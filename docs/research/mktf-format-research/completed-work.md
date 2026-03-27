@@ -309,10 +309,70 @@ Block M [aligned..):
 
 `research/20260327-mktf-format/mktf_v3.py` — full implementation with read_header, read_data, read_selective, read_metadata.
 
+---
+
+## 2026-03-27: Source-Only MKTF + FP32 Kernel (pathmaker)
+
+### The Big Insight
+
+**Don't store derivables.** GPU recomputes 7 derived features from 2 source columns in 0.111ms (FP32 fused kernel). Reading those same 7 columns from NVMe takes 4.4ms. The recompute is **40x faster than the I/O it eliminates.**
+
+### Head-to-Head: Source-Only vs Pre-Computed
+
+| Metric | Source-only (5 cols) | Pre-computed (12 cols) | Winner |
+|--------|---------------------|----------------------|--------|
+| File size | **12.6MB** | 27.6MB | src (2.2x smaller) |
+| Disk read | **3.83ms** | 8.23ms | src (2.1x faster) |
+| H2D | **0.87ms** | 1.50ms | src (1.7x faster) |
+| GPU compute | 0.111ms | 0.000ms | pre (but 0.111ms is nothing) |
+| **TOTAL pipeline** | **4.81ms** | 9.73ms | **src wins by 4.92ms** |
+
+**Source-only is 2x faster end-to-end** despite the GPU recompute step.
+
+### Universe (4,604 tickers)
+
+| Pipeline | Time | Storage |
+|----------|------|---------|
+| **Source-only** | **22.2s** (0.4 min) | 58.0 GB |
+| Pre-computed | 44.8s (0.7 min) | 127.0 GB |
+| **Savings** | **22.6s faster** | **69.0 GB saved** |
+
+### FP32 vs FP64 Fused Kernel (7 outputs from 2 inputs)
+
+| Precision | Time | Ratio |
+|-----------|------|-------|
+| **FP32** | **14.8us** | baseline |
+| FP64 | 102.0us | 6.9x slower |
+
+The 7x speedup comes from SFU-accelerated transcendentals (logf, sqrtf use dedicated hardware units) and 64x higher FP32 FLOPS (125 vs 1.95 TFLOPS).
+
+### FP32 Precision Validation
+
+| Derived column | Max relative error vs FP64 |
+|---------------|---------------------------|
+| ln_price | 4.75e-08 |
+| sqrt_price | 3.16e-08 |
+| recip_price | 5.56e-08 |
+| notional | 5.96e-08 |
+
+**~50 nanometer precision.** For market data where the smallest price tick is $0.01, this is 6+ orders of magnitude beyond what matters.
+
+### Architecture Implications
+
+1. **MKTF stores only source columns**: price(f32), size(f32), timestamp(i64), conditions(u32), exchange(u8)
+2. **GPU recomputes all derived features** in a single fused FP32 kernel launch (0.111ms)
+3. **The fused kernel IS the decoder**: MKTF bytes go straight to GPU, kernel produces all features
+4. **Storage halved**: 58GB vs 127GB for full universe
+5. **Pipeline 2x faster**: less I/O dominates over tiny recompute cost
+
+### Prototype Code
+
+`research/20260327-mktf-format/bench_source_only.py` — full pipeline benchmark + FP32/FP64 kernel comparison.
+
 ### Next Steps
 
-- [ ] GPU H2D timing — how fast can we get MKTF columns to GPU memory?
-- [ ] Explore hybrid: raw write + memmap read (best of both)
-- [ ] LZ4 column compression for cold storage variant
-- [ ] Multi-file batch reader (read 100 tickers concurrently)
-- [ ] Rust/C reader for maximum throughput
+- [ ] Switch fused_bin_stats.py from double to float (64x capability unlock)
+- [ ] Switch fusion.py codegen from double to float output
+- [ ] Multi-ticker batch reader (read 100 source-only files concurrently)
+- [ ] Rust/C MKTF reader for maximum throughput
+- [ ] DirectStorage integration (NVMe -> GPU VRAM, no CPU touch)

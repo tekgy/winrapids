@@ -804,3 +804,221 @@ This is a v2 optimization — the pipelined pinned-memory approach is the correc
 - [I/O Rings — When One I/O Operation is Not Enough](https://windows-internals.com/i-o-rings-when-one-i-o-operation-is-not-enough/)
 - [DirectStorage GitHub (Microsoft)](https://github.com/microsoft/DirectStorage)
 - [ssd-gpu-dma: Userspace NVMe drivers with CUDA](https://github.com/enfiskutensykkel/ssd-gpu-dma)
+
+---
+
+# Part 4: Self-Describing Files — The Header IS the State
+
+**Naturalist: Provenance and self-description patterns**
+**Date: 2026-03-27 (evening session)**
+
+---
+
+## The Vision
+
+MKTF headers replace ALL manifests and become the single source of truth. The file IS the state:
+- File exists + is_complete=true → done
+- File exists + is_complete=false → corrupt, delete and recompute
+- File doesn't exist → not computed
+
+No sidecar files. No external databases. No manifest.jsonl. The header IS the manifest IS the state IS the provenance.
+
+## Cross-Domain Precedents
+
+### FITS: The 45-Year Self-Describing Champion
+
+FITS has been self-describing since 1979. Every FITS file carries:
+- **CHECKSUM**: 32-bit ones-complement checksum over the entire HDU. Self-validating integrity.
+- **DATASUM**: Checksum of just the data portion. Detect corruption without recomputing derived checksums.
+- **HISTORY**: Keyword that accumulates processing history. Each pipeline step adds a HISTORY card. The file knows its own past.
+- **ORIGIN**: Where the file was created.
+- **DATE**: When the file was created.
+- **COMMENT**: Free-form documentation.
+
+FITS headers can carry arbitrary keyword/value pairs up to the 2880-byte block boundary. The format is extensible without version bumps — new keywords are just new key/value pairs in the ASCII header.
+
+**What FITS got right**: Simplicity. 80-character fixed-width cards. Human-readable. Machine-parseable. Extensible. Self-contained. 45 years of astronomical data are interpretable today because every FITS file carries its own documentation.
+
+**What FITS got wrong**: ASCII headers are wasteful (80 bytes per key/value pair). 2880-byte block padding wastes space for small headers. No structured typing for values.
+
+### HDF5: Self-Describing to the Point of Complexity
+
+HDF5 allows arbitrary attributes at every level (file, group, dataset). Each dataset is fully self-describing: dtype, dimensions, chunking, compression, plus user-defined attributes.
+
+**What HDF5 got right**: Complete self-description. A researcher can open a 10-year-old HDF5 file and understand it without any external documentation.
+
+**What HDF5 got wrong**: The format is so flexible that it's slow. Opening an HDF5 file requires traversing B-trees of metadata. The self-describing flexibility trades off against I/O performance. For hot data, this is unacceptable.
+
+### Git Commit Objects: Provenance as Chain
+
+A git commit is a self-describing provenance unit:
+```
+tree      <hash>     ← content fingerprint
+parent    <hash>     ← upstream provenance
+author    <identity> ← who produced this
+committer <identity> ← when it was finalized
+message   <text>     ← why
+```
+
+The commit chain IS the history. No external database. `git log` reconstructs provenance by traversing commit parents. Every commit is self-validating (SHA hash of its contents).
+
+**The parallel to MKTF**: Each MKTF file is like a git commit. Its "parent" is the upstream file(s) that produced it. Its "tree" is the content hash. To check staleness, you compare the recorded parent hash to the current upstream file's actual hash — just like `git status` compares working tree to HEAD.
+
+### Kubeflow ML Pipelines: Task Fingerprints
+
+ML pipeline systems use deterministic fingerprints of the execution context (input data + code version + parameters) to decide whether a task's output is still valid. If the fingerprint matches a cached result, skip recomputation.
+
+**The parallel to MKTF**: The `upstream_fingerprints` field in the MKTF header is exactly this pattern. If the upstream files' current fingerprints match what's recorded in the header, the file is fresh. Otherwise, it's stale.
+
+## Design: MKTF Provenance Header
+
+The header must answer six questions without any external state:
+
+| Question | Header Field | Pattern Source |
+|----------|-------------|----------------|
+| **What is this data?** | ticker, date, node_address, column_directory | NIfTI (dimensions + dtype) |
+| **Is it complete?** | is_complete flag + data_checksum | FITS (CHECKSUM + DATASUM) |
+| **Is it corrupt?** | header_checksum (covers entire header) | FITS (CHECKSUM) |
+| **What produced it?** | node_address, backend_name, backend_version | FITS (ORIGIN) |
+| **What are its inputs?** | upstream_fingerprints (list of node_address → content_hash) | Git (parent), Kubeflow (task fingerprint) |
+| **When was it produced?** | created_at (nanosecond timestamp) | FITS (DATE) |
+
+### Staleness Detection (No Database Required)
+
+```
+To check if file F is stale:
+  1. Read F's header → get upstream_fingerprints
+  2. For each (upstream_node, expected_hash) in upstream_fingerprints:
+     a. Find the upstream file by node_address (deterministic path)
+     b. Read its header → get actual content_hash
+     c. If expected_hash != actual_hash → F is STALE
+  3. If all match → F is FRESH
+```
+
+This is O(N) header reads where N is the number of upstream dependencies (typically 1-3). Each header read is 1-4 KB. Total cost: microseconds.
+
+### Reconciliation (No Manifest Required)
+
+```
+To rebuild system state from scratch:
+  1. Walk the data directory
+  2. For each .mktf file:
+     a. Read header
+     b. If is_complete=false → delete (incomplete write)
+     c. If header_checksum fails → delete (corrupt)
+     d. Otherwise → add to state cache (ticker, date, node, fingerprint)
+  3. The state cache IS the BitmapStateDB
+```
+
+This replaces manifest.jsonl scanning. The files ARE the manifest. Reconciliation is just `glob("**/*.mktf") + read_headers()`.
+
+### Content Fingerprint Strategy
+
+The content fingerprint should be:
+- **Fast to compute**: xxHash-64 or xxHash-128 of the data portion (not the header, since the header contains the hash itself)
+- **Stable**: Deterministic — same input data always produces same hash
+- **Collision-resistant**: 64-bit xxHash has ~10^-19 collision probability for our data sizes
+- **Stored in header**: `data_fingerprint` field, computed after all data columns are written
+
+The write sequence:
+1. Write header with `is_complete=false`, `data_fingerprint=0`
+2. Write all column data
+3. Compute xxHash-64 of the data portion
+4. Seek back to header, update `data_fingerprint` and `is_complete=true`
+5. Compute header checksum, write it
+
+If the process crashes between steps 1-4, the file has `is_complete=false` and will be deleted on reconciliation.
+
+### Proposed Header Layout (Expanded from Part 1)
+
+```
+Bytes 0-63:    Core Header (64 bytes)
+  [0:4]        Magic "MKTF"
+  [4:6]        Version uint16
+  [6:8]        Flags uint16
+                 bit 0: is_complete
+                 bit 1: has_implicit_timestamps
+                 bit 2: has_provenance (Part 2 of header present)
+  [8:16]       n_rows uint64
+  [16:18]      n_cols uint16
+  [18:26]      t_start int64 (nanosecond epoch)
+  [26:34]      t_step int64 (0 if irregular)
+  [34:42]      data_fingerprint uint64 (xxHash-64 of data portion)
+  [42:50]      header_checksum uint64 (xxHash-64 of bytes 0:42 + 50:end_of_header)
+  [50:64]      Reserved (14 bytes)
+
+Bytes 64-(64+64*n_cols): Column Directory (64 bytes per column)
+  [0:32]       name (32 bytes, null-padded)
+  [32]         dtype_code uint8
+  [33]         compression uint8
+  [34:42]      offset uint64
+  [42:50]      nbytes uint64
+  [50:58]      scale float64
+  [58:64]      reserved
+
+Bytes (64+64*n_cols)-(provenance_end): Provenance Block (if flag bit 2 set)
+  [0:8]        created_at int64 (nanosecond timestamp)
+  [8:40]       node_address (32 bytes, null-padded, e.g., "K01P01.TI00TO00")
+  [40:72]      ticker (32 bytes, null-padded)
+  [72:80]      date int64 (YYYYMMDD as integer)
+  [80:112]     backend_name (32 bytes, null-padded)
+  [112:120]    backend_version uint64
+  [120:122]    n_upstreams uint16
+  [122:128]    reserved (6 bytes)
+  Per upstream (64 bytes each):
+    [0:32]     upstream_node_address (32 bytes)
+    [32:40]    upstream_fingerprint uint64
+    [40:48]    upstream_date int64
+    [48:64]    reserved (16 bytes)
+
+Bytes (provenance_end) aligned to 64: Column Data begins
+```
+
+Total overhead for 5 columns + 2 upstreams:
+- Core header: 64 bytes
+- Column directory: 5 × 64 = 320 bytes
+- Provenance: 128 + 2 × 64 = 256 bytes
+- **Total: 640 bytes** (0.005% of 12.6 MB file)
+
+All provenance metadata fits in a single NVMe sector read (4096 bytes covers 5 columns + up to ~55 upstream dependencies).
+
+---
+
+## The Structural Insight
+
+Every domain that achieves long-term data integrity does it the same way: **the file carries its own meaning**.
+
+- FITS files from 1979 are readable today because the header explains the data
+- HDF5 files from 2005 are interpretable because attributes describe every dataset
+- Git commits from 2008 are traversable because each one names its parents
+
+The formats that failed (proprietary binary blobs, data-without-metadata, files that require external manifests) became unreadable within years.
+
+MKTF's provenance header is the same principle applied to a data pipeline. Each file knows: what it is, where it came from, whether it's complete, and whether it's stale. The pipeline operates on headers alone for all decisions. The data is just payload.
+
+This is the NIfTI pattern at industrial scale: **self-describing, self-sufficient, self-validating files**. The 352-byte header that serves all of neuroimaging, extended with provenance to serve all of a data pipeline.
+
+---
+
+## Dead End: Tensor Cores for K02 Bin Aggregations
+
+Investigated whether K02 bin statistics (sum, mean, std, min, max, first, last) could use Tensor Cores via BF16/FP16 for the advertised 250+ TFLOPS (2x over FP32).
+
+**Verdict: No.** Tensor Cores are matmul-only hardware (WMMA/MMA instructions compute D = A × B + C for small matrices). Reduction operations (sum, min, max, etc.) use standard CUDA Cores regardless of data type. BF16 reductions run on the same FP32 pipeline after automatic upcast.
+
+**What BF16 does help with**: Memory bandwidth. Reading BF16 data from GPU memory is half the bytes of FP32 → fewer cache misses, higher effective bandwidth for memory-bound reductions. But the compute throughput is identical.
+
+**Recommendation for K02**: FP32 warp-shuffle reductions with FP32 accumulation. Store K02 results as FP32 (or BF16 for bulk features where 2.3 decimal digits suffice). Don't chase Tensor Core reductions — they don't exist.
+
+---
+
+## Sources (Part 4)
+
+- [FITS Checksum Convention](https://fits.gsfc.nasa.gov/registry/checksum.html)
+- [FITS Checksum Proposal (arXiv)](https://arxiv.org/abs/1201.1345)
+- [FITS File Integrity](https://cxc.harvard.edu/contrib/arots/fits/integrity.html)
+- [FITS Registry of Conventions](https://fits.gsfc.nasa.gov/fits_registry.html)
+- [HDF5 — Self-describing scientific data format](https://www.hdfgroup.org/solutions/hdf5/)
+- [HDF5 and Open Science](https://github.com/HDFGroup/hdf-clinic/blob/main/2025-02-11/HDF5%20and%20Open%20Science.md)
+- [Kubeflow ML Metadata and Caching](https://deepwiki.com/kubeflow/pipelines/5.4-ml-metadata-and-caching)
+- [OpenLineage — Data lineage standard](https://openlineage.io/)

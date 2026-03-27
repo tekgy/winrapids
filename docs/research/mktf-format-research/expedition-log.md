@@ -704,11 +704,16 @@ Every domain that optimizes for throughput stores integers and computes in float
 
 ---
 
-## The Problem: GPUDirect Storage is Linux-Only
+## Two Different Technologies — Don't Conflate
 
-NVIDIA's GPUDirect Storage (cuFile) enables DMA directly from NVMe to GPU VRAM, bypassing the CPU entirely. KvikIO (from RAPIDS) provides Python bindings. **Neither works on Windows.**
+**NVIDIA GPUDirect Storage (cuFile)**: Linux-only. Provides true NVMe → GPU DMA bypassing the CPU. Uses the cuFile API and `nvidia-fs` kernel module. KvikIO (from RAPIDS) provides Python bindings. **Dead for WinRapids — Linux-only.**
 
-Microsoft's DirectStorage is the Windows equivalent, but it's a DirectX 12 API designed for game asset loading. Using it with CUDA requires D3D12-CUDA interop (`cudaGraphicsD3D12RegisterResource`), which is complex and fragile.
+**Microsoft DirectStorage 1.4**: Windows-native. DirectX 12 API for high-throughput file I/O with optional GPU decompression (GDeflate). **Alive and confirmed working on our system (Day 1 expedition).** Does NOT bypass the CPU for uncompressed data — it optimizes the I/O submission path and enables GPU-side decompression. Using it with CUDA requires D3D12-CUDA interop (`cudaGraphicsD3D12RegisterResource`), which adds complexity but is viable (proven by llama.cpp PR #7796).
+
+**DirectStorage's value for us** (even without GPU decompression):
+1. Lower-overhead async I/O submission than Win32 overlapped I/O
+2. Potential future NVMe→GPU path as Windows evolves
+3. Streaming API pattern for live WebSocket data → MKTF → GPU
 
 ## What Actually Works on Windows: Pipelined Pinned-Memory I/O
 
@@ -1022,3 +1027,227 @@ Investigated whether K02 bin statistics (sum, mean, std, min, max, first, last) 
 - [HDF5 and Open Science](https://github.com/HDFGroup/hdf-clinic/blob/main/2025-02-11/HDF5%20and%20Open%20Science.md)
 - [Kubeflow ML Metadata and Caching](https://deepwiki.com/kubeflow/pipelines/5.4-ml-metadata-and-caching)
 - [OpenLineage — Data lineage standard](https://openlineage.io/)
+
+---
+
+# Part 5: Tensor Core Opportunities — Unlocking 250-1000 TFLOPS
+
+**Naturalist: Tensor Core architecture research**
+**Date: 2026-03-27 (late session)**
+
+**CORRECTION**: Part 2 of this log contained some recommendations that benchmarking has superseded:
+- ~~int32 × 10^-4 for prices~~ → float32 wins (source data IS float32 from SIP; int64 fixed-point is 30% larger, 15-56% slower)
+- ~~Delta timestamps~~ → Absolute int64 required (72K negative deltas in real AAPL from multi-venue out-of-order delivery)
+- ~~bfloat16 for derived features~~ → DANGEROUS for returns (delta_ln_price at 1bp-100bp rounds to 0.0)
+
+The validated encoding: float32 for prices/sizes, int64 for timestamps, uint32 bitmask, uint8 exchange. MKTF v2 achieves 5.90ms disk→GPU per ticker (11.3x faster than parquet).
+
+---
+
+## The Untapped Capability
+
+Our RTX PRO 6000 Blackwell has 752 5th-generation Tensor Cores. We're using zero of them.
+
+### Estimated Tensor Core TFLOPS (RTX PRO 6000 Blackwell)
+
+| Precision | Tensor Core Dense | vs FP32 CUDA (125 TFLOPS) | Use Case |
+|-----------|------------------|---------------------------|----------|
+| TF32 | ~125 TFLOPS | ~1x | Drop-in FP32 acceleration for GEMM |
+| BF16/FP16 (FP32 accum) | ~250 TFLOPS | **2x** | Mixed-precision GEMM |
+| FP8 (FP32 accum) | ~500 TFLOPS | **4x** | Quantized GEMM |
+| FP4 (sparse) | ~2000 TFLOPS | **16x** | AI inference only |
+
+(Estimates scaled from RTX 5090 published specs × 752/680 Tensor Core ratio. 4000 AI TOPS headline = FP4 with 2:4 sparsity.)
+
+### What Tensor Cores Can and Cannot Do
+
+**CAN do (GEMM-shaped)**:
+- D = A × B + C for matrix tiles (16×16, 32×32, or 256×256 on Blackwell)
+- Automatically invoked by cuBLAS for qualifying GEMM calls
+- Accessible via CuPy: `cp.matmul(a.astype(cp.float16), b.astype(cp.float16))` → cuBLAS → Tensor Cores
+- cuBLAS 11.0+ auto-selects Tensor Core kernels when beneficial
+
+**CANNOT do directly**:
+- Element-wise operations (log, sqrt, sin)
+- Min/max reductions
+- Sorting, conditional logic
+- Any non-linear operation
+
+### KEY DISCOVERY: Reductions CAN Use Tensor Cores
+
+My earlier conclusion ("Tensor Cores don't help with reductions") was **partially wrong**.
+
+[Dakkak et al. (2019)](https://arxiv.org/abs/1811.09736) demonstrated encoding arithmetic reductions as chained matrix multiply-accumulate operations:
+- **Up to 100x faster** than conventional GPU reduction for small segment sizes
+- **3.2x faster** for general reduction vs state-of-the-art
+- Achieves 89-98% of peak memory copy bandwidth
+- 22% lower power consumption
+
+The technique: partition N values into groups matching Tensor Core tile size (16×16), encode as matrix columns, multiply by a "reduction vector" (ones), chain partial sums through subsequent GEMM rounds.
+
+---
+
+## Tier 1: Natural GEMM Operations (Massive Win)
+
+### Cross-Ticker Correlation (K04)
+
+This is the crown jewel Tensor Core target. Computing the correlation matrix across 4,604 tickers:
+
+```
+X: (n_features × n_tickers) = (170 × 4604)
+Correlation = normalize(X^T × X) = GEMM: M=4604, N=4604, K=170
+```
+
+| Precision | TFLOPS | Time (theoretical) | Speedup vs FP32 |
+|-----------|--------|-------------------|-----------------|
+| FP32 CUDA | 125 | ~0.058ms | 1x |
+| TF32 Tensor | 125 | ~0.058ms | 1x |
+| FP16 Tensor | 250 | ~0.029ms | 2x |
+| FP8 Tensor | 500 | ~0.014ms | 4x |
+
+The single correlation matrix is tiny. The real win: **batched across 31 cadences**:
+- 31 × correlation GEMM at FP16 Tensor: ~0.9ms
+- 31 × correlation GEMM at FP32 CUDA: ~1.8ms
+- Batched GEMM via `cublasGemmStridedBatched` → maximum Tensor Core utilization
+
+**Cross-domain validation**: The paper ["Calculation of cross-correlation function accelerated by TensorFloat-32 Tensor Core operations"](https://www.sciencedirect.com/science/article/pii/S1877750323000467) specifically validates this approach for cross-correlation using Tensor Cores.
+
+### PCA / Eigendecomposition
+
+Power iteration method = repeated GEMM. Lanczos algorithm = GEMM + vector operations. Both naturally Tensor Core-accelerated for the GEMM portion.
+
+For dimensionality reduction of 170 K02 features across 4,604 tickers: the main cost is the covariance matrix (GEMM) and eigensolves (iterative GEMM). Perfect Tensor Core territory.
+
+---
+
+## Tier 2: Reformulated Operations (Moderate Win)
+
+### Bin Statistics as GEMM
+
+For fused_bin_stats (sum, mean, std per bin):
+
+Let `B` be the bin assignment matrix: (n_bins × n_ticks) where B[i,j] = 1 if tick j belongs to bin i.
+
+```
+bin_sums   = B × data        → GEMM  ✓
+bin_counts = B × ones         → GEMM  ✓
+bin_means  = bin_sums / counts → elementwise
+bin_sum_sq = B × (data²)     → GEMM after elementwise square  ✓
+bin_std    = sqrt(sum_sq/n - mean²) → derived from two GEMMs  ✓
+```
+
+Four of seven statistics (sum, mean, sum_sq, std) can be expressed as GEMM. min/max/first/last cannot.
+
+**However**: The B matrix is extremely sparse. For 1-second cadence with 598K ticks over 6.5 hours = ~23,400 bins. B is (23,400 × 598,057) with one non-zero per column. Standard dense GEMM would waste 99.996% of computation.
+
+**Solutions**:
+1. **Sparse GEMM via cuSPARSE**: Tensor Core-accelerated sparse GEMM (cuSPARSE supports structured sparsity on Ampere+)
+2. **Segmented reduction via Tensor Core MMA** (Dakkak technique): Encode segments as matrix tiles, 3.2x over warp-shuffle
+3. **Batched small GEMM**: Group ticks by bin, compute per-bin statistics as many small GEMMs via `cublasGemmBatched`
+
+The Dakkak segmented reduction technique is most promising — it's designed exactly for this shape of problem.
+
+### Rolling Windows as Convolution
+
+Rolling mean/std of window W can be formulated as:
+```
+rolling_mean = convolve(data, [1/W, 1/W, ..., 1/W])  (length W)
+```
+
+1D convolution = Toeplitz matrix × vector. This can use:
+- cuDNN 1D convolution (Tensor Core accelerated internally)
+- im2col + GEMM via cuBLAS (explicit Tensor Core GEMM)
+- Or the existing CuPy cumsum trick (which is already fast)
+
+For small windows (5-20 elements), the overhead of GEMM reformulation may exceed the benefit. For large windows (100+), the Tensor Core path wins.
+
+---
+
+## Tier 3: CuPy Access Pattern
+
+CuPy provides transparent Tensor Core access:
+
+```python
+import cupy as cp
+
+# This AUTOMATICALLY uses Tensor Cores via cuBLAS:
+a = cp.random.randn(4604, 170, dtype=cp.float16)
+b = cp.random.randn(170, 4604, dtype=cp.float16)
+c = cp.matmul(a, b)  # → cuBLAS → Tensor Cores → FP16 GEMM with FP32 accumulation
+
+# TF32 mode (transparent FP32 acceleration):
+# cuBLAS 11.0+ defaults to TF32 for FP32 GEMM on Ampere+
+a32 = cp.random.randn(4604, 170, dtype=cp.float32)
+b32 = cp.random.randn(170, 4604, dtype=cp.float32)
+c32 = cp.matmul(a32, b32)  # → TF32 Tensor Cores (automatic on Blackwell)
+
+# Batched GEMM for 31 cadences:
+# Stack correlation data → one cublasBatchedGemm call
+```
+
+No raw CUDA needed for standard GEMM. CuPy → cuBLAS → Tensor Cores happens automatically.
+
+For the Dakkak reduction technique or custom MMA patterns: need CUTLASS (C++) or custom CUDA with `nvcuda::wmma` / `mma.sync` intrinsics.
+
+---
+
+## The Tensor Core Pipeline Vision
+
+```
+                    CUDA Cores (125 TFLOPS)          Tensor Cores (250+ TFLOPS)
+                    ────────────────────────          ──────────────────────────
+K01 Pointwise:      logf, sqrtf, sinf (SFU) ←──── NOT GEMM-shaped
+                    elementwise arithmetic
+
+K01 Sequential:     diff, lag, cumsum        ←──── NOT GEMM-shaped
+
+K01 Windowed:       rolling mean/std         ←?──→ Convolution → GEMM (large W)
+
+K02 Bin Stats:      sum, mean, std           ←?──→ Segmented reduction as MMA
+                    min, max, first, last    ←──── NOT GEMM-shaped
+
+K04 Correlation:                             ────→ X^T × X = pure GEMM ✓✓✓
+K04 PCA:                                     ────→ Eigensolve = iterative GEMM ✓✓
+K04 Regression:                              ────→ (X^T X)^-1 X^T y = GEMM + solve ✓✓
+```
+
+**Estimated Tensor Core utilization**:
+- K01: ~0% (all SFU + elementwise — compute is trivial anyway at 14.8µs)
+- K02 bin stats: ~30-50% of ops (sum/mean/std via MMA; min/max/first/last stay CUDA Core)
+- K04 correlation/PCA: ~90-100% (naturally GEMM-shaped)
+
+**Where the real payoff is**: K04 cross-ticker operations on 4,604 tickers × 170 features × 31 cadences. This is where GEMM matrices get large and Tensor Core throughput dominates.
+
+---
+
+## Precision Safety for Tensor Core Paths
+
+From benchmarking (pathmaker confirmed):
+- **FP16 DANGER for returns**: bfloat16/float16 rounds delta_ln_price to 0.0 at 1bp-100bp
+- **FP16 OK for level features**: ln_price, sqrt_price, sin_time — sufficient range/precision
+- **TF32 safe everywhere**: Same exponent range as FP32, reduced mantissa (10 bits vs 23). Max error ~0.1% for our data.
+
+**Recommended precision by operation**:
+| Operation | Input Precision | Accumulator | Tensor Core Mode |
+|-----------|----------------|-------------|------------------|
+| Correlation GEMM | FP32 (→TF32 auto) | FP32 | TF32 (automatic) |
+| Correlation GEMM (aggressive) | FP16 | FP32 | FP16 Tensor (2x) |
+| Bin sum/mean | FP32 (→TF32 auto) | FP32 | TF32 |
+| PCA/eigensolve | FP32 (→TF32 auto) | FP32 | TF32 |
+| Feature cross-products | FP16 | FP32 | FP16 Tensor (2x) |
+
+TF32 is the safe default: automatic, no code changes, no precision risk, ~1x-2x throughput for GEMM.
+
+---
+
+## Sources (Part 5)
+
+- [Accelerating Reduction and Scan Using Tensor Core Units (Dakkak et al., 2019)](https://arxiv.org/abs/1811.09736)
+- [Cross-correlation accelerated by TF32 Tensor Cores](https://www.sciencedirect.com/science/article/pii/S1877750323000467)
+- [RTX PRO 6000 Blackwell Datasheet (NVIDIA)](https://www.nvidia.com/content/dam/en-zz/Solutions/data-center/rtx-pro-6000-blackwell-workstation-edition/workstation-blackwell-rtx-pro-6000-workstation-edition-nvidia-us-3519208-web.pdf)
+- [RTX Blackwell Architecture Whitepaper v1.1](https://images.nvidia.com/aem-dam/Solutions/geforce/blackwell/nvidia-rtx-blackwell-gpu-architecture.pdf)
+- [cuBLAS 13.2 documentation (Tensor Core math modes)](https://docs.nvidia.com/cuda/cublas/)
+- [CUTLASS — CUDA Templates for Linear Algebra](https://github.com/NVIDIA/cutlass)
+- [cuBLAS Strided Batched Matrix Multiply (NVIDIA blog)](https://developer.nvidia.com/blog/cublas-strided-batched-matrix-multiply/)
+- [Batched GEMM for small matrices on FP16 Tensor Cores](https://par.nsf.gov/servlets/purl/10190584)
+- [RTX 5090 BF16 Tensor TFLOPS discussion (NVIDIA Forums)](https://forums.developer.nvidia.com/t/rtx-5090-peak-bf16-tensor-tflops/350543)

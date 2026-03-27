@@ -334,3 +334,198 @@ Real-world validation: 100 MKTF v2 files (float32 encoding) read sequentially to
 | Selective 2-col read | 3.2s | ~30s (est.) |
 | Disk -> GPU | 26.6s | 306.8s (11.5x slower) |
 | Disk -> GPU -> compute | 28.7s | ~310s (est.) |
+
+---
+
+## Experiment 5: GPU Precision & Throughput — FP64 vs FP32
+
+**Hardware**: NVIDIA RTX PRO 6000 Blackwell Max-Q, 102.6 GB VRAM
+
+### Phase 1: Fused Pointwise Kernel Throughput
+
+Custom CUDA kernel computing 13 derived columns from 3 base columns (price, size, timestamp): notional, ln_price, sqrt_price, recip_price, abs_return, sign_return, ln_size, sqrt_size, recip_size, price_x_sqrt_size, vwap_contrib, spread_proxy, momentum.
+
+| Precision | Time (us) | Bandwidth (GB/s) | Data moved (MB) |
+|---|---|---|---|
+| **FP64** | 102.1 | 750 | 76.6 |
+| **FP32** | 25.4 | 1601 | 40.7 |
+| **Speedup** | **4.0x** | — | — |
+
+**Why 4x, not 30-40x**: The kernel is **bandwidth-bound**, not compute-bound. At 598K elements, we're moving data through memory, not crunching math. FP32's advantage is 2x smaller data (half the bytes through the memory bus) plus some speedup on transcendental functions. The theoretical 1:64 FP64:FP32 ratio only applies to compute-bound workloads at much larger scales.
+
+**FP32 at 1601 GB/s approaches theoretical memory bandwidth** — this kernel is nearly optimal.
+
+Individual operation benchmarks:
+
+| Op | FP64 (us) | FP32 (us) | Speedup | Bottleneck |
+|---|---|---|---|---|
+| log | 26.8 | 8.6 | 3.1x | Compute (transcendental) |
+| sqrt | 10.9 | 8.2 | 1.3x | Bandwidth |
+| multiply | 8.1 | 8.2 | 1.0x | Bandwidth |
+| abs | 8.1 | 8.4 | 1.0x | Bandwidth |
+| std | 324.6 | 211.1 | 1.5x | Multi-pass reduction |
+| sort | 189.9 | 114.4 | 1.7x | Memory + compute hybrid |
+| sum | 14.6 | 15.1 | 1.0x | Bandwidth (reduction) |
+| cumsum | 27.3 | 24.1 | 1.1x | Bandwidth (scan) |
+
+### Phase 2: Precision Validation (FP32 vs FP64 on Real AAPL)
+
+| Column | Max Abs Error | Max Rel Error | Mean Rel Error |
+|---|---|---|---|
+| notional | 49.34 | 5.96e-8 | 1.38e-8 |
+| ln_price | 2.58e-7 | 4.75e-8 | 2.08e-8 |
+| sqrt_price | 4.77e-7 | 3.16e-8 | 1.58e-8 |
+| recip_price | 2.33e-10 | 5.56e-8 | 2.78e-8 |
+| abs_return | 1.80e-9 | 5.94e-8 | 2.15e-8 |
+| sign_return | **0** | **0** | **0** |
+| spread_proxy | **0** | **0** | **0** |
+| momentum | **0** | **0** | **0** |
+
+**All columns within 1e-6 relative error. All within 1e-4. FP32 is more than sufficient.**
+
+Price roundtrip error (FP64->FP32->FP64): **exactly zero**. AAPL prices at $227-$255 fit perfectly in float32's 24-bit mantissa (7.2 decimal digits).
+
+### Phase 3: "Don't Store Derivables" Pipeline
+
+| Pipeline | Time (ms) | File Size (MB) |
+|---|---|---|
+| Path A: Read 14 cols + H2D | 11.33 | 35.88 |
+| **Path B: Read 3 cols + H2D + GPU recompute** | **3.57** | **9.57** |
+
+**Path B wins by 7.76ms (3.2x faster).**
+
+Path B breakdown:
+- Read 3 columns: 3.08ms
+- H2D transfer: 0.42ms
+- **GPU recompute 13 derived columns: 0.035ms (35 microseconds!)**
+
+**The GPU compute is essentially free** — 35 microseconds to recompute everything vs 7.76ms saved by not reading/transferring the extra 26 MB. The I/O savings utterly dominate.
+
+**Universe impact**:
+- Path A: 52.2s for 4604 tickers
+- **Path B: 16.4s for 4604 tickers (3.2x faster)**
+- **Disk savings: 121 GB per day** (73% reduction)
+- **Yearly savings: 30 TB** (250 trading days)
+
+### Phase 4: Kahan Compensated Summation
+
+| Method | Sum | Relative Error |
+|---|---|---|
+| numpy FP64 (ground truth) | 137,306,041.818451 | — |
+| CuPy FP64 | 137,306,041.818451 | 0.00e+00 |
+| CuPy FP32 naive | 137,306,048.000000 | 4.50e-08 |
+| **FP32 Kahan compensated** | **137,306,041.818451** | **0.00e+00** |
+| FP32->FP64 upcast accum | 137,306,041.818451 | 0.00e+00 |
+
+**Kahan FP32 matches FP64 exactly.** We don't need FP64 for accumulation.
+
+Rolling mean accuracy at different windows:
+
+| Window | Max Error ($) | Relative Error |
+|---|---|---|
+| 100 | $0.000039 | 1.71e-7 |
+| 1,000 | $0.000070 | 3.06e-7 |
+| 10,000 | $0.000176 | 7.65e-7 |
+| 100,000 | $0.000331 | 1.44e-6 |
+
+**Sub-cent errors even at 100K windows. Completely negligible for signal detection.**
+
+### Experiment 5 Conclusions
+
+1. **FP32 is the correct default**. All errors within 1e-6 relative. Price fits exactly. Sub-cent rolling mean errors.
+2. **Don't store derived columns**. GPU recomputes 13 columns in 35 microseconds. Storing them wastes 73% disk space and 3.2x pipeline time.
+3. **The fused kernel is bandwidth-bound at 1601 GB/s**, near theoretical peak. Can't go faster without reducing data volume (which FP32 already does).
+4. **Kahan FP32 matches FP64 for accumulation**. No need for FP64 anywhere in the pipeline.
+5. **The optimal MKTF file stores ONLY base columns**: price (float32), size (float32), timestamp (int64), exchange (uint8), conditions (uint32), is_odd_lot (uint8). Total: ~9.6 MB per ticker. Everything else recomputed on GPU in 35us.
+
+**Revised pipeline**: Read 9.6 MB → H2D 0.42ms → GPU recompute 0.035ms → **total 3.57ms per ticker → 16.4s for full universe**.
+
+Benchmark script: `experiments/file_format/bench_gpu_precision.py`
+
+---
+
+## Experiment 6: MKTF v3 — Self-Describing Format Benchmark
+
+Pathmaker's MKTF v3: 4096-byte NVMe-sector alignment, self-describing headers with identity/quality/provenance, crash recovery via is_complete flag.
+
+### Phase 1: Basic I/O
+
+| Metric | Value |
+|---|---|
+| Data size | 15.55 MB (7 columns) |
+| File size | 15.59 MB (35 KB overhead) |
+| Write | 5.47ms ± 0.63 |
+| Read (full) | 4.11ms ± 0.16 |
+| Read 1-col | 0.28ms ± 0.02 |
+| Read 2-col | 0.50ms ± 0.03 |
+| Header scan | **29.5us ± 1.8** |
+
+Overhead from 4096-byte alignment: only 35 KB (0.2% of file). Negligible.
+
+### Phase 2: v3 (4096-align) vs v2 (64-align)
+
+| Metric | v3 (4096) | v2 (64) | Delta |
+|---|---|---|---|
+| File size | 15.59 MB | 15.55 MB | +0.03 MB |
+| Write | 5.47ms | 3.55ms | +1.92ms |
+| Read (full) | 4.11ms | 4.22ms | **-0.11ms** |
+| Sel 2-col | 0.50ms | 0.52ms | -0.02ms |
+
+**Write is 1.92ms slower** due to header computation (schema fingerprint, per-column stats, crash-safe protocol). **Read is identical or marginally faster**. The operational features (self-describing, crash recovery, daemon-scannable) cost nothing at read time.
+
+### Phase 3: GPU Pipeline (Source-Only + Fused Recompute)
+
+| Stage | Time |
+|---|---|
+| Read 7 cols | 4.34ms |
+| H2D transfer | 0.60ms |
+| Fused kernel (13 derived cols) | 0.036ms (36us) |
+| **Total pipeline** | **6.01ms** |
+
+Universe: 27.7s for 4604 tickers.
+
+### Phase 4: Cold vs Warm Cache
+
+- Warm: 4.11ms, Cold: 5.22ms, Ratio: **1.27x**
+- Consistent with earlier experiments (~25-30% cold penalty).
+
+### Phase 5: Daemon Header Scan
+
+**The killer feature**: daemon reads ONLY headers, zero data bytes.
+
+| Metric | Value |
+|---|---|
+| Per-header scan | 183us |
+| 100 headers | 18.3ms |
+| **4604 headers (full universe)** | **0.84s** |
+
+Each header provides: is_complete, ticker, day, schema fingerprint, n_rows, total_nulls, write duration, per-column min/max/null_count. **Complete operational state in sub-second scan.**
+
+Crash recovery validated: is_complete flag correctly detects incomplete writes.
+
+### Conclusions
+
+1. **MKTF v3 is production-ready**. 4096-byte alignment adds 35 KB overhead, zero read penalty.
+2. **Write overhead (+1.92ms) is acceptable** for the self-describing features gained.
+3. **Header scan at 0.84s for full universe** enables sub-second staleness checks, schema drift detection, and quality monitoring.
+4. **Full GPU pipeline at 6.01ms/ticker** (read + H2D + fused recompute) = 27.7s for universe.
+5. **The daemon never touches data bytes** — all operational decisions from headers alone.
+
+Benchmark script: `experiments/file_format/bench_mktf_v3.py`
+
+---
+
+## Summary of All Experiments
+
+| # | Experiment | Key Finding |
+|---|---|---|
+| 1 | Format comparison (9 formats) | Aligned binary wins GPU pipeline at 7.98ms |
+| 1b | Per-column compression | Float64 incompressible; only timestamps/booleans benefit |
+| 2 | Hybrid encoding | Compression is net negative for market data |
+| 3 | MKTF v2 end-to-end | 11.3x faster than parquet for disk->GPU |
+| 4 | Universe scan (100 files) | 28.7s full pipeline, 3.2s selective for 4604 tickers |
+| 5 | GPU precision + throughput | FP32 sufficient, don't store derivables (73% savings), Kahan matches FP64 |
+| 6 | MKTF v3 self-describing | 35KB overhead, 0.84s full-universe header scan, crash recovery works |
+
+**Final recommended pipeline**: MKTF v3 source-only → H2D → fused FP32 recompute → GPU compute.
+**Per-ticker**: 6.01ms. **Full universe**: 27.7s. **Storage**: 15.59 MB/ticker = 71.8 GB/day.

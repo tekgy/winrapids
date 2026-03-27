@@ -441,3 +441,70 @@ This is K04's core operation (X^T @ X). At 0.31ms, the correlation matrix comput
 ### Prototype Code
 
 `research/20260327-mktf-format/bench_tensor_cores.py`
+
+---
+
+## 2026-03-27: Concurrent MKTF Reader — NVMe Saturation (pathmaker)
+
+### The Insight
+
+Sequential reads reach 3.20 GB/s. NVMe theoretical is 7 GB/s. ThreadPoolExecutor with 12 workers closes the gap to **6.59 GB/s — 94% of NVMe theoretical.**
+
+### Concurrent Read Benchmark (100 x 12.6MB MKTF files, 1.26GB total)
+
+| Workers | Time | Per-file | Bandwidth | Speedup |
+|---------|------|----------|-----------|---------|
+| Sequential | 393.6ms | 3.94ms | 3.20 GB/s | baseline |
+| 1 | 505.6ms | 5.06ms | 2.49 GB/s | 0.78x |
+| 2 | 298.4ms | 2.98ms | 4.22 GB/s | 1.32x |
+| 4 | 244.5ms | 2.45ms | 5.15 GB/s | 1.61x |
+| 8 | 217.9ms | 2.18ms | 5.78 GB/s | 1.81x |
+| **12** | **190.9ms** | **1.91ms** | **6.59 GB/s** | **2.06x** |
+| 16 | 193.5ms | 1.93ms | 6.51 GB/s | 2.03x |
+
+**12 workers is the sweet spot.** Returns diminish after that — the NVMe queue depth is the bottleneck, not the thread count.
+
+### Pipelined: Concurrent Prefetch + GPU
+
+| Prefetch workers | Time | Per-file | Speedup vs seq read+GPU |
+|-----------------|------|----------|------------------------|
+| Sequential read+GPU | 446.6ms | 4.47ms | baseline |
+| 2 | 294.4ms | 2.94ms | 1.52x |
+| 4 | 283.5ms | 2.83ms | 1.58x |
+| **8** | **223.2ms** | **2.23ms** | **2.00x** |
+
+The prefetch pattern works: while GPU processes the current batch, I/O threads pre-read the next batch.
+
+### Universe Projections (4,604 tickers)
+
+| Pipeline | Projected time |
+|----------|---------------|
+| Sequential read | 18.1s |
+| Sequential read+GPU | 20.6s |
+| **Concurrent read (12 workers)** | **10.0s** |
+| NVMe theoretical (7 GB/s) | 8.3s |
+
+**10.0s for the full universe — within 1.7s of NVMe hardware limit.**
+
+### Architecture Implications
+
+1. **12 workers for production reader**: Simple ThreadPoolExecutor, no exotic I/O. 2x speedup for free.
+2. **Pipelined pattern for GPU**: Submit I/O futures, process results as they arrive. Hides I/O latency behind GPU compute.
+3. **We're NVMe-bound now**: At 6.59 GB/s, the only way faster is DirectStorage (GPU-direct, skip CPU). That's a Rust/C project.
+4. **Combined with source-only**: 5 cols (12.6MB/file) x 4,604 tickers x concurrent read = **10s read + 0.5s GPU recompute = 10.5s total pipeline.**
+
+### The Full Pipeline (Day 1 → Now)
+
+| What | Time for 4,604 tickers |
+|------|----------------------|
+| Original parquet sequential | ~11 min |
+| MKTF v3 sequential read | 18.1s |
+| MKTF source-only sequential | 22.2s (smaller files, plus recompute) |
+| **MKTF source-only + concurrent** | **~10.5s** |
+| NVMe theoretical floor | 8.3s |
+
+**From 11 minutes to 10.5 seconds.** 63x faster. And we're within 27% of hardware limits.
+
+### Prototype Code
+
+`research/20260327-mktf-format/bench_concurrent.py`

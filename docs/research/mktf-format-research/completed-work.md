@@ -376,3 +376,68 @@ The 7x speedup comes from SFU-accelerated transcendentals (logf, sqrtf use dedic
 - [ ] Multi-ticker batch reader (read 100 source-only files concurrently)
 - [ ] Rust/C MKTF reader for maximum throughput
 - [ ] DirectStorage integration (NVMe -> GPU VRAM, no CPU touch)
+
+---
+
+## 2026-03-27: Tensor Core Exploration (pathmaker)
+
+### Peak GPU Performance
+
+| Precision | Measured TFLOPS | Theoretical |
+|-----------|----------------|-------------|
+| FP32 (CUDA cores) | ~50 TFLOPS | 125 TFLOPS |
+| FP16 (Tensor Cores) | ~240 TFLOPS | 1000+ TFLOPS |
+| Ratio | 5x | 8x |
+
+Measured at ~50% of theoretical — typical for cuBLAS on a workstation GPU.
+
+### Hypothesis 1: Column Decode as GEMM — REJECTED
+
+| Method | Time |
+|--------|------|
+| **Elementwise multiply** | **14.8us** |
+| Scalar multiply | 65.6us |
+| GEMM FP16 | 43.2us |
+| GEMM FP32 | 52.1us |
+
+Tensor Cores need K >= 16 to saturate. Our column decode has K=3 (3 columns). The GEMM overhead dominates. **Stay on CUDA cores for column decode.**
+
+### Hypothesis 2: Bin Stats as GEMM — MIXED
+
+| Method | Time | Notes |
+|--------|------|-------|
+| Uniform reshape + sum | 25.0us | Best for equal-size bins |
+| GEMM FP32 (uniform) | 20.5us | Slightly faster for uniform |
+| Cumsum + diff | 286.3us | Required for variable-size bins |
+
+Bin stats CAN be formulated as GEMM for uniform bins, but the speedup is marginal (25us -> 20us). Variable-size bins (our actual use case) can't use GEMM efficiently. **Cumsum + diff is the practical path for variable bins.**
+
+### Hypothesis 3: Cross-Ticker Correlation — USE TENSOR CORES
+
+| Scale | FP32 | FP16 (TC) | Speedup | TFLOPS |
+|-------|------|-----------|---------|--------|
+| 100 tickers | 0.04ms | 0.04ms | 1.0x | ~1 |
+| 1000 tickers | 0.09ms | 0.03ms | 2.5x | 86 |
+| **4604 tickers** | **1.34ms** | **0.31ms** | **4.4x** | **198** |
+
+**Full 4604-ticker correlation matrix in 0.31ms at 198 TFLOPS.**
+
+This is K04's core operation (X^T @ X). At 0.31ms, the correlation matrix computation is effectively free — it's faster than reading a single column from disk.
+
+### FP16 Precision
+
+- Max relative error on normalized data: high on individual outlier elements
+- Mean relative error: 3.13e-03 — acceptable for correlation ranking
+- For correlation-based signals (rank ordering, not absolute values), FP16 is sufficient
+- For exact correlation values, use FP32 (still fast at 1.34ms)
+
+### Architecture Implications
+
+1. **K01/K02 pipeline (per-ticker)**: Stay on FP32 CUDA cores. Data is too narrow (5-20 cols) for Tensor Cores to help.
+2. **K04 cross-ticker correlation**: Use FP16 Tensor Cores via cuBLAS GEMM. 4.4x speedup, 0.31ms for full universe.
+3. **Future large-matrix ops** (eigendecomposition, PCA, factor models): Target Tensor Cores by formulating as GEMM.
+4. **Data layout for TC**: Column-major (Fortran order) preferred by cuBLAS for GEMM. MKTF column-oriented layout is already correct.
+
+### Prototype Code
+
+`research/20260327-mktf-format/bench_tensor_cores.py`

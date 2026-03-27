@@ -71,6 +71,12 @@ def _schema_fingerprint(columns: dict[str, np.ndarray]) -> bytes:
     return h.digest()[:16]
 
 
+def _data_fingerprint(arr: np.ndarray) -> int:
+    """8-byte data hash as uint64. Detects upstream data changes."""
+    h = hashlib.sha256(arr.tobytes()).digest()[:8]
+    return struct.unpack_from("<Q", h, 0)[0]
+
+
 # ══════════════════════════════════════════════════════════════════
 # FIXED HEADER (4096 bytes, Block 0)
 # ══════════════════════════════════════════════════════════════════
@@ -114,7 +120,18 @@ def _schema_fingerprint(columns: dict[str, np.ndarray]) -> bytes:
 #   168     8     meta_size            uint64 (0 if none)
 #   176     8     data_start           uint64
 #
-#   [184..4096)  reserved
+#   Upstream fingerprints (offset 184): 4 x 40 bytes = 160 bytes
+#   Each entry (40 bytes):
+#   184+i*40+0   16    upstream_leaf_id     bytes (null-padded, e.g. "K01P01")
+#   184+i*40+16   8    upstream_write_ts    int64 (write_timestamp_ns of upstream)
+#   184+i*40+24   8    upstream_data_hash   uint64 (SHA-256[:8] of upstream data)
+#   184+i*40+32   8    reserved             bytes
+#
+#   K01P01 has zero upstream entries (all zeroed). K02 records K01P01 here.
+#   Staleness check: read K01P01 header -> compare write_timestamp_ns + data_hash.
+#   Two header reads, zero data reads.
+#
+#   [344..4096)  reserved
 #
 HEADER_FMT = "<4s H H I I"    # magic, version, flags, alignment, header_blocks
 IDENTITY_FMT = "<16s 8s 10s 16s 16s 16s"  # leaf_id, ticker, day, cadence, leaf_version, fingerprint
@@ -134,6 +151,13 @@ PROV_OFFSET = 128
 PROV_SIZE = 8 + 4 + 4  # = 16
 LAYOUT_OFFSET = 144
 LAYOUT_SIZE = 8 * 5  # = 40
+
+# Upstream fingerprints (Block 0, offset 184)
+UPSTREAM_FP_OFFSET = 184
+UPSTREAM_FP_ENTRIES = 4
+UPSTREAM_FP_ENTRY_SIZE = 40
+UPSTREAM_FP_ENTRY_FMT = "<16s q Q 8s"  # leaf_id, write_ts_ns, data_hash, reserved
+assert struct.calcsize(UPSTREAM_FP_ENTRY_FMT) == UPSTREAM_FP_ENTRY_SIZE
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -196,6 +220,8 @@ def write_mktf(
     compute_duration_ms: int = 0,
     metadata: dict | None = None,
     scale_factors: dict[str, float] | None = None,
+    upstream_fingerprints: list[dict] | None = None,
+    # Each dict: {"leaf_id": str, "write_timestamp_ns": int, "data_hash": int}
 ) -> int:
     """Write an MKTF v3 file.
 
@@ -287,6 +313,18 @@ def write_mktf(
     struct.pack_into(LAYOUT_FMT, header, LAYOUT_OFFSET,
                      dir_offset, n_cols, meta_offset, meta_size, data_start)
 
+    # Upstream fingerprints (offset 184)
+    if upstream_fingerprints:
+        for i, fp in enumerate(upstream_fingerprints[:UPSTREAM_FP_ENTRIES]):
+            entry_off = UPSTREAM_FP_OFFSET + i * UPSTREAM_FP_ENTRY_SIZE
+            struct.pack_into(
+                UPSTREAM_FP_ENTRY_FMT, header, entry_off,
+                fp.get("leaf_id", "").encode()[:16].ljust(16, b"\x00"),
+                fp.get("write_timestamp_ns", 0),
+                fp.get("data_hash", 0),
+                b"\x00" * 8,
+            )
+
     # ── Build directory ──
     directory = bytearray(n_cols * DIR_ENTRY_SIZE)
     for i, name in enumerate(col_names):
@@ -355,6 +393,7 @@ class MKTFHeader:
         "total_nulls", "is_complete",
         "write_timestamp_ns", "write_duration_ms", "compute_duration_ms",
         "dir_offset", "dir_entries", "meta_offset", "meta_size", "data_start",
+        "upstream_fingerprints",  # list of dicts: leaf_id, write_timestamp_ns, data_hash
         "columns",  # list of MKTFColumnInfo
     )
 
@@ -413,6 +452,20 @@ def read_header(path: str) -> MKTFHeader:
         # Layout
         h.dir_offset, h.dir_entries, h.meta_offset, h.meta_size, h.data_start = \
             struct.unpack_from(LAYOUT_FMT, buf, LAYOUT_OFFSET)
+
+        # Upstream fingerprints
+        h.upstream_fingerprints = []
+        for i in range(UPSTREAM_FP_ENTRIES):
+            entry_off = UPSTREAM_FP_OFFSET + i * UPSTREAM_FP_ENTRY_SIZE
+            raw_leaf, write_ts, data_hash, _ = \
+                struct.unpack_from(UPSTREAM_FP_ENTRY_FMT, buf, entry_off)
+            leaf_id_str = raw_leaf.rstrip(b"\x00").decode("utf-8")
+            if leaf_id_str:  # skip zeroed entries
+                h.upstream_fingerprints.append({
+                    "leaf_id": leaf_id_str,
+                    "write_timestamp_ns": write_ts,
+                    "data_hash": data_hash,
+                })
 
         # Read directory
         f.seek(h.dir_offset)

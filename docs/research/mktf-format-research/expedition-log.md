@@ -397,6 +397,8 @@ The fused kernel computes: `log()` × 3, `sqrt()` × 1, `sin()` × 1, `cos()` ×
 
 **Combined effect**: A kernel that's 50% transcendentals + 50% arithmetic could see roughly **30-40x speedup** from FP64 → FP32, even before considering memory bandwidth savings.
 
+> **⚠ CORRECTION (observer benchmarks):** The actual measured speedup for our fused kernel is **4.0x** (102µs FP64 → 25µs FP32), not 30-40x. Reason: at 598K elements, the kernel is **bandwidth-bound**, not compute-bound. FP32 achieves 1601 GB/s — near peak memory bandwidth. The 1:64 TFLOPS ratio only manifests in compute-heavy workloads where ALU throughput is the bottleneck. The 4x speedup comes from **halving the data volume through the memory bus** (8 bytes → 4 bytes per element). Still very much worth doing — and Kahan summation in FP32 matches FP64 exactly, eliminating any precision concern.
+
 ### Blackwell's Unified INT32/FP32 Pipeline
 
 Critical architectural nuance: **Blackwell unified the INT32 and FP32 datapaths into a single execution cluster.** Only one type — FP32 or INT32 — can decode and execute per cycle. This means:
@@ -1251,3 +1253,149 @@ TF32 is the safe default: automatic, no code changes, no precision risk, ~1x-2x 
 - [cuBLAS Strided Batched Matrix Multiply (NVIDIA blog)](https://developer.nvidia.com/blog/cublas-strided-batched-matrix-multiply/)
 - [Batched GEMM for small matrices on FP16 Tensor Cores](https://par.nsf.gov/servlets/purl/10190584)
 - [RTX 5090 BF16 Tensor TFLOPS discussion (NVIDIA Forums)](https://forums.developer.nvidia.com/t/rtx-5090-peak-bf16-tensor-tflops/350543)
+
+---
+
+# Part 6: NVMe Queue Depth & the Universe Scan Problem
+
+> *Self-directed research while idle between assignments. The pathmaker is building a concurrent MKTF reader (ThreadPoolExecutor, 4 workers). I wanted to understand whether 4 workers is enough to saturate the NVMe, and whether file-level design choices affect throughput.*
+
+## The Queue Depth Cliff
+
+NVMe performance is dramatically queue-depth dependent. From PCIe Gen5 benchmarks:
+
+| Queue Depth | Sequential Read | 4K Random Read |
+|-------------|----------------|----------------|
+| QD1 | ~1.5 GB/s | ~60 MB/s |
+| QD4 | ~6 GB/s | ~240 MB/s |
+| QD32 | ~11 GB/s | ~2 GB/s |
+| QD128 | ~13 GB/s | ~3 GB/s |
+
+**The cliff is between QD1 and QD4.** Going from QD1 → QD4 captures ~46% of peak bandwidth. Going from QD4 → QD128 captures the remaining ~54%. This means 4 ThreadPoolExecutor workers — if each does one synchronous read at a time — operates at roughly **half of peak NVMe throughput**.
+
+### What This Means for Universe Scan
+
+Universe = 4604 MKTF files × ~15 MB = ~69 GB total.
+
+| Workers (≈QD) | Estimated BW | Universe Read Time | % of Peak |
+|---------------|-------------|-------------------|-----------|
+| 1 | 1.5 GB/s | 46.0s | 12% |
+| 4 | 6.0 GB/s | 11.5s | 46% |
+| 16 | 10.0 GB/s | 6.9s | 77% |
+| 32 | 11.0 GB/s | 6.3s | 85% |
+| 64+ | 12.5 GB/s | 5.5s | 96% |
+
+The current 4-worker design gives ~11.5s read time. Jumping to 16 workers could cut almost 5 seconds. But there's a better approach.
+
+---
+
+## FILE_FLAG_OVERLAPPED: Multiple Outstanding IOs per Thread
+
+Windows overlapped I/O allows a single thread to have multiple reads in flight simultaneously. Each outstanding `ReadFile` with an `OVERLAPPED` structure maps to one NVMe submission queue entry — effectively increasing queue depth without increasing thread count.
+
+```
+Thread model comparison:
+  4 threads × 1 sync read = QD4 ≈ 6 GB/s
+  4 threads × 8 overlapped reads = QD32 ≈ 11 GB/s  ← same 4 threads!
+  4 threads × 16 overlapped reads = QD64 ≈ 12 GB/s
+```
+
+This is the llama.cpp approach from Part 3: `FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED` with round-robin pinned buffers. Each thread submits multiple reads, then waits for completions. The NVMe controller reorders them internally for optimal media access.
+
+### Python Access
+
+`ctypes` + `kernel32.CreateFileW` with `FILE_FLAG_OVERLAPPED` is verbose but functional. A cleaner path: `asyncio` with `proactor` event loop (Windows default) — it uses `FILE_FLAG_OVERLAPPED` internally.
+
+```python
+# Conceptual: asyncio proactor uses overlapped I/O internally
+import asyncio
+
+async def read_ticker(path):
+    loop = asyncio.get_event_loop()
+    # run_in_executor still uses threads, but we can fire many at once
+    data = await loop.run_in_executor(thread_pool, read_mktf, path)
+    return data
+
+# Fire 64 reads concurrently — proactor manages overlapped I/O
+results = await asyncio.gather(*[read_ticker(p) for p in ticker_paths[:64]])
+```
+
+The true zero-copy overlapped path needs ctypes, but `ThreadPoolExecutor` with 16-32 workers is the pragmatic middle ground that achieves QD16-32 without platform-specific code.
+
+---
+
+## The Alignment Stack
+
+Every layer in the NVMe → GPU path has alignment requirements. MKTF v3's 4096-byte alignment is exactly right:
+
+```
+Layer               Alignment Required    Why
+─────────────────   ──────────────────    ───
+NVMe physical sector   4096 bytes        Hardware sector size
+FILE_FLAG_NO_BUFFERING 4096 bytes        Windows DMA requirement
+cudaMallocHost         4096 bytes        Page-aligned by default
+PCIe TLP payload       64/128/256 bytes  Max Payload Size
+GPU L2 cache line      128 bytes         Cache efficiency
+MKTF v3 columns        4096 bytes        ← matches all of the above
+```
+
+4096-byte alignment satisfies every layer simultaneously. The 64-byte alignment in MKTF v2 was too small — it satisfies cache lines and PCIe, but not DMA or sector alignment. For unbuffered I/O (which bypasses OS page cache for maximum throughput), 4096 is the minimum.
+
+**Column padding cost**: For 598K-tick columns, the wasted bytes per column are at most 4095 bytes. For 8 columns: ~32KB waste total. The file is ~15MB. Padding overhead: 0.2%. Negligible.
+
+---
+
+## The Sharding Question: Should We Batch Tickers?
+
+Current design: one MKTF file per ticker per date (4604 files for universe scan).
+Alternative: shard N tickers into one file with an index.
+
+### Arguments for sharding:
+- Fewer file opens (4604 → ~46 files at 100 tickers/shard)
+- Larger sequential reads → NVMe prefers sequential over random
+- Single I/O submission can read multiple tickers
+- Reduced filesystem metadata overhead
+
+### Arguments against sharding:
+- Selective ticker reads require reading (and discarding) unwanted data
+- Update granularity becomes coarser
+- Daemon scan must regenerate entire shard when one ticker updates
+- File self-description becomes more complex (multi-ticker headers)
+- Complicates the "file IS the state" model from Part 4
+
+### The Zarr precedent:
+Zarr's sharding codec solves this by putting an offset index at the end of the shard file. Each "chunk" (ticker, in our case) is at a known offset, so selective reads are still O(1) seeks. But the index itself must be read first, adding latency for single-ticker access.
+
+### Verdict: **Don't shard for now.**
+
+The MKTF-per-ticker model is clean, self-describing, and matches the "file IS the state" design. The throughput gap between 4-worker and 32-worker is ~5 seconds, which is better solved by increasing thread count than by redesigning the file model. Sharding trades simplicity for I/O efficiency — and the I/O efficiency can be achieved through queue depth alone.
+
+**If** universe scan time is still bottlenecked after 16-32 worker optimization, revisit sharding. But the math says 16 workers should achieve ~7s, which is already well under the current 27.2s MKTF benchmark (which includes disk→GPU transfer, not just disk read).
+
+---
+
+## Recommendation for Pathmaker
+
+For the concurrent MKTF reader (task #19):
+
+1. **Increase ThreadPoolExecutor workers from 4 to 16-32.** This is the single biggest throughput lever. Each additional worker adds NVMe queue depth.
+
+2. **Use `FILE_FLAG_NO_BUFFERING`** if not already. Bypasses Windows page cache, reduces memory copies, gives predictable performance (no warm/cold cache variance).
+
+3. **Pre-allocate pinned buffers** (`cudaMallocHost`) and round-robin them across workers. Don't allocate per-read — pool them.
+
+4. **Benchmark at QD1, QD4, QD16, QD32, QD64.** Find the saturation knee for our specific NVMe drive. Gen5 theoretical peak is ~14 GB/s; real peak will be lower.
+
+5. **Don't shard tickers.** Keep one-file-per-ticker. Solve throughput with queue depth, not file redesign.
+
+---
+
+## Sources (Part 6)
+
+- [PCIe Gen5 NVMe Performance Guide (Allion Labs)](https://www.allion.com/tech_syst_gen5_nvme_ssd/)
+- [Zarr Benchmark: Small Random Reads with io_uring (GitHub Discussion)](https://github.com/zarr-developers/zarr-benchmark/discussions/26)
+- [NVMe Queues Explained (Western Digital)](https://blog.westerndigital.com/nvme-queues-explained/)
+- [Storage 101: Queue Depth and NVMe (Computer Weekly)](https://www.computerweekly.com/feature/Storage-101-Queue-depth-NVMe-and-the-array-controller)
+- [GPUDirect Storage Best Practices — 4K Alignment (NVIDIA)](https://docs.nvidia.com/gpudirect-storage/best-practices-guide/index.html)
+- [Windows Overlapped I/O (Microsoft Learn)](https://learn.microsoft.com/en-us/windows/win32/sync/synchronization-and-overlapped-input-and-output)
+- [Fio Queue Depth Tuning (Simplyblock)](https://www.simplyblock.io/glossary/fio-queue-depth-tuning/)

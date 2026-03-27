@@ -129,28 +129,12 @@ class GPUBinEngine:
         return cp.sqrt(self.bin_variances(col, cadence_id))
 
     def bin_mins(self, col: str, cadence_id: int) -> cp.ndarray:
-        """Min per bin. Requires per-bin reduction (not O(1) from prefix)."""
-        data = self._columns[col]
-        b = self._get_boundaries(cadence_id)
-        n_bins = len(b) - 1
-        result = cp.full(n_bins, cp.nan, dtype=cp.float64)
-        for i in range(n_bins):
-            lo, hi = int(b[i]), int(b[i + 1])
-            if hi > lo:
-                result[i] = cp.min(data[lo:hi])
-        return result
+        """Min per bin. Single fused kernel launch via fused_bin_stats."""
+        return self._fused_stats(col, cadence_id)["min"]
 
     def bin_maxs(self, col: str, cadence_id: int) -> cp.ndarray:
-        """Max per bin. Requires per-bin reduction."""
-        data = self._columns[col]
-        b = self._get_boundaries(cadence_id)
-        n_bins = len(b) - 1
-        result = cp.full(n_bins, cp.nan, dtype=cp.float64)
-        for i in range(n_bins):
-            lo, hi = int(b[i]), int(b[i + 1])
-            if hi > lo:
-                result[i] = cp.max(data[lo:hi])
-        return result
+        """Max per bin. Single fused kernel launch via fused_bin_stats."""
+        return self._fused_stats(col, cadence_id)["max"]
 
     def bin_firsts(self, col: str, cadence_id: int) -> cp.ndarray:
         """First tick value per bin. O(1) via boundary index."""
@@ -170,32 +154,26 @@ class GPUBinEngine:
         result = cp.where(counts > 0, data[last_idx], cp.nan)
         return result
 
-    def bin_all_stats(self, col: str, cadence_id: int) -> dict[str, cp.ndarray]:
-        """All basic statistics in minimal passes.
+    def _fused_stats(self, col: str, cadence_id: int) -> dict[str, cp.ndarray]:
+        """Compute all stats via single fused CUDA kernel launch.
 
-        Returns dict with: mean, std, min, max, sum, count, first, last, variance.
-        Currently not truly fused (multiple kernel launches) but the interface
-        is right. A custom CUDA kernel would fuse all of these into one pass.
+        One kernel launch computes count, sum, sum_sq, min, max, first,
+        last + derived mean, variance, std for all bins. Replaces the
+        N-kernel-launch loops that bin_mins/bin_maxs previously used.
         """
-        counts = self.bin_counts(cadence_id)
-        sums = self.bin_sums(col, cadence_id)
-        counts_f = counts.astype(cp.float64)
-        means = cp.where(counts_f > 0, sums / counts_f, cp.nan)
-        sum_sq = self.bin_sum_sq(col, cadence_id)
-        variances = cp.where(counts_f > 1, sum_sq / counts_f - means ** 2, cp.nan)
-        variances = cp.maximum(variances, 0.0)
+        from winrapids.fused_bin_stats import fused_bin_stats as _fused
 
-        return {
-            "count": counts,
-            "sum": sums,
-            "mean": means,
-            "variance": variances,
-            "std": cp.sqrt(variances),
-            "min": self.bin_mins(col, cadence_id),
-            "max": self.bin_maxs(col, cadence_id),
-            "first": self.bin_firsts(col, cadence_id),
-            "last": self.bin_lasts(col, cadence_id),
-        }
+        data = self._columns[col]
+        boundaries = self._get_boundaries(cadence_id)
+        return _fused(data, boundaries)
+
+    def bin_all_stats(self, col: str, cadence_id: int) -> dict[str, cp.ndarray]:
+        """All basic statistics in ONE fused kernel launch.
+
+        Returns dict with: count, sum, sum_sq, mean, variance, std,
+        min, max, first, last.
+        """
+        return self._fused_stats(col, cadence_id)
 
     def slice(self, col: str, cadence_id: int, bin_idx: int) -> cp.ndarray:
         """Raw tick array for one bin. GPU array."""

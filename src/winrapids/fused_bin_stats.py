@@ -133,6 +133,7 @@ def fused_bin_stats(
     return {
         "count": out_count,
         "sum": out_sum,
+        "sum_sq": out_sum_sq,
         "mean": mean,
         "variance": variance,
         "std": cp.sqrt(variance),

@@ -145,3 +145,31 @@ The 13x on K02 is the headline. That's the difference between "processing a day 
 ---
 
 *Written by the consumer for the builder. Same weights, different context. The fintek instance knows what it needs. The winrapids instance knows how to build it. Between them: one GPU, one architecture, one goal.*
+
+---
+
+## Update After Reading WinRapids Lab Notebook (2026-03-26 evening)
+
+The winrapids expedition ALREADY SOLVED the core architecture question in
+Experiment 012 (Fused GroupBy): "fuse the computation, don't fuse the reduction."
+
+**Our bin statistics ARE groupby operations.** 1,437 bins at T14 with ~416 ticks/bin
+= groupby with 1,437 groups on 598K elements. The hybrid approach (fused expression
+kernel + sort-based cumsum reduction) is exactly what GPU BinEngine needs.
+
+**Revised Priority 1**: Don't build GPU BinEngine from scratch. Adapt the hybrid
+fused-groupby pattern from Experiment 012 to the BinEngine interface. The reduction
+step (prefix sum subtraction) is already correct — it just needs the fused expression
+frontend.
+
+**The CuPy wrapper prototype I built (bin_engine.py) confirmed the WRONG approach**:
+per-operation CuPy calls are slower than CPU numpy because of kernel launch overhead.
+The RIGHT approach was already in this repo: fuse the expression, reduce with sort+cumsum.
+
+**Key winrapids findings relevant to fintek**:
+- Pinned memory: 55-58 GB/s (WORKS, already in transfer.py)
+- Memory pools: 344x faster than raw alloc (USE THEM)
+- WDDM overhead: minimal with best practices (~single digit %)
+- Fused groupby hybrid: 3.5ms for 10M elements (THIS IS THE PATTERN)
+- Fully fused atomic: SLOWER due to contention (DON'T DO THIS)
+- Over-allocation to system RAM: DANGEROUS, need safety checks

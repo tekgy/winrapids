@@ -150,6 +150,29 @@ bytes per column, the cost is negligible. Ticker-specific institutional peaks at
 inflated by the daily U-shape (open/midday/close trading intensity variation).
 Detrending reduces it to 3.4x. The execution regime (1s-5min) is the durable signal.
 
+### Read Crossover (observer, Experiment 16)
+
+Progressive level reads cost `36 + 2.58 × n_bins` microseconds (Python overhead).
+Full column reads cost ~4,072us regardless of content. **Crossover: 1,548 bins.**
+
+| Cadence | Bins | Progressive read | vs Full read | Verdict     |
+|---------|------|-----------------|--------------|-------------|
+| session | 1    | 39 us           | 0.01x        | PROGRESSIVE |
+| 1h      | 7    | 54 us           | 0.01x        | PROGRESSIVE |
+| 15min   | 26   | 103 us          | 0.03x        | PROGRESSIVE |
+| 5min    | 78   | 237 us          | 0.06x        | PROGRESSIVE |
+| 1min    | 390  | 1,042 us        | 0.26x        | PROGRESSIVE |
+| 30s     | 780  | 2,048 us        | 0.50x        | PROGRESSIVE |
+| 10s     | 2,340| 6,073 us        | 1.49x        | FULL READ   |
+| 1s      | 23,400| 60,408 us      | 14.83x       | FULL READ   |
+
+**Recommended cadence grid**: Store levels session through 30s (~800 total bins).
+Adds +2ms write overhead (vs +37ms with 1s). Every stored level reads faster than
+full column data. For sub-30s analysis, read raw columns directly.
+
+A Rust progressive reader (~100x less per-bin overhead) would shift the crossover
+to ~150,000 bins, making even 1s levels read-viable. Future optimization.
+
 ### Size Budget (5 source columns per K01 file)
 
 | Level   | Per-file     | Universe (4,604) |
@@ -157,13 +180,15 @@ Detrending reduces it to 3.4x. The execution regime (1s-5min) is the durable sig
 | Session | 100 B       | 460 KB          |
 | 1h      | 700 B       | 3.1 MB          |
 | 15min   | 2.6 KB      | 11.7 MB         |
+| 5min    | 7.8 KB      | 35.1 MB         |
 | 1min    | 39 KB       | 175 MB          |
-| 1s      | 2.3 MB      | 10.6 GB         |
-| **All** | **~2.4 MB** | **~10.8 GB**    |
+| 30s     | 78 KB       | 350 MB          |
+| **Recommended** | **~128 KB** | **~575 MB** |
+| 1s (optional) | 2.3 MB | 10.6 GB       |
 
-The 15-minute level adds only 2.6 KB per file (11.7 MB universe) — a composition
-convenience, not a spectral necessity. Levels 5+4+3+2 add ~43 KB — negligible.
-Level 1 (1s) is optional for files that don't need sub-minute resolution.
+The recommended 7-level grid (session through 30s) adds ~128 KB per file —
+0.8% overhead on a 15.5 MB K01 file. The 1s level should be MI-gated:
+include only when MI(1min, 1s) > 0.5 (most tickers: MI = 0.22, skip it).
 
 ## Composability Proof
 
@@ -301,11 +326,12 @@ MI scores are written as 0.0 when not yet computed. A separate K-SS01 leaf
 
 ## Open Questions
 
-1. ~~**Should Level 1 (1s) be optional?**~~ **RESOLVED: Yes, MI-gated, default off.**
-   Observer benchmarks show 1s is 74% of progressive data volume, MI drops to 0.22
-   (diminishing returns), and 1s reads (61ms) are SLOWER than full column reads (4ms).
-   The 1s level is the wrong trade for most tickers. Default finest level: 5s or 10s.
-   Include 1s only when MI(1min, 1s) > threshold (TBD, likely ~0.5).
+1. ~~**Should Level 1 (1s) be optional?**~~ **RESOLVED: Yes. Default grid stops at 30s.**
+   Three independent findings converge: (a) MI drops to 0.22 at 1s — diminishing
+   information returns. (b) Read crossover at 1,548 bins — 1s reads (61ms) are 15x
+   SLOWER than full column reads (4ms). (c) 1s is 74% of progressive write cost.
+   Recommended grid: session through 30s (~800 bins, +2ms write, every level reads
+   faster than full columns). Include 1s only when MI(1min, 1s) > 0.5.
 
 2. **Cadence alignment**: Bins assume market hours (09:30-16:00 ET). Pre-market
    and after-hours need a convention — separate bins? Extended session?

@@ -23,20 +23,24 @@ With fsync writes: 170s (writes = 82% of pipeline).
 
 ## Three Architectural Levers (by impact)
 
-### 1. Write Mode Flag (~5x pipeline impact)
-**The single largest lever.** `fsync=False` for derived outputs reduces the pipeline from 170s to 35s.
+### 1. Write Mode Flag (context-dependent impact)
+**The single largest lever for cadence grid writes without progressive.** `fsync=False` reduces 140s to 12s (91% savings).
 
 Source files (K01 from ingest) = crash-safe (fsync + rename). Everything else = recomputable.
 
-| Mode | Cadence Grid | % of Pipeline |
+| Mode | Cadence Grid (no progressive) | With 7-cadence progressive |
 |---|---|---|
-| Production (2×fsync) | 140s | 82% |
-| Batch (no fsync) | 12s | 34% |
+| Production (2×fsync) | 140s (91% of this is fsync) | ~25s (fsync is ~10% — data volume dominates) |
+| Batch (no fsync) | 12s | ~23s |
+
+**Important framing**: The 91% savings applies to small files WITHOUT progressive. With progressive stats, data volume (not fsync) dominates write time, compressing the safe/batch gap to ~10%. Both modes should still use batch for K02+, but don't misquote the 91% figure for progressive-enabled files.
 
 ### 2. Pipeline Overlap (~2x throughput)
 With 3-stage pipelining (read N+1 / process N / write N-1):
-- Sequential: 35s
-- Pipelined: max(reads, GPU, writes) ≈ max(13.4, 9, 12) ≈ **15s**
+- Sequential (no progressive): 35s → Pipelined: max(13.4, 9, 12) ≈ **15s**
+- Sequential (7-cad progressive): ~46s → Pipelined: max(13.4, 9, 23) ≈ **23s**
+
+Progressive writes become the pipeline bottleneck. Selective reads (2-3x from reading only needed columns) would cut reads from 13.4s to ~6s, but writes at 23s still dominate. Pipeline overlap's main value with progressive: overlapping writes with next ticker's reads.
 
 Requires: async I/O (Python asyncio + thread pool for reads), CUDA streams for H2D/compute overlap, write thread pool.
 
@@ -91,28 +95,38 @@ The value of Rust is in the write path and orchestration, not the read path.
 
 | Stage | K01→K02 | K02→K03 | K03→K04 |
 |---|---|---|---|
-| Read input | 13.4s | 12s (cadence files) | ~8s (feature files) |
+| Read input | 13.4s | 12s (cadence files) | ~8s (feature) / 0.4s (progressive) |
 | GPU compute | ~9s | ~5s | <1s (GEMM, Tensor Core) |
-| Write output | 12s | ~8s | ~2s |
-| **Subtotal** | **~35s** | **~25s** | **~11s** |
-| **Running total** | **35s** | **60s** | **71s** |
-| Pipelined estimate | 15s | ~13s | ~8s |
-| **Pipelined total** | 15s | **28s** | **36s** |
+| Write output (no prog) | 12s | ~8s | ~2s |
+| Write output (7-cad prog) | 23s | ~10s | ~2s |
+| **Subtotal (no prog)** | **~35s** | **~25s** | **~11s** |
+| **Subtotal (7-cad prog)** | **~46s** | **~27s** | **~3s** (via progressive) |
+| Pipelined (no prog) | 15s | ~13s | ~8s |
+| Pipelined (7-cad prog) | 23s | ~13s | ~3s |
+| **Pipelined total (no prog)** | 15s | **28s** | **36s** |
+| **Pipelined total (7-cad prog)** | 23s | **36s** | **39s** |
 
-**Full K01→K04 estimate: ~71s sequential, ~36s pipelined.** Down from 3.7 hours.
+**Without progressive: ~71s sequential, ~36s pipelined.** Down from 3.7 hours.
+**With 7-cadence progressive: ~76s sequential, ~39s pipelined.** +3s for 49x K04 read speedup — progressive pays for itself if K04 runs more than once.
 
 ---
 
-## Progressive Section Impact (Experiment 15)
+## Progressive Section Impact (Experiments 15-16)
 
 | Metric | Value | Notes |
 |---|---|---|
-| Write overhead | +37ms/file | 3.1 MB stats data dominates (not fsync) |
-| Read overhead | +0.7% | Within noise — zero cost to existing reads |
+| Write overhead (10 cadences) | +37ms/file | 3.1 MB stats, dominated by 1s cadence |
+| Write overhead (7 cadences, recommended) | +2ms/file | ~80 KB stats, 30min→30s only |
+| Read overhead on full columns | +0.7% | Within noise — zero cost to existing reads |
 | Progressive summary read | 83us | Directory only, no stat data I/O |
 | **Coarse K04 shortcut** | **0.4s vs 18.7s** | **49x read speedup** |
-| Size overhead | 25.2% (+3.1 MB) | Pure float32 stats, no indirection |
 
-**K04 via progressive**: Instead of reading 4604 full files (18.7s), read 4604 progressive summaries (0.4s). The K03→K04 stage drops from ~11s to ~3s, making the full pipelined tree ~28s.
+**Read crossover at 1,548 bins (151 KB)**: Below this, progressive level reads are cheaper than full column reads. Above, use full column reads. Cost model: `read_us = 36 + 2.58 × n_bins` (99% Python overhead, not I/O).
 
-**Cadence selection trade-off**: The 1s cadence (23,400 bins) contributes 74% of progressive data volume but has MI=0.22 (lowest). Dropping to 5s finest would halve progressive write time with minimal information loss (MI=0.28→0.22 for the dropped level).
+**Decision table**:
+- ≥30s cadence (≤780 bins): **PROGRESSIVE** — 0.02x to 0.51x of full read cost
+- ≤10s cadence (≥2,340 bins): **FULL READ** — progressive is 1.5x to 15x slower
+
+**Recommended cadence set**: 7 levels (30min→30s, ~800 total bins). Captures institutional boundary (5min) with 17x read advantage. Adds only +2ms write and ~80 KB per file. Drop 1s/5s/10s — they're past the crossover and should use full reads.
+
+**The crossover aligns with spectral regime boundaries**: institutional regime (5min+) uses progressive, execution regime (≤10s) uses raw data. The format naturally partitions by analysis regime.

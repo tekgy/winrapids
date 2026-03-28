@@ -1221,6 +1221,91 @@ Benchmark script: `experiments/file_format/bench_progressive.py` (runs via finte
 
 ---
 
+## Experiment 16: Progressive Level Read Crossover
+
+**Date**: 2026-03-28
+**Motivation**: Experiment 15 showed fine progressive levels (1s = 61ms) are slower than full column reads (4ms). Where exactly is the crossover? This determines when the daemon should use progressive stats vs raw column data.
+
+**Setup**: Same AAPL file (598K rows, 5 columns). Sweep bin counts from 5 to 50,000. 20 runs per point, warm cache.
+
+### Phase 1-2: Read Cost vs Bin Count
+
+| Bins | Cadence | Read Time | vs Full Read |
+|---|---|---|---|
+| 5 | 78min | 134us | 0.03x |
+| 10 | 39min | 188us | 0.05x |
+| 50 | 8min | 244us | 0.06x |
+| 100 | 4min | 364us | 0.09x |
+| 200 | 2min | 621us | 0.15x |
+| 500 | 47s | 1,395us | 0.35x |
+| 780 | 30s | 2,060us | 0.51x |
+| 1,000 | 23s | 2,641us | 0.66x |
+| **2,000** | **12s** | **5,233us** | **1.30x** |
+| 5,000 | 5s | 12,749us | 3.17x |
+| 10,000 | 2s | 25,640us | 6.37x |
+| 20,000 | 1s | 50,963us | 12.66x |
+| 50,000 | <1s | 129,188us | 32.09x |
+
+Full column read baseline: 4,025us.
+
+### Phase 3: Crossover Point
+
+**Crossover at ~1,548 bins (151 KB).**
+
+Interpolated between 1,000 bins (0.66x) and 2,000 bins (1.30x). At 1,548 bins, progressive read equals full column read at ~4,025us.
+
+### Phase 5: Cost Model
+
+**`read_us = 36 + 2.58 × n_bins`**
+
+- Fixed overhead: 36us (file open + header + directory parse)
+- Per-bin cost: 2.58us (2,577 ns)
+- Per-bin data: 100 bytes (5 cols × 5 stats × 4B)
+- Implied bandwidth: 0.04 GB/s — **99% Python processing overhead, not I/O**
+
+The NVMe can do 4.86 GB/s. The progressive reader achieves 0.04 GB/s. This means the read bottleneck is Python per-bin unpacking (numpy slice, dict construction), not disk I/O. A Rust progressive reader could shift the crossover by 100x.
+
+### Phase 6: Decision Table for the Daemon
+
+| Cadence | Bins | Strategy |
+|---|---|---|
+| 30min | 13 | **PROGRESSIVE** (69us, 0.02x) |
+| 20min | 19 | **PROGRESSIVE** (85us, 0.02x) |
+| 15min | 26 | **PROGRESSIVE** (103us, 0.03x) |
+| 10min | 39 | **PROGRESSIVE** (136us, 0.03x) |
+| 5min | 78 | **PROGRESSIVE** (237us, 0.06x) |
+| 1min | 390 | **PROGRESSIVE** (1,041us, 0.26x) |
+| 30s | 780 | **PROGRESSIVE** (2,046us, 0.51x) |
+| 10s | 2,340 | **FULL READ** (6,066us, 1.51x) |
+| 5s | 4,680 | **FULL READ** (12,097us, 3.01x) |
+| 1s | 23,400 | **FULL READ** (60,342us, 15.0x) |
+
+**The crossover aligns with the spectral regime boundary.** 5-minute institutional analysis (78 bins) is 17x faster via progressive. Execution-regime analysis (1s-10s) should use full reads. The system naturally wants progressive for coarse/institutional and raw data for fine/execution.
+
+### Phase 7: Write Cost vs Bin Count (batch mode)
+
+| Bins | Write Time | Prog Size | % of File |
+|---|---|---|---|
+| 13 | 17.3ms | 1.3 KB | 0.0% |
+| 78 | 17.9ms | 7.6 KB | 0.1% |
+| 390 | 18.7ms | 38.1 KB | 0.3% |
+| 780 | 17.9ms | 76.2 KB | 0.6% |
+| 2,340 | 20.7ms | 228.5 KB | 1.8% |
+| 4,680 | 24.2ms | 457.0 KB | 3.6% |
+| 23,400 | 48.9ms | 2,285 KB | 15.7% |
+
+Write cost is gentle up to ~780 bins (+2ms over baseline). Sharp inflection at 2,340+ bins. The 10-cadence production config from Exp 15 (31,765 total bins) costs +37ms — dominated by the 1s cadence (23,400 bins alone).
+
+### Architectural Recommendation
+
+**Store progressive levels from 30min down to 30s (7 cadences, ~800 total bins).** This captures the institutional boundary (5min) with large margin, stays well below the read crossover, and adds only ~2ms write overhead and ~80 KB to the file. Drop the 10s, 5s, 1s levels — they're past the crossover and should use full column reads.
+
+If the daemon needs execution-regime (1s-10s) analysis, it reads the full column data at 4ms/file. If it needs institutional-regime (30s-30min) analysis, it reads progressive levels at 69-2,046us/file. Two pathways, automatic selection based on cadence.
+
+Benchmark script: `experiments/file_format/bench_progressive_crossover.py` (runs via fintek venv)
+
+---
+
 ## Summary of All Experiments
 
 | # | Experiment | Key Finding |
@@ -1241,6 +1326,7 @@ Benchmark script: `experiments/file_format/bench_progressive.py` (runs via finte
 | 13 | **I/O strategy sweep** | **Handle pools are a trap (bulk read penalty); production design is near-optimal** |
 | 14 | **Write path micro-anatomy** | **fsync dominates small writes (62%); no-fsync cadence grid: 140s → 12s (91% savings)** |
 | 15 | **Progressive section + dual write** | **+37ms write, +0.7% read; progressive summary = 49x faster than full read for coarse K04** |
+| 16 | **Progressive read crossover** | **Crossover at 1,548 bins (151 KB); ≥30s cadence → progressive, ≤10s → full read** |
 
 ### Complete Pipeline Model (4604 tickers, AAPL-scale)
 

@@ -49,8 +49,9 @@ Wavelet (domain_type=3):
   [16:48] reserved
 
 Sufficient stats (domain_type=4):
-  [0:4]   stat_type     uint32   0=moments, 1=cumulants, 2=quantiles, 3=spectral_moments
-  [4:8]   order_max     uint32   maximum order (e.g., 4 = up to kurtosis)
+  [0:4]   stat_type     uint32   0=moments, 1=cumulants, 2=quantiles, 3=spectral_moments,
+                                 4=PHASE (cos/sin pair per target period — see K-SS01(PHASE))
+  [4:8]   order_max     uint32   maximum order (e.g., 4 = up to kurtosis); unused for stat_type=4
   [8:48]  reserved
 ```
 
@@ -136,15 +137,36 @@ them, compare with stored hash." Still a single Block 0 comparison.
 
 ---
 
+## KO Code Registry
+
+The `ko_type` field in the LAYOUT header mirrors the KO code from the leaf filename.
+If filename and header disagree, the header is authoritative (belt and suspenders).
+
+| KO Code | Name | domain_type | Description |
+|---------|------|-------------|-------------|
+| KO00 | Columnar | 0 (time) | Default — raw bins, pointwise features (K01, K02, K03) |
+| KO01 | FFT Cartesian | 1 (DFT) | DFT output in Cartesian (re, im) columns |
+| KO02 | FFT Radial | 1 (DFT) | DFT output as (amplitude, phase) columns |
+| KO03 | FFT Spiral | 1 (DFT) | Chirp-Z or log-spaced frequency grid |
+| KO04 | Wavelet | 3 (wavelet) | Haar, Daubechies, sym8, coif5, etc. |
+| KO05 | Sufficient stats | 4 (sufficient_stats) | Composable — moments, cumulants, PHASE, MI score |
+| KO06 | Correlation matrix | 0 (time) | Cross-ticker Pearson/Spearman (K04) |
+| KO07 | Eigenvectors/PCA | 4 (sufficient_stats) | Principal components of feature matrix |
+| KO08 | Compressed sensing | 5 (custom) | Sparse measurement matrix |
+| KO09 | Grid/tensor | 0 (time) | Cross-ticker × time tensor (K03-class) |
+| KO10 | Sparse | 5 (custom) | Nonzero entries only, COO or CSR layout |
+
+---
+
 ## Kingdom Taxonomy Draft
 
-| Kingdom | Domain | Leaf ID prefix | Typical n_rows | Columns |
-|---------|--------|----------------|----------------|---------|
-| Time Kingdom | Time-domain binned features | K01, K02, K03 | ticks (100K-1M) | price, size, log_price, rolling_mean… |
-| Frequency Kingdom | DFT / DCT | K-F01, K-F02 | freq_bins (512-4096) | power_re, power_im, phase, coherence |
-| Scale Kingdom | Wavelet | K-W01 | scale×shift pairs | wavelet_coeff, detail, approx |
-| Statistics Kingdom | Sufficient stats | K-SS01 | stat_order (4-20) | moments, cumulants, quantiles |
-| Correlation Kingdom | Cross-ticker | K04 | ticker_pairs (4604²) | pearson_r, spearman_r, cov |
+| Kingdom | Domain | KO code | Leaf ID prefix | Typical n_rows | Columns |
+|---------|--------|---------|----------------|----------------|---------|
+| Time Kingdom | Time-domain binned features | KO00 | K01, K02, K03 | ticks (100K-1M) | price, size, log_price, rolling_mean… |
+| Frequency Kingdom | DFT / DCT | KO01, KO02 | K-F01, K-F02 | freq_bins (512-4096) | power_re, power_im, phase, coherence |
+| Scale Kingdom | Wavelet | KO04 | K-W01 | scale×shift pairs | wavelet_coeff, detail, approx |
+| Statistics Kingdom | Sufficient stats | KO05 | K-SS01 | stat_order (4-20) | moments, cumulants, quantiles, phase |
+| Correlation Kingdom | Cross-ticker | KO06 | K04 | ticker_pairs (4604²) | pearson_r, spearman_r, cov |
 
 Each Kingdom is a valid, self-consistent representation of the same underlying market.
 Each uses the SAME format, SAME daemon, SAME reconcile algorithm.

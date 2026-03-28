@@ -1,21 +1,21 @@
-"""Progressive sufficient statistics — GPU extraction for MKTF writer.
+"""KO05 sufficient statistics — GPU extraction for standalone MKTF files.
 
-Bridges the GPUBinEngine (fused kernel output on GPU) with the MKTF
-writer's progressive_stats parameter (CPU float32 arrays).
+Each cadence level gets its own KO05 file with sufficient statistics
+as regular MKTF columns. Same GPU kernel produces both KO00 (full data)
+and KO05 (stats) — the kernel already computes {sum, sum_sq, min, max,
+first, last, count}; KO05 uses 5 of 7.
 
 Usage:
-    from winrapids.progressive import extract_progressive_stats
+    from winrapids.progressive import extract_ko05_columns
 
-    # Explicit cadence mapping:
-    prog_stats = extract_progressive_stats(
-        engine,
-        cadences=[(86_400_000, 0), (3_600_000, 1), (60_000, 2), (30_000, 3)],
-    )
+    # Extract stats for one cadence level:
+    columns = extract_ko05_columns(engine, cadence_id=2)
+    write_mktf(path, columns, ko=5, domain=5, ...)
 
-    # Or use the default 7-level grid (session through 30s):
-    prog_stats = extract_progressive_stats(engine)
-
-    write_mktf(path, columns, progressive_stats=prog_stats)
+    # Iterate the default cadence grid:
+    for cadence_ms, cadence_id in zip(DEFAULT_CADENCES_MS, range(8)):
+        columns = extract_ko05_columns(engine, cadence_id)
+        write_mktf(ko05_path(cadence_ms), columns, ko=5, domain=5, ...)
 """
 
 from __future__ import annotations
@@ -29,12 +29,10 @@ if TYPE_CHECKING:
 
 
 STAT_FIELDS = 5  # sum, sum_sq, min, max, count
+STAT_SUFFIXES = ("_sum", "_sum_sq", "_min", "_max", "_count")
 
-# Default cadence grid: session through 30s (~800 bins total).
-# Observer Experiment 16 found progressive reads beat full column reads
-# up to 1,548 bins (crossover). 30s = 780 bins, safely under.
-# Cadences finer than 30s should read raw columns instead.
-# Format: (cadence_ms, description) — cadence_id mapping is caller's job.
+# Default cadence grid: session through 30s.
+# Each cadence level becomes its own KO05 file.
 DEFAULT_CADENCES_MS = [
     86_400_000,   # session (~1 bin)
     1_800_000,    # 30 min (~13 bins)
@@ -43,59 +41,45 @@ DEFAULT_CADENCES_MS = [
     300_000,      # 5 min (~78 bins) — institutional fingerprint boundary
     120_000,      # 2 min (~195 bins)
     60_000,       # 1 min (~390 bins)
-    30_000,       # 30 sec (~780 bins) — crossover floor
+    30_000,       # 30 sec (~780 bins)
 ]
 
 
-def extract_progressive_stats(
+def extract_ko05_columns(
     engine: GPUBinEngine,
-    cadences: list[tuple[int, int]] | None = None,
-) -> list[tuple[int, dict[str, np.ndarray]]]:
-    """Extract progressive stats from GPUBinEngine via fused kernel.
+    cadence_id: int,
+) -> dict[str, np.ndarray]:
+    """Extract sufficient statistics as flat MKTF columns for one cadence.
 
-    One fused kernel launch per (column, cadence) pair. Results are
-    transferred D2H and cast to float32 for the MKTF writer.
+    One fused kernel launch per column. Results transferred D2H as float32.
 
     Args:
         engine: GPUBinEngine with columns and cadence boundaries loaded.
-        cadences: List of (cadence_ms, cadence_id) pairs, ordered
-                  coarsest-first. cadence_ms is the label stored in
-                  the progressive section; cadence_id is the key into
-                  engine's boundary dict.
-                  If None, uses DEFAULT_CADENCES_MS with cadence_id =
-                  index into engine's boundary dict (assumes boundaries
-                  are keyed by ascending cadence_id matching the default
-                  grid order).
+        cadence_id: Key into engine's boundary dict for this cadence.
 
     Returns:
-        List of (cadence_ms, {col_name: (n_bins, 5) float32 ndarray})
-        suitable for write_mktf(progressive_stats=...).
-        The 5 stats are [sum, sum_sq, min, max, count].
+        Dict of {col_stat: float32[n_bins]} ready for write_mktf().
+        For source columns [price, volume], returns:
+          price_sum, price_sum_sq, price_min, price_max, price_count,
+          volume_sum, volume_sum_sq, volume_min, volume_max, volume_count
     """
-    if cadences is None:
-        # Use default grid — cadence_id = index (0, 1, 2, ...)
-        cadences = [(ms, i) for i, ms in enumerate(DEFAULT_CADENCES_MS)]
-
     col_names = list(engine._columns.keys())
-    result = []
+    n_bins = engine.n_bins(cadence_id)
+    columns: dict[str, np.ndarray] = {}
 
-    for cadence_ms, cadence_id in cadences:
-        n_bins = engine.n_bins(cadence_id)
-        col_stats: dict[str, np.ndarray] = {}
+    for name in col_names:
+        fused = engine.bin_all_stats(name, cadence_id)
 
-        for name in col_names:
-            fused = engine.bin_all_stats(name, cadence_id)
+        # Extract the 5 stats and transfer D2H
+        raw = [
+            fused["sum"].get().astype(np.float32),
+            fused["sum_sq"].get().astype(np.float32),
+            fused["min"].get().astype(np.float32),
+            fused["max"].get().astype(np.float32),
+            fused["count"].get().astype(np.float32),
+        ]
 
-            # Extract the 5 progressive stats and transfer to CPU
-            stats = np.zeros((n_bins, STAT_FIELDS), dtype=np.float32)
-            stats[:, 0] = fused["sum"].get().astype(np.float32)
-            stats[:, 1] = fused["sum_sq"].get().astype(np.float32)
-            stats[:, 2] = fused["min"].get().astype(np.float32)
-            stats[:, 3] = fused["max"].get().astype(np.float32)
-            stats[:, 4] = fused["count"].get().astype(np.float32)
+        for suffix, arr in zip(STAT_SUFFIXES, raw):
+            columns[f"{name}{suffix}"] = arr[:n_bins]
 
-            col_stats[name] = stats
-
-        result.append((cadence_ms, col_stats))
-
-    return result
+    return columns

@@ -111,22 +111,20 @@ The value of Rust is in the write path and orchestration, not the read path.
 
 ---
 
-## Progressive Section Impact (Experiments 15-16)
+## Progressive Section Impact (Experiments 15-17)
 
 | Metric | Value | Notes |
 |---|---|---|
 | Write overhead (10 cadences) | +37ms/file | 3.1 MB stats, dominated by 1s cadence |
-| Write overhead (7 cadences, recommended) | +2ms/file | ~80 KB stats, 30min→30s only |
+| Write overhead (7 cadences) | +2ms/file | ~80 KB stats, 30min→30s only |
 | Read overhead on full columns | +0.7% | Within noise — zero cost to existing reads |
 | Progressive summary read | 83us | Directory only, no stat data I/O |
 | **Coarse K04 shortcut** | **0.4s vs 18.7s** | **49x read speedup** |
 
-**Read crossover at 1,548 bins (151 KB)**: Below this, progressive level reads are cheaper than full column reads. Above, use full column reads. Cost model: `read_us = 36 + 2.58 × n_bins` (99% Python overhead, not I/O).
+**~~Read crossover at 1,548 bins~~ CORRECTED (Exp 17)**: The crossover was an artifact of a nested Python loop in `unpack_progressive_level()` (117,000 `np.frombuffer` calls for 1s cadence). Replacing with single `np.frombuffer` + `reshape` eliminates the crossover entirely — progressive reads are faster than full column reads at ALL cadences, including 1s (1,398us vs 2,708us = 0.52x).
 
-**Decision table**:
-- ≥30s cadence (≤780 bins): **PROGRESSIVE** — 0.02x to 0.51x of full read cost
-- ≤10s cadence (≥2,340 bins): **FULL READ** — progressive is 1.5x to 15x slower
+**With optimized reader, decision table becomes**:
+- ALL cadences: **PROGRESSIVE** — 0.03x to 0.52x of full read cost
+- The cadence selection question shifts from reader performance to: MI value (1s adds MI=0.22) and write cost (+37ms for 10 vs +2ms for 7)
 
-**Recommended cadence set**: 7 levels (30min→30s, ~800 total bins). Captures institutional boundary (5min) with 17x read advantage. Adds only +2ms write and ~80 KB per file. Drop 1s/5s/10s — they're past the crossover and should use full reads.
-
-**The crossover aligns with spectral regime boundaries**: institutional regime (5min+) uses progressive, execution regime (≤10s) uses raw data. The format naturally partitions by analysis regime.
+**Cadence set**: If the reader fix lands, 10 cadences are viable. The remaining trade-off is write cost only. 7 cadences (+2ms write) if write pipeline is bottleneck; 10 cadences (+37ms) if K04 query speed matters more.

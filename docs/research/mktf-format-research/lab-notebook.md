@@ -1306,6 +1306,69 @@ Benchmark script: `experiments/file_format/bench_progressive_crossover.py` (runs
 
 ---
 
+## Experiment 17: Progressive Reader Anatomy
+
+**Date**: 2026-03-28
+**Motivation**: Experiment 16 found the progressive reader achieves only 0.04 GB/s — 99% Python overhead. Root cause: `unpack_progressive_level()` in format.py:815-820 uses a nested Python loop (`for b in range(n_bins): for name in col_names:`) that makes 117,000 `np.frombuffer` calls for the 1s cadence. This experiment measures the cost and tests an optimized reader.
+
+**The fix**: Replace the per-bin loop with a single `np.frombuffer` + `reshape(n_bins, n_cols, 5)`. One numpy call instead of 117,000 Python iterations.
+
+### Phase 2: Unpack-Only Comparison (in-memory, no file I/O)
+
+| Cadence | Bins | Production | Bulk+reshape | Bulk+view | Speedup |
+|---|---|---|---|---|---|
+| 30min | 13 | 35us | 3us | 1us | 11.9x |
+| 5min | 78 | 194us | 4us | 2us | 49.5x |
+| 1min | 390 | 984us | 8us | 2us | 117.6x |
+| 30s | 780 | 1,977us | 13us | 2us | **150x** |
+| 10s | 2,340 | 5,781us | 33us | 3us | **176.5x** |
+| 5s | 4,680 | 11,615us | 64us | 5us | **181x** |
+| 1s | 23,400 | 57,842us | 862us | 282us | **67x** |
+
+The speedup scales with bin count — more bins = more Python iterations eliminated. Even at 1s (23,400 bins), the optimized reader is 67x faster.
+
+### Phase 3: Full Pipeline (file I/O + header + unpack)
+
+| Cadence | Bins | Production | Optimized | vs Full Read |
+|---|---|---|---|---|
+| 30min | 13 | 116us | 81us | 0.03x |
+| 5min | 78 | 286us | 111us | 0.04x |
+| 1min | 390 | 1,121us | 93us | 0.03x |
+| 30s | 780 | 2,135us | 101us | 0.04x |
+| 10s | 2,340 | 6,221us | 133us | 0.05x |
+| 5s | 4,680 | 12,074us | 169us | 0.06x |
+| **1s** | **23,400** | **59,152us** | **1,398us** | **0.52x** |
+
+**With the optimized reader, progressive reads are faster than full column reads at ALL cadences.** The 1,548-bin crossover from Experiment 16 was an artifact of the Python per-bin loop, not a fundamental I/O limit.
+
+Even the 1s cadence (23,400 bins) at 1,398us is 0.52x of a full column read (2,708us). The 10s cadence at 133us is 0.05x — 20x faster than full reads.
+
+### Phase 4: Correctness
+
+Both 5min (78 bins) and 1s (23,400 bins) produce identical results between production and optimized readers.
+
+### Revised Recommendation
+
+**CORRECTION to Experiment 16's recommendation.** The 7-cadence limit (30min→30s) was based on a reader bottleneck that can be fixed with a one-function Python change. With the optimized reader:
+
+- **All 10 cadences are viable** — every level reads faster than full column data
+- The write cost trade-off (+37ms for 10 cadences vs +2ms for 7) is the remaining consideration
+- The MI-based argument still holds: 1s cadence (MI=0.22) adds little information
+- But the I/O argument against it is gone
+
+The decision shifts from "what can the reader handle?" to "what does the analysis need?" — which is the right question.
+
+**The fix itself**: Replace `unpack_progressive_level()` in format.py with:
+```python
+raw = np.frombuffer(data[level.offset:level.offset + total * 4], dtype=np.float32)
+shaped = raw.reshape(n_bins, n_cols, PROG_STAT_FIELDS)
+return {name: shaped[:, i, :].copy() for i, name in enumerate(col_names)}
+```
+
+Benchmark script: `experiments/file_format/bench_progressive_reader_anatomy.py` (runs via fintek venv)
+
+---
+
 ## Summary of All Experiments
 
 | # | Experiment | Key Finding |
@@ -1327,6 +1390,7 @@ Benchmark script: `experiments/file_format/bench_progressive_crossover.py` (runs
 | 14 | **Write path micro-anatomy** | **fsync dominates small writes (62%); no-fsync cadence grid: 140s → 12s (91% savings)** |
 | 15 | **Progressive section + dual write** | **+37ms write, +0.7% read; progressive summary = 49x faster than full read for coarse K04** |
 | 16 | **Progressive read crossover** | **Crossover at 1,548 bins (151 KB); ≥30s cadence → progressive, ≤10s → full read** |
+| 17 | **Progressive reader anatomy** | **Nested Python loop = 99% overhead; np.frombuffer+reshape = 67-181x faster; crossover eliminated** |
 
 ### Complete Pipeline Model (4604 tickers, AAPL-scale)
 
@@ -1371,7 +1435,7 @@ Observations about the AAPL tick data (598,057 rows, 2025-09-02) that affect for
 
 - **19.5% of trades have zero inter-arrival time** (~117K trades for AAPL). These are exchange-level batches — multiple fills from one order reported at the same nanosecond. The timestamp column is monotonically **non-decreasing**, not strictly increasing. Any analysis assuming unique timestamps will silently produce wrong results. **Scales with liquidity**: mega-caps 17-18%, mid-caps ~25% (KO). Per-ticker analysis code must handle this differently by ticker.
 - **Median IAT = 346us, mean IAT = 120ms** — extremely heavy-tailed. Most trades arrive in sub-millisecond bursts, but gaps between bursts are 100ms+. This distribution is NOT Poisson (PSD dynamic range of 1047x decisively rejects flat spectrum).
-- **Spectral structure after detrending** (naturalist's K-F01b + detrending experiments, 10 tickers):
+- **Spectral structure after detrending** (naturalist's spectral + detrending experiments, 10 tickers):
   - ~~Two-regime with institutional layer at 15-30min~~ **CORRECTED**: The "institutional regime" above ~5min was mostly daily U-shape artifact. After subtracting the mean intraday IAT curve:
   - Sub-second: suppressed (0.7-0.9x) — exchange batching anti-correlates arrivals. **CONFIRMED, enhanced by detrending.**
   - 1s-30s execution regime: 2-5x excess — algorithmic execution synchronization, scales with liquidity. **CONFIRMED, enhanced.**
@@ -1382,5 +1446,6 @@ Observations about the AAPL tick data (598,057 rows, 2025-09-02) that affect for
   - Pink noise baseline (alpha ≈ 0.3) is universal regardless of liquidity. **CONFIRMED.**
   - The daily U-shape itself varies by ticker: AAPL 3.5x mid/open ratio, NVDA 3.0x (doesn't recover at close), TSLA 4.0x (extreme open burst). The U-shape is an observable, not a periodic signal.
   - **The 20min cadence sentinel was NOT justified by spectral excess.** Still useful for archival/detection, but the I/O cost argument (1.2s batch mode) is the justification, not spectral signal.
+  - **5min phase is NOT stable** (naturalist's bootstrap + split-day validation): Block bootstrap 95% CI = ±170°, R≈0.04. Within-day segments show phase drift of 150-170° (AAPL segments: -29° to +137°). The "AAPL-NVDA 0.9° coincidence" was a cancellation artifact — segment-by-segment mean distance = 82°. ~~Three strategy clocks~~ **REFUTED**. The 5min algorithms are real (excess proves it) but event-locked, not clock-locked. **Amplitude fingerprint (NVDA 28.5x vs CHWY 1.8x) is the robust cross-ticker observable, not phase.**
 - **Delta encoding of timestamps would compress beautifully** (massive repetition from zero-IAT trades) but is net negative for GPU pipeline throughput (Experiment 2). Raw int64 is correct.
 - **flip_dirty write asymmetry**: Reading 1 byte at EOF = 29us. Writing 1 byte = 3,937us (135x slower). NTFS file-open-for-write metadata overhead dominates. Daemon bulk-marking should be avoided; batch dirty signals instead.

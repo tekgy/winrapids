@@ -321,8 +321,8 @@ Decision: skip Level 1 (1s) for this ticker — the MI score says it's not worth
 the I/O. This is especially powerful for universe-scale operations where different
 tickers have different information density across timescales.
 
-MI scores are written as 0.0 when not yet computed. A separate K-SS01 leaf
-(sufficient statistics metadata) can compute and backfill them.
+MI scores are written as 0.0 when not yet computed. A K02 leaf with KO05
+(sufficient statistics domain) can compute and backfill them.
 
 ## Open Questions
 

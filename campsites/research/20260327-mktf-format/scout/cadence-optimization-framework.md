@@ -23,12 +23,12 @@ The cadence grid serves three distinct goals with different metrics:
 **2. Gaming Detection** — can we see specific algorithmic signatures?
 - Metric: spectral SNR at known algorithm frequencies
 - Key cadences: 60s (VWAP/TWAP), ~20s (child order refresh), ~10s (round numbers)
-- Data: from K-F01b inter-arrival time DFT analysis (done for AAPL)
+- Data: from K02 KO01b inter-arrival time DFT analysis (done for AAPL)
 
 **3. Cross-ticker Generalization** — informative across the full universe
 - Metric: I_total(T) variance across ticker liquidity classes
 - Universal cadences: those with high I_total across AAPL AND micro-caps
-- Ticker-specific cadences: adaptive per K-SS01(MI_SCORE) leaf
+- Ticker-specific cadences: adaptive per K02 KO05 MI_SCORE leaf
 - Data: from K04-class analysis on MI leaves across 50+ tickers
 
 Different objectives → different optimal cadences. Since cadences are separate files,
@@ -166,7 +166,7 @@ delete → recompute from K01. This mechanism already exists. safe=False trusts 
 ## Three-Step Research Design
 
 **Step 1: Spectral Analysis** (DONE — 8 tickers, detrending validated)
-- K-F01b (IAT DFT, market hours, session_filter params in Block 0)
+- K02 KO01b (IAT DFT, market hours, session_filter params in Block 0)
 - Raw spectrum: two-regime gradient (execution 1s-30s, apparent institutional 1min-30min)
 - Cross-ticker: two-regime structure confirmed universal across AAPL/MSFT/AMD/KO/CHWY/NVDA/TSLA/BRK.B
 - Detrending correction: above ~10min is 90-98% U-shape artifact. 1-2min real. 5min real for high-liquidity.
@@ -186,10 +186,10 @@ delete → recompute from K01. This mechanism already exists. safe=False trusts 
 - The MI plateau boundaries define the useful cadence range
 
 **Step 3: Cross-ticker K04** (BLOCKED — needs K02 + MI leaf infrastructure)
-- Store MI landscape per ticker as K-SS01(MI_SCORE) leaf
+- Store MI landscape per ticker as K02 KO05 MI_SCORE leaf
 - Run K04 correlation analysis on MI leaves across full universe
 - Universal cadences: high I_total across all liquidity classes
-- Adaptive cadences: per K-SS01 recommendation for individual tickers
+- Adaptive cadences: per K02 KO05 recommendation for individual tickers
 - Result: base universal grid + per-ticker adaptive grid
 
 ---
@@ -208,12 +208,12 @@ This unblocks the entire MI experiment + cross-ticker research program.
 
 ---
 
-## The K-SS01(MI_SCORE) Leaf Design
+## The K02 KO05 MI_SCORE Leaf Design
 
 When step 2 runs, the MI landscape should be stored as an MKTF leaf:
 
 ```
-leaf_id:    "K-SS01-MI"
+leaf_id:    "K02-MI.KO05"
 domain:     sufficient_stats (domain_type=4)
 upstream:   K01 (for this ticker+day)
 
@@ -230,10 +230,10 @@ Block 0 transform_params (stat_type=MI_SCORE):
   target_variable_id (uint8: 0=return_5min, 1=realized_vol, 2=direction)
 ```
 
-The daemon treats K-SS01-MI like any other leaf:
+The daemon treats K02-MI.KO05 like any other leaf:
 - upstream = K01 → stale if K01 updates (daily recompute)
 - schema_fingerprint covers target_variable_id → changing the target invalidates cached MI leaves
-- K04 analysis on K-SS01-MI leaves reveals universal vs ticker-specific cadences
+- K04 analysis on K02 KO05 MI leaves reveals universal vs ticker-specific cadences
 
 ---
 
@@ -279,5 +279,5 @@ doesn't need MI confirmation to be included.
 ## Sources
 
 - Naturalist experiments: `research/20260327-mktf-format/interarrival_spectrum.py`
-- K-F01b campsite note: `kspace-kingdom.md` (this directory)
+- K02 KO01b campsite note: `kspace-kingdom.md` (this directory)
 - Codebase survey: engineering gap in `src/winrapids/bin_engine.py:137-141`

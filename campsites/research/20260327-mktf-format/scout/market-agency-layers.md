@@ -19,7 +19,7 @@ at the same time, and detrending separated them.
 
 ## Four Layers of Market Agency
 
-The spectral analysis (K-F01b, 8 tickers, 0.1s to 30min) — with detrending correction —
+The spectral analysis (K02 KO01b, 8 tickers, 0.1s to 30min) — with detrending correction —
 reveals four distinct regimes, each with different physics and different appropriate representations:
 
 ### Layer A: Exchange Physics (sub-500ms)
@@ -37,7 +37,7 @@ leave MI-informative structure at this scale.
 **Physics**: Child order refresh cycles, round-number timing, VWAP/TWAP ticks
 **What's periodic**: Genuinely periodic. Individual algorithms have clocks.
 60s = VWAP/TWAP. 20s = child order refresh. 10s = round-number concentration.
-**Right representation**: Binned stats (K02) + DFT of inter-arrival times (K-F01b)
+**Right representation**: Binned stats (K02) + DFT of inter-arrival times (K02 KO01b)
 **I_total peak**: 2s (AAPL-class). The MI experiment lives here.
 
 ### Layer C: Strategy Coordination (2–5min)
@@ -57,42 +57,46 @@ ahead of AAPL (4.1x). Sector and strategy composition matter independently of li
 Options-gamma hypothesis fits NVDA/TSLA well. KO's 9.6x signal is harder to explain with
 gamma hedging — consumer staples have different options market structure.
 
-**Right representation**: K02 bins + K-F01b + K-SS01(MI_SCORE) leaves
+**Right representation**: K02 bins + K02 KO01b + K02 KO05 MI_SCORE leaves
 **Cross-ticker**: This is where algorithmic ecosystems diverge. Execution regime variation
 reflects liquidity class differences. 5min variation reflects *what algorithms are doing*
 — strategy type, sector dynamics, options exposure.
-**Phase analysis: three strategy clocks confirmed** (naturalist, interarrival_phase.py +
-interarrival_phase_clusters.py, 10 tickers, circular k-means BIC selection)
+**Phase analysis: RETRACTED — phase not stable at daily scale**
+(naturalist, interarrival_phase_bootstrap.py + interarrival_phase_stability.py)
 
-Global Rayleigh test: R=0.211, p=0.64 — cannot reject uniformity. Rayleigh tests for
-ONE shared clock. The data has THREE sector clocks ~120° apart that cancel in the mean
-resultant vector. Correct test: von Mises mixture → k=3 wins (BIC -8.90 vs k=2 -4.58).
+⚠️ CORRECTION (fourth in this thread): The three-clock cluster finding did not survive validation.
 
-| Cluster | Center | Internal R | Members |
-|---------|--------|------------|---------|
-| Mega-cap tech | -18.0° | 0.968 | AAPL, NVDA, TSLA |
-| Consumer/value | +72.4° | 0.883 | KO, BRK.B, JNJ, CHWY |
-| Phase-shifted tech | -157.1° | 0.843 | MSFT, AMD, META |
+**Bootstrap result**: 95% CI per ticker = ±170° (effectively the full circle). Bootstrap R ≈ 0.04.
+Cluster assignment stability: 28-40% (barely above 33% random for k=3 clusters).
 
-**Note on "phase-shifted tech"**: These tickers are ~155° out of phase with AAPL/NVDA —
-almost exactly half a period (~150 seconds) ahead. "Contrarian" in phase position, not in
-price correlation. They run a 5min IAT clock that's 2.5 minutes offset from mega-cap tech.
+**Split-day stability**: 6 × 65-minute segments, mean within-ticker R = 0.399 (weak).
+AAPL phases by segment: -29°, -51°, -34°, +96°, +71°, +137° — spread: 172°.
+NVDA phases by segment: +179°, -128°, +72°, -12°, +67°, +91° — spread: 169°.
 
-**Lead-lag relative to AAPL** (at 5min period):
-- NVDA: 0.7 seconds ahead (= 0.9° — functionally identical clock)
-- TSLA: 26 seconds ahead (within mega-cap cluster)
-- KO, CHWY: ~50 seconds behind (consumer/value lag — scout predicted 52s, confirmed ±2s)
-- MSFT, AMD: 93–123 seconds ahead (phase-shifted cluster)
+**The AAPL-NVDA 0.9° coincidence was a cancellation artifact.** Segment-by-segment
+AAPL-NVDA angular distances: [151°, 77°, 106°, 108°, 4°, 46°] — mean 82°. The full-day
+vector average happened to cancel to near-zero difference, masking true intra-day drift.
 
-**Nearest-neighbor chains**: AAPL→NVDA→TSLA | KO→CHWY→BRK.B→JNJ | MSFT→AMD→META
+**What this means for Layer C**: The 5min algorithms are real (excess is robust), but they
+are NOT wall-clock locked. They oscillate at ~5min period with drifting phase — likely
+triggered by order flow surges or events rather than fixed timestamps. The excess itself
+is non-stationary within day (AAPL: 0.8x→85.1x across segments, NVDA: 28.5x→88.2x).
 
-**K04 implication**: K04 on (cos(phase), sin(phase)) columns at 5min will recover this
-three-cluster topology. The cluster structure falls out of standard Euclidean correlation —
-no circular distance function needed. The phase topology IS a map of the 5min ecosystem.
+**What survives**:
+- 5min spectral excess is real and robust (4-28x detrended, across 10 tickers) ✓
+- Cross-ticker amplitude CV = 0.93 — tickers differ in HOW MUCH 5min periodicity ✓
+- The amplitude fingerprint (NVDA 28.5x, CHWY 1.8x) is the durable cross-ticker feature ✓
 
-**K-SS01(PHASE) leaf confirmed**: store (cos(phase), sin(phase)) as float32 pair per period.
-Enables: sector clock detection, lead-lag network analysis, gaming signature detection
-(tickers that deviate from their cluster's expected phase).
+**What does not survive**:
+- Stable phase at 5min ✗ — drifts within a single day
+- Three strategy clocks ✗ — single-realization artifact
+- AAPL-NVDA synchronization ✗ — accidental in full-day vector average
+- K02 KO05 PHASE as daily leaf ✗ — phase too unstable for a single daily value
+
+**K02 KO05 PHASE design note**: The (cos, sin) encoding is technically correct IF a stable
+phase source existed. Daily-granularity phase is not that source. Intraday phase within
+a 65-min segment may be more stable (within-segment R = 0.399 is weak but nonzero).
+Future investigation: shorter-window phase estimates, conditioned on high-amplitude segments.
 
 ### Layer D: Daily Structure (above 5min)
 **Signal**: Not periodic — smooth trend
@@ -103,7 +107,7 @@ The raw FFT decomposed the U-shape into many harmonics and made it look like
 giant excess at 10-30min. Detrending revealed: it was all aliases of the same trend.
 **What's there**: Real structured non-stationarity. The U-shape is a genuine feature.
 **Wrong representation**: FFT (decomposes smooth trends into spurious harmonics)
-**Right representation**: Wavelet decomposition (K-W01) — can represent both smooth
+**Right representation**: Wavelet decomposition (K02 KO04) — can represent both smooth
 trends AND localized periodicities in a single framework without the FFT's aliasing problem
 
 ---
@@ -116,9 +120,9 @@ wants a different mathematical representation:
 | Layer | Agent | Right tool | K-space type | Cross-ticker CV |
 |-------|-------|------------|--------------|-----------------|
 | Exchange (sub-500ms) | Exchange | Raw ticks | K01 (archival) | — |
-| Execution (500ms–2min) | Algorithms | DFT of IAT | K-F01b | 0.31–0.64 |
-| Strategy (2–5min) | Strategy ecosystems | DFT + MI | K-F01b + K-SS01(MI) | **0.93** ← peak |
-| Daily structure (5min+) | Session/institution | Wavelet | K-W01 | collapsed (U-shape artifact) |
+| Execution (500ms–2min) | Algorithms | DFT of IAT | K02 KO01b | 0.31–0.64 |
+| Strategy (2–5min) | Strategy ecosystems | DFT + MI | K02 KO01b + K02 KO05 MI | **0.93** ← peak |
+| Daily structure (5min+) | Session/institution | Wavelet | K02 KO04 | collapsed (U-shape artifact) |
 
 The 5min CV peak (0.93) is the strongest discriminative signal found across all cadences.
 This is the scale where tickers are most distinguishable from each other by periodic structure.
@@ -126,9 +130,9 @@ This is the scale where tickers are most distinguishable from each other by peri
 The cadence grid covers all four layers — but we've been optimizing for Layer B/C only
 (the MI experiment, I_total peak at 2s). The long cadences (5min–30min) stay in the grid
 for archival and industry convention, as documented. But their full value might only be
-accessible via K-W01, not K-F01b.
+accessible via K02 KO04, not K02 KO01b.
 
-**Implication for kspace-kingdom.md**: The case for K-W01 isn't just "completeness."
+**Implication for kspace-kingdom.md**: The case for K02 KO04 isn't just "completeness."
 It's the *only* correct representation for Layer D. DFT cannot see smooth trend structure
 without aliasing into spurious harmonics. Wavelets are what Layer D requires.
 
@@ -184,18 +188,18 @@ which IS genuinely ticker-specific by liquidity class and algo composition.
 
 ---
 
-## A Note on What This Means for the K-W01 Design
+## A Note on What This Means for the K02 KO04 Design
 
 Naturalist's open question from kspace-kingdom.md #1: "Should K-space files carry the
 Nyquist frequency explicitly, or is it derivable from source cadence?"
 
-For K-F01b: derivable is fine (Nyquist = 1/(2×cadence)).
-For K-W01: the question is different. Wavelets don't have a single Nyquist — they have
+For K02 KO01b: derivable is fine (Nyquist = 1/(2×cadence)).
+For K02 KO04: the question is different. Wavelets don't have a single Nyquist — they have
 a *scale range*. The relevant parameters are:
 - Finest scale (= cadence × 2, to see sub-cadence structure): auto-derivable
 - Coarsest scale (= session duration / 2, to see half-day structure): needs explicit storage
 
-The coarsest scale is important: if we want K-W01 to capture the daily U-shape structure,
+The coarsest scale is important: if we want K02 KO04 to capture the daily U-shape structure,
 the coarsest wavelet scale must be ≥ half the session duration (~3 hours). This means
 the Block 0 domain descriptor's `scale_max` field in the wavelet transform_params
 (currently `[12:16]`) needs to be session-length-aware, not just cadence-aware.
@@ -220,15 +224,15 @@ the Block 0 domain descriptor's `scale_max` field in the wavelet transform_param
 
 3. **The cadence grid + K-space kingdom together cover all four layers:**
    - K01: Layer A (raw ticks)
-   - K02 + K-F01b: Layer B/C (execution + strategy)
-   - K-W01: Layer D (daily trend structure)
+   - K02 + K02 KO01b: Layer B/C (execution + strategy)
+   - K02 KO04: Layer D (daily trend structure)
 
 4. **The cross-ticker "institutional fingerprints" are probably U-shape differences,**
    not genuine periodic differences. The real ticker-specific differentiation lives in
    Layer B/C — liquidity class, algo composition, round-number behavior.
 
 5. **The coarsest wavelet scale needs to be session-length-aware** (≥ 3 hours for full-day
-   daily trend capture). This is a concrete addition to the K-W01 domain descriptor design.
+   daily trend capture). This is a concrete addition to the K02 KO04 domain descriptor design.
 
 ---
 

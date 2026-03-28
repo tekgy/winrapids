@@ -7,10 +7,10 @@
 
 The MKTF columnar structure is already coordinate-system agnostic.
 
-In time-domain K01: rows = ticks, columns = features (price, size, log_price…)
-In frequency-domain K-F01: rows = frequency bins, columns = spectral features (power, phase, coherence…)
-In wavelet K-W01: rows = scale×shift pairs, columns = wavelet coefficients
-In sufficient-statistics K-SS01: rows = statistics (mean, var, skew…), columns = cross-ticker projections
+In time-domain K01 KO00: rows = ticks, columns = features (price, size, log_price…)
+In frequency-domain K02 KO01: rows = frequency bins, columns = spectral features (power, phase, coherence…)
+In wavelet K02 KO04: rows = scale×shift pairs, columns = wavelet coefficients
+In sufficient-statistics K02 KO05: rows = statistics (mean, var, skew…), columns = cross-ticker projections
 
 The column directory already has `n_elements` per column. The data layout is already columnar.
 **The format already works for k-space. What's missing is a domain descriptor in Block 0.**
@@ -50,7 +50,7 @@ Wavelet (domain_type=3):
 
 Sufficient stats (domain_type=4):
   [0:4]   stat_type     uint32   0=moments, 1=cumulants, 2=quantiles, 3=spectral_moments,
-                                 4=PHASE (cos/sin pair per target period — see K-SS01(PHASE))
+                                 4=PHASE (cos/sin pair per target period — see K02 KO05 PHASE)
   [4:8]   order_max     uint32   maximum order (e.g., 4 = up to kurtosis); unused for stat_type=4
   [8:48]  reserved
 ```
@@ -70,7 +70,7 @@ The cadence IS the frequency grid in k-space. This connects Thread 1 and Thread 
 - 5min cadence → Nyquist = 1.67 mHz (can see intraday rhythms down to 10-minute cycles)
 
 **The MI cadence optimization (naturalist's Thread 1) tells us which cadences are informationally
-rich. These are exactly the cadences that produce K-F01 files with maximum spectral discriminating
+rich. These are exactly the cadences that produce K02 KO01 files with maximum spectral discriminating
 power for gaming detection.**
 
 The measurement function and detection function want their cadences for the SAME reason in k-space:
@@ -78,7 +78,7 @@ high MI = high spectral information content = can distinguish "gaming" spectral 
 
 The cadence grid and the frequency resolution grid are the SAME optimization.
 
-A cadence that's maximally informative per MI analysis will produce K-F01 data where the
+A cadence that's maximally informative per MI analysis will produce K02 KO01 data where the
 gaming signature (periodicity just below round boundaries) has maximum SNR.
 
 ---
@@ -109,15 +109,15 @@ Pathmaker can validate this convention without a dtype change.
 
 The upstream fingerprint design already handles k-space staleness with no changes needed.
 
-A K-F01 file (DFT of K01):
+A K02 KO01 file (DFT of K01):
 ```
 upstream_fingerprints[0]:
   upstream_leaf_id  = "K01P01"      # leaf_id of the source time-domain file
-  upstream_write_ts = <K01's write_timestamp_ns at time K-F01 was computed>
+  upstream_write_ts = <K01's write_timestamp_ns at time K02 KO01 was computed>
   upstream_data_hash = xxHash64(K01 data bytes)  # optional hash for content verification
 ```
 
-The daemon's staleness check: "if K01 has been updated since K-F01 was computed → K-F01 is stale."
+The daemon's staleness check: "if K01 has been updated since K02 KO01 was computed → K02 KO01 is stale."
 Same algorithm. Same header-only read. Zero new machinery.
 
 Multi-upstream k-space is also handled. A cross-ticker coherence K-COH01 file might have:
@@ -163,9 +163,9 @@ If filename and header disagree, the header is authoritative (belt and suspender
 | Kingdom | Domain | KO code | Leaf ID prefix | Typical n_rows | Columns |
 |---------|--------|---------|----------------|----------------|---------|
 | Time Kingdom | Time-domain binned features | KO00 | K01, K02, K03 | ticks (100K-1M) | price, size, log_price, rolling_mean… |
-| Frequency Kingdom | DFT / DCT | KO01, KO02 | K-F01, K-F02 | freq_bins (512-4096) | power_re, power_im, phase, coherence |
-| Scale Kingdom | Wavelet | KO04 | K-W01 | scale×shift pairs | wavelet_coeff, detail, approx |
-| Statistics Kingdom | Sufficient stats | KO05 | K-SS01 | stat_order (4-20) | moments, cumulants, quantiles, phase |
+| Frequency Kingdom | DFT / DCT | KO01, KO02 | K02 KO01, K02 KO02 | freq_bins (512-4096) | power_re, power_im, phase, coherence |
+| Scale Kingdom | Wavelet | KO04 | K02 KO04 | scale×shift pairs | wavelet_coeff, detail, approx |
+| Statistics Kingdom | Sufficient stats | KO05 | K02 KO05 | stat_order (4-20) | moments, cumulants, quantiles, phase |
 | Correlation Kingdom | Cross-ticker | KO06 | K04 | ticker_pairs (4604²) | pearson_r, spearman_r, cov |
 
 Each Kingdom is a valid, self-consistent representation of the same underlying market.
@@ -188,7 +188,7 @@ For time-domain files: domain_type=0, all zeros = backwards compatible with v3.
 The daemon, reconcile, and BitmapStateDB code are unchanged. They read `is_complete` and
 `upstream_write_ts` from Block 0. Domain type is irrelevant to operational decisions.
 
-Only computational kernels (K-F01 FFT kernel, K-W01 wavelet kernel) need to know about domain.
+Only computational kernels (K02 KO01 FFT kernel, K02 KO04 wavelet kernel) need to know about domain.
 Analytical tools that want to understand the domain read the descriptor. The daemon never does.
 
 ---
@@ -202,54 +202,47 @@ Analytical tools that want to understand the domain read the descriptor. The dae
 2. For the gaming detection use case: is the interesting spectral feature the DFT of the
    raw tick series, or the DFT of the inter-arrival times (gaps between ticks)?
    These have very different Nyquist properties. The gap-series DFT would live in
-   a different K-F leaf than the price-series DFT.
+   a different K02 KO01 leaf than the price-series DFT.
 
-3. For the MI cadence optimization: can the MI score itself be stored as a K-SS01 leaf
+3. For the MI cadence optimization: can the MI score itself be stored as a K02 KO05 leaf
    (sufficient statistics leaf with stat_type=MI_SCORE)? This would make the cadence
    selection reproducible and auditable via the standard MKTF pipeline.
-   **ANSWERED: YES.** K-SS01(MI_SCORE) leaf design specified in cadence-optimization-framework.md.
+   **ANSWERED: YES.** K02 KO05 MI_SCORE leaf design specified in cadence-optimization-framework.md.
    MI experiment now unblocked (fused kernel wired in, commit ba66b70).
 
 ---
 
-## K-SS01(PHASE) Leaf — Confirmed Data Product
+## K02 KO05 PHASE Leaf — RETRACTED (phase not stable at daily scale)
 
-Phase analysis of 5min inter-arrival time periodicity (10 tickers, circular k-means) confirmed
-that phase is a genuine per-ticker feature. Three sector clocks exist at 5min:
-- Mega-cap tech (AAPL/NVDA/TSLA): center -18°, internal R=0.968
-- Consumer/value (KO/BRK.B/JNJ/CHWY): center +72°, internal R=0.883
-- Phase-shifted tech (MSFT/AMD/META): center -157°, internal R=0.843
+⚠️ CORRECTION 2026-03-28: The three-clock finding that motivated this leaf did not survive
+validation. Bootstrap CI per ticker = ±170°. Split-day analysis shows phases drift 172°
+within a single day. The AAPL-NVDA 0.9° coincidence was a cancellation artifact.
+See market-agency-layers.md for full retraction details.
 
-**Schema: K-SS01(PHASE)**
+**stat_type=4 (PHASE) registration retained** — the (cos, sin) encoding is the correct
+representation IF a stable phase source is found. The design is sound; the daily-granularity
+5min phase is not a stable source. Possible future paths:
+
+- Multi-day phase averaging (may stabilize if drift is mean-reverting)
+- Shorter-window phase within high-amplitude segments (within-segment R = 0.399 is weak but nonzero)
+- Different target period where phase IS stable (execution regime 1-30s, not yet tested)
+
+**Schema (design reserved, not production):**
 
 ```
-leaf_id:    "K-SS01-PHASE"
+leaf_id:    "K02-PHASE.KO05"
 domain:     sufficient_stats (domain_type=4)
+stat_type:  4 (PHASE)
 upstream:   K01 (for this ticker+day)
 
 Columns (n_candidates rows — one row per candidate period):
   candidate_period_ms   float32
-  phase_cos             float32   cos(phase at this period)
-  phase_sin             float32   sin(phase at this period)
-  amplitude             float32   spectral excess at this period (detrended)
-  rayleigh_r            float32   local R (from multi-day averaging, if available)
-
-Block 0 transform_params (stat_type=PHASE):
-  period_range_min_ms, period_range_max_ms
-  n_candidates
-  detrend_method        uint8   0=none, 1=mean_iat_subtraction
+  phase_cos             float32   cos(phase) — stable only if source phase is stable
+  phase_sin             float32   sin(phase)
+  amplitude             float32   spectral excess (detrended) — THIS is the robust feature
+  within_day_r          float32   mean resultant R across intraday segments (stability indicator)
 ```
 
-**Why (cos, sin) and not raw angle:**
-- Circular quantities don't have a natural linear distance — (cos, sin) makes Euclidean
-  K04 correlation well-defined and continuous across the ±180° wrap point
-- Standard Pearson on (cos, sin) approximates circular correlation (rho_c) well for
-  moderate phase differences — no custom distance function needed in K04
-- The three sector clocks at 120° spacing fall out automatically from Euclidean K04:
-  cluster centroids in (cos, sin) space are [(-0.31, -0.95), (-0.53, +0.85), (-0.97, -0.25)]
-
-**Upstream**: K01 → stale if K01 updates (daily recompute).
-**Relationship to K-SS01(MI_SCORE)**: separate leaves, different stat_type values.
-K-SS01(PHASE) answers "when does this ticker's algorithm pulse?"
-K-SS01(MI_SCORE) answers "how much information does each cadence contain?"
-Both live in domain_type=4 (sufficient_stats), different stat_type codes.
+**The amplitude column is the durable feature.** phase_cos/phase_sin are not ready for
+production until within_day_r > 0.7 threshold is met. K02 KO05 PHASE should gate on this
+before being treated as a usable leaf.

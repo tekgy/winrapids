@@ -1,9 +1,9 @@
 """Test KO05 sufficient statistics files — standalone MKTF roundtrip.
 
 Proves:
-  1. KO05 files are regular MKTF files with bundled stat columns — write/read bit-exact
-  2. Bundled column layout: {source_col}_stats = float32[n_bins * 5]
-  3. unpack_ko05_column reshapes correctly
+  1. KO05 files with alignment=64 write/read bit-exact
+  2. Column naming convention: {source_col}_{stat_suffix}
+  3. alignment=64 produces smaller files than alignment=4096
   4. Sufficient stats compose correctly (monoid: sum/count additive, min/max comparable)
 """
 
@@ -16,19 +16,14 @@ import numpy as np
 
 import sys
 sys.path.insert(0, "R:/fintek")
-sys.path.insert(0, "R:/winrapids/src")
 
 from trunk.backends.mktf.writer import write_mktf
 from trunk.backends.mktf.reader import read_header, read_columns
 
-# Import directly to avoid cupy chain in __init__.py
+# Mirror from progressive.py
 STAT_FIELDS = 5
-STAT_NAMES = ("sum", "sum_sq", "min", "max", "count")
-
-
-def _unpack_ko05_column(flat: np.ndarray) -> np.ndarray:
-    """Mirror of progressive.unpack_ko05_column for testing."""
-    return flat.reshape(-1, STAT_FIELDS)
+STAT_SUFFIXES = ("_sum", "_sum_sq", "_min", "_max", "_count")
+KO05_ALIGNMENT = 64
 
 
 def _make_ko05_columns(
@@ -36,26 +31,23 @@ def _make_ko05_columns(
     n_bins: int,
     rng: np.random.Generator,
 ) -> dict[str, np.ndarray]:
-    """Generate deterministic bundled KO05 stat columns for testing."""
+    """Generate deterministic KO05 stat columns for testing."""
     columns: dict[str, np.ndarray] = {}
     for name in col_names:
         count = rng.integers(100, 1000, n_bins).astype(np.float32)
         mean = rng.normal(100.0, 10.0, n_bins).astype(np.float32)
         std = rng.uniform(0.5, 5.0, n_bins).astype(np.float32)
 
-        stats = np.empty((n_bins, STAT_FIELDS), dtype=np.float32)
-        stats[:, 0] = (mean * count).astype(np.float32)       # sum
-        stats[:, 1] = ((std**2 + mean**2) * count).astype(np.float32)  # sum_sq
-        stats[:, 2] = (mean - 3 * std).astype(np.float32)     # min
-        stats[:, 3] = (mean + 3 * std).astype(np.float32)     # max
-        stats[:, 4] = count                                      # count
-
-        columns[f"{name}_stats"] = stats.ravel()
+        columns[f"{name}_sum"] = (mean * count).astype(np.float32)
+        columns[f"{name}_sum_sq"] = ((std**2 + mean**2) * count).astype(np.float32)
+        columns[f"{name}_min"] = (mean - 3 * std).astype(np.float32)
+        columns[f"{name}_max"] = (mean + 3 * std).astype(np.float32)
+        columns[f"{name}_count"] = count
     return columns
 
 
 def test_ko05_roundtrip():
-    """Write KO05 file with bundled columns, read back, verify bit-exact."""
+    """Write KO05 file with alignment=64, read back, verify bit-exact."""
     source_cols = ["price", "volume"]
     n_bins = 78  # 5-minute cadence
     rng = np.random.default_rng(42)
@@ -69,75 +61,85 @@ def test_ko05_roundtrip():
             leaf_id="K02P01C01.TI00TO05.KI00KO05",
             ticker="AAPL",
             day="2026-03-27",
+            alignment=KO05_ALIGNMENT,
         )
 
-        # Read back
+        assert header.alignment == 64
+
         h2 = read_header(path)
         assert h2.is_complete is True
+        assert h2.alignment == 64
 
         _, cols_read = read_columns(path)
 
-        # Verify all bundled columns roundtrip bit-exact
         for col_name, arr in columns.items():
             assert col_name in cols_read, f"Missing column: {col_name}"
             assert np.array_equal(arr, cols_read[col_name]), (
-                f"Data mismatch for {col_name}: "
-                f"max diff = {np.abs(arr - cols_read[col_name]).max()}"
+                f"Data mismatch for {col_name}"
             )
 
-        # Verify column count: 2 source cols = 2 bundled columns
-        assert len(cols_read) == 2
+        # 2 source cols × 5 stats = 10 columns
+        assert len(cols_read) == 10
 
-    print("PASS: KO05 roundtrip bit-exact (bundled)")
+    print("PASS: KO05 roundtrip bit-exact (alignment=64)")
 
 
-def test_ko05_unpack():
-    """Verify unpack_ko05_column reshapes correctly."""
-    n_bins = 13
-    rng = np.random.default_rng(99)
+def test_ko05_alignment_size_reduction():
+    """alignment=64 produces smaller files than alignment=4096."""
+    source_cols = ["price", "volume", "log_price", "spread", "imbalance"]
+    n_bins = 1  # session cadence — maximum alignment waste
+    rng = np.random.default_rng(42)
 
-    stats_2d = rng.random((n_bins, STAT_FIELDS)).astype(np.float32)
-    flat = stats_2d.ravel()
+    columns = _make_ko05_columns(source_cols, n_bins, rng)
 
-    unpacked = _unpack_ko05_column(flat)
-    assert unpacked.shape == (n_bins, STAT_FIELDS)
-    assert np.array_equal(unpacked, stats_2d)
+    import os
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path_4096 = Path(tmpdir) / "align4096.mktf"
+        write_mktf(path_4096, columns, leaf_id="test4096", alignment=4096)
+        size_4096 = os.path.getsize(path_4096)
 
-    # Verify stat fields are in correct positions
-    assert np.array_equal(unpacked[:, 0], stats_2d[:, 0])  # sum
-    assert np.array_equal(unpacked[:, 4], stats_2d[:, 4])  # count
+        path_64 = Path(tmpdir) / "align64.mktf"
+        write_mktf(path_64, columns, leaf_id="test64", alignment=64)
+        size_64 = os.path.getsize(path_64)
 
-    print("PASS: unpack_ko05_column reshapes correctly")
+        ratio = size_4096 / size_64
+        print(f"  alignment=4096: {size_4096:,} bytes")
+        print(f"  alignment=64:   {size_64:,} bytes")
+        print(f"  Reduction:      {ratio:.1f}x")
+
+        assert size_64 < size_4096, "alignment=64 should produce smaller files"
+        # For 25 columns of 4 bytes each:
+        # 4096: 25 × 4096 ≈ 100 KB overhead
+        # 64:   25 × 64 ≈ 1.6 KB overhead
+        assert ratio > 5, f"Expected >5x reduction, got {ratio:.1f}x"
+
+    print("PASS: alignment=64 reduces file size")
 
 
 def test_ko05_composability():
     """Sufficient stats compose correctly via monoid operations."""
-    # Two adjacent bins (bundled format)
-    a = np.array([150.0, 25000.0, 90.0, 115.0, 500.0], dtype=np.float32)
-    b = np.array([160.0, 28000.0, 88.0, 120.0, 600.0], dtype=np.float32)
+    a_sum, a_sum_sq, a_min, a_max, a_count = 150.0, 25000.0, 90.0, 115.0, 500.0
+    b_sum, b_sum_sq, b_min, b_max, b_count = 160.0, 28000.0, 88.0, 120.0, 600.0
 
-    # Compose: sum adds, sum_sq adds, min takes min, max takes max, count adds
-    c = np.empty(STAT_FIELDS, dtype=np.float32)
-    c[0] = a[0] + b[0]           # sum
-    c[1] = a[1] + b[1]           # sum_sq
-    c[2] = min(a[2], b[2])       # min
-    c[3] = max(a[3], b[3])       # max
-    c[4] = a[4] + b[4]           # count
+    c_sum = a_sum + b_sum
+    c_sum_sq = a_sum_sq + b_sum_sq
+    c_min = min(a_min, b_min)
+    c_max = max(a_max, b_max)
+    c_count = a_count + b_count
 
-    # Verify derived statistics
-    mean = c[0] / c[4]
-    var = c[1] / c[4] - mean**2
+    mean = c_sum / c_count
+    var = c_sum_sq / c_count - mean**2
 
-    assert c[4] == 1100.0
-    assert c[2] == 88.0
-    assert c[3] == 120.0
-    assert var >= 0, "Variance should be non-negative"
+    assert c_count == 1100.0
+    assert c_min == 88.0
+    assert c_max == 120.0
+    assert var >= 0
 
     print("PASS: sufficient stats compose correctly")
 
 
 if __name__ == "__main__":
     test_ko05_roundtrip()
-    test_ko05_unpack()
+    test_ko05_alignment_size_reduction()
     test_ko05_composability()
     print("\n=== ALL KO05 TESTS PASSED ===")

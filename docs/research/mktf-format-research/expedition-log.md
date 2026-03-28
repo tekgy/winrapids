@@ -1277,6 +1277,8 @@ NVMe performance is dramatically queue-depth dependent. From PCIe Gen5 benchmark
 
 Universe = 4604 MKTF files × ~15 MB = ~69 GB total.
 
+**Theoretical estimates (Gen5 benchmarks):**
+
 | Workers (≈QD) | Estimated BW | Universe Read Time | % of Peak |
 |---------------|-------------|-------------------|-----------|
 | 1 | 1.5 GB/s | 46.0s | 12% |
@@ -1285,7 +1287,22 @@ Universe = 4604 MKTF files × ~15 MB = ~69 GB total.
 | 32 | 11.0 GB/s | 6.3s | 85% |
 | 64+ | 12.5 GB/s | 5.5s | 96% |
 
-The current 4-worker design gives ~11.5s read time. Jumping to 16 workers could cut almost 5 seconds. But there's a better approach.
+> **⚠ CORRECTION (pathmaker benchmarks on actual hardware):**
+>
+> | Workers | Measured BW | Notes |
+> |---------|-------------|-------|
+> | 1 | 2.11 GB/s | |
+> | 4 | 4.40 GB/s | |
+> | 8 | 5.40 GB/s | |
+> | **12** | **6.00 GB/s** | **← sweet spot (97% of peak)** |
+> | 16 | 6.16 GB/s | marginal gain |
+> | 24 | 5.00 GB/s | REGRESSION — allocator thrash |
+> | 32 | 5.37 GB/s | worse than 12 |
+> | 64 | 5.21 GB/s | worse than 12 |
+>
+> **Our NVMe peaks at ~6.2 GB/s** (likely Gen4, or WDDM overhead on Gen5). 12 workers is optimal. Beyond 16, regression from thread scheduling overhead and memory pressure (~300 MB of concurrent pinned buffers at QD24). TCC mode test (Part 7) will determine if the 6.2 ceiling is hardware or WDDM.
+
+The current 4-worker design gives ~4.4 GB/s. Jumping to 12 workers captures 97% of available bandwidth — a 36% improvement for free. But there's a better approach for the I/O model itself.
 
 ---
 
@@ -1376,17 +1393,45 @@ The MKTF-per-ticker model is clean, self-describing, and matches the "file IS th
 
 ## Recommendation for Pathmaker
 
-For the concurrent MKTF reader (task #19):
+> **⚠ CORRECTION #2 (observer Experiment 10 — R595 driver coalescing):**
+>
+> The R595 driver (installed 2026-03-27) fundamentally changed the I/O landscape:
+>
+> | Config | R581 | R595 | Change |
+> |--------|------|------|--------|
+> | 1 worker | 2.29 GB/s | 2.93 GB/s | **+28% sequential** |
+> | 12 workers | 5.62 GB/s (2.45x) | 3.55 GB/s (1.21x) | **threading nearly useless** |
+>
+> **The R595 driver does internal I/O coalescing** — it manages NVMe queue depth itself,
+> making application-level threading redundant for I/O throughput. Sequential performance
+> improved 28% because the driver batches better than our thread pool can.
+>
+> The 51% NVMe utilization ceiling (3.55 GB/s of ~7 GB/s) is suspiciously close to the
+> WDDM overhead ceiling (~55%). Hypothesis: R595's coalescing routes all I/O through a
+> single WDDM-mediated path, directly exposing the WDDM bottleneck that R581's
+> multi-threaded path partially circumvented.
+>
+> **Revised bottleneck stack:**
+> - R595 + Python (1-4 workers): ~3.5 GB/s — **this is the current optimal**
+> - Native reader (Rust/C++ + CUDA streams): ~6-7 GB/s (removes Python from hot path, reaches WDDM ceiling)
+> - TCC mode + native reader: ~12-14 GB/s (removes WDDM, reaches NVMe theoretical)
+>
+> **All previous worker-count recommendations are superseded.** On R595, use 1-4 workers.
+> Engineering effort should go to GPU compute (K04 kernels), not I/O threading.
 
-1. **Increase ThreadPoolExecutor workers from 4 to 16-32.** This is the single biggest throughput lever. Each additional worker adds NVMe queue depth.
+For the concurrent MKTF reader:
+
+1. **~~Use 12 workers.~~** → **Use 1-4 workers on R595.** Driver coalescing makes higher worker counts redundant. Save the thread pool complexity.
 
 2. **Use `FILE_FLAG_NO_BUFFERING`** if not already. Bypasses Windows page cache, reduces memory copies, gives predictable performance (no warm/cold cache variance).
 
-3. **Pre-allocate pinned buffers** (`cudaMallocHost`) and round-robin them across workers. Don't allocate per-read — pool them.
+3. ~~Pre-allocate a fixed pool of 12 pinned buffers.~~ → **Pre-allocate 4 pinned buffers** (`cudaMallocHost`, 16 MB each = 64 MB). Matches the 1-4 worker model.
 
-4. **Benchmark at QD1, QD4, QD16, QD32, QD64.** Find the saturation knee for our specific NVMe drive. Gen5 theoretical peak is ~14 GB/s; real peak will be lower.
+4. ~~Benchmark at QD1, QD4, QD16, QD32, QD64.~~ **Done by pathmaker (R581) and observer (R581 vs R595).** R595 driver manages QD internally — application-level QD tuning is no longer necessary.
 
-5. **Don't shard tickers.** Keep one-file-per-ticker. Solve throughput with queue depth, not file redesign.
+5. **Don't shard tickers.** Keep one-file-per-ticker. (**Confirmed by pathmaker.**)
+
+6. **Next I/O leap is architectural, not tuning.** The path forward: native reader (Rust/C++ with CUDA streams + async pinned memcpy) → TCC mode (when second GPU arrives). No further Python I/O optimization will help — the driver and WDDM are the ceilings now.
 
 ---
 
@@ -1399,3 +1444,233 @@ For the concurrent MKTF reader (task #19):
 - [GPUDirect Storage Best Practices — 4K Alignment (NVIDIA)](https://docs.nvidia.com/gpudirect-storage/best-practices-guide/index.html)
 - [Windows Overlapped I/O (Microsoft Learn)](https://learn.microsoft.com/en-us/windows/win32/sync/synchronization-and-overlapped-input-and-output)
 - [Fio Queue Depth Tuning (Simplyblock)](https://www.simplyblock.io/glossary/fio-queue-depth-tuning/)
+
+---
+
+# Part 7: Custom GPUDirect for Windows — Three Paths to NVMe→GPU
+
+> *Commissioned research from team lead. Three approaches to bypass or minimize the Windows storage/display stack for maximum NVMe→GPU throughput.*
+
+## The Problem
+
+The standard Windows I/O path for NVMe→GPU:
+```
+NVMe → kernel storage stack → filesystem cache → user buffer → cudaMemcpy → GPU
+```
+
+Each arrow is a copy. The kernel storage stack adds scheduling overhead. The filesystem cache consumes RAM. WDDM (Windows Display Driver Model) adds GPU scheduling overhead designed for display, not compute.
+
+On Linux with GPUDirect Storage: `NVMe → GPU` (one DMA, zero copies). We can't have that on Windows. What can we get?
+
+---
+
+## Path 1: MCDM / TCC Mode (Driver-Level Bypass)
+
+### What MCDM Is
+
+Microsoft Compute Driver Model (MCDM) is a compute-only subset of WDDM, available since Windows 10 1903 (WDDM 2.6). It's designed for devices that provide compute without display — GPUs running headless, NPUs, custom accelerators.
+
+MCDM architecture:
+```
+Application → DirectCompute DDI → Command Queue → Context → SW Queue
+                                                              ↓
+                                              OS Scheduler → Engine → HW Queue → GPU
+```
+
+Key difference from WDDM: **no display pipeline overhead**. No compositor, no vsync, no desktop window manager interaction. The scheduler is pure compute scheduling — DMA buffers submitted, executed, completed.
+
+### TCC Mode on RTX PRO 6000
+
+The RTX PRO 6000 supports TCC (Tesla Compute Cluster) mode via `nvidia-smi`:
+```
+nvidia-smi -g 0 -dm 1    # Switch to TCC mode
+nvidia-smi -g 0 -dm 0    # Switch back to WDDM
+```
+
+**TCC mode eliminates WDDM overhead entirely.** The GPU operates as a pure compute device — no display output, no WDDM scheduling, no compositor.
+
+### Measured Impact
+
+From community benchmarks (GitHub issue microsoft/graphics-driver-samples#103):
+- **WDDM mode**: RAM→GPU transfers run "at least 3x slower" than Linux
+- **TCC mode**: Achieves parity with Linux performance
+- **Overall**: "Linux runs 2x faster than Windows" under WDDM; TCC closes the gap
+
+The 2-3x penalty is specifically for RAM↔GPU data transfers — exactly our hot path (pinned memory → GPU via cudaMemcpyAsync).
+
+### Requirements
+
+- **Second GPU for display** (or headless machine). TCC disables all graphics output.
+- **R595+ driver** (available: 595.97 released 2026-03-24). We're updating from R581.
+- **RTX PRO cards support TCC natively**. Consumer GeForce cards have TCC locked at the driver level.
+
+### Verdict: **Test immediately after driver update.**
+
+Switch to TCC, re-run the MKTF universe benchmark. If RAM→GPU transfers speed up 2-3x, the whole pipeline benefits. This is the lowest-effort, highest-potential-impact change.
+
+**Caveat**: We need a second GPU or iGPU for display output. ~~Check if the workstation has an integrated GPU or a second discrete card.~~ **CONFIRMED**: Tekgy is purchasing a second GPU for display, enabling TCC mode on the RTX PRO 6000 for dedicated compute. TCC is now on the roadmap.
+
+---
+
+## Path 2: Unbuffered I/O + Pinned Buffers + cudaMemcpyAsync (Buildable Today)
+
+### The llama.cpp Discovery
+
+The llama.cpp project benchmarked every Windows I/O method for NVMe→GPU tensor loading. Results on a Corsair T705 NVMe (Gen5):
+
+| Method | Cold (not cached) | Warm (cached) |
+|--------|-------------------|---------------|
+| std::fstream | 1,777 MB/s | 1,638 MB/s |
+| fread | 3,005 MB/s | 7,965 MB/s |
+| CreateFile (buffered) | 5,501 MB/s | 8,155 MB/s |
+| **CreateFile (unbuffered)** | **8,538 MB/s** | **8,383 MB/s** |
+| mmap | 2,193 MB/s | 3,602 MB/s |
+
+**Key insight: Unbuffered CreateFile is 4.8x faster than std::fstream and 3.9x faster than mmap.** And it's consistent — no cold/warm cache variance because it bypasses the filesystem cache entirely.
+
+### Why DirectStorage Wasn't Worth It
+
+The llama.cpp team initially tried DirectStorage but abandoned it (PR #7796 closed). Reasons:
+- Unbuffered I/O already saturates the NVMe drive (~8.5 GB/s)
+- DirectStorage adds DX12 dependency and complexity
+- DX12↔CUDA interop adds latency and code complexity
+- The benefit over unbuffered I/O is marginal at best
+
+**DirectStorage's real value is GPU decompression (GDeflate).** For uncompressed MKTF files, it adds nothing over unbuffered I/O. If we ever add MKTF compression, revisit.
+
+### The Pipeline Architecture
+
+```python
+# Conceptual pipeline (actual implementation needs ctypes for CreateFile flags)
+#
+# Thread pool (16-32 workers) × pinned buffer pool → cudaMemcpyAsync → GPU
+#
+# Each worker:
+#   1. Acquire pinned buffer from pool
+#   2. ReadFile (unbuffered, overlapped) → pinned buffer
+#   3. cudaMemcpyAsync(gpu_dest, pinned_buf, size, stream)
+#   4. Record CUDA event
+#   5. Release pinned buffer (after event completes)
+
+# Key flags:
+FILE_FLAG_NO_BUFFERING    = 0x20000000  # Bypass filesystem cache
+FILE_FLAG_OVERLAPPED      = 0x40000000  # Async I/O
+FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000  # Hint for prefetch
+
+# Buffer requirements:
+# - cudaMallocHost (pinned) for async DMA
+# - Size must be multiple of disk sector (4096 bytes)
+# - Alignment must be 4096 bytes (satisfied by cudaMallocHost)
+```
+
+### Performance Estimate
+
+With 16 workers, unbuffered I/O, pinned buffers:
+- NVMe read: ~8.5 GB/s (saturated)
+- PCIe H2D transfer: ~25 GB/s (PCIe Gen5 x16)
+- **Bottleneck**: NVMe at 8.5 GB/s
+- Universe (69 GB): ~8.1 seconds NVMe read time
+- With I/O + H2D pipelined: GPU processing starts within milliseconds of first file read
+
+### Verdict: **This is the production path. Build it.**
+
+Unbuffered I/O into pinned buffers with cudaMemcpyAsync is proven (llama.cpp), fast (8.5 GB/s), and requires no special drivers or modes. Combine with TCC mode for additional 2-3x on the H2D leg.
+
+---
+
+## Path 3: User-Mode NVMe Driver (SPDK/WPDK — The Nuclear Option)
+
+### What SPDK Is
+
+The Storage Performance Development Kit (SPDK) provides user-mode NVMe drivers that bypass the entire kernel storage stack. The application talks directly to the NVMe controller via memory-mapped I/O:
+
+```
+Standard:  App → syscall → kernel → filesystem → block layer → NVMe driver → NVMe
+SPDK:      App → SPDK library → NVMe controller (user-mode, polled, zero-copy)
+```
+
+No kernel transitions. No interrupts (polled mode). No filesystem. The application IS the storage stack.
+
+### SPDK on Windows: WPDK
+
+The Windows Platform Development Kit (WPDK) exists and is functional:
+- Created by MayaData/DataCore, maintained by rtegrity
+- **Last updated: June 2025** (active development)
+- All SPDK unit tests pass on Windows
+- Can attach to physical NVMe disk and issue I/O
+- Requires `netuio` and `virt2phys` kernel drivers from dpdk-kmods
+
+Status: **Experimental but real.** NVMe-oF targets work. Physical NVMe access works. The foundational layer is proven.
+
+### What It Would Give Us
+
+With SPDK + pinned CUDA memory:
+```
+NVMe controller → PCIe DMA → pinned host memory → cudaMemcpyAsync → GPU
+```
+
+Two DMA operations, zero kernel transitions, zero copies. The CPU never touches the data — it only dispatches commands.
+
+Theoretical throughput: full NVMe bandwidth (~14 GB/s Gen5) with sub-microsecond latency per I/O submission. This is what HFT firms run on Linux.
+
+### What It Costs
+
+1. **NVMe device exclusive access**: SPDK unbinds the NVMe from the Windows storage stack. No other process (including Windows itself) can use that drive. Need a dedicated NVMe for data, separate boot drive.
+2. **Kernel driver installation**: `netuio` + `virt2phys` are kernel-mode drivers that need signing or test signing mode.
+3. **No filesystem**: SPDK talks raw NVMe commands. We'd need our own block allocation or partition the drive for raw access.
+4. **Experimental on Windows**: May hit edge cases, stability unknowns.
+5. **Maintenance burden**: Custom storage stack is permanent engineering commitment.
+
+### The HFT Precedent
+
+This is not unprecedented. HFT firms on Linux routinely:
+- Run SPDK for market data storage
+- Use kernel-bypass networking (DPDK) for feed handlers
+- Deploy FPGA-accelerated NVMe controllers
+- Operate entirely in user space for the hot path
+
+The question is whether the throughput gain over unbuffered I/O justifies the complexity.
+
+### Math Check
+
+| Approach | Read BW | Universe 69 GB | Complexity |
+|----------|---------|----------------|------------|
+| Unbuffered I/O (16 workers) | ~8.5 GB/s | ~8.1s | Low |
+| SPDK (polled, QD64) | ~12-14 GB/s | ~5.0-5.8s | Very High |
+| **Delta** | **+40-65%** | **~2-3s saved** | |
+
+Saving 2-3 seconds on universe scan by building a custom NVMe driver stack. That's meaningful for iterative research (dozens of scans per session), but the complexity cost is enormous.
+
+### Verdict: **Moonshot. Don't build now. Know it exists.**
+
+WPDK proves it's possible. If unbuffered I/O + TCC mode isn't fast enough AND universe scan latency is the critical bottleneck, SPDK/WPDK is the escape hatch. File the knowledge, revisit if needed.
+
+---
+
+## The Combined Vision
+
+```
+                        TODAY (R581, WDDM)         NEXT (R595, TCC)           MOONSHOT
+                        ──────────────────         ─────────────────          ─────────
+NVMe Read:              ~6 GB/s (QD4)              ~8.5 GB/s (QD16-32)       ~14 GB/s (SPDK)
+H2D Transfer:           ~12 GB/s (WDDM overhead)  ~25 GB/s (TCC, full PCIe) ~25 GB/s (TCC)
+Universe (69 GB):       ~27s (current benchmark)   ~8s (projected)           ~5s (theoretical)
+Complexity:             Current code               + unbuffered I/O refactor  + custom NVMe stack
+```
+
+The R595 + TCC + unbuffered I/O combination should achieve ~8s universe scan — a **3.4x improvement** over current 27.2s — with moderate engineering effort.
+
+---
+
+## Sources (Part 7)
+
+- [MCDM Overview (Microsoft Learn)](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/mcdm)
+- [MCDM Architecture (Microsoft Learn)](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/mcdm-architecture)
+- [WDDM vs TCC/MCDM Transfer Speed Issue (GitHub)](https://github.com/microsoft/graphics-driver-samples/issues/103)
+- [llama.cpp DirectStorage CUDA Interop PR #7796](https://github.com/ggml-org/llama.cpp/pull/7796)
+- [NVIDIA RTX Driver R595 U3 (595.97)](https://www.nvidia.com/download/driverResults.aspx/265877/en-us/)
+- [SPDK User Space Drivers](https://spdk.io/doc/userspace.html)
+- [WPDK — Windows Platform Development Kit for SPDK](https://github.com/wpdk/wpdk)
+- [SPDK on Windows (Experimental, 2021)](https://spdk.io/news/2021/03/11/spdk_on_windows/)
+- [Can SPDK Deliver High Performance NVMe on Windows? (SNIA)](https://www.snia.org/educational-library/can-spdk-deliver-high-performance-nvme-windows-2021)
+- [nvidia-smi GPU Mode Switching](https://www.leadergpu.com/articles/505-switch-gpu-modes-in-windows)

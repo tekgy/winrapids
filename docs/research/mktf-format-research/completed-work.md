@@ -508,3 +508,105 @@ The prefetch pattern works: while GPU processes the current batch, I/O threads p
 ### Prototype Code
 
 `research/20260327-mktf-format/bench_concurrent.py`
+
+---
+
+## 2026-03-27: Progressive Sufficient Statistics (pathmaker + naturalist)
+
+### The Insight
+
+A K04 cross-ticker correlation over 4,604 tickers requires reading ALL K01 tick data: ~58 GB from NVMe. But coarse correlations (hourly, session) only need pre-aggregated statistics. Store composable sufficient statistics at multiple cadence levels in the MKTF file itself. **Session-level K04: 0.34ms (180 KB I/O) vs 11s (58 GB I/O) — 32,000x speedup.**
+
+### Sufficient Statistic Tuple
+
+`{sum, sum_sq, min, max, count}` = 5 x float32 = 20 bytes per bin per column.
+
+Composable by addition: to get a parent interval, sum the children's `sum`, `sum_sq`, `count`, take min of `min`, max of `max`. The tuple is a monoid.
+
+### Cadence Levels (real AAPL data, 598K ticks, 16h)
+
+| Level | Cadence | Bins | Bytes/col | Per-file (2 cols) | Universe (4,604) |
+|-------|---------|------|-----------|-------------------|------------------|
+| 4 | session | 1 | 20 B | 40 B | 180 KB |
+| 3 | 1 hour | 20 | 400 B | 800 B | 3.5 MB |
+| 2 | 1 minute | 1,200 | 24 KB | 48 KB | 211 MB |
+| 1 | 1 second | 71,990 | 1.4 MB | 2.8 MB | 12.6 GB |
+| **All** | | | | **2.9 MB** | **12.6 GB** |
+
+Overhead: 18.9% of raw data (15.5 MB per K01 file).
+
+### Prototype Results
+
+| Test | Result |
+|------|--------|
+| Composability (1s->1min) | PASS (max rel error 3.8e-5) |
+| Composability (1h->session) | PASS (within FP32 tolerance) |
+| Pack/unpack roundtrip | PASS (bit-exact) |
+| Session read | **1.7us** |
+| Hourly read | **23.1us** |
+| Compute time (all 4 levels) | 66ms |
+
+### Coarse K04 Speedup
+
+| Resolution | I/O | GEMM | Total | Speedup |
+|-----------|-----|------|-------|---------|
+| Session | 0.03ms | 0.31ms | **0.34ms** | **32,451x** |
+| Hourly | 0.6ms | 0.31ms | **0.9ms** | **12,524x** |
+| Full (tick) | 10,979ms | 0.31ms | **10,979ms** | baseline |
+
+### On-Disk Layout
+
+Progressive section lives after data region, pointer in Layout reserved bytes [488:512):
+- `progressive_offset` (uint64) — 0 means no section
+- `progressive_size` (uint64)
+- `progressive_levels` (uint16)
+
+Per-cadence layout (coarsest first) for contiguous GPU reads. No version bump needed — old readers skip it.
+
+### Design Doc
+
+`docs/research/mktf-format-research/progressive-sufficient-statistics.md`
+
+### GPU Integration Path
+
+The existing `fused_bin_stats` CUDA kernel already outputs {sum, sum_sq, min, max, count, first, last} — 5 of 7 stats needed. No kernel modification required. Progressive section compute: 4 kernel launches (<1ms GPU total) + float64→float32 cast. Essentially free if K02 bins are already being computed.
+
+`sum_sq` exposed in fused output (commit `ba66b70`). `GPUBinEngine.bin_all_stats()` now uses the fused kernel instead of N per-bin kernel launches (~120x speedup for min/max).
+
+### Spectral Evidence (corrected)
+
+Initial spectral analysis showed 33.5x excess at 15min, suggesting a strong "institutional regime." Detrending (removing daily U-shape: open/midday/close rate variation) reduced this to 3.4x — mostly artifact. The durable spectral findings:
+
+- **1s-5min (execution regime)**: 1.4-28.5x excess, enhanced by detrending. REAL.
+- **Sub-second**: Suppressed (0.7-0.9x) — exchange batching. 1s is the natural floor.
+- **>10min**: 90-98% daily U-shape artifact after detrending.
+
+The design doc has been corrected. The progressive section's value is in composable multi-resolution access, not in capturing a specific spectral regime.
+
+### Prototype Code
+
+`research/20260327-mktf-format/progressive_stats_prototype.py`
+
+### Production Integration (v4 MKTF stack)
+
+Progressive section wired into `fintek/trunk/backends/mktf/`:
+
+- **format.py**: `FLAG_HAS_PROGRESSIVE` (bit 10), `progressive_offset/size/levels` in MKTFHeader at Layout [488:512), `ProgressiveLevel` dataclass, `pack_progressive_section()` / `unpack_progressive_directory()` / `unpack_progressive_level()`. Section header includes `domain` (uint8) and MI scores (float32 per adjacent pair).
+
+- **writer.py**: `write_mktf()` gains `progressive_stats` and `progressive_mi` kwargs. Progressive section writes at 4096-aligned offset after column data, before trailing status. Data checksum covers only column data (progressive is recomputable).
+
+- **reader.py**: `read_progressive_summary(path)` reads level directory only. `read_progressive_level_data(path, cadence_ms)` reads one level. Both return None gracefully for files without progressive section.
+
+Backward compatible: Layout [488:512) was reserved zeros. Old readers see `progressive_offset == 0` and skip. No version bump. Tests in `tests/test_progressive_roundtrip.py` — 4 tests, bit-exact roundtrip confirmed.
+
+### Dual Write Mode (safe/batch)
+
+`write_mktf()` gains `safe` parameter (default True). When `safe=False`, both `os.fsync()` calls are skipped — 62% write speedup for small files (observer's pipeline model). Intended for recomputable K02+ files where crash recovery = delete + recompute. K01 files (irreplaceable source data) always use `safe=True`.
+
+Pipeline impact (observer's model): 170s -> 35s for full K01->K02 universe with batch mode on K02 writes.
+
+### GPU Progressive Stats Extractor
+
+`winrapids/progressive.py`: `extract_progressive_stats(engine, cadences)` bridges GPUBinEngine (fused kernel on GPU) to MKTF writer. One fused kernel launch per (column, cadence), D2H transfer + float32 cast. Produces the `progressive_stats` list that `write_mktf()` accepts directly.
+
+Full GPU-to-disk path: tick data -> GPUBinEngine -> fused kernel -> extract_progressive_stats() -> write_mktf(progressive_stats=...) -> MKTF file with progressive section.

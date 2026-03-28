@@ -146,10 +146,14 @@ Limitations:
 - Any scan or prefix operation
 - The entire current K01/K02 pipeline
 
-**Revised I/O picture** (corrected for 1792 GB/s):
-- 15.5MB file (float32, 598K rows): H2D = **0.009ms** (not 0.017ms)
-- GPU processing (fused kernel): ~4ms
-- GPU is compute-bound, NOT I/O-bound
+**Revised I/O picture** (corrected by observer):
+- 1792 GB/s is GPU-**internal** VRAM bandwidth (VRAM → compute units). NOT host→device rate.
+- PCIe 5.0 x16 H2D bandwidth: ~24.6 GB/s actual
+- 15.5MB file: NVMe→RAM = ~1.1ms (NVMe @ ~14 GB/s), H2D = **~0.5ms** (PCIe @ 24.6 GB/s)
+- Total I/O per ticker: ~1.6ms. GPU compute (fused kernel): ~4ms.
+- GPU is compute-bound — but I/O is not negligible (I/O:compute ratio ~0.4, not ~0.002)
+- The 2x speedup from 3-stage pipelining (read N+1 / process N / write N-1) makes sense
+  at this ratio. At 0.009ms H2D, pipelining would have been nearly irrelevant.
 - Integer encoding still halves file size and write time, but GPU speedup from integer is NOT I/O
 
 **The real bottleneck**: fused_bin_stats reduction kernel itself (~4ms compute).

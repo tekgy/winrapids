@@ -26,7 +26,7 @@ pub mod cache;
 pub mod launch;
 pub mod fused_expr;
 
-pub use ops::{AssociativeOp, AddOp, MulOp, MaxOp, MinOp, WelfordOp, CubicMomentsOp, KalmanOp, EWMOp, KalmanAffineOp, SarkkaOp};
+pub use ops::{AssociativeOp, AddOp, MulOp, MaxOp, MinOp, WelfordOp, CubicMomentsOp, KalmanOp, EWMOp, AffineOp, RefCenteredStatsOp, KalmanAffineOp, SarkkaOp};
 pub use engine::{generate_scan_kernel, generate_multiblock_scan};
 pub use cache::KernelCache;
 pub use launch::{ScanEngine, ScanResult, ScanDeviceOutput};

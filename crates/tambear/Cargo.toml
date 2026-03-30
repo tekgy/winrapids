@@ -7,7 +7,12 @@ description = "Sort-free DataFrame engine. Tam doesn't sort. Tam knows."
 [dependencies]
 cudarc = { version = "0.19", features = ["nvrtc", "cuda-version-from-build-system"] }
 blake3 = "1"
+mktf = { path = "../../archive/fintek-contributions/crates/mktf-rs" }
 
 [[bin]]
 name = "tambear-test"
 path = "src/main.rs"
+
+[[bin]]
+name = "tam-real-data"
+path = "src/real_data.rs"

@@ -23,3 +23,7 @@ path = "src/verify_correctness.rs"
 [[bin]]
 name = "bench-kernel-time"
 path = "src/bench_kernel_time.rs"
+
+[[bin]]
+name = "verify-affine"
+path = "src/verify_affine.rs"

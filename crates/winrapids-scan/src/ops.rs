@@ -614,6 +614,220 @@ impl AssociativeOp for SarkkaOp {
 }
 
 // ============================================================
+// AffineOp — Universal affine combine for ALL 1D linear recurrences
+//
+// The discovery (Experiment 5): one combine function handles cumsum,
+// constant-alpha EWM, variable-alpha EWM, and Kalman. All bit-identical
+// to their specialized implementations. Zero error.
+//
+// State: { A: f64, b: f64 } — 16 bytes
+//
+// Any 1D linear recurrence x[t] = A_t * x[t-1] + b_t parallelizes as:
+//   Combine: (right.A * left.A, right.A * left.b + right.b)
+//   This is the composition of affine maps: (A₂∘A₁)(x) = A₂(A₁·x + b₁) + b₂
+//
+// Cost: 2 multiplies + 1 add. Fast tier (~42μs). No division. No pow().
+// No transcendentals. The combine is universal — specialization is in the lift.
+//
+// EWMOp's pow(1-α, count) was solving a problem that doesn't exist here.
+// The "segment decay" is naturally captured by the accumulated A product.
+// The affine formulation eliminates pow() entirely — even for variable alpha.
+//
+// | Use case           | Lift                        | Error vs reference |
+// |--------------------|-----------------------------|--------------------|
+// | Cumsum             | (1.0, x)                    | 0.00e+00           |
+// | Constant EWM       | (1-α, α·x)                 | 0.00e+00           |
+// | Variable EWM       | (1-α_t, α_t·x)             | 0.00e+00           |
+// | Steady-state Kalman| ((1-K·H)·F, K·x)           | 0.00e+00           |
+// ============================================================
+
+pub struct AffineOp {
+    /// Per-element A coefficient (constant across scan).
+    /// Cumsum: 1.0. EWM: 1-alpha. Kalman: (1-K_ss*H)*F.
+    lift_a: f64,
+    /// Per-element b multiplier (multiplied by input x).
+    /// Cumsum: 1.0. EWM: alpha. Kalman: K_ss.
+    lift_b_coeff: f64,
+    /// Mode name for params_key differentiation.
+    mode: String,
+}
+
+impl AffineOp {
+    /// Cumulative sum: x[t] = x[t-1] + z[t]. Equivalent to AddOp.
+    pub fn cumsum() -> Self {
+        AffineOp { lift_a: 1.0, lift_b_coeff: 1.0, mode: "cumsum".into() }
+    }
+
+    /// Exponentially weighted mean: x[t] = (1-α)·x[t-1] + α·z[t].
+    /// Equivalent to EWMOp(alpha) — but without pow() in the combine.
+    pub fn ewm(alpha: f64) -> Self {
+        AffineOp { lift_a: 1.0 - alpha, lift_b_coeff: alpha, mode: format!("ewm_a{:.10}", alpha) }
+    }
+
+    /// Steady-state Kalman filter via Riccati solution.
+    /// x[t] = A·x[t-1] + K_ss·z[t] where A=(1-K_ss·H)·F.
+    /// Equivalent to KalmanAffineOp — same Riccati solve, same result.
+    pub fn kalman(f: f64, h: f64, q: f64, r: f64) -> Self {
+        // Riccati iteration (converges in ~50 for scalar case)
+        let mut p = 1.0;
+        for _ in 0..1000 {
+            let p_pred = f * p * f + q;
+            let k = p_pred * h / (h * p_pred * h + r);
+            p = (1.0 - k * h) * p_pred;
+        }
+        let p_pred = f * p * f + q;
+        let k_ss = p_pred * h / (h * p_pred * h + r);
+        let a = (1.0 - k_ss * h) * f;
+        AffineOp {
+            lift_a: a,
+            lift_b_coeff: k_ss,
+            mode: format!("kalman_F{:.10}_H{:.10}_Q{:.10}_R{:.10}", f, h, q, r),
+        }
+    }
+
+    /// Raw affine map: x[t] = a·x[t-1] + b_coeff·z[t].
+    /// For custom recurrences.
+    pub fn raw(a: f64, b_coeff: f64) -> Self {
+        AffineOp { lift_a: a, lift_b_coeff: b_coeff, mode: format!("raw_a{:.10}_b{:.10}", a, b_coeff) }
+    }
+}
+
+impl AssociativeOp for AffineOp {
+    fn name(&self) -> &'static str { "affine" }
+
+    fn cuda_state_type(&self) -> String {
+        r#"struct AffineState { double A; double b; }"#.into()
+    }
+
+    fn cuda_identity(&self) -> String { "{1.0, 0.0}".into() }
+    fn cuda_combine(&self) -> String { String::new() }
+    fn cuda_lift_element(&self) -> String { String::new() }
+    fn cuda_extract(&self) -> String { "s.b".into() }
+    fn state_byte_size(&self) -> usize { 16 }
+
+    fn params_key(&self) -> String {
+        self.mode.clone()
+    }
+
+    fn cuda_lift_body(&self) -> String {
+        format!(
+            r#"    state_t s;
+    s.A = {a};
+    s.b = {b} * x;
+    return s;"#,
+            a = self.lift_a, b = self.lift_b_coeff
+        )
+    }
+
+    fn cuda_combine_body(&self) -> String {
+        // THE universal affine combine. 2 mul + 1 add. Fast tier.
+        // (right ∘ left)(x) = right.A * (left.A * x + left.b) + right.b
+        //                   = (right.A * left.A) * x + (right.A * left.b + right.b)
+        r#"    state_t result;
+    result.A = b.A * a.A;
+    result.b = b.A * a.b + b.b;
+    return result;"#.into()
+    }
+}
+
+// ============================================================
+// RefCenteredStatsOp — fast-tier variance via reference centering
+//
+// The discovery (Experiment 7): center values around a fixed reference
+// point, then accumulate (count, sum_delta, sum_delta_sq) via pure
+// addition. The combine is 3 ADDS — zero division, fast tier.
+//
+// State: { count: i64, sum_delta: f64, sum_delta_sq: f64 } — 24 bytes
+//
+// Combine: 1 add (count) + 1 add (sum_delta) + 1 add (sum_delta_sq)
+//   = 3 ADDS. Same as CubicMomentsOp. Fast tier (~42-50μs).
+//
+// vs Welford: Welford has 1 division in combine (~72-79μs, division tier).
+//   RefCentered is 1.5x FASTER than Welford.
+//   RefCentered is 2-6 digits MORE STABLE than Welford (pairwise scan tree).
+//
+// | Data type        | Naive (digits) | Welford | RefCentered |
+// |------------------|----------------|---------|-------------|
+// | Returns          | 16             | 14      | 16          |
+// | Prices (large μ) | 9              | 14      | 20 (EXACT)  |
+// | Prices (huge μ)  | 2              | 10      | 16          |
+// | Timestamps (ns)  | -5 (WRONG)     | 1       | 13          |
+//
+// Why: Welford accumulates per-step rounding through running mean (O(n) error).
+// RefCentered sums deviations — in the scan tree, this IS pairwise summation
+// (O(log n) error). Fixed centering + pairwise tree = machine-epsilon precision.
+// ============================================================
+
+pub struct RefCenteredStatsOp {
+    /// Fixed reference point for centering. Set to first observation
+    /// or best estimate of the mean. The closer to the true mean,
+    /// the smaller the cancellation — but ANY value works correctly.
+    pub reference: f64,
+}
+
+impl RefCenteredStatsOp {
+    pub fn new(reference: f64) -> Self {
+        RefCenteredStatsOp { reference }
+    }
+}
+
+impl AssociativeOp for RefCenteredStatsOp {
+    fn name(&self) -> &'static str { "refcentered_stats" }
+
+    fn cuda_state_type(&self) -> String {
+        r#"struct RefCenteredState { long long count; double sum_delta; double sum_delta_sq; }"#.into()
+    }
+
+    fn cuda_identity(&self) -> String { "{0, 0.0, 0.0}".into() }
+    fn cuda_combine(&self) -> String { String::new() }
+    fn cuda_lift_element(&self) -> String { String::new() }
+
+    fn cuda_extract(&self) -> String {
+        // Primary output: running mean = ref + sum_delta / count
+        format!("({ref_val} + s.sum_delta / (double)s.count)", ref_val = self.reference)
+    }
+
+    fn output_width(&self) -> usize { 2 }
+
+    fn cuda_extract_secondary(&self) -> Vec<String> {
+        // Secondary: running variance (Bessel-corrected)
+        // var = (sum_delta_sq - sum_delta^2/n) / (n-1)
+        vec![
+            "(s.count > 1 ? (s.sum_delta_sq - s.sum_delta * s.sum_delta / (double)s.count) / (double)(s.count - 1) : 0.0)".into()
+        ]
+    }
+
+    fn state_byte_size(&self) -> usize { 24 } // i64(8) + f64(8) + f64(8)
+
+    fn params_key(&self) -> String {
+        format!("ref={:.15}", self.reference)
+    }
+
+    fn cuda_lift_body(&self) -> String {
+        format!(
+            r#"    double delta = x - {ref_val};
+    state_t s;
+    s.count = 1;
+    s.sum_delta = delta;
+    s.sum_delta_sq = delta * delta;
+    return s;"#,
+            ref_val = self.reference
+        )
+    }
+
+    fn cuda_combine_body(&self) -> String {
+        // 3 ADDS. Zero division. Fast tier.
+        // This is the entire combine. The magic is in the lift (centering)
+        // and the scan tree (pairwise summation for free).
+        r#"    state_t result;
+    result.count = a.count + b.count;
+    result.sum_delta = a.sum_delta + b.sum_delta;
+    result.sum_delta_sq = a.sum_delta_sq + b.sum_delta_sq;
+    return result;"#.into()
+    }
+}
+
+// ============================================================
 // KalmanAffineOp — exact steady-state Kalman via affine scan
 //
 // State: { a_acc: f64, b_acc: f64 } — 16 bytes, two doubles

@@ -68,9 +68,10 @@ impl ScanDeviceOutput {
         })
     }
 
-    /// Copy primary output back to host. Useful for validation.
+    /// Copy primary output back to host (truncated to actual length). Useful for validation.
     pub fn primary_to_host(&self) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
-        Ok(self.stream.clone_dtoh(&self.primary)?)
+        let full = self.stream.clone_dtoh(&self.primary)?;
+        Ok(full[..self.primary_len].to_vec())
     }
 }
 
@@ -123,6 +124,7 @@ impl ScanEngine {
         }
 
         let n_blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let padded_n = n_blocks * BLOCK_SIZE;
         assert!(
             n_blocks <= MAX_BLOCKS,
             "Input too large: {} elements requires {} blocks (max {})",
@@ -135,15 +137,16 @@ impl ScanEngine {
         // Ensure module is compiled and loaded
         let module_key = self.ensure_module(op)?;
 
-        // Allocate device buffers
-        let input_dev: CudaSlice<f64> = self.stream.clone_htod(input)?;
-        // State buffer: n × state_byte_size bytes
-        let mut state_dev: CudaSlice<u8> = self.stream.alloc_zeros(n * state_bytes)?;
-        // Block totals: n_blocks × state_byte_size bytes
+        // Pad input to block-size multiple for branch-free kernels
+        let mut padded_input = input.to_vec();
+        padded_input.resize(padded_n, 0.0);
+
+        // Allocate device buffers (padded to block-size multiples)
+        let input_dev: CudaSlice<f64> = self.stream.clone_htod(&padded_input)?;
+        let mut state_dev: CudaSlice<u8> = self.stream.alloc_zeros(padded_n * state_bytes)?;
         let mut totals_dev: CudaSlice<u8> = self.stream.alloc_zeros(n_blocks * state_bytes)?;
-        // Output buffers
-        let mut out0_dev: CudaSlice<f64> = self.stream.alloc_zeros(n)?;
-        let out1_n = if op.output_width() > 1 { n } else { 1 };
+        let mut out0_dev: CudaSlice<f64> = self.stream.alloc_zeros(padded_n)?;
+        let out1_n = if op.output_width() > 1 { padded_n } else { 1 };
         let mut out1_dev: CudaSlice<f64> = self.stream.alloc_zeros(out1_n)?;
 
         // Phase 1: scan_per_block
@@ -200,11 +203,13 @@ impl ScanEngine {
             }
         }
 
-        // Synchronize and copy results back
+        // Synchronize and copy results back (truncate padding)
         self.stream.synchronize()?;
-        let primary = self.stream.clone_dtoh(&out0_dev)?;
+        let full_primary = self.stream.clone_dtoh(&out0_dev)?;
+        let primary = full_primary[..n].to_vec();
         let secondary = if op.output_width() > 1 {
-            vec![self.stream.clone_dtoh(&out1_dev)?]
+            let full = self.stream.clone_dtoh(&out1_dev)?;
+            vec![full[..n].to_vec()]
         } else {
             vec![]
         };
@@ -236,6 +241,7 @@ impl ScanEngine {
         }
 
         let n_blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let padded_n = n_blocks * BLOCK_SIZE;
         assert!(
             n_blocks <= MAX_BLOCKS,
             "Input too large: {} elements requires {} blocks (max {})",
@@ -253,11 +259,21 @@ impl ScanEngine {
             self.stream.upgrade_device_ptr::<f64>(input_ptr, n)
         );
 
-        // Allocate output-side device buffers (we own these)
-        let mut state_dev: CudaSlice<u8> = self.stream.alloc_zeros(n * state_bytes)?;
+        // Pad input on device for branch-free kernels.
+        // alloc_zeros gives a zeroed buffer; memcpy_dtod copies n elements into it.
+        let padded_input: CudaSlice<f64> = if padded_n > n {
+            let mut buf: CudaSlice<f64> = self.stream.alloc_zeros(padded_n)?;
+            self.stream.memcpy_dtod(&*input_dev, &mut buf)?;
+            buf
+        } else {
+            self.stream.clone_dtod(&*input_dev)?
+        };
+
+        // Allocate output-side device buffers (padded to block-size multiples)
+        let mut state_dev: CudaSlice<u8> = self.stream.alloc_zeros(padded_n * state_bytes)?;
         let mut totals_dev: CudaSlice<u8> = self.stream.alloc_zeros(n_blocks * state_bytes)?;
-        let mut out0_dev: CudaSlice<f64> = self.stream.alloc_zeros(n)?;
-        let out1_n = if op.output_width() > 1 { n } else { 1 };
+        let mut out0_dev: CudaSlice<f64> = self.stream.alloc_zeros(padded_n)?;
+        let out1_n = if op.output_width() > 1 { padded_n } else { 1 };
         let mut out1_dev: CudaSlice<f64> = self.stream.alloc_zeros(out1_n)?;
 
         // Phase 1: scan_per_block
@@ -269,7 +285,7 @@ impl ScanEngine {
                 shared_mem_bytes: shared_bytes,
             };
             self.stream.launch_builder(&module.scan_per_block)
-                .arg(&*input_dev)
+                .arg(&padded_input)
                 .arg(&mut state_dev)
                 .arg(&mut totals_dev)
                 .arg(&(n as i32))

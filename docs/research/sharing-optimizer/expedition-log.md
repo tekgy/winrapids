@@ -731,6 +731,21 @@ The pathmaker's steady-state form collapses the scout's two-stage pipeline: DARE
 
 **~~Family overlap~~**: FALSIFIED by observer (lab notebook entry 021). KalmanAffineOp(F=1, H=1) and EWMOp(alpha=K_ss) share the same decay constant (A = 1-K_ss) but compute different quantities. KalmanAffineOp extracts `b_acc` (unnormalized state). EWMOp extracts `value/weight` (weight-normalized average). Divergence is structural (up to 10.5), not floating point. The operators are related in parameter space but distinct in computation space. Families share the trait, not necessarily computations.
 
+### Observation #27: Branch-Free Scan Adds an Implicit Operator Contract
+
+The branch-free scan pads input arrays to BLOCK_SIZE multiples with 0.0. This eliminates `if (gid < n)` divergence in the hot kernels. The correctness argument: padded positions only affect scan results at indices >= n, which are truncated from output. Real positions [0, n) get correct results regardless of what the padded positions compute.
+
+This works for all current operators because `lift_element(0.0)` is well-defined and `combine(real_value, lift(0.0))` doesn't produce NaN for any of them. But it adds an implicit contract: **future operators must tolerate `lift(0.0)` without producing values that poison the combine chain** (e.g., NaN from division by zero).
+
+The old branching kernel used `make_identity()` for out-of-bounds positions — universally safe but branch-divergent. The branch-free kernel uses `lift(0.0)` — fast but depends on the operator tolerating zero input.
+
+If a future operator has `lift(x) = {1.0/x, ...}`, `lift(0.0)` produces inf, which might propagate NaN through combines. Options:
+1. Add `safe_padding_value()` to AssociativeOp (operator specifies its own padding)
+2. Fall back to branching kernel for operators that can't tolerate zero
+3. Document the contract and enforce via sizeof-style validation
+
+Not blocking — all 7 current operators satisfy the contract. Worth documenting when the operator vocabulary grows.
+
 ### Watch Item: Per-Node Overhead Needs Experimental Confirmation
 
 The theoretical per-node cost is BLAKE3 (~100ns) + HashMap probe (O(1)). For a 1000-node plan, that's ~100μs of overhead before any GPU work starts. At FinTek scale (7.4M kernels reduced to ~60 fused launches, meaning ~60 plan nodes on a warm run), the overhead is ~6μs — deep in the noise.
@@ -744,6 +759,50 @@ This is not a concern at current scale. It's a measurement to have in pocket for
 CSE catches syntactic duplicates (same identity hash). It does NOT catch mathematical equivalences across families. However, the observer falsified the KalmanAffine/EWM equivalence claim — they compute structurally different quantities despite sharing a decay constant. Apparent equivalences must be VERIFIED, not assumed from parameter relationships. The identity system is correct (different specifications ARE different entries), but the sharing is missed.
 
 For E10 specialist discovery: each new candidate should be checked against existing operators under parameter specialization. "Is this a new point in operator space, or an existing point via a different path?" Option 1 (document equivalences, enforce by convention) now. Option 2 (canonical alias mapping in SpecialistRecipe) when there are enough aliases to justify the machinery.
+
+### Observation #28: The sizeof Validation Catches a Real Bug on Day One
+
+The sizeof validation (query_sizeof kernel + ensure_module assert) caught KalmanOp's alignment bug on first use. KalmanOp declared `state_byte_size() = 28` but CUDA `sizeof(state_t) = 32` — the `{f64, f64, f64, i32}` struct gets padded to 8-byte alignment. The assert fired immediately, navigator fixed it (28→32), KalmanOp dispatched successfully at 106μs.
+
+This was the EXACT failure mode predicted in the sizeof journal (002): struct alignment padding creating a Rust/CUDA size mismatch. The first operator with mixed types triggered it. Every prior operator had homogeneous types where alignment is natural. Build cost: ~20 minutes. Bug cost if missed: hours-to-days of debugging silent numerical corruption.
+
+Defensive infrastructure ROI: one kernel (3 lines CUDA), one assert (15 lines Rust), one entire class of bugs eliminated.
+
+### Observation #29: The Combine Body IS the Performance Bottleneck
+
+Lab notebook Entry 020 confirmed with a controlled experiment: CubicMomentsOp (24B state, 3 adds in combine) runs at 42μs p01 — in the AddOp tier (38μs), not the WelfordOp tier (99μs). Same state size as WelfordOp but 2.4x faster. The isolated variable: **combine-body complexity**.
+
+Two performance tiers:
+- **Simple combine** (adds, multiplies): ~40μs p01 regardless of state size (8-24B)
+- **Complex combine** (division + branching): ~100μs p01 regardless of state size (24-32B)
+
+State size has no measurable effect. The 2.5x penalty comes from division throughput (1 per 4 clocks) and branch divergence within the combine body itself. Design principle confirmed: push complexity to the constructor, keep the combine cheap. KalmanAffineOp (Riccati in constructor, 3 FLOPs in combine, 39μs) vs KalmanOp (covariance intersection in combine, 103μs) = **2.6x for the same computation**.
+
+### Observation #30: Branch-Free Scan Is a Net Negative
+
+Entry 022 measured the branch-free scan as +7-18μs slower than the original. The padding overhead (alloc_zeros + memcpy_dtod) exceeds the savings from eliminating 1% divergent blocks. At n=100K with BLOCK_SIZE=1024, 97/98 blocks have warp-uniform `gid < n` branches — handled at near-zero cost by GPU branch prediction.
+
+The branch-free kernel eliminated the WRONG branches. The expensive branches are inside `combine_states()` (division, conditional logic), not outside it (`gid < n` bounds check). Task #16 (combine audit) targets the right optimization surface.
+
+### Observation #31: Combine Audit Narrows the Gap From 2.5x to 1.5x
+
+Entry 023 measured the combine audit's impact. Three optimizations (WelfordOp 2→1 divisions via inv_n cache, KalmanOp 5→1 divisions via algebraic reformulation, MaxOp/MinOp ternary→fmax/fmin). Results:
+
+| Operator | Pre-audit p01 | Post-audit p01 | Δ |
+|---|---|---|---|
+| WelfordOp | 104μs | 72.5μs | -30% |
+| KalmanOp | 100μs | 78.8μs | -21% |
+| Fast-tier operators | ~42μs | ~49μs | noise |
+
+The three-tier model collapsed to two: Fast (~42-51μs, adds/muls only) and Medium (~72-79μs, 1 division + branch). The "Slow" tier (~100μs, multiple divisions) was eliminated entirely by the audit. Remaining gap: 1.5x, down from 2.5x.
+
+The residual ~25μs gap correlates with one remaining f64 division per combine invocation. An f64 division is ~20 cycles on Blackwell. At 1024 threads × 10 scan steps, that's ~200K division cycles — plausible for ~25μs.
+
+**Design principle refined**: The original "push complexity to constructor" remains valid but the bottleneck is now precisely identified. The remaining cost is ONE division per combine. If SarkkaOp (task #17) can be implemented with zero divisions in the combine (by algebraic restructuring), it would be the definitive test: same state size as KalmanOp but in the fast tier.
+
+### Prediction: SarkkaOp Performance Tier
+
+Based on the refined two-tier model, SarkkaOp (5 doubles, 40B) with 1 division + 0 branches should land at **55-72μs** — below WelfordOp (1 div + 1 branch = 72.5μs) but above the fast tier (~49μs). If implemented WITHOUT division (algebraic reformulation), it should collapse to the fast tier (~49-55μs). The result will isolate whether the branch or the division is the dominant remaining cost. Journal 004 has the full analysis.
 
 *— Naturalist, 2026-03-30 (continued)*
 

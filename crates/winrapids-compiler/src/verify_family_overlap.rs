@@ -26,7 +26,7 @@ fn verify_overlap() {
 
     // F=1, H=1, Q=0.01, R=0.1
     let kalman = KalmanAffineOp::new(1.0, 1.0, 0.01, 0.1);
-    let ewm = EWMOp { alpha: kalman.k_ss };
+    let ewm = EWMOp::new(kalman.k_ss);
 
     println!("  F=1.0, H=1.0, Q=0.01, R=0.1");
     println!("  Kalman K_ss = {:.10}", kalman.k_ss);
@@ -94,7 +94,7 @@ fn verify_at_multiple_qr_ratios() {
 
     for &(q, r) in &[(0.001, 1.0), (0.01, 0.1), (0.1, 0.1), (1.0, 0.01), (0.5, 0.5)] {
         let kalman = KalmanAffineOp::new(1.0, 1.0, q, r);
-        let ewm = EWMOp { alpha: kalman.k_ss };
+        let ewm = EWMOp::new(kalman.k_ss);
 
         let kr = engine.scan_inclusive(&kalman, &data).unwrap();
         let er = engine.scan_inclusive(&ewm, &data).unwrap();

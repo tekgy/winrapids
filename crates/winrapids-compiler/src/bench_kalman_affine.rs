@@ -10,7 +10,7 @@
 use std::time::Instant;
 
 use winrapids_scan::{ScanEngine, AddOp, WelfordOp, DevicePtr};
-use winrapids_scan::ops::{AssociativeOp, KalmanOp, KalmanAffineOp};
+use winrapids_scan::ops::{AssociativeOp, CubicMomentsOp, KalmanOp, KalmanAffineOp};
 
 fn main() {
     println!("{}", "=".repeat(70));
@@ -94,10 +94,12 @@ fn bench_operator_family_gradient() {
     let input_ptr = { let (p, _g) = input_dev.device_ptr(&stream); p };
 
     // Operators in order of state complexity.
-    // KalmanOp sizeof bug fixed (28→32), now passes sizeof validation.
+    // Full operator family gradient. CubicMomentsOp is the control:
+    // 24B state + simple combine (3 adds) — tests navigator's prediction.
     let operators: Vec<(Box<dyn AssociativeOp>, &str)> = vec![
         (Box::new(AddOp), "AddOp"),
         (Box::new(KalmanAffineOp::new(0.98, 1.0, 0.01, 0.1)), "KalmanAffineOp"),
+        (Box::new(CubicMomentsOp), "CubicMomentsOp"),
         (Box::new(WelfordOp), "WelfordOp"),
         (Box::new(KalmanOp { f: 0.98, h: 1.0, q: 0.01, r: 0.1 }), "KalmanOp"),
     ];

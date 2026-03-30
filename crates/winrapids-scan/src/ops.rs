@@ -109,7 +109,7 @@ impl AssociativeOp for MaxOp {
     fn name(&self) -> &'static str { "max" }
     fn cuda_state_type(&self) -> String { "double".into() }
     fn cuda_identity(&self) -> String { "(-1.0/0.0)".into() } // -infinity
-    fn cuda_combine(&self) -> String { "(a > b ? a : b)".into() }
+    fn cuda_combine(&self) -> String { "fmax(a, b)".into() }
     fn cuda_lift_element(&self) -> String { "x".into() }
     fn cuda_extract(&self) -> String { "s".into() }
 }
@@ -124,7 +124,7 @@ impl AssociativeOp for MinOp {
     fn name(&self) -> &'static str { "min" }
     fn cuda_state_type(&self) -> String { "double".into() }
     fn cuda_identity(&self) -> String { "(1.0/0.0)".into() } // +infinity
-    fn cuda_combine(&self) -> String { "(a < b ? a : b)".into() }
+    fn cuda_combine(&self) -> String { "fmin(a, b)".into() }
     fn cuda_lift_element(&self) -> String { "x".into() }
     fn cuda_extract(&self) -> String { "s".into() }
 }
@@ -154,11 +154,13 @@ impl AssociativeOp for WelfordOp {
     fn cuda_combine(&self) -> String {
         // Parallel Welford merge: combine two partial aggregates.
         // This IS associative — proven by Chan et al. 1979.
+        // Reciprocal-cached: 1 division instead of 2.
         r#"({
             long long n = a.count + b.count;
             double delta = b.mean - a.mean;
-            double mean = (n == 0) ? 0.0 : a.mean + delta * (double)b.count / (double)n;
-            double m2 = a.m2 + b.m2 + delta * delta * (double)a.count * (double)b.count / (double)n;
+            double inv_n = (n > 0) ? 1.0 / (double)n : 0.0;
+            double mean = a.mean + delta * (double)b.count * inv_n;
+            double m2 = a.m2 + b.m2 + delta * delta * (double)a.count * (double)b.count * inv_n;
             (WelfordState){n, mean, m2};
         })"#.into()
     }
@@ -188,14 +190,74 @@ impl AssociativeOp for WelfordOp {
     }
 
     fn cuda_combine_body(&self) -> String {
+        // Reciprocal-cached Welford merge: 1 division (was 2).
+        // When n==0 (identity merge in Phase 2), inv_n=0.0 makes all
+        // delta terms vanish cleanly — no NaN, no special-case branch.
         r#"    long long n = a.count + b.count;
     double delta = b.mean - a.mean;
-    double mean = (n == 0) ? 0.0 : a.mean + delta * (double)b.count / (double)n;
-    double m2 = a.m2 + b.m2 + delta * delta * (double)a.count * (double)b.count / (double)n;
+    double inv_n = (n > 0) ? 1.0 / (double)n : 0.0;
+    double mean = a.mean + delta * (double)b.count * inv_n;
+    double m2 = a.m2 + b.m2 + delta * delta * (double)a.count * (double)b.count * inv_n;
     state_t result;
     result.count = n;
     result.mean = mean;
     result.m2 = m2;
+    return result;"#.into()
+    }
+}
+
+// ============================================================
+// CubicMomentsOp — running sum of x, x², x³
+//
+// State: { s1: f64, s2: f64, s3: f64 } — 24 bytes, 3 doubles
+//
+// Combine: 3 adds. No division, no branching.
+// This is the control experiment for the combine-complexity
+// hypothesis: 24B state with simple combine should cost ~40μs
+// (like AddOp), not ~100μs (like WelfordOp).
+// See lab notebook Entry 020 addendum.
+// ============================================================
+
+pub struct CubicMomentsOp;
+
+impl AssociativeOp for CubicMomentsOp {
+    fn name(&self) -> &'static str { "cubic_moments" }
+
+    fn cuda_state_type(&self) -> String {
+        r#"struct CubicState { double s1; double s2; double s3; }"#.into()
+    }
+
+    fn cuda_identity(&self) -> String {
+        "{0.0, 0.0, 0.0}".into()
+    }
+
+    fn cuda_combine(&self) -> String {
+        String::new() // overridden by cuda_combine_body
+    }
+
+    fn cuda_lift_element(&self) -> String {
+        String::new() // overridden by cuda_lift_body
+    }
+
+    fn cuda_extract(&self) -> String {
+        "s.s1".into()
+    }
+
+    fn state_byte_size(&self) -> usize { 24 } // 3 × f64
+
+    fn cuda_lift_body(&self) -> String {
+        r#"    state_t s;
+    s.s1 = x;
+    s.s2 = x * x;
+    s.s3 = x * x * x;
+    return s;"#.into()
+    }
+
+    fn cuda_combine_body(&self) -> String {
+        r#"    state_t result;
+    result.s1 = a.s1 + b.s1;
+    result.s2 = a.s2 + b.s2;
+    result.s3 = a.s3 + b.s3;
     return result;"#.into()
     }
 }
@@ -299,39 +361,30 @@ impl AssociativeOp for KalmanOp {
 
     fn cuda_combine_body(&self) -> String {
         // Merge two Kalman segments: left (a) and right (b).
-        // 1. Propagate a's state through the time gap using F
-        // 2. Fuse propagated a with b using Kalman update equations
+        // Associative — Särkkä & García-Fernández 2021, Theorem 1.
         //
-        // The key insight: this merge IS associative because
-        // linear state-space models compose associatively.
-        // (Särkkä & García-Fernández 2021, Theorem 1)
+        // Covariance fusion reformulated from 5 divisions to 1:
+        //   P_fused = P_pred * b.P / (P_pred + b.P)
+        //   x_fused = (x_pred * b.P + b.x * P_pred) / (P_pred + b.P)
+        // Both share inv_denom = 1 / (P_pred + b.P).
         format!(
             r#"    double F = {f};
     double Q = {q};
     state_t result;
 
     if (!a.has_data) {{
-        // Left segment empty — return right
         result = b;
     }} else if (!b.has_data) {{
-        // Right segment empty — propagate left through time
         result.x = F * a.x;
         result.P = F * a.P * F + Q;
         result.F_acc = F * a.F_acc;
         result.has_data = 1;
     }} else {{
-        // Both segments have data — predict then update
-        // Predict: propagate a through one time step
         double x_pred = F * a.x;
         double P_pred = F * a.P * F + Q;
-
-        // Fuse: combine prediction with b's estimate
-        // Using the covariance intersection / Kalman fusion:
-        // P_fused = 1 / (1/P_pred + 1/b.P)
-        // x_fused = P_fused * (x_pred/P_pred + b.x/b.P)
-        double P_inv_sum = 1.0 / P_pred + 1.0 / b.P;
-        result.P = 1.0 / P_inv_sum;
-        result.x = result.P * (x_pred / P_pred + b.x / b.P);
+        double inv_denom = 1.0 / (P_pred + b.P);
+        result.P = P_pred * b.P * inv_denom;
+        result.x = (x_pred * b.P + b.x * P_pred) * inv_denom;
         result.F_acc = b.F_acc * F * a.F_acc;
         result.has_data = 1;
     }}
@@ -354,6 +407,15 @@ impl AssociativeOp for KalmanOp {
 
 pub struct EWMOp {
     pub alpha: f64,
+    /// Precomputed ln(1 - alpha). Using exp(log_decay * count) replaces
+    /// pow(1-alpha, count) — one transcendental instead of two.
+    log_decay: f64,
+}
+
+impl EWMOp {
+    pub fn new(alpha: f64) -> Self {
+        Self { alpha, log_decay: (1.0 - alpha).ln() }
+    }
 }
 
 impl AssociativeOp for EWMOp {
@@ -369,16 +431,16 @@ impl AssociativeOp for EWMOp {
 
     fn cuda_combine(&self) -> String {
         // EWM merge: the later segment's weights decay the earlier segment.
-        // a is the earlier (left) partial, b is the later (right) partial.
-        // The decay factor is pow(1-alpha, b.count) — the length of b's segment.
+        // exp(log_decay * count) replaces pow(1-alpha, count) —
+        // one transcendental (exp) instead of two (exp + log inside pow).
         format!(
             r#"({{
-                double decay = pow(1.0 - {alpha}, (double)b.count);
+                double decay = exp({log_decay} * (double)b.count);
                 (EWMState){{ a.weight * decay + b.weight,
                              a.value  * decay + b.value,
                              a.count + b.count }};
             }})"#,
-            alpha = self.alpha
+            log_decay = self.log_decay
         )
     }
 
@@ -404,14 +466,16 @@ impl AssociativeOp for EWMOp {
     }
 
     fn cuda_combine_body(&self) -> String {
+        // exp(log_decay * count) replaces pow(1-alpha, count).
+        // One transcendental instead of two.
         format!(
-            r#"    double decay = pow(1.0 - {alpha}, (double)b.count);
+            r#"    double decay = exp({log_decay} * (double)b.count);
     state_t result;
     result.weight = a.weight * decay + b.weight;
     result.value = a.value * decay + b.value;
     result.count = a.count + b.count;
     return result;"#,
-            alpha = self.alpha
+            log_decay = self.log_decay
         )
     }
 }

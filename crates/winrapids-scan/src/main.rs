@@ -34,13 +34,13 @@ fn test_kernel_generation() {
     assert!(welford_kernel.contains("WelfordState"), "Should contain state struct");
     println!("  WelfordOp kernel generated  ({} bytes)  PASS", welford_kernel.len());
 
-    let ewm_kernel = generate_scan_kernel(&EWMOp { alpha: 0.1 });
+    let ewm_kernel = generate_scan_kernel(&EWMOp::new(0.1));
     assert!(ewm_kernel.contains("EWMState"), "Should contain state struct");
     println!("  EWMOp kernel generated  ({} bytes)  PASS", ewm_kernel.len());
 
     // Cache key uniqueness
-    let ewm1 = EWMOp { alpha: 0.1 };
-    let ewm2 = EWMOp { alpha: 0.2 };
+    let ewm1 = EWMOp::new(0.1);
+    let ewm2 = EWMOp::new(0.2);
     assert_ne!(ewm1.params_key(), ewm2.params_key());
     println!("  Cache key uniqueness  PASS");
 }
@@ -70,7 +70,7 @@ fn test_operator_properties() {
         ("MaxOp", Box::new(MaxOp)),
         ("MinOp", Box::new(MinOp)),
         ("WelfordOp", Box::new(WelfordOp)),
-        ("EWMOp(0.1)", Box::new(EWMOp { alpha: 0.1 })),
+        ("EWMOp(0.1)", Box::new(EWMOp::new(0.1))),
     ];
 
     for (name, op) in &ops {
@@ -81,7 +81,7 @@ fn test_operator_properties() {
 
     assert_eq!(AddOp.state_byte_size(), 8);
     assert_eq!(WelfordOp.state_byte_size(), 24);
-    assert_eq!(EWMOp { alpha: 0.1 }.state_byte_size(), 24);
+    assert_eq!(EWMOp::new(0.1).state_byte_size(), 24);
     assert_eq!(KalmanOp { f: 1.0, h: 1.0, q: 0.01, r: 0.1 }.state_byte_size(), 32); // 3×f64 + i32 + 4B pad
     assert_eq!(KalmanAffineOp::new(0.98, 1.0, 0.01, 0.1).state_byte_size(), 16);
     println!("  State byte sizes  PASS");

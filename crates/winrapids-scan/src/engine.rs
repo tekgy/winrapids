@@ -151,9 +151,9 @@ pub fn generate_multiblock_scan(op: &dyn AssociativeOp) -> String {
     }
 
     // Output writes in propagate_extract
-    let mut output_writes = String::from("        out0[gid] = extract_primary(s);\n");
+    let mut output_writes = String::from("    out0[gid] = extract_primary(s);\n");
     for i in 0..secondaries.len() {
-        output_writes += &format!("        out{k}[gid] = extract_secondary_{i}(s);\n", k = i + 1);
+        output_writes += &format!("    out{k}[gid] = extract_secondary_{i}(s);\n", k = i + 1);
     }
 
     // Output parameters for propagate_extract (fixed: always out0 + out1)
@@ -200,7 +200,7 @@ extern "C" __global__ void scan_per_block(
     int tid = threadIdx.x;
     int gid = blockIdx.x * blockDim.x + tid;
 
-    shared[tid] = (gid < n) ? lift_element(input[gid]) : make_identity();
+    shared[tid] = lift_element(input[gid]);  // input padded to BLOCK_SIZE multiple
     __syncthreads();
 
     // Up-sweep (reduce)
@@ -221,7 +221,7 @@ extern "C" __global__ void scan_per_block(
         __syncthreads();
     }}
 
-    if (gid < n) state_out[gid] = shared[tid];
+    state_out[gid] = shared[tid];  // buffer padded to BLOCK_SIZE multiple
     // Last thread in block writes the block total
     if (tid == blockDim.x - 1) block_totals[blockIdx.x] = shared[tid];
 }}
@@ -267,13 +267,11 @@ extern "C" __global__ void propagate_extract(
     int n
 ) {{
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (gid < n) {{
-        state_t s = state_in[gid];
-        if (blockIdx.x > 0) {{
-            s = combine_states(block_prefixes[blockIdx.x - 1], s);
-        }}
-{output_writes}    }}
-}}
+    state_t s = state_in[gid];
+    if (blockIdx.x > 0) {{
+        s = combine_states(block_prefixes[blockIdx.x - 1], s);
+    }}
+{output_writes}}}
 
 // sizeof validation: returns sizeof(state_t) so Rust can verify
 // that its state_byte_size() matches the actual CUDA struct layout.

@@ -97,7 +97,7 @@ fn parse_scan_op(params: &[(String, String)]) -> Result<Box<dyn AssociativeOp>, 
                 .find(|(k, _)| k == "alpha")
                 .map(|(_, v)| v.parse::<f64>())
                 .ok_or("EWM scan missing 'alpha' parameter")??;
-            Ok(Box::new(EWMOp { alpha }))
+            Ok(Box::new(EWMOp::new(alpha)))
         }
         "kalman_affine" => {
             let get = |key: &str| -> Result<f64, Box<dyn std::error::Error>> {

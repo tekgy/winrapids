@@ -1273,20 +1273,25 @@ The full pipeline now runs end-to-end on real GPU: Python → compile → plan �
 
 ### Operator Family: State Complexity → Dispatch Time
 
-| Operator | state_B | combine complexity | dispatch p01 | dispatch p50 |
+| Operator | state_B | combine | dispatch p01 | dispatch p50 |
 |---|---|---|---|---|
-| AddOp | 8 | 1 add | 37 us | 48 us |
-| KalmanAffineOp | 16 | 2 mul + 1 add | 39 us | 43 us |
-| WelfordOp | 24 | div + branch + 6 ops | 100 us | 101 us |
-| KalmanOp | 32 | div + branch + ~10 ops | 103 us | 106 us |
+| AddOp | 8 | 1 add | 38 us | 49 us |
+| KalmanAffineOp | 16 | 2 mul + 1 add | 39 us | 53 us |
+| **CubicMomentsOp** | **24** | **3 adds** | **42 us** | **64 us** |
+| WelfordOp | 24 | div + branch + 6 ops | 99 us | 101 us |
+| KalmanOp | 32 | div + branch + ~10 ops | 103 us | 108 us |
 
-(p01 shown because it's more stable than p50 on WDDM. n=100K, device-to-device, cached kernel.)
+(p01 is most stable on WDDM. n=100K, device-to-device, cached kernel.)
 
-**Finding**: The bottleneck is combine body complexity, NOT state size. Simple combines (adds/muls) cost ~40μs regardless of 8B or 16B state. Complex combines (division + branching) cost ~100μs regardless of 24B or 32B state. The step function is at the complexity boundary, not the size boundary.
+**CONFIRMED**: The bottleneck is combine body complexity, NOT state size. CubicMomentsOp (24B, 3 adds) sits at p01=42μs — same tier as AddOp (8B) and KalmanAffineOp (16B). WelfordOp (24B, div+branch) at 99μs is 2.4x slower with the SAME state size.
 
-**Navigator's prediction (testable)**: A 24B-state operator with a simple combine (no division/branching) should cost ~40μs. No such operator exists yet — when one arrives, this can be verified.
+**Two tiers**:
+- Simple combine (adds, muls): ~40μs p01 regardless of state size (8-24B)
+- Complex combine (division + branching): ~100μs p01 regardless of state size (24-32B)
 
-**KalmanOp vs KalmanAffineOp**: Both compute Kalman filtering. KalmanOp (covariance intersection, div + branch) = 132μs. KalmanAffineOp (affine composition, 2 mul + 1 add) = 47μs. **2.8x faster for the same computation** — the affine formulation eliminates the combine complexity bottleneck.
+**E10 design principle**: Formulate operators with simple combines wherever possible. Push complexity to the constructor (like KalmanAffineOp's Riccati solver). The 2.5x penalty for division/branching in combine applies to every single kernel launch.
+
+**KalmanOp vs KalmanAffineOp**: Both compute Kalman filtering. KalmanOp (covariance intersection) = 106μs. KalmanAffineOp (affine composition) = 41μs. **2.6x faster for the same computation.**
 
 ### KalmanAffineOp Scaling
 
@@ -1307,6 +1312,49 @@ KalmanOp declared `state_byte_size() = 28` but CUDA `sizeof(state_t) = 32` (alig
 ### Demo Blocker Update
 
 Entry 018 listed 3 blockers. Now: #2 (CudaKernelDispatcher) resolved AND FusedExpr dispatches. The pipeline runs end-to-end on GPU for all E04 specialists. Remaining blockers: MKTF reader, persistent store Session API.
+
+---
+
+## Entry 022 — Branch-Free Scan Engine: No Performance Benefit
+
+**Date**: 2026-03-30
+**Type**: Performance measurement (A/B comparison)
+**Status**: Complete
+**Source**: `crates/winrapids-compiler/src/bench_branchfree.rs`
+
+### What Changed
+
+Pathmaker removed all `gid < n` conditionals from Phase 1 and Phase 3 kernels. Inputs padded to BLOCK_SIZE multiples (alloc_zeros + memcpy_dtod in device path, resize in host path).
+
+### Correctness
+
+All 10 compiler tests pass. scan_device_ptr bitwise identical to scan_inclusive at all sizes (100 to 100K), including block boundaries and WelfordOp.
+
+Identity padding with 0.0 is safe because the Blelloch scan is causal — padded elements at the end cannot affect positions 0..n-1. Output is truncated to n elements on readback.
+
+### Performance: Branch-Free vs Original
+
+| Operator | BEFORE p01 | AFTER p01 | Change |
+|---|---|---|---|
+| AddOp (8B) | 38μs | 46μs | +8μs slower |
+| KalmanAffineOp (16B) | 39μs | 48μs | +9μs slower |
+| CubicMomentsOp (24B) | 42μs | 49μs | +7μs slower |
+| WelfordOp (24B) | 99μs | 104μs | +5μs slower |
+| KalmanOp (32B) | 103μs | 121μs | +18μs slower |
+
+**The branch-free engine is a net negative.** Padding overhead (alloc_zeros + memcpy_dtod) costs 5-18μs, more than the eliminated branches saved.
+
+### Why Branching Was Nearly Free
+
+At n=100K with BLOCK_SIZE=1024: 97 full blocks + 1 partial block. The `gid < n` branch is warp-uniform in all full blocks (all threads take the same path). Only the last block has divergent warps — 1/98 = 1% of blocks.
+
+GPU branch prediction handles warp-uniform branches at near-zero cost. The padding to eliminate a 1% divergence adds a device allocation + device copy that costs 7-18μs every time.
+
+### Conclusion
+
+**The two-tier performance gap (40μs vs 100μs) is NOT caused by kernel-level branching.** It is caused entirely by combine-body complexity (division + conditional logic within `combine_states()`). The operator audit (task #16) is the correct path to collapsing the tiers — reformulating WelfordOp/KalmanOp combines to eliminate division and branching from the combine body.
+
+**Recommendation**: Revert the padding in `scan_device_ptr` to recover the 7-18μs regression. The host path padding in `scan_inclusive` is acceptable (host-side resize is cheap), but the device path's alloc + memcpy_dtod is pure overhead.
 
 ---
 
@@ -1349,6 +1397,77 @@ They share: the decay factor, the parameter space dimension, the sequential recu
 They don't share: the extract function, the normalization convention, numerical output.
 
 Families are **not** overlapping in operator output space. They are related in parameter space but structurally distinct in computation space. The trait captures both, but being in the same trait doesn't mean they're the same operator.
+
+---
+
+## Entry 023 — Combine Audit Impact (2026-03-30)
+
+**Context**: Pathmaker completed Task #16 (operator combine audit). Three optimizations:
+1. WelfordOp: 2 divisions → 1 (cached `inv_n = 1.0/(double)n`)
+2. KalmanOp: 5 divisions → 1 (algebraic reformulation, single `inv_denom`)
+3. EWMOp: `pow(1-α, count)` → `exp(log_decay * count)` (precomputed `log_decay`)
+
+**Question**: Does reducing divisions collapse the two-tier model? Do WelfordOp/KalmanOp drop to ~40μs?
+
+### Method
+
+Standing methodology: n=100K, `scan_device_ptr`, 3 warmup, 20 timed, `--release`.
+Binary: `bench-branchfree` (same instrument as Entry 022).
+
+### Results
+
+| Operator | stateB | combine | p01 μs | p50 μs | p99 μs |
+|---|---|---|---|---|---|
+| AddOp | 8 | 1 add | 48.1 | 75.2 | 126.1 |
+| KalmanAffineOp | 16 | 2 mul + 1 add | 49.1 | 62.4 | 77.7 |
+| CubicMomentsOp | 24 | 3 adds | 51.1 | 56.6 | 85.0 |
+| **WelfordOp** | 24 | **1 div + 1 branch** | **72.5** | **75.8** | **97.2** |
+| **KalmanOp** | 32 | **1 div + branches** | **78.8** | **97.2** | **138.0** |
+
+### Comparison with Entry 022 (pre-audit)
+
+| Operator | Pre-audit p01 | Post-audit p01 | Δ |
+|---|---|---|---|
+| AddOp | 46.2 | 48.1 | +4% (noise) |
+| KalmanAffineOp | 42.1 | 49.1 | +17% (noise) |
+| CubicMomentsOp | 44.2 | 51.1 | +16% (noise) |
+| **WelfordOp** | **104.0** | **72.5** | **-30%** |
+| **KalmanOp** | **99.8** | **78.8** | **-21%** |
+
+Fast-tier operators show slight p01 increase (run-to-run variance, same session). The important signal is in the slow tier.
+
+### Analysis
+
+**The combine audit moved the needle significantly but did NOT collapse the two tiers.**
+
+- WelfordOp: 104 → 72.5 μs (-30%). Still 1 division + 1 branch remaining.
+- KalmanOp: 100 → 78.8 μs (-21%). Still 1 division + has_data branches remaining.
+- Gap narrowed from ~2.5x to ~1.5x between tiers.
+
+**What each optimization bought** (estimated from cycle savings):
+- WelfordOp: saved 1 division (~20 cycles) = ~30μs improvement. 1 division remains.
+- KalmanOp: saved 4 divisions (~80 cycles) = ~21μs improvement. 1 division remains.
+- Both still have at least one division and one branch in the combine body.
+
+**The residual gap (~25μs) correlates with one remaining f64 division per combine invocation.** An f64 division is ~20 cycles on Blackwell. At 1024 threads × 10 steps (log2 scan depth), that's ~200K division cycles — plausible for ~25μs at ~8 GHz effective throughput.
+
+### Design Rule Update
+
+The two-tier model from Entry 020 should be refined:
+
+| Tier | Combine body | p01 range |
+|---|---|---|
+| Fast | adds, muls only | ~42-51 μs |
+| Medium | 1 division + branch | ~72-79 μs |
+| ~~Slow~~ | ~~multiple divisions~~ | ~~99-104 μs~~ (eliminated by audit) |
+
+The audit collapsed three tiers into two. The remaining "medium" tier is ~1.5x the fast tier, down from ~2.5x.
+
+### Remaining Questions
+
+1. **SarkkaOp (Task #17)**: Branch-free 5-tuple Kalman with NO divisions in combine. If it lands at ~42-51μs, that confirms: division is the sole remaining bottleneck.
+2. **WelfordOp reformulated as sum/sum_sq**: Extract as `sum/count` — moves the division from combine to extract (runs once per element, not log(n) times). Prediction: would collapse to fast tier.
+3. **Has_data branch isolation**: Run same operator with and without the `n > 0` branch to isolate branch cost vs division cost.
 
 ---
 

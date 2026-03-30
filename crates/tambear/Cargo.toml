@@ -1,0 +1,13 @@
+[package]
+name = "tambear"
+version = "0.1.0"
+edition = "2021"
+description = "Sort-free DataFrame engine. Tam doesn't sort. Tam knows."
+
+[dependencies]
+cudarc = { version = "0.19", features = ["nvrtc", "cuda-version-from-build-system"] }
+blake3 = "1"
+
+[[bin]]
+name = "tambear-test"
+path = "src/main.rs"

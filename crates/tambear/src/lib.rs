@@ -1,35 +1,56 @@
 //! # tambear
 //!
-//! Sort-free DataFrame engine. Tam doesn't sort. Tam knows.
+//! Sort-free GPU DataFrame engine.
 //!
-//! The sort-free principle (manuscript 014): sort is O(n log n) with poor
-//! GPU memory access patterns. For every operation that traditionally uses
-//! sort — groupby, dedup, join, top-k — there exists an O(n) hash-based
-//! alternative. The compiler enforces this: `sort` is emitted only for
-//! explicit `sort_values()` and `rank()`.
+//! Tam doesn't sort. Tam knows where everything is.
 //!
-//! ## Core types
+//! The core insight: groupby, deduplication, join, and top-k selection
+//! all traditionally use sort as an implementation convenience. On GPU,
+//! hash scatter is 17x faster — O(n) with one pass versus O(n log n)
+//! with random-access memory writes.
 //!
-//! - [`Frame`]: a GPU-resident DataFrame. Columns live on GPU until evicted.
-//! - [`Column`]: a named, typed, GPU-resident column buffer.
-//! - [`GroupIndex`]: pre-built row→group mapping. Built once, reused forever
-//!   via provenance hash. Eliminates group-discovery cost from every groupby.
+//! ## Four architectural invariants
 //!
-//! ## The sort-free contract
+//! Each eliminates an operation by carrying information forward instead of
+//! recovering it later.
 //!
-//! The compiler NEVER emits sort for:
-//! - GroupBy → `hash_scatter` (this crate)
-//! - Dedup → `hash_set` (this crate)
-//! - Join → `hash_probe` (this crate)
-//! - TopK → `selection` (this crate)
+//! **Sort-free**: GroupBy/Dedup/Join/TopK → hash ops, never sort.
+//! Sort emitted only for `sort_values`, `rank`. 17x on GPU.
+//! "Tam doesn't sort. Tam knows."
 //!
-//! Sort emitted only for: `sort_values`, `rank`.
+//! **Mask-not-filter**: Filter sets bits in `Frame::row_mask` (1 bit/row,
+//! packed u64). Downstream ops are mask-aware. No compaction, no new array.
+//! "Tam doesn't filter. Tam knows which rows matter."
+//!
+//! **Dictionary strings**: String columns are int codes at ingestion.
+//! Dictionary lives in the `.tb` header. GroupBy on strings = GroupBy on ints.
+//! Decode only at output.
+//! "Tam doesn't do strings. Tam knows the dictionary."
+//!
+//! **Types once**: `tb.pipeline(dtype=tb.float64)` — single declared dtype.
+//! JIT kernels generated for the declared type. Zero runtime dispatch.
+//! "Tam doesn't check types. Tam knows the schema."
+//!
+//! ## Quick Start
+//!
+//! ```no_run
+//! use tambear::HashScatterEngine;
+//!
+//! let engine = HashScatterEngine::new().unwrap();
+//! let keys = vec![0i32, 0, 1, 1, 2];
+//! let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+//!
+//! let sums = engine.scatter_sum(&keys, &values, 3).unwrap();
+//! // [3.0, 7.0, 5.0] — group 0: 1+2, group 1: 3+4, group 2: 5
+//! ```
 
+pub mod dictionary;
 pub mod frame;
 pub mod group_index;
 pub mod hash_scatter;
 pub mod stats;
 
-pub use frame::{Column, DType, Frame};
+pub use dictionary::Dictionary;
+pub use frame::{Column, ColumnEncoding, DType, Frame};
 pub use group_index::GroupIndex;
-pub use hash_scatter::HashScatterEngine;
+pub use hash_scatter::{HashScatterEngine, GroupByResult};

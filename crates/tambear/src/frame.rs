@@ -136,10 +136,13 @@ impl Frame {
 
     /// Retrieve or build a GroupIndex for `key_col`.
     ///
-    /// If a valid GroupIndex already exists (provenance matches), returns it
-    /// without rebuilding. Otherwise builds via hash scatter and caches.
-    /// Cost: O(n_groups) metadata check if valid; O(n) hash scatter if not.
-    pub fn group_index_for(&mut self, key_col: &str) -> Result<&crate::GroupIndex, String> {
+    /// `max_key`: maximum key value for this column. From the `.tb` header —
+    /// caller provides it; the frame does not scan to discover it.
+    /// Accumulators are sized to `max_key + 1`. No counting pass.
+    ///
+    /// Cost on cache hit: 35ns provenance check.
+    /// Cost on cache miss: O(n) hash scatter kernel (one pass).
+    pub fn group_index_for(&mut self, key_col: &str, max_key: u32) -> Result<&crate::GroupIndex, String> {
         if let Some(idx) = self.group_indices.get(key_col) {
             let col = self.columns.get(key_col)
                 .ok_or_else(|| format!("column '{}' not found", key_col))?;
@@ -147,10 +150,10 @@ impl Frame {
                 return Ok(self.group_indices.get(key_col).unwrap());
             }
         }
-        // Build or rebuild the index.
+        // Build or rebuild. max_key from caller (from .tb header).
         let col = self.columns.get(key_col)
             .ok_or_else(|| format!("column '{}' not found", key_col))?;
-        let idx = crate::GroupIndex::build(col, &self.stream)?;
+        let idx = crate::GroupIndex::build(col, max_key, &self.stream)?;
         self.group_indices.insert(key_col.to_string(), idx);
         Ok(self.group_indices.get(key_col).unwrap())
     }

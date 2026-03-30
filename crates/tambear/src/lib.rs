@@ -45,12 +45,19 @@
 //! ```
 
 pub mod dictionary;
+pub mod format;
 pub mod frame;
 pub mod group_index;
 pub mod hash_scatter;
 pub mod stats;
 
 pub use dictionary::Dictionary;
+pub use format::{
+    TileColumnStats, TbColumnDescriptor, TbFileHeader,
+    global_min, global_max, global_sum, global_count, global_mean,
+    tile_skip_mask_gt, tile_skip_mask_lt,
+    TB_MAGIC, TB_VERSION, TB_TILE_SIZE_DEFAULT, FILE_HEADER_SIZE, TB_MAX_COLUMNS,
+};
 pub use frame::{Column, ColumnEncoding, DType, Frame};
 pub use group_index::GroupIndex;
 pub use hash_scatter::{HashScatterEngine, GroupByResult};

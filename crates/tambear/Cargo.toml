@@ -19,3 +19,7 @@ path = "src/real_data.rs"
 [[bin]]
 name = "tb-demo"
 path = "src/tb_demo.rs"
+
+[[bin]]
+name = "io-bench"
+path = "src/io_bench.rs"

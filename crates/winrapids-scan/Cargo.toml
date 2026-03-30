@@ -1,0 +1,13 @@
+[package]
+name = "winrapids-scan"
+version = "0.1.0"
+edition = "2021"
+description = "Pluggable parallel scan with associative operators on GPU. The liftability principle in code."
+
+[dependencies]
+cudarc = { version = "0.19", features = ["nvrtc", "cuda-version-from-build-system"] }
+blake3 = "1"
+
+[[bin]]
+name = "scan-test"
+path = "src/main.rs"

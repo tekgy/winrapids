@@ -1,0 +1,16 @@
+[package]
+name = "mktf"
+version = "0.1.0"
+edition = "2024"
+description = "MKTF v4 binary format — reader, writer, compression"
+
+[dependencies]
+sha2 = "0.10"
+lz4_flex = "0.11"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+name = "mktf"
+path = "src/lib.rs"

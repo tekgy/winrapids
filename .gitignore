@@ -3,3 +3,8 @@ __pycache__/
 .venv/
 campsites/logbook.db
 *.mktf
+target/
+**/target/
+**/*.pdb
+**/*.rlib
+**/*.exe

@@ -1,12 +1,16 @@
 README.md
 pyproject.toml
 src/winrapids/__init__.py
+src/winrapids/bin_engine.py
 src/winrapids/column.py
 src/winrapids/frame.py
+src/winrapids/fused_bin_stats.py
 src/winrapids/fusion.py
+src/winrapids/progressive.py
 src/winrapids/test_winrapids.py
 src/winrapids/transfer.py
 src/winrapids.egg-info/PKG-INFO
 src/winrapids.egg-info/SOURCES.txt
 src/winrapids.egg-info/dependency_links.txt
 src/winrapids.egg-info/top_level.txt
+tests/test_progressive_roundtrip.py

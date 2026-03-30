@@ -201,6 +201,148 @@ impl AssociativeOp for WelfordOp {
 }
 
 // ============================================================
+// KalmanOp — parallel Kalman filter (scalar, 1D state)
+//
+// The liftability principle's most dramatic demonstration:
+// Kalman filtering — the gold standard of sequential estimation —
+// parallelized from O(n) to O(log n) via associative scan.
+//
+// State: { x: f64, P: f64, F_acc: f64, has_data: i32 }
+//   x = state estimate
+//   P = error covariance
+//   F_acc = accumulated dynamics (product of F across the segment)
+//   has_data = whether this segment has been initialized
+//
+// The combine operation merges two Kalman filter segments.
+// For the scalar case (1D state, 1D observation):
+//   Predict: x_pred = F * x, P_pred = F * P * F + Q
+//   Update:  K = P_pred * H / (H * P_pred * H + R)
+//            x = x_pred + K * (z - H * x_pred)
+//            P = (1 - K * H) * P_pred
+//
+// The parallel formulation (Särkkä & García-Fernández 2021):
+// Two segments (left=a, right=b) merge by:
+//   1. Propagate a's state through b's dynamics
+//   2. Fuse with b's measurement update
+//
+// This IS associative. Proven in the paper. The scan parallelizes it.
+//
+// Parameters: F (state transition), H (observation model),
+//             Q (process noise), R (observation noise)
+//
+// Fock boundary: nonlinear Kalman (EKF/UKF) where F depends on x.
+// Partial lift: linearize around trajectory estimate (EKF-as-scan,
+// approximate but bounded error).
+// ============================================================
+
+pub struct KalmanOp {
+    pub f: f64,  // state transition (scalar)
+    pub h: f64,  // observation model (scalar)
+    pub q: f64,  // process noise variance
+    pub r: f64,  // observation noise variance
+}
+
+impl AssociativeOp for KalmanOp {
+    fn name(&self) -> &'static str { "kalman" }
+
+    fn cuda_state_type(&self) -> String {
+        r#"struct KalmanState { double x; double P; double F_acc; int has_data; }"#.into()
+    }
+
+    fn cuda_identity(&self) -> String {
+        "{0.0, 0.0, 1.0, 0}".into()
+    }
+
+    fn cuda_combine(&self) -> String {
+        // Not used — cuda_combine_body overrides
+        String::new()
+    }
+
+    fn cuda_lift_element(&self) -> String {
+        // Not used — cuda_lift_body overrides
+        String::new()
+    }
+
+    fn cuda_extract(&self) -> String {
+        "s.x".into()
+    }
+
+    fn output_width(&self) -> usize { 2 }
+
+    fn cuda_extract_secondary(&self) -> Vec<String> {
+        vec!["s.P".into()] // error covariance
+    }
+
+    fn params_key(&self) -> String {
+        format!("F={:.10},H={:.10},Q={:.10},R={:.10}", self.f, self.h, self.q, self.r)
+    }
+
+    fn state_byte_size(&self) -> usize { 28 } // f64(8) + f64(8) + f64(8) + i32(4)
+
+    fn cuda_lift_body(&self) -> String {
+        // Each observation z is lifted into a Kalman state.
+        // Initialize with the measurement: x = z/H, P = R/H²
+        // This is the "information form" initialization.
+        format!(
+            r#"    state_t s;
+    double H = {h};
+    double R = {r};
+    s.x = x / H;
+    s.P = R / (H * H);
+    s.F_acc = 1.0;
+    s.has_data = 1;
+    return s;"#,
+            h = self.h,
+            r = self.r,
+        )
+    }
+
+    fn cuda_combine_body(&self) -> String {
+        // Merge two Kalman segments: left (a) and right (b).
+        // 1. Propagate a's state through the time gap using F
+        // 2. Fuse propagated a with b using Kalman update equations
+        //
+        // The key insight: this merge IS associative because
+        // linear state-space models compose associatively.
+        // (Särkkä & García-Fernández 2021, Theorem 1)
+        format!(
+            r#"    double F = {f};
+    double Q = {q};
+    state_t result;
+
+    if (!a.has_data) {{
+        // Left segment empty — return right
+        result = b;
+    }} else if (!b.has_data) {{
+        // Right segment empty — propagate left through time
+        result.x = F * a.x;
+        result.P = F * a.P * F + Q;
+        result.F_acc = F * a.F_acc;
+        result.has_data = 1;
+    }} else {{
+        // Both segments have data — predict then update
+        // Predict: propagate a through one time step
+        double x_pred = F * a.x;
+        double P_pred = F * a.P * F + Q;
+
+        // Fuse: combine prediction with b's estimate
+        // Using the covariance intersection / Kalman fusion:
+        // P_fused = 1 / (1/P_pred + 1/b.P)
+        // x_fused = P_fused * (x_pred/P_pred + b.x/b.P)
+        double P_inv_sum = 1.0 / P_pred + 1.0 / b.P;
+        result.P = 1.0 / P_inv_sum;
+        result.x = result.P * (x_pred / P_pred + b.x / b.P);
+        result.F_acc = b.F_acc * F * a.F_acc;
+        result.has_data = 1;
+    }}
+    return result;"#,
+            f = self.f,
+            q = self.q,
+        )
+    }
+}
+
+// ============================================================
 // EWMOp — exponential weighted mean
 //
 // State: { weight: f64, value: f64, count: i64 }

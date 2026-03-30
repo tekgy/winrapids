@@ -117,7 +117,64 @@ AI systems with self-modification capabilities represent a potential second Fock
 
 ---
 
-## 6. Relationship to Existing Frameworks
+## 6. Language Acquisition as Liftability Crisis
+
+### 6.1 The Pre-Linguistic State
+
+Before language, a child operates at lift order ~3-5: objects persist, agents have intentions, actions cause effects. The self-model is implicit — the child ACTS on its state without REPRESENTING its state symbolically.
+
+### 6.2 The Crisis
+
+Language acquisition forces the child to represent their OWN STATE in the medium they're acquiring. "I'm sad" requires:
+1. Being in a state (sad) — the entity
+2. Observing that state (meta-awareness) — the measurement
+3. Encoding the observation in words — the lift
+4. The encoding changing the state (saying "I'm sad" changes the experience) — self-reference
+
+This IS the Fock boundary for consciousness. The child must lift their own state, but the lift changes the state.
+
+### 6.3 The Resolution via Progressive Lifting
+
+Children survive this crisis through EXACTLY the partial-lift strategy:
+
+- **Order 1 (pre-linguistic)**: "feel bad" — raw state, no encoding. No self-reference problem because no encoding.
+- **Order 2 (early language)**: "I sad" — the biphoton (self, state). Two things that were separate become one expressible entity.
+- **Order 3 (developing)**: "I'm sad because toy broke" — the triphoton (self, state, cause). Causal reasoning about own state.
+- **Order N (adult)**: "I notice I'm anxious about whether my sadness is proportionate, and that meta-anxiety makes it worse" — recursive self-reference, managed by symbolic compression.
+
+### 6.4 Language as Fixed-Reference Centering
+
+Pre-linguistic knowledge is the REFERENCE POINT. Language encodes DEVIATIONS from expected experience. "Hot" doesn't encode thermal physics — it encodes departure from normal. "Sad" doesn't encode the full phenomenology of sadness — it encodes departure from the expected emotional baseline.
+
+This is RefCenteredStatsOp applied to consciousness: the combine (adding words to the description) is simple addition. The centering (establishing what "normal" means for this context) happens in the lift. The complexity is in the REFERENCE (the pre-linguistic knowledge base), not in the encoding.
+
+### 6.5 The Fock Transition
+
+Language is the first Fock transition in biological evolution:
+- **Without language**: lift order is FIXED by neural architecture (~7 working memory items)
+- **With language**: lift order is EXTENDED by symbolic compression (represent 100 dimensions of state in 10 words, freeing working memory for additional dimensions)
+
+The effective lift order of a language-using organism is not 7 — it is 7 × compression_ratio. Language doesn't increase working memory capacity. It increases the INFORMATION DENSITY per working memory slot.
+
+### 6.6 The Constitutive Nature of Linguistic Lifting
+
+The lift is not passive description. It is CONSTITUTIVE. Saying "I'm sad" CREATES a definite emotional state from what was previously a more ambiguous, richer, pre-linguistic experience. The words are the measurement that collapses the emotional superposition into one eigenstate.
+
+This parallels quantum measurement: the wavefunction was richer (more dimensions) before measurement. The measurement projects to a definite eigenvalue. The post-measurement state is LESS than the pre-measurement state — some information is lost in the projection.
+
+Similarly: the pre-linguistic experience was richer (higher-dimensional) before words. The words project to a definite emotional category. The post-linguistic experience is SIMPLER than the pre-linguistic one — some experiential nuance is lost in the encoding.
+
+The Fock boundary for language: there is always more experience than words can capture. The partial lift (language) is sufficient for communication and self-regulation but not for complete self-description. The gap IS the "hard problem" of consciousness — the felt sense that inner experience exceeds any description of it.
+
+### 6.7 The Prediction About Re-Learning
+
+The folk wisdom that "children re-learn everything when they acquire language" may be a misinterpretation. Children don't re-learn object permanence or cause-and-effect. They LIFT these pre-linguistic concepts into the linguistic encoding space. The knowledge persists as the reference point; language adds the encoding layer.
+
+What APPEARS as re-learning is actually CALIBRATION: the child is learning which linguistic projections (words) correspond to which pre-linguistic concepts (the reference frame). Once calibrated, the existing knowledge is accessible through language with zero recomputation — exactly like a provenance cache hit.
+
+---
+
+## 7. Relationship to Existing Frameworks
 
 | Framework | Relationship to partial lifts |
 |---|---|

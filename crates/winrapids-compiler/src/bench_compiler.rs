@@ -41,7 +41,7 @@ fn bench_e04_cse(registry: &HashMap<String, winrapids_compiler::registry::Specia
         ],
     };
 
-    let exec_plan = plan(&spec, &registry, &mut NullWorld);
+    let exec_plan = plan(&spec, &registry, &mut NullWorld, None);
 
     println!("  Pipeline: rolling_zscore(price,20) + rolling_std(price,20)");
     println!("  Original nodes: {}", exec_plan.cse_stats.original_nodes);
@@ -65,14 +65,14 @@ fn bench_plan_time(registry: &HashMap<String, winrapids_compiler::registry::Spec
 
     // Warmup
     for _ in 0..3 {
-        let _ = plan(&spec, &registry, &mut NullWorld);
+        let _ = plan(&spec, &registry, &mut NullWorld, None);
     }
 
     // Timed
     let mut times = Vec::with_capacity(20);
     for _ in 0..20 {
         let t0 = Instant::now();
-        let _ = plan(&spec, &registry, &mut NullWorld);
+        let _ = plan(&spec, &registry, &mut NullWorld, None);
         times.push(t0.elapsed().as_nanos() as f64 / 1000.0);
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -103,14 +103,14 @@ fn bench_scaling(registry: &HashMap<String, winrapids_compiler::registry::Specia
 
         // Warmup
         for _ in 0..3 {
-            let _ = plan(&spec, &registry, &mut NullWorld);
+            let _ = plan(&spec, &registry, &mut NullWorld, None);
         }
 
         // Timed
         let mut times = Vec::with_capacity(20);
         for _ in 0..20 {
             let t0 = Instant::now();
-            let exec_plan = plan(&spec, &registry, &mut NullWorld);
+            let exec_plan = plan(&spec, &registry, &mut NullWorld, None);
             let elapsed = t0.elapsed().as_nanos() as f64 / 1000.0;
             times.push(elapsed);
 

@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use winrapids_compiler::ir::PrimitiveOp;
 use winrapids_compiler::plan::{PipelineSpec, SpecialistCall, plan};
 use winrapids_compiler::execute::{execute, MockDispatcher};
+use winrapids_compiler::cuda_dispatch::CudaKernelDispatcher;
+use winrapids_scan::DevicePtr;
 use winrapids_compiler::registry::build_e04_registry;
 use winrapids_store::header::BufferPtr;
 use winrapids_store::store::GpuStore;
@@ -31,6 +33,8 @@ fn main() {
     test_world_state_probe();
     test_execute_mock();
     test_provenance_reuse();
+    test_cuda_dispatch();
+    test_fused_expr_numerics();
 
     println!("\n{}", "=".repeat(70));
     println!("ALL COMPILER TESTS PASSED");
@@ -310,4 +314,204 @@ fn test_provenance_reuse() {
     println!("  Store: {} entries, {:.0}% hit rate overall",
         store_stats.entries, store_stats.hit_rate() * 100.0);
     println!("  PASS: provenance reuse eliminates all computation on identical rerun");
+}
+
+fn test_cuda_dispatch() {
+    println!("\n--- Test 8: CudaKernelDispatcher (Scan + FusedExpr on real GPU) ---");
+
+    // rolling_mean = scan(data, agg=add) + fused_expr(rolling_mean)
+    // Both primitives now dispatch to real GPU kernels.
+    let registry = build_e04_registry();
+    let spec = PipelineSpec {
+        calls: vec![
+            SpecialistCall {
+                specialist: "rolling_mean".into(),
+                data_var: "price".into(),
+                window: 20,
+            },
+        ],
+    };
+
+    let exec_plan = plan(&spec, &registry, &mut NullWorld, None);
+    println!("  Plan: {} steps", exec_plan.steps.len());
+
+    for step in &exec_plan.steps {
+        let node = exec_plan.arena.get(step.node_id);
+        println!("    [{:12?}] {:<6}  inputs={}",
+            node.op, node.output_name, node.input_identities.len());
+    }
+
+    // Create real GPU data: 1000 doubles = 8000 bytes
+    let n = 1000usize;
+    let host_data: Vec<f64> = (1..=n as u64).map(|x| x as f64).collect();
+    let host_data_sq: Vec<f64> = host_data.iter().map(|x| x * x).collect();
+
+    let mut dispatcher = CudaKernelDispatcher::new()
+        .expect("Failed to create CudaKernelDispatcher (is a GPU available?)");
+
+    // Upload data to GPU. Clone the Arc<CudaStream> to avoid borrowing dispatcher.
+    let stream = dispatcher.engine().stream().clone();
+    let input_dev = stream.clone_htod(&host_data)
+        .expect("Failed to upload data to GPU");
+    let sq_dev = stream.clone_htod(&host_data_sq)
+        .expect("Failed to upload squared data");
+
+    // Extract raw device pointers (SyncOnDrop guards drop at end of block)
+    let input_ptr = { let (p, _g) = input_dev.device_ptr(&stream); p };
+    let sq_ptr = { let (p, _g) = sq_dev.device_ptr(&stream); p };
+    let byte_size = (n * 8) as u64;
+
+    // Build data_ptrs map
+    let mut data_ptrs = HashMap::new();
+    data_ptrs.insert("data:price".into(), BufferPtr { device_ptr: input_ptr, byte_size });
+    data_ptrs.insert("data_sq:price".into(), BufferPtr { device_ptr: sq_ptr, byte_size });
+
+    // Execute — both Scan and FusedExpr dispatch to real GPU kernels.
+    let (results, stats) = execute(&exec_plan, &mut NullWorld, &mut dispatcher, &data_ptrs)
+        .expect("Execute failed");
+
+    println!("  Execute succeeded: {} steps, {} misses", stats.total_steps, stats.misses);
+    for (identity, step_result) in &results {
+        if identity.starts_with("data:") || identity.starts_with("data_sq:") {
+            continue;
+        }
+        println!("    Result '{}': ptr=0x{:x}, size={}B, was_hit={}",
+            identity, step_result.ptr.device_ptr, step_result.ptr.byte_size, step_result.was_hit);
+    }
+
+    assert_eq!(stats.total_steps, 2, "rolling_mean has 2 steps");
+    assert_eq!(stats.misses, 2, "NullWorld: both steps should miss");
+    println!("  PASS: Scan + FusedExpr both dispatched on real GPU");
+}
+
+fn test_fused_expr_numerics() {
+    println!("\n--- Test 9: FusedExpr numerical validation ---");
+
+    // x = [1.0, 2.0, ..., 100.0], window = 3
+    // For k >= 2 (0-indexed): mean[k] = k exactly (x[k-2]+x[k-1]+x[k])/3 = (3k)/3 = k)
+    // For k >= 2: std[k] = sqrt(2/3) = 0.8164965...
+    // For k >= 2: zscore[k] = 1/sqrt(2/3) = sqrt(3/2) = 1.2247448...
+
+    let n = 100usize;
+    let window = 3usize;
+    let host_x: Vec<f64> = (1..=n as u64).map(|x| x as f64).collect();
+    let host_x_sq: Vec<f64> = host_x.iter().map(|x| x * x).collect();
+
+    let expected_mean_at_k = |k: usize| -> f64 {
+        if k < window { (0..=k).map(|i| host_x[i]).sum::<f64>() / (k + 1) as f64 }
+        else { (k - window + 1..=k).map(|i| host_x[i]).sum::<f64>() / window as f64 }
+    };
+    let expected_std = (2.0f64 / 3.0).sqrt();   // constant for k >= 2 with window=3
+    let expected_zscore = (3.0f64 / 2.0).sqrt(); // constant for k >= 2
+
+    let mut dispatcher = CudaKernelDispatcher::new()
+        .expect("CudaKernelDispatcher failed");
+    let stream = dispatcher.engine().stream().clone();
+
+    let x_dev = stream.clone_htod(&host_x).expect("htod x");
+    let xsq_dev = stream.clone_htod(&host_x_sq).expect("htod x_sq");
+    let (x_ptr, _gx) = x_dev.device_ptr(&stream);
+    let (xsq_ptr, _gxsq) = xsq_dev.device_ptr(&stream);
+    let byte_size = (n * 8) as u64;
+
+    // --- rolling_mean ---
+    {
+        let registry = build_e04_registry();
+        let spec = PipelineSpec {
+            calls: vec![SpecialistCall {
+                specialist: "rolling_mean".into(),
+                data_var: "price".into(),
+                window: window as u32,
+            }],
+        };
+        let exec_plan = plan(&spec, &registry, &mut NullWorld, None);
+        let mut data_ptrs = HashMap::new();
+        data_ptrs.insert("data:price".into(), BufferPtr { device_ptr: x_ptr, byte_size });
+        data_ptrs.insert("data_sq:price".into(), BufferPtr { device_ptr: xsq_ptr, byte_size });
+
+        let (results, _stats) = execute(&exec_plan, &mut NullWorld, &mut dispatcher, &data_ptrs)
+            .expect("rolling_mean execute failed");
+
+        // Find the "out" result
+        let out_identity = exec_plan.outputs.get(&(0, "out".to_string())).expect("no output");
+        let out_result = results.get(out_identity).expect("no result for output");
+        let out_host = unsafe { dispatcher.copy_to_host(out_result.ptr) }.expect("dtoh");
+
+        let max_err = out_host.iter().enumerate()
+            .map(|(k, &v)| (v - expected_mean_at_k(k)).abs())
+            .fold(0.0f64, f64::max);
+
+        println!("  rolling_mean: max_err={:.2e}  out[2]={:.4}  out[99]={:.4}",
+            max_err, out_host[2], out_host[99]);
+        assert!(max_err < 1e-9, "rolling_mean max_err={} exceeds tolerance", max_err);
+        assert!((out_host[2] - 2.0).abs() < 1e-12, "mean[2] should be 2.0");
+        assert!((out_host[99] - 99.0).abs() < 1e-9, "mean[99] should be 99.0");
+    }
+
+    // --- rolling_std ---
+    {
+        let registry = build_e04_registry();
+        let spec = PipelineSpec {
+            calls: vec![SpecialistCall {
+                specialist: "rolling_std".into(),
+                data_var: "price".into(),
+                window: window as u32,
+            }],
+        };
+        let exec_plan = plan(&spec, &registry, &mut NullWorld, None);
+        let mut data_ptrs = HashMap::new();
+        data_ptrs.insert("data:price".into(), BufferPtr { device_ptr: x_ptr, byte_size });
+        data_ptrs.insert("data_sq:price".into(), BufferPtr { device_ptr: xsq_ptr, byte_size });
+
+        let (results, _stats) = execute(&exec_plan, &mut NullWorld, &mut dispatcher, &data_ptrs)
+            .expect("rolling_std execute failed");
+
+        let out_identity = exec_plan.outputs.get(&(0, "out".to_string())).expect("no output");
+        let out_result = results.get(out_identity).expect("no result");
+        let out_host = unsafe { dispatcher.copy_to_host(out_result.ptr) }.expect("dtoh");
+
+        // For k >= window-1=2: std should be sqrt(2/3) exactly
+        let max_err_steady = out_host[window-1..].iter()
+            .map(|&v| (v - expected_std).abs())
+            .fold(0.0f64, f64::max);
+
+        println!("  rolling_std:  max_err={:.2e}  out[2]={:.8}  expected={:.8}",
+            max_err_steady, out_host[2], expected_std);
+        assert!(max_err_steady < 1e-9, "rolling_std max_err={} exceeds tolerance", max_err_steady);
+    }
+
+    // --- rolling_zscore ---
+    {
+        let registry = build_e04_registry();
+        let spec = PipelineSpec {
+            calls: vec![SpecialistCall {
+                specialist: "rolling_zscore".into(),
+                data_var: "price".into(),
+                window: window as u32,
+            }],
+        };
+        let exec_plan = plan(&spec, &registry, &mut NullWorld, None);
+        let mut data_ptrs = HashMap::new();
+        data_ptrs.insert("data:price".into(), BufferPtr { device_ptr: x_ptr, byte_size });
+        data_ptrs.insert("data_sq:price".into(), BufferPtr { device_ptr: xsq_ptr, byte_size });
+
+        let (results, _stats) = execute(&exec_plan, &mut NullWorld, &mut dispatcher, &data_ptrs)
+            .expect("rolling_zscore execute failed");
+
+        let out_identity = exec_plan.outputs.get(&(0, "out".to_string())).expect("no output");
+        let out_result = results.get(out_identity).expect("no result");
+        let out_host = unsafe { dispatcher.copy_to_host(out_result.ptr) }.expect("dtoh");
+
+        // For k >= window-1=2: zscore = (x[k] - mean[k]) / std[k]
+        //   = (k+1 - k) / sqrt(2/3) = sqrt(3/2) = 1.2247...
+        let max_err_steady = out_host[window-1..].iter()
+            .map(|&v| (v - expected_zscore).abs())
+            .fold(0.0f64, f64::max);
+
+        println!("  rolling_zscore: max_err={:.2e}  out[2]={:.8}  expected={:.8}",
+            max_err_steady, out_host[2], expected_zscore);
+        assert!(max_err_steady < 1e-9, "rolling_zscore max_err={} exceeds tolerance", max_err_steady);
+    }
+
+    println!("  PASS: rolling_mean, rolling_std, rolling_zscore numerically correct on GPU");
 }

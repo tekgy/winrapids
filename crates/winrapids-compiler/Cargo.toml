@@ -7,6 +7,7 @@ description = "Pipeline compiler: spec → primitive DAG → CSE → execution p
 [dependencies]
 blake3 = "1"
 winrapids-store = { path = "../winrapids-store" }
+winrapids-scan = { path = "../winrapids-scan" }
 
 [[bin]]
 name = "compiler-test"
@@ -15,3 +16,11 @@ path = "src/main.rs"
 [[bin]]
 name = "bench-compiler"
 path = "src/bench_compiler.rs"
+
+[[bin]]
+name = "bench-gpu-dispatch"
+path = "src/bench_gpu_dispatch.rs"
+
+[[bin]]
+name = "verify-device-scan"
+path = "src/verify_device_scan.rs"

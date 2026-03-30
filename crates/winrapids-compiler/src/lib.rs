@@ -33,8 +33,10 @@ pub mod registry;
 pub mod plan;
 pub mod topo;
 pub mod execute;
+pub mod cuda_dispatch;
 
 pub use ir::{Arena, NodeId, PrimitiveOp, Node};
 pub use plan::{PipelineSpec, SpecialistCall, ExecutionPlan, ExecStep, CseStats, plan};
 pub use registry::{SpecialistRecipe, PrimitiveStep, build_e04_registry};
 pub use execute::{execute, KernelDispatcher, MockDispatcher, StepResult, ExecuteStats};
+pub use cuda_dispatch::CudaKernelDispatcher;

@@ -8,9 +8,10 @@
 //!
 //! Supports up to BLOCK_SIZE × 1024 elements (1M with BLOCK_SIZE=1024).
 
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
-use cudarc::driver::{CudaContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
+use cudarc::driver::{CudaContext, CudaFunction, CudaSlice, CudaStream, DevicePtr, LaunchConfig, PushKernelArg};
 
 use crate::cache::{cache_key, KernelCache};
 use crate::engine::generate_multiblock_scan;
@@ -29,6 +30,48 @@ pub struct ScanResult {
     /// Secondary outputs (e.g., running variance for WelfordOp).
     /// Empty for single-output operators.
     pub secondary: Vec<Vec<f64>>,
+}
+
+/// Result of a device-to-device scan. Owns the output GPU buffers.
+///
+/// The buffers remain allocated on GPU until this struct is dropped.
+/// Use `primary_device_ptr()` to get the raw pointer for downstream kernels.
+pub struct ScanDeviceOutput {
+    primary: CudaSlice<f64>,
+    primary_len: usize,
+    secondary: Option<CudaSlice<f64>>,
+    stream: Arc<CudaStream>,
+}
+
+impl ScanDeviceOutput {
+    /// Raw device pointer for the primary output buffer.
+    pub fn primary_device_ptr(&self) -> u64 {
+        let (ptr, _guard) = self.primary.device_ptr(&self.stream);
+        ptr
+    }
+
+    /// Number of f64 elements in primary output.
+    pub fn primary_len(&self) -> usize {
+        self.primary_len
+    }
+
+    /// Byte size of the primary output.
+    pub fn primary_byte_size(&self) -> u64 {
+        (self.primary_len * 8) as u64
+    }
+
+    /// Raw device pointer for secondary output (if any).
+    pub fn secondary_device_ptr(&self) -> Option<u64> {
+        self.secondary.as_ref().map(|s| {
+            let (ptr, _guard) = s.device_ptr(&self.stream);
+            ptr
+        })
+    }
+
+    /// Copy primary output back to host. Useful for validation.
+    pub fn primary_to_host(&self) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+        Ok(self.stream.clone_dtoh(&self.primary)?)
+    }
 }
 
 /// Compiled scan module: three functions for one operator.
@@ -167,6 +210,128 @@ impl ScanEngine {
         };
 
         Ok(ScanResult { primary, secondary })
+    }
+
+    /// Run scan on data already resident on GPU. Zero-copy device-to-device.
+    ///
+    /// Returns owned output buffers — caller keeps them alive as long as the
+    /// pointers are in use. No host round-trip.
+    ///
+    /// # Safety
+    /// `input_ptr` must be a valid device pointer to at least `n` contiguous
+    /// f64 elements on the same GPU context. Caller retains ownership of the
+    /// input buffer.
+    pub unsafe fn scan_device_ptr(
+        &mut self,
+        op: &dyn AssociativeOp,
+        input_ptr: u64,
+        n: usize,
+    ) -> Result<ScanDeviceOutput, Box<dyn std::error::Error>> {
+        if n == 0 {
+            let primary = self.stream.alloc_zeros::<f64>(1)?;
+            return Ok(ScanDeviceOutput {
+                primary, primary_len: 0, secondary: None,
+                stream: self.stream.clone(),
+            });
+        }
+
+        let n_blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        assert!(
+            n_blocks <= MAX_BLOCKS,
+            "Input too large: {} elements requires {} blocks (max {})",
+            n, n_blocks, MAX_BLOCKS
+        );
+
+        let state_bytes = op.state_byte_size();
+        let shared_bytes = (BLOCK_SIZE * state_bytes) as u32;
+
+        let module_key = self.ensure_module(op)?;
+
+        // Wrap input device pointer without taking ownership.
+        // ManuallyDrop prevents CudaSlice from freeing the caller's buffer.
+        let input_dev = ManuallyDrop::new(
+            self.stream.upgrade_device_ptr::<f64>(input_ptr, n)
+        );
+
+        // Allocate output-side device buffers (we own these)
+        let mut state_dev: CudaSlice<u8> = self.stream.alloc_zeros(n * state_bytes)?;
+        let mut totals_dev: CudaSlice<u8> = self.stream.alloc_zeros(n_blocks * state_bytes)?;
+        let mut out0_dev: CudaSlice<f64> = self.stream.alloc_zeros(n)?;
+        let out1_n = if op.output_width() > 1 { n } else { 1 };
+        let mut out1_dev: CudaSlice<f64> = self.stream.alloc_zeros(out1_n)?;
+
+        // Phase 1: scan_per_block
+        {
+            let module = self.modules.get(&module_key).unwrap();
+            let cfg = LaunchConfig {
+                grid_dim: (n_blocks as u32, 1, 1),
+                block_dim: (BLOCK_SIZE as u32, 1, 1),
+                shared_mem_bytes: shared_bytes,
+            };
+            self.stream.launch_builder(&module.scan_per_block)
+                .arg(&*input_dev)
+                .arg(&mut state_dev)
+                .arg(&mut totals_dev)
+                .arg(&(n as i32))
+                .launch(cfg)?;
+        }
+
+        // Phase 2: scan_block_totals (multi-block only)
+        if n_blocks > 1 {
+            let module = self.modules.get(&module_key).unwrap();
+            let totals_block_size = n_blocks.next_power_of_two();
+            let cfg = LaunchConfig {
+                grid_dim: (1, 1, 1),
+                block_dim: (totals_block_size as u32, 1, 1),
+                shared_mem_bytes: (totals_block_size * state_bytes) as u32,
+            };
+            self.stream.launch_builder(&module.scan_block_totals)
+                .arg(&mut totals_dev)
+                .arg(&(n_blocks as i32))
+                .launch(cfg)?;
+        }
+
+        // Phase 3: propagate_extract
+        {
+            let module = self.modules.get(&module_key).unwrap();
+            let cfg = LaunchConfig {
+                grid_dim: (n_blocks as u32, 1, 1),
+                block_dim: (BLOCK_SIZE as u32, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            self.stream.launch_builder(&module.propagate_extract)
+                .arg(&mut out0_dev)
+                .arg(&mut out1_dev)
+                .arg(&state_dev)
+                .arg(&totals_dev)
+                .arg(&(n as i32))
+                .launch(cfg)?;
+        }
+
+        self.stream.synchronize()?;
+
+        let secondary = if op.output_width() > 1 {
+            Some(out1_dev)
+        } else {
+            None
+        };
+
+        Ok(ScanDeviceOutput {
+            primary: out0_dev,
+            primary_len: n,
+            secondary,
+            stream: self.stream.clone(),
+        })
+    }
+
+    /// Access the stream (for dtoh copies on ScanDeviceOutput).
+    pub fn stream(&self) -> &Arc<CudaStream> {
+        &self.stream
+    }
+
+    /// Access the CUDA context (for sharing with FusedExprEngine).
+    pub fn ctx(&self) -> &Arc<CudaContext> {
+        &self.ctx
     }
 
     /// Ensure the operator's PTX module is compiled and loaded.

@@ -24,8 +24,13 @@ pub mod ops;
 pub mod engine;
 pub mod cache;
 pub mod launch;
+pub mod fused_expr;
 
 pub use ops::{AssociativeOp, AddOp, MulOp, MaxOp, MinOp, WelfordOp, EWMOp};
 pub use engine::{generate_scan_kernel, generate_multiblock_scan};
 pub use cache::KernelCache;
-pub use launch::{ScanEngine, ScanResult};
+pub use launch::{ScanEngine, ScanResult, ScanDeviceOutput};
+pub use fused_expr::{FusedExprEngine, FusedExprOutput};
+
+// Re-export cudarc traits needed by downstream crates for device pointer access
+pub use cudarc::driver::DevicePtr;

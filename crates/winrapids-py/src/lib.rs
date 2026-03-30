@@ -33,17 +33,22 @@ use winrapids_store::store::GpuStore;
 use winrapids_store::world::NullWorld;
 
 /// A lazy pipeline builder. Add specialist calls, then compile or execute.
+///
+/// Holds an optional persistent GpuStore for cross-call provenance reuse.
+/// When use_store=True, the store is initialized on first execute() and
+/// persists across subsequent calls — enabling 25,714x provenance hits.
 #[pyclass]
-#[derive(Clone)]
 struct Pipeline {
     calls: Vec<SpecialistCall>,
+    /// Persistent store. None until first execute(use_store=True).
+    store: Option<GpuStore>,
 }
 
 #[pymethods]
 impl Pipeline {
     #[new]
     fn new() -> Self {
-        Pipeline { calls: Vec::new() }
+        Pipeline { calls: Vec::new(), store: None }
     }
 
     /// Add a specialist call to the pipeline.
@@ -74,10 +79,15 @@ impl Pipeline {
     /// Returns a dict with execution results:
     ///     - "plan": the compiled Plan
     ///     - "stats": {"hits": N, "misses": N, "hit_rate": float}
-    ///     - "outputs": list of (call_idx, output_name, device_ptr, byte_size)
+    ///     - "outputs": list of (call_idx, output_name, device_ptr, byte_size, was_hit)
+    ///
+    /// When use_store=True, results are registered in the Pipeline's persistent
+    /// GpuStore and reused on subsequent calls (provenance hit = zero compute).
+    /// The store survives across Python execute() calls within the same Pipeline
+    /// instance — this is where the 25,714x lives.
     #[pyo3(signature = (data, use_store=false))]
     fn execute<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         data: &Bound<'py, PyDict>,
         use_store: bool,
@@ -104,20 +114,25 @@ impl Pipeline {
             input_provs.insert(name, data_provenance(&format!("data:{}:{}", key.str()?, ptr)));
         }
 
-        // Choose world state: GpuStore (persistent) or NullWorld (compute everything)
         let result_dict = PyDict::new(py);
 
         if use_store {
-            let mut store = GpuStore::new(60_000_000_000); // 60GB VRAM ceiling
-            let exec_plan = plan::plan(&spec, &registry, &mut store, Some(&input_provs));
+            // Initialize persistent store on first call (60GB = full VRAM ceiling)
+            if self.store.is_none() {
+                self.store = Some(GpuStore::new(60_000_000_000));
+            }
+            let store = self.store.as_mut().unwrap();
+
+            let exec_plan = plan::plan(&spec, &registry, store, Some(&input_provs));
             result_dict.set_item("plan", Plan::from_exec_plan(&exec_plan))?;
 
             let mut dispatcher = MockDispatcher::new();
-            let (results, stats) = execute::execute(&exec_plan, &mut store, &mut dispatcher, &data_ptrs)
+            let (results, stats) = execute::execute(&exec_plan, store, &mut dispatcher, &data_ptrs)
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
             Self::populate_results(py, &result_dict, &exec_plan, &results, &stats)?;
         } else {
+            // NullWorld: no store, compute everything
             let exec_plan = plan::plan(&spec, &registry, &mut NullWorld, Some(&input_provs));
             result_dict.set_item("plan", Plan::from_exec_plan(&exec_plan))?;
 

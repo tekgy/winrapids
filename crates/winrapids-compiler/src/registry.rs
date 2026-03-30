@@ -36,7 +36,12 @@ pub struct SpecialistRecipe {
     pub identity_params: Vec<String>,
 }
 
-/// Build the E04 minimal registry: rolling_mean, rolling_std, rolling_zscore.
+/// Build the E04 minimal registry: rolling_mean, rolling_std, rolling_zscore,
+/// and kalman_filter (steady-state Kalman via affine scan).
+///
+/// kalman_filter uses a single `scan` with `agg=kalman_affine`. The DARE
+/// constants (F, H, Q, R) are baked into the kernel at construction time,
+/// so no fused_expr step is needed — the scan output IS the filtered signal.
 pub fn build_e04_registry() -> HashMap<String, SpecialistRecipe> {
     let mut reg = HashMap::new();
 
@@ -116,6 +121,31 @@ pub fn build_e04_registry() -> HashMap<String, SpecialistRecipe> {
         fusion_crossover_rows: u64::MAX,
         independent: false,
         identity_params: vec!["data_identity".into(), "window".into()],
+    });
+
+    reg.insert("kalman_filter".into(), SpecialistRecipe {
+        name: "kalman_filter".into(),
+        primitive_dag: vec![
+            PrimitiveStep {
+                output_name: "out".into(),
+                op: "scan".into(),
+                input_names: vec!["data".into()],
+                params: vec![
+                    ("agg".into(), "kalman_affine".into()),
+                    ("F".into(), "0.98".into()),
+                    ("H".into(), "1.0".into()),
+                    ("Q".into(), "0.01".into()),
+                    ("R".into(), "0.1".into()),
+                ],
+            },
+        ],
+        fusion_eligible: false,
+        fusion_crossover_rows: u64::MAX,
+        independent: false,
+        identity_params: vec![
+            "data_identity".into(),
+            "F".into(), "H".into(), "Q".into(), "R".into(),
+        ],
     });
 
     reg

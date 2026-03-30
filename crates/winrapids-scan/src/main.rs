@@ -4,6 +4,7 @@
 //! Part 2: GPU launch + correctness verification (requires CUDA device).
 
 use winrapids_scan::ops::*;
+use winrapids_scan::KalmanAffineOp;
 use winrapids_scan::engine::{generate_scan_kernel, generate_multiblock_scan};
 use winrapids_scan::launch::ScanEngine;
 
@@ -81,6 +82,8 @@ fn test_operator_properties() {
     assert_eq!(AddOp.state_byte_size(), 8);
     assert_eq!(WelfordOp.state_byte_size(), 24);
     assert_eq!(EWMOp { alpha: 0.1 }.state_byte_size(), 24);
+    assert_eq!(KalmanOp { f: 1.0, h: 1.0, q: 0.01, r: 0.1 }.state_byte_size(), 32); // 3×f64 + i32 + 4B pad
+    assert_eq!(KalmanAffineOp::new(0.98, 1.0, 0.01, 0.1).state_byte_size(), 16);
     println!("  State byte sizes  PASS");
 }
 
@@ -214,7 +217,81 @@ fn test_gpu_launch() {
         n, max_mean_err, max_var_err, elapsed_us,
         if max_mean_err < 1e-4 && max_var_err < 1e-1 { "PASS" } else { "FAIL" });
 
+    // ── KalmanAffineOp: steady-state Kalman filter ──────────────
+    test_kalman_affine(&mut engine);
+
     println!("\n{}", "=".repeat(70));
     println!("GPU LAUNCH TESTS COMPLETE");
     println!("{}", "=".repeat(70));
+}
+
+fn test_kalman_affine(engine: &mut ScanEngine) {
+    println!("\n  --- KalmanAffineOp (exact steady-state Kalman) ---");
+
+    // Sequential reference: x[t] = A * x[t-1] + K_ss * z[t], x[-1] = 0
+    fn cpu_kalman_affine(data: &[f64], a: f64, k_ss: f64) -> Vec<f64> {
+        let mut result = Vec::with_capacity(data.len());
+        let mut x = 0.0;
+        for &z in data {
+            x = a * x + k_ss * z;
+            result.push(x);
+        }
+        result
+    }
+
+    // Test parameters: F=0.98, H=1.0, Q=0.01, R=0.1
+    let op = KalmanAffineOp::new(0.98, 1.0, 0.01, 0.1);
+    println!("  F=0.98, H=1.0, Q=0.01, R=0.1 -> K_ss={:.6}, A={:.6}", op.k_ss, op.a);
+
+    // Verify Riccati convergence: A = (1 - K_ss * H) * F
+    let a_check = (1.0 - op.k_ss * op.h) * op.f;
+    assert!((op.a - a_check).abs() < 1e-15, "A derivation mismatch");
+
+    // Small test: exact match against sequential
+    let n = 100;
+    let input: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.1).sin() * 10.0).collect();
+    let expected = cpu_kalman_affine(&input, op.a, op.k_ss);
+
+    let result = engine.scan_inclusive(&op, &input)
+        .expect("KalmanAffineOp scan failed");
+
+    let max_err: f64 = result.primary.iter().zip(&expected)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    println!("  Small (n={}): max_err={:.2e}  {}", n, max_err,
+        if max_err < 1e-10 { "PASS" } else { "FAIL" });
+    assert!(max_err < 1e-10, "Small KalmanAffineOp failed: max_err={}", max_err);
+
+    // Multi-block test
+    let n = 10_000;
+    let input: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.01).sin() * 50.0).collect();
+    let expected = cpu_kalman_affine(&input, op.a, op.k_ss);
+    let result = engine.scan_inclusive(&op, &input)
+        .expect("KalmanAffineOp medium scan failed");
+    let max_err: f64 = result.primary.iter().zip(&expected)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    println!("  Medium (n={}): max_err={:.2e}  {}", n, max_err,
+        if max_err < 1e-8 { "PASS" } else { "FAIL" });
+    assert!(max_err < 1e-8, "Medium KalmanAffineOp failed: max_err={}", max_err);
+
+    // FinTek size
+    let n = 100_000;
+    let input: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.001).sin() * 100.0).collect();
+    let expected = cpu_kalman_affine(&input, op.a, op.k_ss);
+    let t0 = std::time::Instant::now();
+    let result = engine.scan_inclusive(&op, &input)
+        .expect("KalmanAffineOp large scan failed");
+    let elapsed_us = t0.elapsed().as_micros();
+    let max_err: f64 = result.primary.iter().zip(&expected)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    println!("  Large (n={}): max_err={:.2e}  time={}us  {}",
+        n, max_err, elapsed_us,
+        if max_err < 1e-6 { "PASS" } else { "FAIL" });
+    assert!(max_err < 1e-6, "Large KalmanAffineOp failed: max_err={}", max_err);
+
+    // Verify state properties
+    assert_eq!(op.state_byte_size(), 16, "State should be 16 bytes (2 x f64)");
+    println!("  State: 16 bytes (2x f64), combine: 2 muls + 1 add  PASS");
 }

@@ -1238,3 +1238,117 @@ Entry 018 listed 3 blockers. #2 (CudaKernelDispatcher) is now resolved — Scan 
 
 ---
 
+## Entry 020 — KalmanAffineOp + Operator Family Gradient + FusedExpr Numerics
+
+**Date**: 2026-03-30
+**Type**: Correctness verification + performance measurement
+**Status**: Complete
+**Source**: `crates/winrapids-compiler/src/bench_kalman_affine.rs`, `crates/winrapids-compiler/src/main.rs` (Tests 8-10)
+
+### KalmanAffineOp Correctness
+
+**Riccati convergence**: F=0.98, H=1.0, Q=0.01, R=0.1 → K_ss=0.258087, A=0.727075
+
+| n | max_err | max_rel_err | Status |
+|---|---|---|---|
+| 100 | 1.78e-15 | 2.68e-16 | PASS |
+| 1,000 | 5.33e-15 | 4.63e-16 | PASS |
+| 10,000 | 5.33e-15 | 4.69e-16 | PASS |
+| 100,000 | 5.33e-15 | 5.49e-16 | PASS |
+
+Verified against sequential reference `x[t] = A*x[t-1] + K_ss*z[t]`. Machine epsilon accuracy. Error does NOT grow with n — the affine composition is numerically stable.
+
+### FusedExpr End-to-End Numerics (Tests 8-10)
+
+FusedExprEngine now dispatches on real GPU. All three specialists verified:
+
+| Specialist | Test | max_err | Status |
+|---|---|---|---|
+| rolling_mean | x=[1..100], w=3, mean[2]=2.0 exactly | 0.00e0 | PASS |
+| rolling_std | x=[1..100], w=3, std=sqrt(2/3) | 3.71e-13 | PASS |
+| rolling_zscore | x=[1..100], w=3, z=sqrt(3/2) | 5.57e-13 | PASS |
+| kalman_filter | x=[1..500]*0.01, F=0.98 | 1.78e-15 | PASS |
+
+The full pipeline now runs end-to-end on real GPU: Python → compile → plan → Scan(GPU) → FusedExpr(GPU) → result.
+
+### Operator Family: State Complexity → Dispatch Time
+
+| Operator | state_B | combine complexity | dispatch p01 | dispatch p50 |
+|---|---|---|---|---|
+| AddOp | 8 | 1 add | 37 us | 48 us |
+| KalmanAffineOp | 16 | 2 mul + 1 add | 39 us | 43 us |
+| WelfordOp | 24 | div + branch + 6 ops | 100 us | 101 us |
+| KalmanOp | 32 | div + branch + ~10 ops | 103 us | 106 us |
+
+(p01 shown because it's more stable than p50 on WDDM. n=100K, device-to-device, cached kernel.)
+
+**Finding**: The bottleneck is combine body complexity, NOT state size. Simple combines (adds/muls) cost ~40μs regardless of 8B or 16B state. Complex combines (division + branching) cost ~100μs regardless of 24B or 32B state. The step function is at the complexity boundary, not the size boundary.
+
+**Navigator's prediction (testable)**: A 24B-state operator with a simple combine (no division/branching) should cost ~40μs. No such operator exists yet — when one arrives, this can be verified.
+
+**KalmanOp vs KalmanAffineOp**: Both compute Kalman filtering. KalmanOp (covariance intersection, div + branch) = 132μs. KalmanAffineOp (affine composition, 2 mul + 1 add) = 47μs. **2.8x faster for the same computation** — the affine formulation eliminates the combine complexity bottleneck.
+
+### KalmanAffineOp Scaling
+
+| n | dispatch p50 |
+|---|---|
+| 1,000 | 47.1 us |
+| 10,000 | 40.5 us |
+| 100,000 | 42.4 us |
+| 500,000 | 56.3 us |
+| 1,000,000 | 73.7 us |
+
+Flat from 1K-100K (kernel launch floor), gentle slope at 500K-1M. Matches AddOp profile from Entry 019.
+
+### Bug Found + Fixed: KalmanOp sizeof Mismatch
+
+KalmanOp declared `state_byte_size() = 28` but CUDA `sizeof(state_t) = 32` (alignment padding on `{f64, f64, f64, i32}`). The sizeof validation in `ensure_module()` correctly panicked. **Fixed by navigator**: 28→32. KalmanOp now dispatches on GPU (Entry 020 addendum, 106μs p50 at 100K).
+
+### Demo Blocker Update
+
+Entry 018 listed 3 blockers. Now: #2 (CudaKernelDispatcher) resolved AND FusedExpr dispatches. The pipeline runs end-to-end on GPU for all E04 specialists. Remaining blockers: MKTF reader, persistent store Session API.
+
+---
+
+## Entry 021 — Family Overlap Claim: KalmanAffineOp ≠ EWMOp (Falsified)
+
+**Date**: 2026-03-30
+**Type**: Claim verification
+**Status**: Complete (claim falsified)
+**Source**: `crates/winrapids-compiler/src/verify_family_overlap.rs`
+
+### Claim Tested
+
+Naturalist Observation #26: "KalmanAffineOp with F=1, H=1 IS EWMOp with alpha=K_ss."
+
+### Result: FALSIFIED
+
+| Test | max_abs_err | bitwise matches |
+|---|---|---|
+| F=1, H=1, Q=0.01, R=0.1, n=10K | **10.5** | 0.0% |
+| Q=0.001, R=1.0 | 3.99 | 0.1% |
+| Q=0.1, R=0.1 | 3.80 | 0.1% |
+| Q=1.0, R=0.01 | 0.098 | 0.1% |
+
+Only element[0] matches (3.107 = 3.107). All subsequent elements diverge.
+
+### Root Cause
+
+The operators share the same decay constant (A = 1 - K_ss = 1 - alpha) but compute different quantities:
+
+- **KalmanAffineOp**: Computes exact state `x[t] = A*x[t-1] + K_ss*z[t]`. Extract = `b_acc` (direct state value). Parallel composition via affine map: `(A2*A1, A2*b1 + b2)`.
+
+- **EWMOp**: Computes weight-normalized running average. Extract = `value / weight`. Parallel composition decays left segment by `pow(1-alpha, b.count)` and normalizes by accumulated weight.
+
+The weight normalization in EWMOp's extract (`value / weight`) divides by a quantity that grows differently than KalmanAffineOp's unnormalized affine composition. At element 1: EWMOp divides by `(2 - alpha)`, KalmanAffineOp doesn't divide at all.
+
+### What the Operators Actually Share
+
+They share: the decay factor, the parameter space dimension, the sequential recurrence form.
+
+They don't share: the extract function, the normalization convention, numerical output.
+
+Families are **not** overlapping in operator output space. They are related in parameter space but structurally distinct in computation space. The trait captures both, but being in the same trait doesn't mean they're the same operator.
+
+---
+

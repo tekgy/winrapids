@@ -10,7 +10,7 @@
 //! Both engines share one CudaContext so scan output pointers are directly
 //! readable by fused_expr kernels without cross-context copies.
 
-use winrapids_scan::{ScanEngine, ScanDeviceOutput, AddOp, WelfordOp, EWMOp};
+use winrapids_scan::{ScanEngine, ScanDeviceOutput, AddOp, WelfordOp, EWMOp, KalmanAffineOp};
 use winrapids_scan::fused_expr::{FusedExprEngine, FusedExprOutput};
 use winrapids_scan::ops::AssociativeOp;
 use winrapids_store::header::BufferPtr;
@@ -98,6 +98,16 @@ fn parse_scan_op(params: &[(String, String)]) -> Result<Box<dyn AssociativeOp>, 
                 .map(|(_, v)| v.parse::<f64>())
                 .ok_or("EWM scan missing 'alpha' parameter")??;
             Ok(Box::new(EWMOp { alpha }))
+        }
+        "kalman_affine" => {
+            let get = |key: &str| -> Result<f64, Box<dyn std::error::Error>> {
+                params.iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, v)| v.parse::<f64>())
+                    .ok_or_else(|| -> Box<dyn std::error::Error> { format!("kalman_affine missing '{}' param", key).into() })?
+                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })
+            };
+            Ok(Box::new(KalmanAffineOp::new(get("F")?, get("H")?, get("Q")?, get("R")?)))
         }
         other => Err(format!("Unknown scan aggregation: {}", other).into()),
     }

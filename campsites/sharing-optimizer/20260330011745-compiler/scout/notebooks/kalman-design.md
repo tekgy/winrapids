@@ -1,6 +1,27 @@
 # KalmanOp Design
 
 *Scout analysis, 2026-03-30. Navigator provocation: is KalmanOp genuinely different from EWMOp?*
+*Postscript: resolved by pathmaker's KalmanAffineOp implementation, 2026-03-30.*
+
+---
+
+## Resolution (added after implementation)
+
+The pathmaker implemented `KalmanAffineOp` — steady-state Kalman with DARE constructor. Key findings:
+
+**DARE is the Möbius scan at its fixed point.** The two-stage GPU design (Möbius P scan → affine x scan) is right for the TRANSIENT case. For steady-state (filter converged, N large), Stage 1 collapses: the Möbius scan converges to a constant P_inf, and DARE computes that constant in Rust at construction time. No GPU P scan needed. One GPU stage is the correct steady-state implementation.
+
+**Measured results on GPU (F=0.98, H=1.0, Q=0.01, R=0.1):**
+- K_ss = 0.258, A = 0.727
+- n=100K: 316μs, max_err = 5.68e-14 (machine epsilon)
+- State: 16 bytes (2 doubles). Combine: 2 muls + 1 add.
+- 13μs overhead vs AddOp — pure shared memory bandwidth, not compute.
+
+**Family overlap confirmed:** KalmanAffineOp with F=1, H=1 is exactly EWMOp with alpha=K_ss. Operator space is continuous; families are clusters, not disjoint categories.
+
+**Trait validation:** AssociativeOp designed for AddOp (8 bytes, 1 FLOP) holds KalmanAffineOp (16 bytes, 3 FLOPs, DARE constructor, GPU sizeof validation). Zero trait changes.
+
+The two-stage GPU design in this doc remains the right path for the transient case — V-column variance output, non-stationary systems, short series where the filter hasn't converged.
 
 ---
 

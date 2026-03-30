@@ -717,6 +717,20 @@ AddOp              AffineKalmanOp (stage 2)       EKFOp                   Nonlin
 ```
 The co-input case is NOT the Fock boundary — each stage is individually liftable. The dependency is inter-stage ordering (DAG edge), not intra-stage sequentiality. The topological sort handles it.
 
+### Observation #26: Three Kalman Formulations — The Trait Holds All Three
+
+Three independent analyses produced three Kalman formulations. All fit AssociativeOp with zero trait changes:
+
+| Formulation | State | Combine | GPU-validated? |
+|---|---|---|---|
+| Full Särkkä | 5 doubles (40B) | 5 ops + division | No |
+| Precision | 4 doubles (32B) | 3 ops + division | No |
+| Steady-state affine | 2 doubles (16B) | 3 ops (mul+add) | Yes — 5.68e-14 at 100K |
+
+The pathmaker's steady-state form collapses the scout's two-stage pipeline: DARE solver runs at construction time in Rust, GPU sees only the trivial affine combine. 317μs for 100K on Blackwell.
+
+**~~Family overlap~~**: FALSIFIED by observer (lab notebook entry 021). KalmanAffineOp(F=1, H=1) and EWMOp(alpha=K_ss) share the same decay constant (A = 1-K_ss) but compute different quantities. KalmanAffineOp extracts `b_acc` (unnormalized state). EWMOp extracts `value/weight` (weight-normalized average). Divergence is structural (up to 10.5), not floating point. The operators are related in parameter space but distinct in computation space. Families share the trait, not necessarily computations.
+
 ### Watch Item: Per-Node Overhead Needs Experimental Confirmation
 
 The theoretical per-node cost is BLAKE3 (~100ns) + HashMap probe (O(1)). For a 1000-node plan, that's ~100μs of overhead before any GPU work starts. At FinTek scale (7.4M kernels reduced to ~60 fused launches, meaning ~60 plan nodes on a warm run), the overhead is ~6μs — deep in the noise.
@@ -724,6 +738,12 @@ The theoretical per-node cost is BLAKE3 (~100ns) + HashMap probe (O(1)). For a 1
 But the ~100ns estimate is a back-of-envelope number. BLAKE3 throughput depends on input size (provenance hashing takes `n_inputs * 16 bytes + computation_id string`). The HashMap probe depends on load factor and key distribution. The observer should clock this experimentally when the compiler is running end-to-end: measure wall time from "plan construction starts" to "first GPU launch dispatched." If it's under 1ms for FinTek-scale plans, the overhead is confirmed negligible. If not, the bottleneck needs investigation.
 
 This is not a concern at current scale. It's a measurement to have in pocket for when someone asks "what does the sharing optimizer cost?"
+
+### Watch Item: Mathematical Equivalences Across Families (E10)
+
+CSE catches syntactic duplicates (same identity hash). It does NOT catch mathematical equivalences across families. However, the observer falsified the KalmanAffine/EWM equivalence claim — they compute structurally different quantities despite sharing a decay constant. Apparent equivalences must be VERIFIED, not assumed from parameter relationships. The identity system is correct (different specifications ARE different entries), but the sharing is missed.
+
+For E10 specialist discovery: each new candidate should be checked against existing operators under parameter specialization. "Is this a new point in operator space, or an existing point via a different path?" Option 1 (document equivalences, enforce by convention) now. Option 2 (canonical alias mapping in SpecialistRecipe) when there are enough aliases to justify the machinery.
 
 *— Naturalist, 2026-03-30 (continued)*
 

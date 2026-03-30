@@ -277,7 +277,7 @@ impl AssociativeOp for KalmanOp {
         format!("F={:.10},H={:.10},Q={:.10},R={:.10}", self.f, self.h, self.q, self.r)
     }
 
-    fn state_byte_size(&self) -> usize { 28 } // f64(8) + f64(8) + f64(8) + i32(4)
+    fn state_byte_size(&self) -> usize { 32 } // f64(8) + f64(8) + f64(8) + i32(4) + 4B padding = 32
 
     fn cuda_lift_body(&self) -> String {
         // Each observation z is lifted into a Kalman state.
@@ -413,5 +413,113 @@ impl AssociativeOp for EWMOp {
     return result;"#,
             alpha = self.alpha
         )
+    }
+}
+
+// ============================================================
+// KalmanAffineOp — exact steady-state Kalman via affine scan
+//
+// State: { a_acc: f64, b_acc: f64 } — 16 bytes, two doubles
+//
+// The steady-state Kalman recurrence is:
+//   x[t] = A * x[t-1] + K_ss * z[t]
+// where A = (1 - K_ss * H) * F and K_ss is the steady-state
+// Kalman gain from the discrete algebraic Riccati equation.
+//
+// This is an AFFINE MAP: x → A*x + b where b = K_ss * z[t].
+// Affine maps compose associatively:
+//   (A2, b2) ∘ (A1, b1) = (A2*A1, A2*b1 + b2)
+//
+// Combine cost: 2 multiplies + 1 add. No pow(), no division,
+// no covariance intersection. Trivially associative.
+//
+// At F=1, H=1: shares decay constant with EWMOp(alpha=K_ss)
+// but NOT equivalent — different extract semantics (unnormalized
+// state vs weight-normalized average). Verified: diverges by up
+// to 10.5 at n=10K. See lab notebook Entry 021.
+//
+// Parameters: F (dynamics), H (observation), Q (process noise),
+//             R (observation noise). Constructor solves Riccati
+//             to get K_ss and A.
+// ============================================================
+
+pub struct KalmanAffineOp {
+    pub f: f64,
+    pub h: f64,
+    pub q: f64,
+    pub r: f64,
+    /// Steady-state Kalman gain (from Riccati convergence).
+    pub k_ss: f64,
+    /// State transition after update: A = (1 - K_ss * H) * F.
+    pub a: f64,
+}
+
+impl KalmanAffineOp {
+    /// Construct from dynamics parameters. Solves the discrete algebraic
+    /// Riccati equation iteratively to find the steady-state gain K_ss.
+    pub fn new(f: f64, h: f64, q: f64, r: f64) -> Self {
+        // Iterate Riccati to convergence (1D scalar, converges in ~50 iterations)
+        let mut p = 1.0;
+        for _ in 0..1000 {
+            let p_pred = f * p * f + q;
+            let k = p_pred * h / (h * p_pred * h + r);
+            p = (1.0 - k * h) * p_pred;
+        }
+        // Final K_ss from converged P
+        let p_pred = f * p * f + q;
+        let k_ss = p_pred * h / (h * p_pred * h + r);
+        let a = (1.0 - k_ss * h) * f;
+        Self { f, h, q, r, k_ss, a }
+    }
+}
+
+impl AssociativeOp for KalmanAffineOp {
+    fn name(&self) -> &'static str { "kalman_affine" }
+
+    fn cuda_state_type(&self) -> String {
+        r#"struct KalmanAffineState { double a_acc; double b_acc; }"#.into()
+    }
+
+    fn cuda_identity(&self) -> String {
+        "{1.0, 0.0}".into()
+    }
+
+    fn cuda_combine(&self) -> String {
+        // Not used — cuda_combine_body overrides
+        String::new()
+    }
+
+    fn cuda_lift_element(&self) -> String {
+        // Not used — cuda_lift_body overrides
+        String::new()
+    }
+
+    fn cuda_extract(&self) -> String {
+        "s.b_acc".into()
+    }
+
+    fn params_key(&self) -> String {
+        format!("F={:.10}_H={:.10}_Q={:.10}_R={:.10}", self.f, self.h, self.q, self.r)
+    }
+
+    fn state_byte_size(&self) -> usize { 16 } // 2 × f64
+
+    fn cuda_lift_body(&self) -> String {
+        format!(
+            r#"    state_t s;
+    s.a_acc = {a};
+    s.b_acc = {k_ss} * x;
+    return s;"#,
+            a = self.a, k_ss = self.k_ss
+        )
+    }
+
+    fn cuda_combine_body(&self) -> String {
+        // Affine composition: (b ∘ a)(x) = b.a * (a.a * x + a.b) + b.b
+        // = (b.a * a.a) * x + (b.a * a.b + b.b)
+        r#"    state_t result;
+    result.a_acc = b.a_acc * a.a_acc;
+    result.b_acc = b.a_acc * a.b_acc + b.b_acc;
+    return result;"#.into()
     }
 }

@@ -35,6 +35,7 @@ fn main() {
     test_provenance_reuse();
     test_cuda_dispatch();
     test_fused_expr_numerics();
+    test_kalman_filter();
 
     println!("\n{}", "=".repeat(70));
     println!("ALL COMPILER TESTS PASSED");
@@ -514,4 +515,85 @@ fn test_fused_expr_numerics() {
     }
 
     println!("  PASS: rolling_mean, rolling_std, rolling_zscore numerically correct on GPU");
+}
+
+fn test_kalman_filter() {
+    println!("\n--- Test 10: kalman_filter end-to-end (KalmanAffineOp, machine epsilon) ---");
+
+    // kalman_filter is a single scan with agg=kalman_affine.
+    // Parameters (matching registry defaults): F=0.98, H=1.0, Q=0.01, R=0.1
+    // KalmanAffineOp bakes k_ss and a from the DARE solution.
+    //
+    // Ground-truth: compute the sequential Kalman filter on CPU and compare.
+    // Machine-epsilon accuracy is expected (max_err < 1e-9 against CPU reference).
+
+    let f = 0.98f64;
+    let h = 1.0f64;
+    let q = 0.01f64;
+    let r = 0.1f64;
+    let n = 500usize;
+
+    // Smooth ramp signal — no surprises in numerical conditioning
+    let host_data: Vec<f64> = (1..=n as u64).map(|x| x as f64 * 0.01).collect();
+
+    // CPU reference: sequential steady-state Kalman (same DARE solve used by KalmanAffineOp)
+    let mut p = 1.0f64;
+    for _ in 0..1000 {
+        let p_pred = f * p * f + q;
+        let k = p_pred * h / (h * p_pred * h + r);
+        p = (1.0 - k * h) * p_pred;
+    }
+    let p_pred_ss = f * p * f + q;
+    let k_ss = p_pred_ss * h / (h * p_pred_ss * h + r);
+    let a_ss = (1.0 - k_ss * h) * f;
+
+    let mut cpu_ref = vec![0.0f64; n];
+    let mut state = 0.0f64;
+    for i in 0..n {
+        state = a_ss * state + k_ss * host_data[i];
+        cpu_ref[i] = state;
+    }
+
+    // GPU path via the compiler + CudaKernelDispatcher
+    let mut dispatcher = CudaKernelDispatcher::new()
+        .expect("CudaKernelDispatcher failed");
+    let stream = dispatcher.engine().stream().clone();
+
+    let data_dev = stream.clone_htod(&host_data).expect("htod data");
+    let (data_ptr, _guard) = data_dev.device_ptr(&stream);
+    let byte_size = (n * 8) as u64;
+
+    let registry = build_e04_registry();
+    let spec = PipelineSpec {
+        calls: vec![SpecialistCall {
+            specialist: "kalman_filter".into(),
+            data_var: "price".into(),
+            window: 0,  // kalman_filter ignores window — params are baked into DARE
+        }],
+    };
+    let exec_plan = plan(&spec, &registry, &mut NullWorld, None);
+
+    let mut data_ptrs = HashMap::new();
+    data_ptrs.insert("data:price".into(), BufferPtr { device_ptr: data_ptr, byte_size });
+
+    let (results, stats) = execute(&exec_plan, &mut NullWorld, &mut dispatcher, &data_ptrs)
+        .expect("kalman_filter execute failed");
+
+    println!("  Plan: {} steps, {} misses", exec_plan.steps.len(), stats.misses);
+
+    let out_identity = exec_plan.outputs.get(&(0, "out".to_string())).expect("no output");
+    let out_result = results.get(out_identity).expect("no result for output");
+    let out_host = unsafe { dispatcher.copy_to_host(out_result.ptr) }.expect("dtoh");
+
+    let max_err = out_host.iter().zip(cpu_ref.iter())
+        .map(|(&gpu, &cpu)| (gpu - cpu).abs())
+        .fold(0.0f64, f64::max);
+
+    println!("  GPU[0]={:.8}  CPU[0]={:.8}", out_host[0], cpu_ref[0]);
+    println!("  GPU[499]={:.8}  CPU[499]={:.8}", out_host[n-1], cpu_ref[n-1]);
+    println!("  max_err={:.2e}", max_err);
+
+    assert_eq!(stats.total_steps, 1, "kalman_filter has 1 step (scan only)");
+    assert!(max_err < 1e-9, "kalman_filter max_err={} exceeds 1e-9 tolerance", max_err);
+    println!("  PASS: kalman_filter matches CPU reference at machine epsilon");
 }

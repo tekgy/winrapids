@@ -24,3 +24,11 @@ path = "src/bench_gpu_dispatch.rs"
 [[bin]]
 name = "verify-device-scan"
 path = "src/verify_device_scan.rs"
+
+[[bin]]
+name = "bench-kalman-affine"
+path = "src/bench_kalman_affine.rs"
+
+[[bin]]
+name = "verify-family-overlap"
+path = "src/verify_family_overlap.rs"

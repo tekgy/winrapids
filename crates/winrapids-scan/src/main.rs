@@ -4,7 +4,7 @@
 //! Part 2: GPU launch + correctness verification (requires CUDA device).
 
 use winrapids_scan::ops::*;
-use winrapids_scan::KalmanAffineOp;
+use winrapids_scan::{KalmanAffineOp, SarkkaOp};
 use winrapids_scan::engine::{generate_scan_kernel, generate_multiblock_scan};
 use winrapids_scan::launch::ScanEngine;
 
@@ -84,6 +84,7 @@ fn test_operator_properties() {
     assert_eq!(EWMOp::new(0.1).state_byte_size(), 24);
     assert_eq!(KalmanOp { f: 1.0, h: 1.0, q: 0.01, r: 0.1 }.state_byte_size(), 32); // 3×f64 + i32 + 4B pad
     assert_eq!(KalmanAffineOp::new(0.98, 1.0, 0.01, 0.1).state_byte_size(), 16);
+    assert_eq!(SarkkaOp::new(0.98, 1.0, 0.01, 0.1).state_byte_size(), 40);
     println!("  State byte sizes  PASS");
 }
 
@@ -220,6 +221,9 @@ fn test_gpu_launch() {
     // ── KalmanAffineOp: steady-state Kalman filter ──────────────
     test_kalman_affine(&mut engine);
 
+    // ── SarkkaOp: full Särkkä 5-tuple Kalman ─────────────────
+    test_sarkka(&mut engine);
+
     println!("\n{}", "=".repeat(70));
     println!("GPU LAUNCH TESTS COMPLETE");
     println!("{}", "=".repeat(70));
@@ -294,4 +298,106 @@ fn test_kalman_affine(engine: &mut ScanEngine) {
     // Verify state properties
     assert_eq!(op.state_byte_size(), 16, "State should be 16 bytes (2 x f64)");
     println!("  State: 16 bytes (2x f64), combine: 2 muls + 1 add  PASS");
+}
+
+fn test_sarkka(engine: &mut ScanEngine) {
+    println!("\n  --- SarkkaOp (Särkkä 5-tuple, exact from step 1) ---");
+
+    // Sequential Kalman filter reference — the gold standard.
+    // This runs the full predict-update cycle, NOT steady-state.
+    // SarkkaOp must match this from step 1, not just after convergence.
+    fn cpu_kalman_sequential(data: &[f64], f: f64, h: f64, q: f64, r: f64) -> (Vec<f64>, Vec<f64>) {
+        let mut xs = Vec::with_capacity(data.len());
+        let mut ps = Vec::with_capacity(data.len());
+        let mut x = 0.0_f64; // initial state
+        let mut p = 0.0_f64; // initial covariance (certain at zero)
+        for &z in data {
+            // Predict
+            let x_pred = f * x;
+            let p_pred = f * p * f + q;
+            // Update
+            let s = h * p_pred * h + r; // innovation covariance
+            let k = p_pred * h / s;     // Kalman gain
+            x = x_pred + k * (z - h * x_pred);
+            p = (1.0 - k * h) * p_pred;
+            xs.push(x);
+            ps.push(p);
+        }
+        (xs, ps)
+    }
+
+    let f = 0.98;
+    let h = 1.0;
+    let q = 0.01;
+    let r = 0.1;
+    let op = SarkkaOp::new(f, h, q, r);
+    println!("  F={}, H={}, Q={}, R={}", f, h, q, r);
+
+    // Small test: exact match from step 1
+    let n = 100;
+    let input: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.1).sin() * 10.0).collect();
+    let (expected_x, expected_p) = cpu_kalman_sequential(&input, f, h, q, r);
+
+    let result = engine.scan_inclusive(&op, &input)
+        .expect("SarkkaOp scan failed");
+    assert!(!result.secondary.is_empty(), "SarkkaOp should produce secondary output (P)");
+
+    let max_x_err: f64 = result.primary.iter().zip(&expected_x)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    let max_p_err: f64 = result.secondary[0].iter().zip(&expected_p)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+
+    println!("  Small (n={}): x_err={:.2e}  p_err={:.2e}  {}",
+        n, max_x_err, max_p_err,
+        if max_x_err < 1e-10 && max_p_err < 1e-10 { "PASS" } else { "FAIL" });
+
+    // Print first few values for debugging
+    println!("\n  Step-by-step comparison (first 10):");
+    for i in 0..10.min(n) {
+        println!("    [{}] gpu_x={:.10e}  cpu_x={:.10e}  x_diff={:.2e}  gpu_p={:.6e}  cpu_p={:.6e}  p_diff={:.2e}",
+            i, result.primary[i], expected_x[i],
+            (result.primary[i] - expected_x[i]).abs(),
+            result.secondary[0][i], expected_p[i],
+            (result.secondary[0][i] - expected_p[i]).abs());
+    }
+
+    assert!(max_x_err < 1e-8, "Small SarkkaOp x failed: max_err={}", max_x_err);
+    assert!(max_p_err < 1e-8, "Small SarkkaOp P failed: max_err={}", max_p_err);
+
+    // Multi-block test
+    let n = 10_000;
+    let input: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.01).sin() * 50.0).collect();
+    let (expected_x, expected_p) = cpu_kalman_sequential(&input, f, h, q, r);
+    let result = engine.scan_inclusive(&op, &input)
+        .expect("SarkkaOp medium scan failed");
+    let max_x_err: f64 = result.primary.iter().zip(&expected_x)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    let max_p_err: f64 = result.secondary[0].iter().zip(&expected_p)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    println!("\n  Medium (n={}): x_err={:.2e}  p_err={:.2e}  {}",
+        n, max_x_err, max_p_err,
+        if max_x_err < 1e-6 && max_p_err < 1e-6 { "PASS" } else { "FAIL" });
+
+    // Benchmark at 100K
+    let n = 100_000;
+    let input: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.001).sin() * 100.0).collect();
+    let (expected_x, _expected_p) = cpu_kalman_sequential(&input, f, h, q, r);
+    let t0 = std::time::Instant::now();
+    let result = engine.scan_inclusive(&op, &input)
+        .expect("SarkkaOp large scan failed");
+    let elapsed_us = t0.elapsed().as_micros();
+    let max_x_err: f64 = result.primary.iter().zip(&expected_x)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    println!("  Large (n={}): x_err={:.2e}  time={}us  {}",
+        n, max_x_err, elapsed_us,
+        if max_x_err < 1e-4 { "PASS" } else { "FAIL" });
+
+    // Verify state properties
+    assert_eq!(op.state_byte_size(), 40, "State should be 40 bytes (5 x f64)");
+    println!("  State: 40 bytes (5x f64), combine: 1 division + muls/adds  PASS");
 }

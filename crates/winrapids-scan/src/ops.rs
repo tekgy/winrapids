@@ -481,6 +481,139 @@ impl AssociativeOp for EWMOp {
 }
 
 // ============================================================
+// SarkkaOp — Särkkä 5-tuple parallel Kalman filter
+//
+// State: { A: f64, b: f64, C: f64, eta: f64, J: f64 } — 40 bytes
+//
+// The full Särkkä & García-Fernández (2021) formulation for scalar
+// Kalman filtering via associative scan. Unlike KalmanAffineOp (which
+// requires Riccati pre-convergence), this carries the full covariance
+// propagation in the scan state — exact from step 1.
+//
+// The 5-tuple encodes the conditional p(x_t | x_{s-1}, z_{s:t}):
+//   Forward:  x_t | x_{s-1} ~ N(A * x_{s-1} + b, C)
+//   Backward: exp(η * x_{s-1} - ½ J * x_{s-1}²)
+//
+// Each element's lift pre-folds the measurement into the predict step.
+// Given D = R + H²Q, a single timestep with observation z produces:
+//   A = FR/D,  b = HQz/D,  C = QR/D,  η = HFz/D,  J = H²F²/D
+//
+// After inclusive scan with x₀ = 0:
+//   x_t = b_combined  (posterior state estimate)
+//   P_t = C_combined  (posterior error covariance)
+//
+// Combine: 1 division (inv_denom = 1/(1 + C_a·J_b)), rest muls/adds.
+// No branching. Branch-free by construction.
+//
+// Parameters: F (dynamics), H (observation), Q (process noise),
+//             R (observation noise).
+// ============================================================
+
+pub struct SarkkaOp {
+    pub f: f64,
+    pub h: f64,
+    pub q: f64,
+    pub r: f64,
+    // Precomputed lift constants (avoid per-element division on GPU)
+    lift_a: f64,
+    lift_b_coeff: f64,
+    lift_c: f64,
+    lift_eta_coeff: f64,
+    lift_j: f64,
+}
+
+impl SarkkaOp {
+    pub fn new(f: f64, h: f64, q: f64, r: f64) -> Self {
+        let d = r + h * h * q;
+        Self {
+            f, h, q, r,
+            lift_a: f * r / d,
+            lift_b_coeff: h * q / d,
+            lift_c: q * r / d,
+            lift_eta_coeff: h * f / d,
+            lift_j: h * h * f * f / d,
+        }
+    }
+}
+
+impl AssociativeOp for SarkkaOp {
+    fn name(&self) -> &'static str { "sarkka" }
+
+    fn cuda_state_type(&self) -> String {
+        r#"struct SarkkaState { double A; double b; double C; double eta; double J; }"#.into()
+    }
+
+    fn cuda_identity(&self) -> String {
+        "{1.0, 0.0, 0.0, 0.0, 0.0}".into()
+    }
+
+    fn cuda_combine(&self) -> String {
+        String::new() // overridden by cuda_combine_body
+    }
+
+    fn cuda_lift_element(&self) -> String {
+        String::new() // overridden by cuda_lift_body
+    }
+
+    fn cuda_extract(&self) -> String {
+        // With x₀ = 0: x_t = A·0 + b = b
+        "s.b".into()
+    }
+
+    fn output_width(&self) -> usize { 2 }
+
+    fn cuda_extract_secondary(&self) -> Vec<String> {
+        // Posterior covariance is directly C (measurement already folded into lift)
+        vec!["s.C".into()]
+    }
+
+    fn params_key(&self) -> String {
+        format!("F={:.10}_H={:.10}_Q={:.10}_R={:.10}", self.f, self.h, self.q, self.r)
+    }
+
+    fn state_byte_size(&self) -> usize { 40 } // 5 × f64
+
+    fn cuda_lift_body(&self) -> String {
+        // Lift with measurement pre-folded. Constants precomputed from D = R + H²Q.
+        format!(
+            r#"    state_t s;
+    s.A = {lift_a};
+    s.b = {lift_b_coeff} * x;
+    s.C = {lift_c};
+    s.eta = {lift_eta_coeff} * x;
+    s.J = {lift_j};
+    return s;"#,
+            lift_a = self.lift_a,
+            lift_b_coeff = self.lift_b_coeff,
+            lift_c = self.lift_c,
+            lift_eta_coeff = self.lift_eta_coeff,
+            lift_j = self.lift_j,
+        )
+    }
+
+    fn cuda_combine_body(&self) -> String {
+        // Särkkä & García-Fernández (2021) scalar combine.
+        // Element a = earlier (left), element b = later (right).
+        //
+        // Forward (A, b, C): standard affine-Gaussian composition.
+        // Backward (η, J): information about x_{s-1} from z_{s:t}.
+        //   η propagates b's measurement info back through a's dynamics,
+        //   corrected by -J_b·b_a (the offset shifts the information center).
+        //   J propagates quadratically through A_a² (precision scales as square).
+        //
+        // 1 division, 11 multiplies, 6 adds. Branch-free.
+        r#"    double inv_d = 1.0 / (1.0 + a.C * b.J);
+    state_t result;
+    result.A = inv_d * b.A * a.A;
+    result.b = inv_d * b.A * (a.b + a.C * b.eta) + b.b;
+    result.C = inv_d * b.A * b.A * a.C + b.C;
+    result.eta = a.eta + inv_d * a.A * (b.eta - b.J * a.b);
+    result.J = a.J + inv_d * a.A * a.A * b.J;
+    return result;"#.into()
+    }
+}
+
+// ============================================================
 // KalmanAffineOp — exact steady-state Kalman via affine scan
 //
 // State: { a_acc: f64, b_acc: f64 } — 16 bytes, two doubles

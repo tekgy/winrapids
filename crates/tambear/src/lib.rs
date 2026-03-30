@@ -50,6 +50,7 @@ pub mod frame;
 pub mod group_index;
 pub mod hash_scatter;
 pub mod stats;
+pub mod tb_io;
 
 pub use dictionary::Dictionary;
 pub use format::{
@@ -61,3 +62,4 @@ pub use format::{
 pub use frame::{Column, ColumnEncoding, DType, Frame};
 pub use group_index::GroupIndex;
 pub use hash_scatter::{HashScatterEngine, GroupByResult};
+pub use tb_io::{TbFile, TbColumnWrite, write_tb};

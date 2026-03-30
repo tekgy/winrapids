@@ -1,0 +1,17 @@
+[package]
+name = "winrapids-compiler"
+version = "0.1.0"
+edition = "2021"
+description = "Pipeline compiler: spec → primitive DAG → CSE → execution plan. The sharing optimizer's brain."
+
+[dependencies]
+blake3 = "1"
+winrapids-store = { path = "../winrapids-store" }
+
+[[bin]]
+name = "compiler-test"
+path = "src/main.rs"
+
+[[bin]]
+name = "bench-compiler"
+path = "src/bench_compiler.rs"

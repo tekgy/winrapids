@@ -1,0 +1,16 @@
+[package]
+name = "winrapids-store"
+version = "0.1.0"
+edition = "2021"
+description = "Persistent GPU store with provenance tracking. The sharing optimizer's memory."
+
+[dependencies]
+blake3 = "1"
+
+[[bin]]
+name = "store-test"
+path = "src/main.rs"
+
+[[bin]]
+name = "bench-hit-miss"
+path = "src/bench_hit_miss.rs"

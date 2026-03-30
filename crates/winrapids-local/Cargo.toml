@@ -1,0 +1,12 @@
+[package]
+name = "winrapids-local"
+version = "0.1.0"
+edition = "2021"
+description = "Local context primitive — multi-offset gather + fused features in one kernel. The most-used primitive for time series."
+
+[dependencies]
+blake3 = "1"
+
+[[bin]]
+name = "local-test"
+path = "src/main.rs"

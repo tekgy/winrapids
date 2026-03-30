@@ -51,6 +51,22 @@ pub trait AssociativeOp: Send + Sync {
     /// Parameters that affect the kernel (for cache key uniqueness).
     /// e.g., EWMOp includes alpha.
     fn params_key(&self) -> String { String::new() }
+
+    /// Size of the state type in bytes. Used for device memory allocation.
+    /// Default: 8 (scalar double). Override for struct states.
+    fn state_byte_size(&self) -> usize { 8 }
+
+    /// CUDA function body for lift_element. Override for struct states
+    /// that need C++-compatible initialization (no compound literals).
+    fn cuda_lift_body(&self) -> String {
+        format!("    state_t s = {};\n    return s;", self.cuda_lift_element())
+    }
+
+    /// CUDA function body for combine_states. Override for struct states
+    /// that need multi-statement combine logic (no GCC statement expressions).
+    fn cuda_combine_body(&self) -> String {
+        format!("    state_t result = {};\n    return result;", self.cuda_combine())
+    }
 }
 
 // ============================================================
@@ -160,14 +176,38 @@ impl AssociativeOp for WelfordOp {
     fn cuda_extract_secondary(&self) -> Vec<String> {
         vec!["(s.count > 1 ? s.m2 / (double)(s.count - 1) : 0.0)".into()] // variance
     }
+
+    fn state_byte_size(&self) -> usize { 24 } // i64(8) + f64(8) + f64(8)
+
+    fn cuda_lift_body(&self) -> String {
+        r#"    state_t s;
+    s.count = 1;
+    s.mean = x;
+    s.m2 = 0.0;
+    return s;"#.into()
+    }
+
+    fn cuda_combine_body(&self) -> String {
+        r#"    long long n = a.count + b.count;
+    double delta = b.mean - a.mean;
+    double mean = (n == 0) ? 0.0 : a.mean + delta * (double)b.count / (double)n;
+    double m2 = a.m2 + b.m2 + delta * delta * (double)a.count * (double)b.count / (double)n;
+    state_t result;
+    result.count = n;
+    result.mean = mean;
+    result.m2 = m2;
+    return result;"#.into()
+    }
 }
 
 // ============================================================
 // EWMOp — exponential weighted mean
 //
-// State: { weight_sum: f64, value_sum: f64 }
+// State: { weight: f64, value: f64, count: i64 }
 // Recurrence: s[t] = alpha * x[t] + (1 - alpha) * s[t-1]
-// Associative form: combine partial weighted sums.
+// Associative form: combine partial weighted sums, decaying
+// the earlier segment by pow(1-alpha, b.count) — the length
+// of the later segment.
 // ============================================================
 
 pub struct EWMOp {
@@ -178,28 +218,30 @@ impl AssociativeOp for EWMOp {
     fn name(&self) -> &'static str { "ewm" }
 
     fn cuda_state_type(&self) -> String {
-        r#"struct EWMState { double weight; double value; }"#.into()
+        r#"struct EWMState { double weight; double value; long long count; }"#.into()
     }
 
     fn cuda_identity(&self) -> String {
-        "{0.0, 0.0}".into()
+        "{0.0, 0.0, 0}".into()
     }
 
     fn cuda_combine(&self) -> String {
         // EWM merge: the later segment's weights decay the earlier segment.
         // a is the earlier (left) partial, b is the later (right) partial.
-        // The decay factor for a's contribution through b's length is b.weight.
+        // The decay factor is pow(1-alpha, b.count) — the length of b's segment.
         format!(
             r#"({{
-                double decay = pow(1.0 - {alpha}, (double)1);
-                (EWMState){{ a.weight * decay + b.weight, a.value * decay + b.value }};
+                double decay = pow(1.0 - {alpha}, (double)b.count);
+                (EWMState){{ a.weight * decay + b.weight,
+                             a.value  * decay + b.value,
+                             a.count + b.count }};
             }})"#,
             alpha = self.alpha
         )
     }
 
     fn cuda_lift_element(&self) -> String {
-        format!("(EWMState){{1.0, x * {alpha}}}", alpha = self.alpha)
+        format!("(EWMState){{1.0, x * {alpha}, 1LL}}", alpha = self.alpha)
     }
 
     fn cuda_extract(&self) -> String {
@@ -208,5 +250,26 @@ impl AssociativeOp for EWMOp {
 
     fn params_key(&self) -> String {
         format!("alpha={:.10}", self.alpha)
+    }
+
+    fn state_byte_size(&self) -> usize { 24 } // f64(8) + f64(8) + i64(8)
+
+    fn cuda_lift_body(&self) -> String {
+        format!(
+            "    state_t s;\n    s.weight = 1.0;\n    s.value = x * {alpha};\n    s.count = 1;\n    return s;",
+            alpha = self.alpha
+        )
+    }
+
+    fn cuda_combine_body(&self) -> String {
+        format!(
+            r#"    double decay = pow(1.0 - {alpha}, (double)b.count);
+    state_t result;
+    result.weight = a.weight * decay + b.weight;
+    result.value = a.value * decay + b.value;
+    result.count = a.count + b.count;
+    return result;"#,
+            alpha = self.alpha
+        )
     }
 }

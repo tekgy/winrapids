@@ -1,0 +1,14 @@
+[package]
+name = "winrapids-py"
+version = "0.1.0"
+edition = "2021"
+description = "PyO3 bindings for WinRapids — the 10-line pipeline API."
+
+[lib]
+name = "_winrapids_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["extension-module"] }
+winrapids-compiler = { path = "../winrapids-compiler" }
+winrapids-store = { path = "../winrapids-store" }

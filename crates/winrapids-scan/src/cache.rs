@@ -61,13 +61,50 @@ impl KernelCache {
         Ok(ptx)
     }
 
+    /// Compile a pre-generated CUDA source string with a given cache key.
+    /// Used by the launch module for multi-block scan kernels.
+    pub fn compile_source(
+        &mut self,
+        source: &str,
+        key: &str,
+    ) -> Result<Ptx, Box<dyn std::error::Error>> {
+        // Check in-memory cache
+        if let Some(ptx) = self.memory.get(key) {
+            return Ok(ptx.clone());
+        }
+
+        // Check disk cache
+        let disk_path = self.cache_dir.join(format!("{}.ptx", &key[..16]));
+        if disk_path.exists() {
+            let ptx_bytes = std::fs::read_to_string(&disk_path)?;
+            let ptx = Ptx::from_src(ptx_bytes);
+            self.memory.insert(key.to_string(), ptx.clone());
+            return Ok(ptx);
+        }
+
+        // Compile via NVRTC
+        let opts = CompileOptions {
+            arch: Some("sm_120"),
+            ..Default::default()
+        };
+        let ptx = compile_ptx_with_opts(source, opts)?;
+
+        // Save to disk cache
+        std::fs::write(&disk_path, ptx.to_src()).ok();
+
+        // Save to memory cache
+        self.memory.insert(key.to_string(), ptx.clone());
+        Ok(ptx)
+    }
+
     /// Generate CUDA source without compiling (for inspection/testing).
     pub fn generate_source(&self, op: &dyn AssociativeOp) -> String {
         generate_scan_kernel(op)
     }
 }
 
-fn cache_key(op: &dyn AssociativeOp, source: &str) -> String {
+/// Compute cache key for an operator + source pair.
+pub fn cache_key(op: &dyn AssociativeOp, source: &str) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(op.name().as_bytes());
     hasher.update(op.params_key().as_bytes());

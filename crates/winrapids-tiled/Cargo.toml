@@ -1,0 +1,12 @@
+[package]
+name = "winrapids-tiled"
+version = "0.1.0"
+edition = "2021"
+description = "Tiled accumulation primitive — 2D blocked reduction with pluggable operators. GEMM, FlashAttention, PCA covariance, KNN distance."
+
+[dependencies]
+blake3 = "1"
+
+[[bin]]
+name = "tiled-test"
+path = "src/main.rs"

@@ -11,3 +11,15 @@ blake3 = "1"
 [[bin]]
 name = "scan-test"
 path = "src/main.rs"
+
+[[bin]]
+name = "bench-scan-engine"
+path = "src/bench_scan_engine.rs"
+
+[[bin]]
+name = "verify-correctness"
+path = "src/verify_correctness.rs"
+
+[[bin]]
+name = "bench-kernel-time"
+path = "src/bench_kernel_time.rs"

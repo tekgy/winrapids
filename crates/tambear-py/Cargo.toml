@@ -1,0 +1,13 @@
+[package]
+name = "tambear-py"
+version = "0.1.0"
+edition = "2021"
+description = "Python bindings for tambear. import tambear as tb"
+
+[lib]
+name = "_tambear"
+crate-type = ["cdylib"]
+
+[dependencies]
+tambear = { path = "../tambear" }
+pyo3 = { version = "0.22", features = ["extension-module"] }

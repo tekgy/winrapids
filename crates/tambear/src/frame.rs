@@ -115,7 +115,7 @@ impl Frame {
             group_indices: HashMap::new(),
             row_mask: None,
             pipeline_dtype,
-            stream: Arc::new(stream),
+            stream,
         })
     }
 

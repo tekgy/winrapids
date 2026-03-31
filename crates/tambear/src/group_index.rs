@@ -45,6 +45,17 @@ use crate::frame::{Column, DType};
 ///
 /// Never conflate these. `accumulator_size` enables no-counting-pass allocation.
 /// `n_active` is the result of computation, not a prerequisite for it.
+///
+/// ## Gather support
+///
+/// `group_offsets` and `rows_by_group` enable the gather-scan-scatter pipeline
+/// for sort-free segmented scans (e.g., per-ticker EWM without sorting by ticker).
+///
+/// `group_offsets[g]` = starting index in `rows_by_group` for group g.
+/// `rows_by_group[group_offsets[g]..group_offsets[g+1]]` = row indices of group g,
+/// in temporal order (preserving the original row ordering within each group).
+///
+/// See: campsites/tambear-build/20260331-segmented-scan-architecture/
 pub struct GroupIndex {
     /// Which group each row belongs to. Length = n_rows.
     /// Primary input to every scatter operation on this column.
@@ -53,6 +64,16 @@ pub struct GroupIndex {
     /// Per-group row counts. Length = accumulator_size.
     /// group_counts[g] = number of rows with key == g. 0 for absent groups.
     pub group_counts: CudaSlice<u32>,
+    /// Prefix sum of group_counts. Length = accumulator_size + 1.
+    /// group_offsets[g]   = start of group g in rows_by_group.
+    /// group_offsets[g+1] = end of group g in rows_by_group (= group_offsets[g] + group_counts[g]).
+    /// group_offsets[accumulator_size] = n_rows (total rows, as a convenient sentinel).
+    pub group_offsets: CudaSlice<u32>,
+    /// Inverted index: row indices sorted by group, preserving within-group order.
+    /// Length = n_rows. rows_by_group[group_offsets[g]..group_offsets[g+1]] are
+    /// the row indices belonging to group g, in their original (temporal) order.
+    /// Enables O(n) gather: `gathered[i] = values[rows_by_group[i]]`.
+    pub rows_by_group: CudaSlice<u32>,
     /// Accumulator array size = max_key + 1. From .tb header.
     /// Scatter accumulators are ALWAYS this size — no counting pass needed.
     pub accumulator_size: usize,
@@ -138,15 +159,44 @@ impl GroupIndex {
         // Count active groups (groups with at least one row).
         let n_active = group_counts_cpu.iter().filter(|&&c| c > 0).count();
 
-        // Upload to GPU.
+        // Prefix sum: group_offsets[g] = sum(group_counts[0..g]).
+        // group_offsets[accumulator_size] = n (sentinel; validates total row count).
+        let mut group_offsets_cpu = vec![0u32; accumulator_size + 1];
+        for g in 0..accumulator_size {
+            group_offsets_cpu[g + 1] = group_offsets_cpu[g] + group_counts_cpu[g];
+        }
+        debug_assert_eq!(group_offsets_cpu[accumulator_size] as usize, n,
+            "prefix sum sentinel should equal total row count");
+
+        // Inverted index: rows_by_group[group_offsets[g]..group_offsets[g+1]]
+        // = row indices of group g, in their original (temporal) order.
+        // Build by iterating rows 0..n and writing each row to its group's
+        // current write cursor (initially = group_offsets[g]).
+        let mut cursor = group_offsets_cpu[..accumulator_size].to_vec();
+        let mut rows_by_group_cpu = vec![0u32; n];
+        for (i, &k) in keys.iter().enumerate() {
+            let g = k as usize;
+            if g < accumulator_size {
+                rows_by_group_cpu[cursor[g] as usize] = i as u32;
+                cursor[g] += 1;
+            }
+        }
+
+        // Upload all four arrays to GPU.
         let row_to_group: CudaSlice<u32> = stream.clone_htod(&row_to_group_cpu)
             .map_err(|e| e.to_string())?;
         let group_counts: CudaSlice<u32> = stream.clone_htod(&group_counts_cpu)
+            .map_err(|e| e.to_string())?;
+        let group_offsets: CudaSlice<u32> = stream.clone_htod(&group_offsets_cpu)
+            .map_err(|e| e.to_string())?;
+        let rows_by_group: CudaSlice<u32> = stream.clone_htod(&rows_by_group_cpu)
             .map_err(|e| e.to_string())?;
 
         Ok(GroupIndex {
             row_to_group,
             group_counts,
+            group_offsets,
+            rows_by_group,
             accumulator_size,
             n_active: Some(n_active),
             provenance,

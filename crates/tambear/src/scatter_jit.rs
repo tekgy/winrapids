@@ -291,6 +291,191 @@ impl ScatterJit {
         }
         Ok(())
     }
+
+    // -----------------------------------------------------------------------
+    // Masked scatter: φ accumulated only for rows where the mask bit is set.
+    //
+    // Implements tambear's mask-not-filter invariant: `filter()` sets bits in
+    // a packed u64 row mask; downstream scatter operations are mask-aware.
+    // Bit gid of mask word (gid/64) = 1 means row gid passes the filter.
+    // -----------------------------------------------------------------------
+
+    /// Scatter φ(values[i]) to output[keys[i]], skipping rows where mask bit is 0.
+    ///
+    /// Combines FilterJit's output (packed u64 bitmask) with additive scatter in
+    /// one kernel pass. No intermediate compacted array — mask is checked inline.
+    ///
+    /// `mask`: ceil(n/64) u64 words from `FilterJit::filter_mask`. Bit gid of
+    /// mask[gid/64] = 1 means row gid passes.
+    pub fn scatter_phi_masked(
+        &mut self,
+        phi_expr: &str,
+        keys: &[i32],
+        values: &[f64],
+        refs: Option<&[f64]>,
+        mask: &[u64],
+        n_groups: usize,
+    ) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+        let n = keys.len();
+        assert_eq!(n, values.len(), "keys and values must have same length");
+        assert_eq!(mask.len(), (n + 63) / 64, "mask must have ceil(n/64) words");
+        if let Some(r) = refs {
+            assert_eq!(r.len(), n_groups, "refs must have length n_groups");
+        }
+
+        let keys_dev   = self.stream.clone_htod(keys)?;
+        let values_dev = self.stream.clone_htod(values)?;
+        let refs_dev: CudaSlice<f64> = match refs {
+            Some(r) => self.stream.clone_htod(r)?,
+            None => self.stream.alloc_zeros(n_groups)?,
+        };
+        let mask_dev = self.stream.clone_htod(mask)?;
+        let output = self.scatter_phi_masked_gpu(
+            phi_expr, &keys_dev, &values_dev, &refs_dev, &mask_dev, n, n_groups
+        )?;
+        self.stream.synchronize()?;
+        Ok(self.stream.clone_dtoh(&output)?)
+    }
+
+    /// Scatter φ with mask check on GPU-resident data. Returns GPU-resident output.
+    ///
+    /// No host-device transfers. Use in pipelines where data stays on GPU.
+    pub fn scatter_phi_masked_gpu(
+        &mut self,
+        phi_expr: &str,
+        keys: &CudaSlice<i32>,
+        values: &CudaSlice<f64>,
+        refs: &CudaSlice<f64>,
+        mask: &CudaSlice<u64>,
+        n: usize,
+        n_groups: usize,
+    ) -> Result<CudaSlice<f64>, Box<dyn std::error::Error>> {
+        // "masked:1:<phi>" can't collide with unmasked keys (CUDA C can't contain ':')
+        let cache_key = format!("masked:1:{}", phi_expr);
+        if !self.cache.contains_key(&cache_key) {
+            let src = build_scatter_phi_masked_source(phi_expr);
+            let opts = CompileOptions { arch: Some("sm_120"), ..Default::default() };
+            let ptx = compile_ptx_with_opts(&src, opts)?;
+            let module = self.ctx.load_module(ptx)?;
+            let f = module.load_function("scatter_phi_masked")?;
+            self.cache.insert(cache_key.clone(), f);
+        }
+        let mut output: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+        let f = self.cache.get(&cache_key).unwrap();
+        let cfg = launch_cfg(n);
+        let n_i32 = n as i32;
+        unsafe {
+            self.stream.launch_builder(f)
+                .arg(keys).arg(values).arg(refs)
+                .arg(mask)
+                .arg(&mut output)
+                .arg(&n_i32)
+                .launch(cfg)?;
+        }
+        Ok(output)
+    }
+
+    /// Scatter N φ functions with mask check in a single kernel pass.
+    ///
+    /// Combines filter + multi-phi fusion: rows where mask bit is 0 are skipped.
+    /// One memory pass, N conditional atomicAdds per passing row.
+    ///
+    /// This is the compiler's fused filter-then-aggregate operation:
+    /// `df.filter(predicate).groupby(key).agg([phi_0, ..., phi_{N-1}])`
+    pub fn scatter_multi_phi_masked(
+        &mut self,
+        phi_exprs: &[&str],
+        keys: &[i32],
+        values: &[f64],
+        refs: Option<&[f64]>,
+        mask: &[u64],
+        n_groups: usize,
+    ) -> Result<Vec<Vec<f64>>, Box<dyn std::error::Error>> {
+        let n_phi = phi_exprs.len();
+        assert!(n_phi >= 1 && n_phi <= 8, "scatter_multi_phi_masked: 1–8 phi expressions, got {}", n_phi);
+        let n = keys.len();
+        assert_eq!(n, values.len(), "keys and values must have same length");
+        assert_eq!(mask.len(), (n + 63) / 64, "mask must have ceil(n/64) words");
+        if let Some(r) = refs {
+            assert_eq!(r.len(), n_groups, "refs must have length n_groups");
+        }
+
+        let keys_dev   = self.stream.clone_htod(keys)?;
+        let values_dev = self.stream.clone_htod(values)?;
+        let refs_dev: CudaSlice<f64> = match refs {
+            Some(r) => self.stream.clone_htod(r)?,
+            None => self.stream.alloc_zeros(n_groups)?,
+        };
+        let mask_dev = self.stream.clone_htod(mask)?;
+        let mut output_devs: Vec<CudaSlice<f64>> = (0..n_phi)
+            .map(|_| self.stream.alloc_zeros::<f64>(n_groups))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.launch_multi_phi_masked(
+            phi_exprs, &keys_dev, &values_dev, &refs_dev, &mask_dev, &mut output_devs, n
+        )?;
+        self.stream.synchronize()?;
+
+        output_devs.iter()
+            .map(|dev| self.stream.clone_dtoh(dev).map_err(Into::into))
+            .collect()
+    }
+
+    fn launch_multi_phi_masked(
+        &mut self,
+        phi_exprs: &[&str],
+        keys: &CudaSlice<i32>,
+        values: &CudaSlice<f64>,
+        refs: &CudaSlice<f64>,
+        mask: &CudaSlice<u64>,
+        outputs: &mut Vec<CudaSlice<f64>>,
+        n: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cache_key = format!("masked:{}:{}", phi_exprs.len(), phi_exprs.join("|"));
+        if !self.cache.contains_key(&cache_key) {
+            let src = build_scatter_multi_phi_masked_source(phi_exprs);
+            let opts = CompileOptions { arch: Some("sm_120"), ..Default::default() };
+            let ptx = compile_ptx_with_opts(&src, opts)?;
+            let module = self.ctx.load_module(ptx)?;
+            let f = module.load_function("scatter_multi_phi_masked")?;
+            self.cache.insert(cache_key.clone(), f);
+        }
+
+        let f = self.cache.get(&cache_key).unwrap();
+        let cfg = launch_cfg(n);
+        let n_i32 = n as i32;
+
+        unsafe {
+            match outputs.as_mut_slice() {
+                [o0] => self.stream.launch_builder(f)
+                    .arg(keys).arg(values).arg(refs).arg(mask)
+                    .arg(o0).arg(&n_i32).launch(cfg)?,
+                [o0, o1] => self.stream.launch_builder(f)
+                    .arg(keys).arg(values).arg(refs).arg(mask)
+                    .arg(o0).arg(o1).arg(&n_i32).launch(cfg)?,
+                [o0, o1, o2] => self.stream.launch_builder(f)
+                    .arg(keys).arg(values).arg(refs).arg(mask)
+                    .arg(o0).arg(o1).arg(o2).arg(&n_i32).launch(cfg)?,
+                [o0, o1, o2, o3] => self.stream.launch_builder(f)
+                    .arg(keys).arg(values).arg(refs).arg(mask)
+                    .arg(o0).arg(o1).arg(o2).arg(o3).arg(&n_i32).launch(cfg)?,
+                [o0, o1, o2, o3, o4] => self.stream.launch_builder(f)
+                    .arg(keys).arg(values).arg(refs).arg(mask)
+                    .arg(o0).arg(o1).arg(o2).arg(o3).arg(o4).arg(&n_i32).launch(cfg)?,
+                [o0, o1, o2, o3, o4, o5] => self.stream.launch_builder(f)
+                    .arg(keys).arg(values).arg(refs).arg(mask)
+                    .arg(o0).arg(o1).arg(o2).arg(o3).arg(o4).arg(o5).arg(&n_i32).launch(cfg)?,
+                [o0, o1, o2, o3, o4, o5, o6] => self.stream.launch_builder(f)
+                    .arg(keys).arg(values).arg(refs).arg(mask)
+                    .arg(o0).arg(o1).arg(o2).arg(o3).arg(o4).arg(o5).arg(o6).arg(&n_i32).launch(cfg)?,
+                [o0, o1, o2, o3, o4, o5, o6, o7] => self.stream.launch_builder(f)
+                    .arg(keys).arg(values).arg(refs).arg(mask)
+                    .arg(o0).arg(o1).arg(o2).arg(o3).arg(o4).arg(o5).arg(o6).arg(o7).arg(&n_i32).launch(cfg)?,
+                _ => return Err("scatter_multi_phi_masked: max 8 phi expressions".into()),
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Build CUDA source for a scatter kernel with the given φ expression.
@@ -359,6 +544,80 @@ extern "C" __global__ void scatter_multi_phi(
         double v = values[gid];
         double r = refs[g];
 {atomic_adds}    }}
+}}
+"#,
+        n = n,
+        phis = phi_exprs.join(", "),
+        out_params = out_params,
+        atomic_adds = atomic_adds,
+    )
+}
+
+/// Build CUDA source for a masked scatter kernel with the given φ expression.
+///
+/// Adds a bitmask check: thread gid only atomicAdds if bit gid of mask[gid/64] is 1.
+/// One 64-bit load per 64 consecutive threads (broadcast read — efficient on GPU).
+fn build_scatter_phi_masked_source(phi_expr: &str) -> String {
+    format!(r#"
+// JIT masked scatter: output[g] += phi(v) for rows where mask bit is set.
+// phi = {phi}
+// mask: packed u64, bit gid of mask[gid>>6] = 1 means row gid passes.
+extern "C" __global__ void scatter_phi_masked(
+    const int* __restrict__ keys,
+    const double* __restrict__ values,
+    const double* __restrict__ refs,
+    const unsigned long long* __restrict__ mask,
+    double* __restrict__ output,
+    int n
+) {{
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid < n) {{
+        unsigned long long word = mask[gid >> 6];
+        if ((word >> (gid & 63)) & 1ULL) {{
+            int g = keys[gid];
+            double v = values[gid];
+            double r = refs[g];
+            atomicAdd(&output[g], ({phi}));
+        }}
+    }}
+}}
+"#, phi = phi_expr)
+}
+
+/// Build CUDA source for a masked multi-scatter kernel with N φ expressions.
+///
+/// Combines mask check (one bit test per element) with N conditional atomicAdds.
+/// Rows where mask bit is 0 are skipped entirely — no atomicAdd overhead.
+fn build_scatter_multi_phi_masked_source(phi_exprs: &[&str]) -> String {
+    let n = phi_exprs.len();
+
+    let out_params: String = (0..n)
+        .map(|i| format!("    double* __restrict__ out{},\n", i))
+        .collect();
+
+    let atomic_adds: String = phi_exprs.iter().enumerate()
+        .map(|(i, phi)| format!("            atomicAdd(&out{}[g], ({}));\n", i, phi))
+        .collect();
+
+    format!(r#"
+// JIT masked multi-scatter: {n} outputs, one pass, mask-filtered.
+// phi expressions: [{phis}]
+extern "C" __global__ void scatter_multi_phi_masked(
+    const int* __restrict__ keys,
+    const double* __restrict__ values,
+    const double* __restrict__ refs,
+    const unsigned long long* __restrict__ mask,
+{out_params}    int n
+) {{
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid < n) {{
+        unsigned long long word = mask[gid >> 6];
+        if ((word >> (gid & 63)) & 1ULL) {{
+            int g = keys[gid];
+            double v = values[gid];
+            double r = refs[g];
+{atomic_adds}        }}
+    }}
 }}
 "#,
         n = n,
@@ -523,5 +782,78 @@ mod tests {
         // sum = 7, sum_sq = 9 + 16 = 25
         assert!((r[0][0] - 7.0).abs()  < 1e-10);
         assert!((r[1][0] - 25.0).abs() < 1e-10);
+    }
+
+    // --- masked scatter tests ---
+
+    /// Masked scatter: only rows with mask bit set are aggregated.
+    #[test]
+    fn scatter_phi_masked_filters_rows() {
+        let mut jit = ScatterJit::new().unwrap();
+        // 6 rows: keys=[0,0,1,1,2,2], values=[1,2,3,4,5,6]
+        // mask: rows 0,2,4 pass (bits 0,2,4 set) = 0b010101 = 0x15
+        let keys   = vec![0i32, 0, 1, 1, 2, 2];
+        let values = vec![1.0,  2.0, 3.0, 4.0, 5.0, 6.0];
+        let mask   = vec![0x15u64];  // bits 0,2,4 set
+
+        let result = jit.scatter_phi_masked(PHI_SUM, &keys, &values, None, &mask, 3).unwrap();
+        // group 0: row 0 passes (val=1), row 1 masked out → sum=1
+        // group 1: row 2 passes (val=3), row 3 masked out → sum=3
+        // group 2: row 4 passes (val=5), row 5 masked out → sum=5
+        assert!((result[0] - 1.0).abs() < 1e-10, "group 0 sum should be 1.0");
+        assert!((result[1] - 3.0).abs() < 1e-10, "group 1 sum should be 3.0");
+        assert!((result[2] - 5.0).abs() < 1e-10, "group 2 sum should be 5.0");
+    }
+
+    /// With all mask bits set, masked scatter equals unmasked scatter.
+    #[test]
+    fn scatter_phi_masked_all_bits_set() {
+        let mut jit = ScatterJit::new().unwrap();
+        let keys   = vec![0i32, 0, 1, 1];
+        let values = vec![3.0, 4.0, 1.0, 2.0];
+        let mask   = vec![u64::MAX];  // all rows pass
+
+        let masked   = jit.scatter_phi_masked(PHI_SUM, &keys, &values, None, &mask, 2).unwrap();
+        let unmasked = jit.scatter_phi(PHI_SUM, &keys, &values, None, 2).unwrap();
+
+        for g in 0..2 {
+            assert!((masked[g] - unmasked[g]).abs() < 1e-10, "group {} should match", g);
+        }
+    }
+
+    /// Masked multi-phi: filter + multi-stat fusion in one kernel pass.
+    #[test]
+    fn scatter_multi_phi_masked_works() {
+        let mut jit = ScatterJit::new().unwrap();
+        // 4 rows: keys=[0,0,0,0], values=[1,2,3,4]
+        // mask bits: 0,2 pass (rows with values 1 and 3)
+        let keys   = vec![0i32; 4];
+        let values = vec![1.0, 2.0, 3.0, 4.0];
+        let mask   = vec![0b0101u64];  // bits 0 and 2 set
+
+        let r = jit.scatter_multi_phi_masked(
+            &[PHI_SUM, PHI_SUM_SQ, PHI_COUNT],
+            &keys, &values, None, &mask, 1,
+        ).unwrap();
+
+        // Only rows 0 (val=1) and 2 (val=3) counted
+        // sum = 1+3 = 4, sum_sq = 1+9 = 10, count = 2
+        assert!((r[0][0] - 4.0).abs()  < 1e-10, "masked sum should be 4.0");
+        assert!((r[1][0] - 10.0).abs() < 1e-10, "masked sum_sq should be 10.0");
+        assert!((r[2][0] - 2.0).abs()  < 1e-10, "masked count should be 2.0");
+    }
+
+    /// All-zero mask: no rows aggregated, output stays zero.
+    #[test]
+    fn scatter_phi_masked_no_bits_set() {
+        let mut jit = ScatterJit::new().unwrap();
+        let keys   = vec![0i32, 1, 2];
+        let values = vec![5.0, 6.0, 7.0];
+        let mask   = vec![0u64];  // no rows pass
+
+        let result = jit.scatter_phi_masked(PHI_SUM, &keys, &values, None, &mask, 3).unwrap();
+        for g in 0..3 {
+            assert_eq!(result[g], 0.0, "group {} should be 0 with empty mask", g);
+        }
     }
 }

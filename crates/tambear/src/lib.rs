@@ -45,6 +45,7 @@
 //! ```
 
 pub mod dictionary;
+pub mod filter_jit;
 pub mod format;
 pub mod frame;
 pub mod group_index;
@@ -63,5 +64,6 @@ pub use format::{
 pub use frame::{Column, ColumnEncoding, DType, Frame};
 pub use group_index::GroupIndex;
 pub use hash_scatter::{HashScatterEngine, GroupByResult};
+pub use filter_jit::{FilterJit, mask_popcount, PRED_NOT_NAN, PRED_FINITE, PRED_POSITIVE};
 pub use scatter_jit::{ScatterJit, PHI_SUM, PHI_SUM_SQ, PHI_CENTERED_SUM, PHI_CENTERED_SUM_SQ, PHI_COUNT};
 pub use tb_io::{TbFile, TbColumnWrite, write_tb};

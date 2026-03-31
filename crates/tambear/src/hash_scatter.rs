@@ -51,9 +51,7 @@ extern "C" __global__ void scatter_sum(
     }
 }
 
-// scatter_stats: sum + sum_sq + count in ONE pass.
-// Three aggregations for one memory read. Costs less than argsort alone.
-// From these three scalars per group, derive mean, variance, and std.
+// scatter_stats: sum + sum_sq + count in ONE pass (naive — 3 global atomicAdds per element).
 extern "C" __global__ void scatter_stats(
     const int* __restrict__ keys,
     const double* __restrict__ values,
@@ -69,6 +67,98 @@ extern "C" __global__ void scatter_stats(
         atomicAdd(&sums[g], v);
         atomicAdd(&sum_sqs[g], v * v);
         atomicAdd(&counts[g], 1.0);
+    }
+}
+
+// scatter_stats_smem: shared-memory privatized scatter.
+// Each block maintains local accumulators in shared memory, merges to global at the end.
+// Reduces global atomicAdd contention from O(n/n_groups) to O(n_blocks/n_groups).
+// Shared memory atomicAdd is ~10x faster than global. Big win for moderate n_groups.
+// Shared memory cost: 3 * n_groups * 8 bytes. Fits default 48KB for n_groups <= 2048.
+extern "C" __global__ void scatter_stats_smem(
+    const int* __restrict__ keys,
+    const double* __restrict__ values,
+    double* __restrict__ sums,
+    double* __restrict__ sum_sqs,
+    double* __restrict__ counts,
+    int n,
+    int n_groups
+) {
+    extern __shared__ double smem[];
+    double* local_sums    = smem;
+    double* local_sum_sqs = smem + n_groups;
+    double* local_counts  = smem + 2 * n_groups;
+
+    // Zero shared memory
+    for (int i = threadIdx.x; i < n_groups; i += blockDim.x) {
+        local_sums[i]    = 0.0;
+        local_sum_sqs[i] = 0.0;
+        local_counts[i]  = 0.0;
+    }
+    __syncthreads();
+
+    // Local scatter to shared memory (fast atomics)
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid < n) {
+        int g = keys[gid];
+        double v = values[gid];
+        atomicAdd(&local_sums[g], v);
+        atomicAdd(&local_sum_sqs[g], v * v);
+        atomicAdd(&local_counts[g], 1.0);
+    }
+    __syncthreads();
+
+    // Merge to global (one atomicAdd per active group per block)
+    for (int i = threadIdx.x; i < n_groups; i += blockDim.x) {
+        if (local_counts[i] > 0.0) {
+            atomicAdd(&sums[i],    local_sums[i]);
+            atomicAdd(&sum_sqs[i], local_sum_sqs[i]);
+            atomicAdd(&counts[i],  local_counts[i]);
+        }
+    }
+}
+
+// scatter_stats_warp: warp-aggregated atomics via __match_any_sync.
+// Threads with the same key within a warp reduce locally via full-warp shuffle,
+// then one elected leader does a single atomicAdd per group per warp.
+// Best when n_groups << warp_size (high intra-warp collision rate).
+extern "C" __global__ void scatter_stats_warp(
+    const int* __restrict__ keys,
+    const double* __restrict__ values,
+    double* __restrict__ sums,
+    double* __restrict__ sum_sqs,
+    double* __restrict__ counts,
+    int n
+) {
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= n) return;
+
+    int g = keys[gid];
+    double v = values[gid];
+    double v2 = v * v;
+    int lane = threadIdx.x & 31;
+
+    // Find all threads in this warp with the same key
+    unsigned int peers = __match_any_sync(0xFFFFFFFF, g);
+    int peer_count = __popc(peers);
+
+    // Reduce v and v2 within peer group using full-warp broadcast
+    double sum_v = 0.0, sum_v2 = 0.0;
+    for (int src = 0; src < 32; src++) {
+        double sv  = __shfl_sync(0xFFFFFFFF, v, src);
+        double sv2 = __shfl_sync(0xFFFFFFFF, v2, src);
+        if (peers & (1u << src)) {
+            sum_v  += sv;
+            sum_v2 += sv2;
+        }
+    }
+
+    // Elect leader: lowest lane in peer group
+    int leader = __ffs(peers) - 1;
+    if (lane == leader) {
+        atomicAdd(&sums[g],    sum_v);
+        atomicAdd(&sum_sqs[g], sum_v2);
+        atomicAdd(&counts[g],  (double)peer_count);
     }
 }
 "#;
@@ -133,6 +223,8 @@ pub struct HashScatterEngine {
     stream: Arc<CudaStream>,
     f_scatter_sum: CudaFunction,
     f_scatter_stats: CudaFunction,
+    f_scatter_stats_smem: CudaFunction,
+    f_scatter_stats_warp: CudaFunction,
 }
 
 impl HashScatterEngine {
@@ -156,6 +248,8 @@ impl HashScatterEngine {
         Ok(Self {
             f_scatter_sum: module.load_function("scatter_sum")?,
             f_scatter_stats: module.load_function("scatter_stats")?,
+            f_scatter_stats_smem: module.load_function("scatter_stats_smem")?,
+            f_scatter_stats_warp: module.load_function("scatter_stats_warp")?,
             ctx,
             stream,
         })
@@ -198,6 +292,23 @@ impl HashScatterEngine {
         self.stream.synchronize()?;
 
         Ok(self.stream.clone_dtoh(&sums_dev)?)
+    }
+
+    /// Count rows per group. Returns `Vec<f64>` of length `n_groups`.
+    ///
+    /// Equivalent to `scatter_sum` with an all-ones value array: one atomicAdd per element.
+    /// Faster than `groupby` when you only need counts (no sum, no mean, no variance).
+    pub fn value_counts(
+        &self,
+        keys: &[i32],
+        n_groups: usize,
+    ) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+        let n = keys.len();
+        if n == 0 {
+            return Ok(vec![0.0; n_groups]);
+        }
+        let ones = vec![1.0f64; n];
+        self.scatter_sum(keys, &ones, n_groups)
     }
 
     /// Multi-stat groupby: sum + sum_sq + count in ONE pass.
@@ -281,6 +392,134 @@ impl HashScatterEngine {
     }
 
     // -----------------------------------------------------------------------
+    // Optimized groupby variants
+    // -----------------------------------------------------------------------
+
+    /// Shared-memory privatized groupby. Each block reduces locally in shared
+    /// memory, then merges to global. Massive contention reduction when
+    /// n_groups fits in shared memory (<= ~2048 groups at default 48KB).
+    pub fn groupby_smem(
+        &self,
+        keys: &[i32],
+        values: &[f64],
+        n_groups: usize,
+    ) -> Result<GroupByResult, Box<dyn std::error::Error>> {
+        let n = keys.len();
+        assert_eq!(n, values.len(), "keys and values must have same length");
+        if n == 0 {
+            return Ok(GroupByResult {
+                n_groups,
+                sums: vec![0.0; n_groups],
+                sum_sqs: vec![0.0; n_groups],
+                counts: vec![0.0; n_groups],
+            });
+        }
+
+        let keys_dev = self.stream.clone_htod(keys)?;
+        let values_dev = self.stream.clone_htod(values)?;
+        let mut sums_dev: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+        let mut sum_sqs_dev: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+        let mut counts_dev: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+
+        self.launch_scatter_stats_smem(
+            &keys_dev, &values_dev,
+            &mut sums_dev, &mut sum_sqs_dev, &mut counts_dev,
+            n, n_groups,
+        )?;
+        self.stream.synchronize()?;
+
+        Ok(GroupByResult {
+            n_groups,
+            sums: self.stream.clone_dtoh(&sums_dev)?,
+            sum_sqs: self.stream.clone_dtoh(&sum_sqs_dev)?,
+            counts: self.stream.clone_dtoh(&counts_dev)?,
+        })
+    }
+
+    /// Warp-aggregated groupby. Threads with the same key in a warp reduce
+    /// locally via shuffle, then one leader does the atomicAdd. Best when
+    /// n_groups is small (high intra-warp collision rate).
+    pub fn groupby_warp(
+        &self,
+        keys: &[i32],
+        values: &[f64],
+        n_groups: usize,
+    ) -> Result<GroupByResult, Box<dyn std::error::Error>> {
+        let n = keys.len();
+        assert_eq!(n, values.len(), "keys and values must have same length");
+        if n == 0 {
+            return Ok(GroupByResult {
+                n_groups,
+                sums: vec![0.0; n_groups],
+                sum_sqs: vec![0.0; n_groups],
+                counts: vec![0.0; n_groups],
+            });
+        }
+
+        let keys_dev = self.stream.clone_htod(keys)?;
+        let values_dev = self.stream.clone_htod(values)?;
+        let mut sums_dev: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+        let mut sum_sqs_dev: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+        let mut counts_dev: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+
+        self.launch_scatter_stats_warp(
+            &keys_dev, &values_dev,
+            &mut sums_dev, &mut sum_sqs_dev, &mut counts_dev,
+            n,
+        )?;
+        self.stream.synchronize()?;
+
+        Ok(GroupByResult {
+            n_groups,
+            sums: self.stream.clone_dtoh(&sums_dev)?,
+            sum_sqs: self.stream.clone_dtoh(&sum_sqs_dev)?,
+            counts: self.stream.clone_dtoh(&counts_dev)?,
+        })
+    }
+
+    /// GPU-resident smem groupby.
+    pub fn groupby_smem_gpu(
+        &self,
+        keys: &CudaSlice<i32>,
+        values: &CudaSlice<f64>,
+        n: usize,
+        n_groups: usize,
+    ) -> Result<(CudaSlice<f64>, CudaSlice<f64>, CudaSlice<f64>), Box<dyn std::error::Error>> {
+        let mut sums_dev: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+        let mut sum_sqs_dev: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+        let mut counts_dev: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+
+        self.launch_scatter_stats_smem(
+            keys, values,
+            &mut sums_dev, &mut sum_sqs_dev, &mut counts_dev,
+            n, n_groups,
+        )?;
+
+        Ok((sums_dev, sum_sqs_dev, counts_dev))
+    }
+
+    /// GPU-resident warp-aggregated groupby.
+    pub fn groupby_warp_gpu(
+        &self,
+        keys: &CudaSlice<i32>,
+        values: &CudaSlice<f64>,
+        n: usize,
+        n_groups: usize,
+    ) -> Result<(CudaSlice<f64>, CudaSlice<f64>, CudaSlice<f64>), Box<dyn std::error::Error>> {
+        let mut sums_dev: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+        let mut sum_sqs_dev: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+        let mut counts_dev: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+
+        self.launch_scatter_stats_warp(
+            keys, values,
+            &mut sums_dev, &mut sum_sqs_dev, &mut counts_dev,
+            n,
+        )?;
+
+        Ok((sums_dev, sum_sqs_dev, counts_dev))
+    }
+
+    // -----------------------------------------------------------------------
     // Kernel launchers
     // -----------------------------------------------------------------------
 
@@ -315,6 +554,60 @@ impl HashScatterEngine {
         let cfg = launch_cfg(n);
         unsafe {
             self.stream.launch_builder(&self.f_scatter_stats)
+                .arg(keys)
+                .arg(values)
+                .arg(sums)
+                .arg(sum_sqs)
+                .arg(counts)
+                .arg(&(n as i32))
+                .launch(cfg)?;
+        }
+        Ok(())
+    }
+
+    fn launch_scatter_stats_smem(
+        &self,
+        keys: &CudaSlice<i32>,
+        values: &CudaSlice<f64>,
+        sums: &mut CudaSlice<f64>,
+        sum_sqs: &mut CudaSlice<f64>,
+        counts: &mut CudaSlice<f64>,
+        n: usize,
+        n_groups: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let n_blocks = ((n as u32) + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let shared_bytes = 3 * n_groups as u32 * 8; // 3 accumulators × n_groups × f64
+        let cfg = LaunchConfig {
+            grid_dim: (n_blocks, 1, 1),
+            block_dim: (BLOCK_SIZE, 1, 1),
+            shared_mem_bytes: shared_bytes,
+        };
+        unsafe {
+            self.stream.launch_builder(&self.f_scatter_stats_smem)
+                .arg(keys)
+                .arg(values)
+                .arg(sums)
+                .arg(sum_sqs)
+                .arg(counts)
+                .arg(&(n as i32))
+                .arg(&(n_groups as i32))
+                .launch(cfg)?;
+        }
+        Ok(())
+    }
+
+    fn launch_scatter_stats_warp(
+        &self,
+        keys: &CudaSlice<i32>,
+        values: &CudaSlice<f64>,
+        sums: &mut CudaSlice<f64>,
+        sum_sqs: &mut CudaSlice<f64>,
+        counts: &mut CudaSlice<f64>,
+        n: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = launch_cfg(n);
+        unsafe {
+            self.stream.launch_builder(&self.f_scatter_stats_warp)
                 .arg(keys)
                 .arg(values)
                 .arg(sums)

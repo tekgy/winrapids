@@ -301,7 +301,7 @@ impl ScatterJit {
                     .arg(o0).arg(o1).arg(o2).arg(o3).arg(o4).arg(o5).arg(o6).arg(o7)
                     .arg(&n_i32).launch(cfg)?,
                 _ => return Err("scatter_multi_phi: max 8 phi expressions".into()),
-            }
+            };
         }
         Ok(())
     }
@@ -486,7 +486,7 @@ impl ScatterJit {
                     .arg(keys).arg(values).arg(refs).arg(mask)
                     .arg(o0).arg(o1).arg(o2).arg(o3).arg(o4).arg(o5).arg(o6).arg(o7).arg(&n_i32).launch(cfg)?,
                 _ => return Err("scatter_multi_phi_masked: max 8 phi expressions".into()),
-            }
+            };
         }
         Ok(())
     }

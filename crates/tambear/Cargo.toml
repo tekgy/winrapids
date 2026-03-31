@@ -23,3 +23,7 @@ path = "src/tb_demo.rs"
 [[bin]]
 name = "io-bench"
 path = "src/io_bench.rs"
+
+[[bin]]
+name = "scatter-bench"
+path = "src/scatter_bench.rs"

@@ -1,0 +1,20 @@
+[package]
+name = "tam-gpu"
+version = "0.1.0"
+edition = "2021"
+description = "Tambear GPU Runtime — unified compute backend (CUDA, Vulkan, CPU)"
+
+[features]
+default = ["cuda"]
+cuda = ["dep:cudarc"]
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+
+[dependencies.cudarc]
+version = "0.19"
+features = ["nvrtc", "cuda-version-from-build-system"]
+optional = true
+
+[dev-dependencies]
+bytemuck = { version = "1", features = ["derive"] }

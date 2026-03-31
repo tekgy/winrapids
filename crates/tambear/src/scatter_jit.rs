@@ -26,15 +26,29 @@
 //! with the same expression use the cached kernel. Compilation cost: ~40ms first
 //! call, ~35ns on cache hit. The scatter itself is always O(n).
 //!
-//! ## Composing multi-output statistics
+//! ## Fused multi-output scatter
 //!
-//! To compute multiple aggregates (e.g., sum + sum_sq + count), run three separate
-//! scatter_phi calls. The memory cost is 3x vs. scatter_stats's 1x, but the
-//! compositional flexibility is worth it for non-standard aggregates.
+//! Use `scatter_multi_phi` to compute N aggregates in one kernel pass:
 //!
-//! For the standard (sum, sum_sq, count) triple, prefer HashScatterEngine::groupby(),
-//! which fuses all three into one kernel pass (3 atomicAdds per element).
-//! Use scatter_phi when you need non-standard φ functions.
+//! ```no_run
+//! use tambear::{ScatterJit, PHI_SUM, PHI_SUM_SQ, PHI_COUNT};
+//! let mut jit = ScatterJit::new().unwrap();
+//! // Three aggregates, one memory pass — the compiler's scatter fusion rule:
+//! let results = jit.scatter_multi_phi(
+//!     &[PHI_SUM, PHI_SUM_SQ, PHI_COUNT],
+//!     keys, values, None, n_groups,
+//! ).unwrap();
+//! ```
+//!
+//! This is `scatter_stats` generalized to arbitrary φ functions.
+//! The standard (sum, sum_sq, count) triple via `HashScatterEngine::groupby()`
+//! uses a hardcoded kernel; `scatter_multi_phi` uses JIT generation for any φ.
+//!
+//! ## Masked scatter (mask-not-filter invariant)
+//!
+//! Use `scatter_phi_masked` or `scatter_multi_phi_masked` to aggregate only rows
+//! where the bitmask bit is set. Mask is produced by `FilterJit::filter_mask()`.
+//! One kernel pass combines filter + aggregate — no intermediate compaction.
 
 use std::collections::HashMap;
 use std::sync::Arc;

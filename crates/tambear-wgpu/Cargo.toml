@@ -1,0 +1,14 @@
+[package]
+name = "tambear-wgpu"
+version = "0.1.0"
+edition = "2021"
+description = "Tambear GPU backend via wgpu — runs on NVIDIA (Vulkan), AMD (Vulkan), Intel (Vulkan), Apple (Metal)"
+
+[dependencies]
+wgpu = "24"
+pollster = "0.4"       # block on async wgpu calls
+bytemuck = { version = "1", features = ["derive"] }
+
+[[bin]]
+name = "wgpu-scatter-bench"
+path = "src/main.rs"

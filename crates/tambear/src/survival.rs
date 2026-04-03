@@ -178,12 +178,20 @@ pub fn cox_ph(x: &[f64], times: &[f64], events: &[bool], n: usize, d: usize, max
     for iter in 0..max_iter {
         iterations = iter + 1;
 
-        // Compute exp(x·β) for all observations
+        // Compute exp(x·β) for all observations (clamp to prevent overflow)
         let mut exp_xb = vec![0.0; n];
+        let mut xb_max = f64::NEG_INFINITY;
+        let mut xb_vals = vec![0.0; n];
         for i in 0..n {
             let mut xb = 0.0;
             for j in 0..d { xb += x[i * d + j] * beta[j]; }
-            exp_xb[i] = xb.exp();
+            xb_vals[i] = xb;
+            if xb > xb_max { xb_max = xb; }
+        }
+        // Log-sum-exp trick: exp(xb - xb_max) keeps values in [0, 1]
+        // This shifts the partial likelihood by a constant that cancels in ratios
+        for i in 0..n {
+            exp_xb[i] = (xb_vals[i] - xb_max).exp();
         }
 
         // Gradient and Hessian of partial log-likelihood (Breslow)
@@ -278,34 +286,90 @@ pub fn cox_ph(x: &[f64], times: &[f64], events: &[bool], n: usize, d: usize, max
         }
     }
 
-    // Compute final log-likelihood and SE
+    // Compute final log-likelihood and SE with log-sum-exp stabilization
     let mut ll = 0.0;
-    let mut exp_xb = vec![0.0; n];
+    let mut xb_vals_final = vec![0.0; n];
+    let mut xb_max_final = f64::NEG_INFINITY;
     for i in 0..n {
         let mut xb = 0.0;
         for j in 0..d { xb += x[i * d + j] * beta[j]; }
-        exp_xb[i] = xb.exp();
+        xb_vals_final[i] = xb;
+        if xb > xb_max_final { xb_max_final = xb; }
     }
+    let mut exp_xb = vec![0.0; n];
+    for i in 0..n { exp_xb[i] = (xb_vals_final[i] - xb_max_final).exp(); }
 
     let mut s0 = 0.0;
     for i in 0..n { s0 += exp_xb[i]; }
-    // Simplified log-likelihood (accurate enough for result reporting)
     for &i in &order {
         if events[i] {
-            let mut xb = 0.0;
-            for j in 0..d { xb += x[i * d + j] * beta[j]; }
-            ll += xb - s0.ln();
+            // log-likelihood: xb_i - log(Σ exp(xb_j)) = xb_i - xb_max - log(s0)
+            ll += (xb_vals_final[i] - xb_max_final) - s0.ln();
         }
         s0 -= exp_xb[i];
     }
 
     let hazard_ratios: Vec<f64> = beta.iter().map(|&b| b.exp()).collect();
-    // SE from diagonal of (-H)⁻¹ (simplified: use 1/sqrt(-h_jj) for d=1)
+
+    // SE from diagonal of (-H)⁻¹, recomputed at final beta
+    let mut hess_final = vec![0.0; d * d];
+    let mut s1_f = vec![0.0; d];
+    let mut s2_f = vec![0.0; d * d];
+    let mut s0_f = 0.0;
+    for i in 0..n {
+        s0_f += exp_xb[i];
+        for j in 0..d {
+            s1_f[j] += x[i * d + j] * exp_xb[i];
+            for k in 0..d {
+                s2_f[j * d + k] += x[i * d + j] * x[i * d + k] * exp_xb[i];
+            }
+        }
+    }
+    let mut idx_f = 0;
+    while idx_f < n {
+        let mut end_f = idx_f + 1;
+        while end_f < n && times[order[end_f]] == times[order[idx_f]] { end_f += 1; }
+        for tidx in idx_f..end_f {
+            let i = order[tidx];
+            if events[i] && s0_f > 0.0 {
+                for j in 0..d {
+                    for k in 0..d {
+                        hess_final[j * d + k] -= s2_f[j * d + k] / s0_f
+                            - (s1_f[j] * s1_f[k]) / (s0_f * s0_f);
+                    }
+                }
+            }
+        }
+        for tidx in idx_f..end_f {
+            let i = order[tidx];
+            s0_f -= exp_xb[i];
+            for j in 0..d {
+                s1_f[j] -= x[i * d + j] * exp_xb[i];
+                for k in 0..d {
+                    s2_f[j * d + k] -= x[i * d + j] * x[i * d + k] * exp_xb[i];
+                }
+            }
+        }
+        idx_f = end_f;
+    }
+    // SE = sqrt(diag((-H)⁻¹))
     let se = if d == 1 {
-        // Recompute Hessian diagonal
-        vec![1.0] // placeholder
+        let h = -hess_final[0];
+        vec![if h > 1e-15 { (1.0 / h).sqrt() } else { f64::NAN }]
     } else {
-        vec![0.0; d] // placeholder for multi-d
+        let neg_h = crate::linear_algebra::Mat::from_vec(d, d,
+            hess_final.iter().map(|v| -v).collect());
+        match crate::linear_algebra::cholesky(&neg_h) {
+            Some(l) => {
+                (0..d).map(|j| {
+                    let mut ej = vec![0.0; d];
+                    ej[j] = 1.0;
+                    let col = crate::linear_algebra::cholesky_solve(&l, &ej);
+                    col[j].max(0.0).sqrt()
+                }).collect()
+            }
+            None => vec![f64::NAN; d],
+        }
     };
 
     CoxResult { beta, se, hazard_ratios, log_likelihood: ll, iterations }

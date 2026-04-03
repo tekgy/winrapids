@@ -317,8 +317,10 @@ pub fn kruskal_wallis(data: &[f64], group_sizes: &[usize]) -> NonparametricResul
     let mut offset = 0;
     let mut h = 0.0;
     for &gs in group_sizes {
-        let r_sum: f64 = ranks[offset..offset + gs].iter().sum();
-        h += r_sum * r_sum / gs as f64;
+        if gs > 0 {
+            let r_sum: f64 = ranks[offset..offset + gs].iter().sum();
+            h += r_sum * r_sum / gs as f64;
+        }
         offset += gs;
     }
     h = (12.0 / (nf * (nf + 1.0))) * h - 3.0 * (nf + 1.0);
@@ -471,6 +473,12 @@ pub fn bootstrap_percentile(
     }
 
     let estimate = statistic(data);
+    if n_resamples < 2 {
+        return BootstrapResult {
+            estimate, ci_lower: f64::NAN, ci_upper: f64::NAN,
+            se: f64::NAN, n_resamples,
+        };
+    }
     let mut rng_state = seed;
     let mut boot_stats = Vec::with_capacity(n_resamples);
     let mut resample = vec![0.0; n];
@@ -644,7 +652,7 @@ fn kernel_eval(kernel: KernelType, u: f64) -> f64 {
 pub fn kde_fft(data: &[f64], n_grid: usize, bandwidth: Option<f64>) -> (Vec<f64>, Vec<f64>) {
     let clean: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
     let n = clean.len();
-    if n == 0 { return (vec![], vec![]); }
+    if n == 0 || n_grid < 2 { return (vec![], vec![]); }
 
     let h = bandwidth.unwrap_or_else(|| silverman_bandwidth(&clean));
     if h <= 0.0 { return (vec![], vec![]); }

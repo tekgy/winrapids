@@ -187,6 +187,9 @@ pub fn lme_random_intercept(
 pub fn icc_oneway(values: &[f64], groups: &[usize]) -> f64 {
     let n = values.len();
     let k = *groups.iter().max().unwrap_or(&0) + 1;
+    if k < 2 || n <= k {
+        return f64::NAN;
+    }
 
     let grand_mean = values.iter().sum::<f64>() / n as f64;
 

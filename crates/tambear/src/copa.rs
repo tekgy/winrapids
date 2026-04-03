@@ -189,8 +189,7 @@ impl CopaState {
 
         // Sort by descending eigenvalue
         let mut idx: Vec<usize> = (0..p).collect();
-        idx.sort_by(|&a, &b| eigenvalues_unsorted[b].partial_cmp(&eigenvalues_unsorted[a])
-            .unwrap_or(std::cmp::Ordering::Equal));
+        idx.sort_by(|&a, &b| eigenvalues_unsorted[b].total_cmp(&eigenvalues_unsorted[a]));
 
         let eigenvalues: Vec<f64> = idx[..k].iter().map(|&i| eigenvalues_unsorted[i].max(0.0)).collect();
         let total_var: f64 = eigenvalues_unsorted.iter().map(|v| v.max(0.0)).sum::<f64>().max(1e-15);

@@ -59,6 +59,7 @@ impl KMeansEngine {
         max_iter: usize,
     ) -> Result<KMeansResult, Box<dyn std::error::Error>> {
         assert_eq!(data.len(), n * d, "data length must be n * d");
+        assert!(k >= 1, "k must be >= 1");
         assert!(k <= n, "k must be <= n");
 
         match self.gpu.shader_lang() {

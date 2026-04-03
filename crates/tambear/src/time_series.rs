@@ -211,8 +211,29 @@ pub fn adf_test(data: &[f64], n_lags: usize) -> AdfResult {
         }
     }
 
+    if nobs <= p {
+        return AdfResult {
+            statistic: f64::NAN,
+            n_lags,
+            critical_1pct: -3.43,
+            critical_5pct: -2.86,
+            critical_10pct: -2.57,
+        };
+    }
+
     let a = crate::linear_algebra::Mat::from_vec(p, p, xtx);
-    let l = crate::linear_algebra::cholesky(&a).expect("ADF regression singular");
+    let l = match crate::linear_algebra::cholesky(&a) {
+        Some(l) => l,
+        None => {
+            return AdfResult {
+                statistic: f64::NAN,
+                n_lags,
+                critical_1pct: -3.43,
+                critical_5pct: -2.86,
+                critical_10pct: -2.57,
+            };
+        }
+    };
     let beta = crate::linear_algebra::cholesky_solve(&l, &xty);
 
     // Standard error of γ (coefficient on y_{t-1})
@@ -248,6 +269,7 @@ pub fn adf_test(data: &[f64], n_lags: usize) -> AdfResult {
 /// Sample autocorrelation function for lags 0..max_lag.
 pub fn acf(data: &[f64], max_lag: usize) -> Vec<f64> {
     let n = data.len();
+    let max_lag = max_lag.min(n.saturating_sub(1));
     let mean = data.iter().sum::<f64>() / n as f64;
     let var: f64 = data.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
     if var < 1e-15 { return vec![1.0; max_lag + 1]; }

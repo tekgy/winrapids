@@ -141,7 +141,16 @@ pub fn panel_fe(x: &[f64], y: &[f64], n: usize, d: usize, units: &[usize]) -> Fe
         }
     }
     let xtx_mat = Mat::from_vec(d, d, xtx);
-    let xtx_inv = inv(&xtx_mat).unwrap_or_else(|| Mat::from_vec(d, d, vec![1.0; d * d]));
+    let xtx_inv = match inv(&xtx_mat) {
+        Some(m) => m,
+        None => {
+            // Singular X'X: return NaN SEs instead of garbage
+            let df = n.saturating_sub(n_units).saturating_sub(d);
+            return FeResult {
+                beta, se_clustered: vec![f64::NAN; d], r2_within, df,
+            };
+        }
+    };
 
     // Meat of the sandwich
     let mut meat = vec![0.0; d * d];
@@ -399,14 +408,22 @@ pub fn hausman_test(fe: &FeResult, re_beta_slopes: &[f64], re_se_slopes: &[f64])
     // H = (β_FE - β_RE)' [V_FE - V_RE]⁻¹ (β_FE - β_RE)
     // Simplified: diagonal-only approximation
     let mut chi2 = 0.0;
+    let mut any_negative = false;
     for j in 0..d {
         let diff = fe.beta[j] - re_beta_slopes[j];
         let v_diff = fe.se_clustered[j].powi(2) - re_se_slopes[j].powi(2);
         if v_diff > 0.0 {
             chi2 += diff * diff / v_diff;
+        } else {
+            any_negative = true;
         }
     }
-    let p_value = crate::special_functions::chi2_sf(chi2, d as f64);
+    // Negative v_diff means RE variance exceeds FE — test assumptions violated
+    let p_value = if any_negative {
+        f64::NAN
+    } else {
+        crate::special_functions::chi2_sf(chi2, d as f64)
+    };
 
     HausmanResult { chi2, df: d, p_value }
 }
@@ -574,9 +591,11 @@ pub fn did(y: &[f64], treated: &[bool], post: &[bool]) -> DidResult {
         counts[idx] += 1;
     }
 
-    let means: Vec<f64> = (0..4).map(|i| {
-        if counts[i] > 0 { sums[i] / counts[i] as f64 } else { 0.0 }
-    }).collect();
+    // All four cells must be populated for valid DiD
+    if counts.iter().any(|&c| c == 0) {
+        return DidResult { att: f64::NAN, se: f64::NAN, t_stat: f64::NAN };
+    }
+    let means: Vec<f64> = (0..4).map(|i| sums[i] / counts[i] as f64).collect();
 
     // ATT = (Ȳ_treat_post - Ȳ_treat_pre) - (Ȳ_ctrl_post - Ȳ_ctrl_pre)
     let att = (means[3] - means[2]) - (means[1] - means[0]);

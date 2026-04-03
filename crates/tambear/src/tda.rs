@@ -116,6 +116,14 @@ impl PersistenceDiagram {
 /// `dist`: n×n symmetric distance matrix (row-major).
 pub fn rips_h0(dist: &[f64], n: usize) -> PersistenceDiagram {
     assert_eq!(dist.len(), n * n);
+    if n == 0 {
+        return PersistenceDiagram { pairs: vec![] };
+    }
+    if n == 1 {
+        return PersistenceDiagram {
+            pairs: vec![PersistencePair { dimension: 0, birth: 0.0, death: f64::INFINITY }],
+        };
+    }
 
     // Collect all edges with distances, sort by distance
     let mut edges: Vec<(f64, usize, usize)> = Vec::with_capacity(n * (n - 1) / 2);
@@ -175,6 +183,9 @@ pub fn rips_h0(dist: &[f64], n: usize) -> PersistenceDiagram {
 /// from this function is exact; H₁ is approximate.
 pub fn rips_h1(dist: &[f64], n: usize, max_edge: f64) -> PersistenceDiagram {
     assert_eq!(dist.len(), n * n);
+    if n < 2 {
+        return PersistenceDiagram { pairs: vec![] };
+    }
 
     // Build filtered edge list
     let mut edges: Vec<(f64, usize, usize)> = Vec::new();

@@ -26,6 +26,46 @@ pub enum CodegenTarget {
     Wgsl,
 }
 
+/// Numeric precision for kernel codegen.
+///
+/// Orthogonal to CodegenTarget — CUDA can emit float or double,
+/// WGSL is always f32 (hardware constraint, ignores this parameter).
+///
+/// Wired from Frame::pipeline_dtype at pipeline construction time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Precision {
+    /// 32-bit float. CUDA: `float`. WGSL: `f32`.
+    F32,
+    /// 64-bit float. CUDA: `double`. WGSL: falls back to `f32`.
+    F64,
+}
+
+impl Precision {
+    /// CUDA type keyword for this precision.
+    pub fn cuda_type(self) -> &'static str {
+        match self {
+            Precision::F32 => "float",
+            Precision::F64 => "double",
+        }
+    }
+
+    /// Byte size per element.
+    pub fn byte_size(self) -> usize {
+        match self {
+            Precision::F32 => 4,
+            Precision::F64 => 8,
+        }
+    }
+
+    /// Convert from DType.
+    pub fn from_dtype(dtype: crate::frame::DType) -> Self {
+        match dtype {
+            crate::frame::DType::F32 | crate::frame::DType::I32 | crate::frame::DType::U32 => Precision::F32,
+            crate::frame::DType::F64 | crate::frame::DType::I64 | crate::frame::DType::U64 => Precision::F64,
+        }
+    }
+}
+
 /// Generated kernel source with its entry point name.
 #[derive(Debug, Clone)]
 pub struct KernelSource {
@@ -63,35 +103,37 @@ fn translate_phi_to_wgsl(phi_expr: &str) -> String {
 /// - `v`: current value (f64 in CUDA, f32 in WGSL)
 /// - `r`: per-group ref value
 /// - `g`: group index (int/u32)
-pub fn emit_scatter(phi_expr: &str, target: CodegenTarget) -> KernelSource {
+pub fn emit_scatter(phi_expr: &str, target: CodegenTarget, precision: Precision) -> KernelSource {
     match target {
-        CodegenTarget::CudaC => emit_scatter_cuda(phi_expr),
+        CodegenTarget::CudaC => emit_scatter_cuda(phi_expr, precision),
         CodegenTarget::Wgsl => emit_scatter_wgsl(phi_expr),
     }
 }
 
-fn emit_scatter_cuda(phi_expr: &str) -> KernelSource {
+fn emit_scatter_cuda(phi_expr: &str, precision: Precision) -> KernelSource {
+    let t = precision.cuda_type();
     let source = format!(
         r#"
 // JIT scatter kernel: output[g] += phi(v) for elements in group g.
 // phi = {phi}
 extern "C" __global__ void scatter_phi(
     const int* __restrict__ keys,
-    const double* __restrict__ values,
-    const double* __restrict__ refs,
-    double* __restrict__ output,
+    const {t}* __restrict__ values,
+    const {t}* __restrict__ refs,
+    {t}* __restrict__ output,
     int n
 ) {{
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     if (gid < n) {{
         int g = keys[gid];
-        double v = values[gid];
-        double r = refs[g];
-        double phi = ({phi});
+        {t} v = values[gid];
+        {t} r = refs[g];
+        {t} phi = ({phi});
         atomicAdd(&output[g], phi);
     }}
 }}
 "#,
+        t = t,
         phi = phi_expr
     );
     KernelSource { source, entry: "scatter_phi".into(), target: CodegenTarget::CudaC }
@@ -144,18 +186,19 @@ fn scatter_phi(@builtin(global_invocation_id) gid: vec3<u32>) {{
 /// Emit a fused scatter kernel with N phi expressions, one memory pass.
 ///
 /// Each phi produces its own output array. One atomicAdd per (element, phi).
-pub fn emit_scatter_multi(phi_exprs: &[&str], target: CodegenTarget) -> KernelSource {
+pub fn emit_scatter_multi(phi_exprs: &[&str], target: CodegenTarget, precision: Precision) -> KernelSource {
     match target {
-        CodegenTarget::CudaC => emit_scatter_multi_cuda(phi_exprs),
+        CodegenTarget::CudaC => emit_scatter_multi_cuda(phi_exprs, precision),
         CodegenTarget::Wgsl => emit_scatter_multi_wgsl(phi_exprs),
     }
 }
 
-fn emit_scatter_multi_cuda(phi_exprs: &[&str]) -> KernelSource {
+fn emit_scatter_multi_cuda(phi_exprs: &[&str], precision: Precision) -> KernelSource {
     let n = phi_exprs.len();
+    let t = precision.cuda_type();
 
     let out_params: String = (0..n)
-        .map(|i| format!("    double* __restrict__ out{},\n", i))
+        .map(|i| format!("    {}* __restrict__ out{},\n", t, i))
         .collect();
 
     let atomic_adds: String = phi_exprs
@@ -170,19 +213,20 @@ fn emit_scatter_multi_cuda(phi_exprs: &[&str]) -> KernelSource {
 // phi expressions: [{phis}]
 extern "C" __global__ void scatter_multi_phi(
     const int* __restrict__ keys,
-    const double* __restrict__ values,
-    const double* __restrict__ refs,
+    const {t}* __restrict__ values,
+    const {t}* __restrict__ refs,
 {out_params}    int n
 ) {{
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     if (gid < n) {{
         int g = keys[gid];
-        double v = values[gid];
-        double r = refs[g];
+        {t} v = values[gid];
+        {t} r = refs[g];
 {atomic_adds}    }}
 }}
 "#,
         n = n,
+        t = t,
         phis = phi_exprs.join(", "),
         out_params = out_params,
         atomic_adds = atomic_adds,
@@ -273,14 +317,15 @@ fn scatter_multi_phi(@builtin(global_invocation_id) gid: vec3<u32>) {{
 /// Mask format:
 /// - CUDA: packed u64 (`unsigned long long`), bit `gid` of `mask[gid/64]`
 /// - WGSL: packed u32, bit `idx` of `mask[idx/32]`
-pub fn emit_scatter_masked(phi_expr: &str, target: CodegenTarget) -> KernelSource {
+pub fn emit_scatter_masked(phi_expr: &str, target: CodegenTarget, precision: Precision) -> KernelSource {
     match target {
-        CodegenTarget::CudaC => emit_scatter_masked_cuda(phi_expr),
+        CodegenTarget::CudaC => emit_scatter_masked_cuda(phi_expr, precision),
         CodegenTarget::Wgsl => emit_scatter_masked_wgsl(phi_expr),
     }
 }
 
-fn emit_scatter_masked_cuda(phi_expr: &str) -> KernelSource {
+fn emit_scatter_masked_cuda(phi_expr: &str, precision: Precision) -> KernelSource {
+    let t = precision.cuda_type();
     let source = format!(
         r#"
 // JIT masked scatter: output[g] += phi(v) for rows where mask bit is set.
@@ -288,10 +333,10 @@ fn emit_scatter_masked_cuda(phi_expr: &str) -> KernelSource {
 // mask: packed u64, bit gid of mask[gid>>6] = 1 means row gid passes.
 extern "C" __global__ void scatter_phi_masked(
     const int* __restrict__ keys,
-    const double* __restrict__ values,
-    const double* __restrict__ refs,
+    const {t}* __restrict__ values,
+    const {t}* __restrict__ refs,
     const unsigned long long* __restrict__ mask,
-    double* __restrict__ output,
+    {t}* __restrict__ output,
     int n
 ) {{
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -299,13 +344,14 @@ extern "C" __global__ void scatter_phi_masked(
         unsigned long long word = mask[gid >> 6];
         if ((word >> (gid & 63)) & 1ULL) {{
             int g = keys[gid];
-            double v = values[gid];
-            double r = refs[g];
+            {t} v = values[gid];
+            {t} r = refs[g];
             atomicAdd(&output[g], ({phi}));
         }}
     }}
 }}
 "#,
+        t = t,
         phi = phi_expr
     );
     KernelSource { source, entry: "scatter_phi_masked".into(), target: CodegenTarget::CudaC }
@@ -362,30 +408,32 @@ fn scatter_phi_masked(@builtin(global_invocation_id) gid: vec3<u32>) {{
 /// Emit a unary element-wise map kernel: `output[i] = phi(values[i])`.
 ///
 /// Variables available to phi: `v` (the current value).
-pub fn emit_map(phi_expr: &str, target: CodegenTarget) -> KernelSource {
+pub fn emit_map(phi_expr: &str, target: CodegenTarget, precision: Precision) -> KernelSource {
     match target {
-        CodegenTarget::CudaC => emit_map_cuda(phi_expr),
+        CodegenTarget::CudaC => emit_map_cuda(phi_expr, precision),
         CodegenTarget::Wgsl => emit_map_wgsl(phi_expr),
     }
 }
 
-fn emit_map_cuda(phi_expr: &str) -> KernelSource {
+fn emit_map_cuda(phi_expr: &str, precision: Precision) -> KernelSource {
+    let t = precision.cuda_type();
     let source = format!(
         r#"
 // JIT map kernel: output[i] = phi(v[i]) for each element.
 // phi = {phi}
 extern "C" __global__ void map_phi_kernel(
-    const double* __restrict__ values,
-    double* __restrict__ output,
+    const {t}* __restrict__ values,
+    {t}* __restrict__ output,
     int n
 ) {{
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     if (gid < n) {{
-        double v = values[gid];
+        {t} v = values[gid];
         output[gid] = ({phi});
     }}
 }}
 "#,
+        t = t,
         phi = phi_expr
     );
     KernelSource { source, entry: "map_phi_kernel".into(), target: CodegenTarget::CudaC }
@@ -421,32 +469,34 @@ fn map_phi_kernel(@builtin(global_invocation_id) gid: vec3<u32>) {{
 /// Emit a binary element-wise map kernel: `output[i] = phi(a[i], b[i])`.
 ///
 /// Variables available to phi: `a`, `b` (the two input values).
-pub fn emit_map2(phi_expr: &str, target: CodegenTarget) -> KernelSource {
+pub fn emit_map2(phi_expr: &str, target: CodegenTarget, precision: Precision) -> KernelSource {
     match target {
-        CodegenTarget::CudaC => emit_map2_cuda(phi_expr),
+        CodegenTarget::CudaC => emit_map2_cuda(phi_expr, precision),
         CodegenTarget::Wgsl => emit_map2_wgsl(phi_expr),
     }
 }
 
-fn emit_map2_cuda(phi_expr: &str) -> KernelSource {
+fn emit_map2_cuda(phi_expr: &str, precision: Precision) -> KernelSource {
+    let t = precision.cuda_type();
     let source = format!(
         r#"
 // JIT two-input map kernel: output[i] = phi(a[i], b[i]).
 // phi = {phi}
 extern "C" __global__ void map_phi2_kernel(
-    const double* __restrict__ vals_a,
-    const double* __restrict__ vals_b,
-    double* __restrict__ output,
+    const {t}* __restrict__ vals_a,
+    const {t}* __restrict__ vals_b,
+    {t}* __restrict__ output,
     int n
 ) {{
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     if (gid < n) {{
-        double a = vals_a[gid];
-        double b = vals_b[gid];
+        {t} a = vals_a[gid];
+        {t} b = vals_b[gid];
         output[gid] = ({phi});
     }}
 }}
 "#,
+        t = t,
         phi = phi_expr
     );
     KernelSource { source, entry: "map_phi2_kernel".into(), target: CodegenTarget::CudaC }
@@ -486,41 +536,43 @@ fn map_phi2_kernel(@builtin(global_invocation_id) gid: vec3<u32>) {{
 /// Each workgroup reduces its elements in shared memory, then atomicAdds
 /// the partial sum to a global partials array. A second pass (or host code)
 /// reduces the partials.
-pub fn emit_reduce_sum(target: CodegenTarget) -> KernelSource {
+pub fn emit_reduce_sum(target: CodegenTarget, precision: Precision) -> KernelSource {
     match target {
-        CodegenTarget::CudaC => emit_reduce_sum_cuda(),
+        CodegenTarget::CudaC => emit_reduce_sum_cuda(precision),
         CodegenTarget::Wgsl => emit_reduce_sum_wgsl(),
     }
 }
 
-fn emit_reduce_sum_cuda() -> KernelSource {
-    let source = r#"
+fn emit_reduce_sum_cuda(precision: Precision) -> KernelSource {
+    let t = precision.cuda_type();
+    let source = format!(r#"
 // JIT reduce sum: tree reduction per block, atomicAdd partials.
 extern "C" __global__ void reduce_sum(
-    const double* __restrict__ input,
-    double* __restrict__ partials,
+    const {t}* __restrict__ input,
+    {t}* __restrict__ partials,
     int n
-) {
-    extern __shared__ double shmem[];
+) {{
+    extern __shared__ {t} shmem[];
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     int lid = threadIdx.x;
 
     shmem[lid] = (gid < n) ? input[gid] : 0.0;
     __syncthreads();
 
-    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (lid < stride) {
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {{
+        if (lid < stride) {{
             shmem[lid] += shmem[lid + stride];
-        }
+        }}
         __syncthreads();
-    }
+    }}
 
-    if (lid == 0) {
+    if (lid == 0) {{
         atomicAdd(&partials[blockIdx.x], shmem[0]);
-    }
-}
-"#
-    .to_string();
+    }}
+}}
+"#,
+        t = t
+    );
     KernelSource { source, entry: "reduce_sum".into(), target: CodegenTarget::CudaC }
 }
 
@@ -591,7 +643,7 @@ mod tests {
 
     #[test]
     fn scatter_cuda_contains_phi() {
-        let ks = emit_scatter("v * v", CodegenTarget::CudaC);
+        let ks = emit_scatter("v * v", CodegenTarget::CudaC, Precision::F64);
         assert_eq!(ks.entry, "scatter_phi");
         assert!(ks.source.contains("extern \"C\" __global__"));
         assert!(ks.source.contains("double phi = (v * v)"));
@@ -600,7 +652,7 @@ mod tests {
 
     #[test]
     fn scatter_wgsl_contains_phi() {
-        let ks = emit_scatter("v * v", CodegenTarget::Wgsl);
+        let ks = emit_scatter("v * v", CodegenTarget::Wgsl, Precision::F64);
         assert_eq!(ks.entry, "scatter_phi");
         assert!(ks.source.contains("@compute @workgroup_size(256)"));
         assert!(ks.source.contains("let phi: f32 = (v * v)"));
@@ -610,14 +662,14 @@ mod tests {
 
     #[test]
     fn scatter_both_targets_same_entry() {
-        let cuda = emit_scatter("v", CodegenTarget::CudaC);
-        let wgsl = emit_scatter("v", CodegenTarget::Wgsl);
+        let cuda = emit_scatter("v", CodegenTarget::CudaC, Precision::F64);
+        let wgsl = emit_scatter("v", CodegenTarget::Wgsl, Precision::F64);
         assert_eq!(cuda.entry, wgsl.entry);
     }
 
     #[test]
     fn scatter_phi_translation_fabs() {
-        let ks = emit_scatter("fabs(v - r)", CodegenTarget::Wgsl);
+        let ks = emit_scatter("fabs(v - r)", CodegenTarget::Wgsl, Precision::F64);
         assert!(ks.source.contains("abs(v - r)"), "fabs should translate to abs");
         // The comment preserves the original phi; check that the executable code uses abs.
         assert!(ks.source.contains("let phi: f32 = (abs(v - r))"));
@@ -629,7 +681,7 @@ mod tests {
 
     #[test]
     fn scatter_multi_cuda_3_outputs() {
-        let ks = emit_scatter_multi(&["v", "v * v", "1.0"], CodegenTarget::CudaC);
+        let ks = emit_scatter_multi(&["v", "v * v", "1.0"], CodegenTarget::CudaC, Precision::F64);
         assert_eq!(ks.entry, "scatter_multi_phi");
         assert!(ks.source.contains("double* __restrict__ out0"));
         assert!(ks.source.contains("double* __restrict__ out1"));
@@ -641,7 +693,7 @@ mod tests {
 
     #[test]
     fn scatter_multi_wgsl_3_outputs() {
-        let ks = emit_scatter_multi(&["v", "v * v", "1.0"], CodegenTarget::Wgsl);
+        let ks = emit_scatter_multi(&["v", "v * v", "1.0"], CodegenTarget::Wgsl, Precision::F64);
         assert_eq!(ks.entry, "scatter_multi_phi");
         // 3 output bindings at indices 3, 4, 5
         assert!(ks.source.contains("@binding(3)"));
@@ -658,7 +710,7 @@ mod tests {
     #[test]
     fn scatter_multi_wgsl_bindings_contiguous() {
         // Verify that N outputs produce bindings 3..3+N, params at 3+N
-        let ks = emit_scatter_multi(&["v", "v * v"], CodegenTarget::Wgsl);
+        let ks = emit_scatter_multi(&["v", "v * v"], CodegenTarget::Wgsl, Precision::F64);
         assert!(ks.source.contains("@binding(3)")); // out0
         assert!(ks.source.contains("@binding(4)")); // out1
         assert!(ks.source.contains("@binding(5)")); // params
@@ -671,7 +723,7 @@ mod tests {
 
     #[test]
     fn scatter_masked_cuda_structure() {
-        let ks = emit_scatter_masked("v * v", CodegenTarget::CudaC);
+        let ks = emit_scatter_masked("v * v", CodegenTarget::CudaC, Precision::F64);
         assert_eq!(ks.entry, "scatter_phi_masked");
         assert!(ks.source.contains("unsigned long long* __restrict__ mask"));
         assert!(ks.source.contains("mask[gid >> 6]"));
@@ -681,7 +733,7 @@ mod tests {
 
     #[test]
     fn scatter_masked_wgsl_structure() {
-        let ks = emit_scatter_masked("v * v", CodegenTarget::Wgsl);
+        let ks = emit_scatter_masked("v * v", CodegenTarget::Wgsl, Precision::F64);
         assert_eq!(ks.entry, "scatter_phi_masked");
         assert!(ks.source.contains("mask: array<u32>"));
         assert!(ks.source.contains("mask[idx >> 5u]"));
@@ -693,8 +745,8 @@ mod tests {
 
     #[test]
     fn scatter_masked_both_targets_same_entry() {
-        let cuda = emit_scatter_masked("v", CodegenTarget::CudaC);
-        let wgsl = emit_scatter_masked("v", CodegenTarget::Wgsl);
+        let cuda = emit_scatter_masked("v", CodegenTarget::CudaC, Precision::F64);
+        let wgsl = emit_scatter_masked("v", CodegenTarget::Wgsl, Precision::F64);
         assert_eq!(cuda.entry, wgsl.entry);
     }
 
@@ -704,7 +756,7 @@ mod tests {
 
     #[test]
     fn map_cuda_basic() {
-        let ks = emit_map("v * v + 1.0", CodegenTarget::CudaC);
+        let ks = emit_map("v * v + 1.0", CodegenTarget::CudaC, Precision::F64);
         assert_eq!(ks.entry, "map_phi_kernel");
         assert!(ks.source.contains("output[gid] = (v * v + 1.0)"));
         assert!(!ks.source.contains("atomicAdd"), "map should not use atomics");
@@ -782,7 +834,7 @@ mod tests {
     fn cuda_output_matches_existing_scatter_jit() {
         // The CUDA output should match the pattern from scatter_jit::build_scatter_phi_source.
         // Key invariants: same param order, same variable names, same atomicAdd pattern.
-        let ks = emit_scatter("v", CodegenTarget::CudaC);
+        let ks = emit_scatter("v", CodegenTarget::CudaC, Precision::F64);
         assert!(ks.source.contains("const int* __restrict__ keys"));
         assert!(ks.source.contains("const double* __restrict__ values"));
         assert!(ks.source.contains("const double* __restrict__ refs"));
@@ -795,7 +847,7 @@ mod tests {
 
     #[test]
     fn wgsl_scatter_has_required_bindings() {
-        let ks = emit_scatter("v", CodegenTarget::Wgsl);
+        let ks = emit_scatter("v", CodegenTarget::Wgsl, Precision::F64);
         assert!(ks.source.contains("@group(0) @binding(0)"));
         assert!(ks.source.contains("@group(0) @binding(1)"));
         assert!(ks.source.contains("@group(0) @binding(2)"));

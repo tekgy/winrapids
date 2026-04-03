@@ -130,8 +130,8 @@ pub fn garch11_forecast(res: &GarchResult, last_return: f64, horizon: usize) -> 
 pub fn ewma_variance(returns: &[f64], lambda: f64) -> Vec<f64> {
     let n = returns.len();
     let mut sigma2 = Vec::with_capacity(n);
-    // Initialize with sample variance
-    let var0: f64 = returns.iter().map(|r| r * r).sum::<f64>() / n as f64;
+    // Initialize with sample variance, floored to avoid log(0) in downstream
+    let var0: f64 = (returns.iter().map(|r| r * r).sum::<f64>() / n as f64).max(1e-15);
     sigma2.push(var0);
     for t in 1..n {
         let s = lambda * sigma2[t - 1] + (1.0 - lambda) * returns[t - 1].powi(2);

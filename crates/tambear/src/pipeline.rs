@@ -687,7 +687,7 @@ impl TamPipeline {
         let mut nn_dists: Vec<f64> = knn_result.neighbors.iter()
             .filter_map(|row| row.last().map(|(_, d2)| d2.sqrt()))
             .collect();
-        nn_dists.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        nn_dists.sort_by(|a, b| a.total_cmp(b));
 
         let eps_tight  = sorted_percentile(&nn_dists, 0.15).max(1e-12);
         let eps_mid    = sorted_percentile(&nn_dists, 0.50).max(1e-12);

@@ -1,11 +1,9 @@
-//! Tiled accumulation validation — kernel generation tests.
-//!
-//! Validates that all operators produce correct CUDA source.
-//! GPU correctness testing requires cudarc (deferred to integration tests).
+//! Tiled accumulation validation — kernel generation + GPU dispatch tests.
 
 use winrapids_tiled::ops::*;
 use winrapids_tiled::engine::generate_tiled_kernel;
 use winrapids_tiled::cache::cache_key;
+use winrapids_tiled::TiledEngine;
 
 fn main() {
     println!("{}", "=".repeat(70));
@@ -18,10 +16,47 @@ fn main() {
     test_distance();
     test_softmax_weighted();
     test_operator_properties();
+    test_gpu_dispatch();
 
     println!("\n{}", "=".repeat(70));
     println!("ALL TILED TESTS PASSED");
     println!("{}", "=".repeat(70));
+}
+
+fn test_gpu_dispatch() {
+    println!("\n--- Test 7: GPU dispatch (DotProduct 2×3 × 3×2) ---");
+
+    let gpu = tam_gpu::detect();
+    println!("  Backend: {}", gpu.name());
+
+    let engine = TiledEngine::new(std::sync::Arc::clone(&gpu));
+
+    // A (2×3) × B (3×2) → C (2×2)
+    // A = [[1,2,3],[4,5,6]]   B = [[7,8],[9,10],[11,12]]
+    // C[0,0] = 1*7+2*9+3*11=58   C[0,1] = 1*8+2*10+3*12=64
+    // C[1,0] = 4*7+5*9+6*11=139  C[1,1] = 4*8+5*10+6*12=154
+    let a = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let b = vec![7.0f64, 8.0, 9.0, 10.0, 11.0, 12.0];
+
+    let c = engine.run(&DotProductOp, &a, &b, 2, 2, 3).unwrap();
+    assert!((c[0] - 58.0).abs() < 1e-9, "C[0,0] expected 58, got {}", c[0]);
+    assert!((c[1] - 64.0).abs() < 1e-9, "C[0,1] expected 64, got {}", c[1]);
+    assert!((c[2] - 139.0).abs() < 1e-9, "C[1,0] expected 139, got {}", c[2]);
+    assert!((c[3] - 154.0).abs() < 1e-9, "C[1,1] expected 154, got {}", c[3]);
+    println!("  DotProduct 2×3 × 3×2: {:?}  PASS", c);
+
+    // Cache: second call hits cache, same result
+    let c2 = engine.run(&DotProductOp, &a, &b, 2, 2, 3).unwrap();
+    assert_eq!(c, c2, "Cached kernel must produce identical result");
+    assert_eq!(engine.cache_len(), 1, "Should have exactly 1 cached kernel");
+    println!("  Cache hit: cache_len={}  PASS", engine.cache_len());
+
+    // Distance: [[0,0]] vs [[3,4]] → L2² = 9+16 = 25
+    let p = vec![0.0f64, 0.0];
+    let q = vec![3.0f64, 4.0];
+    let dist_sq = engine.run(&DistanceOp, &p, &q, 1, 1, 2).unwrap();
+    assert!((dist_sq[0] - 25.0).abs() < 1e-9, "L2² expected 25, got {}", dist_sq[0]);
+    println!("  DistanceOp 1×2 L2²=25: {:?}  PASS", dist_sq);
 }
 
 fn test_dot_product() {
@@ -32,6 +67,8 @@ fn test_dot_product() {
     assert!(kernel.contains("acc += a_val * b_val"), "Should contain dot product accumulate");
     assert!(kernel.contains("typedef double acc_t"), "Should have scalar accumulator");
     assert!(kernel.contains("return x;"), "Identity pre-transform");
+    assert!(kernel.contains("const int* __restrict__ dims"), "Should use dims buffer for M/N/K");
+    assert!(kernel.contains("int M = dims[0]"), "Should extract M from dims");
 
     println!("  DotProductOp: {} bytes  PASS", kernel.len());
 }

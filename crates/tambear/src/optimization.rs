@@ -363,7 +363,7 @@ pub fn nelder_mead<F: Fn(&[f64]) -> f64>(
     for iter in 0..max_iter {
         // Sort by function value
         let mut order: Vec<usize> = (0..np1).collect();
-        order.sort_by(|&a, &b| f_vals[a].partial_cmp(&f_vals[b]).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|&a, &b| f_vals[a].total_cmp(&f_vals[b]));
         let sorted_simplex: Vec<Vec<f64>> = order.iter().map(|&i| simplex[i].clone()).collect();
         let sorted_fvals: Vec<f64> = order.iter().map(|&i| f_vals[i]).collect();
         simplex = sorted_simplex;

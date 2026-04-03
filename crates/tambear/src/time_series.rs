@@ -281,7 +281,7 @@ pub fn pacf(data: &[f64], max_lag: usize) -> Vec<f64> {
     if max_lag == 0 { return pacf_vals; }
 
     let mut phi = vec![0.0; max_lag];
-    let mut sigma2 = var;
+    let mut sigma2 = 1.0; // r[lag] is normalized autocorrelation (ρ), so ρ[0] = 1
 
     for k in 0..max_lag {
         let mut num = r[k + 1];

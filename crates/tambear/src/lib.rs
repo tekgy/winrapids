@@ -34,14 +34,10 @@
 //! ## Quick Start
 //!
 //! ```no_run
-//! use tambear::HashScatterEngine;
+//! use tambear::scatter_engine::ScatterEngine;
 //!
-//! let engine = HashScatterEngine::new().unwrap();
-//! let keys = vec![0i32, 0, 1, 1, 2];
-//! let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-//!
-//! let sums = engine.scatter_sum(&keys, &values, 3).unwrap();
-//! // [3.0, 7.0, 5.0] — group 0: 1+2, group 1: 3+4, group 2: 5
+//! let engine = ScatterEngine::new(tam_gpu::detect());
+//! // Sum by group — runs on any backend (CUDA, CPU)
 //! ```
 
 pub mod accumulate;
@@ -59,15 +55,18 @@ pub mod robust;
 pub mod linear_algebra;
 pub mod intermediates;
 pub mod dictionary;
+#[cfg(feature = "legacy-cudarc")]
 pub mod filter_jit;
 pub mod format;
 pub mod graph;
 pub mod gather_op;
 pub mod frame;
 pub mod group_index;
+#[cfg(feature = "legacy-cudarc")]
 pub mod hash_scatter;
 pub mod reduce_op;
 pub mod rng;
+#[cfg(feature = "legacy-cudarc")]
 pub mod scatter_jit;
 pub mod signal_processing;
 pub mod spatial;
@@ -84,7 +83,9 @@ pub use format::{
 };
 pub use frame::{Column, ColumnEncoding, DType, Frame};
 pub use group_index::GroupIndex;
+#[cfg(feature = "legacy-cudarc")]
 pub use hash_scatter::{HashScatterEngine, GroupByResult};
+#[cfg(feature = "legacy-cudarc")]
 pub use filter_jit::{
     FilterJit, MaskOp,
     mask_popcount, mask_and, mask_or, mask_not, mask_xor,
@@ -95,7 +96,10 @@ pub use accumulate::{AccumulateEngine, Grouping, Expr, Op, AccResult};
 pub use clustering::{ClusteringEngine, ClusterResult};
 pub use intermediates::{DistanceMatrix, Metric, SufficientStatistics, IntermediateTag, TamSession, DataId};
 pub use reduce_op::ReduceOp;
+#[cfg(feature = "legacy-cudarc")]
 pub use scatter_jit::{ScatterJit, PHI_SUM, PHI_SUM_SQ, PHI_CENTERED_SUM, PHI_CENTERED_SUM_SQ, PHI_COUNT};
+#[cfg(not(feature = "legacy-cudarc"))]
+pub use scatter_engine::{PHI_SUM, PHI_SUM_SQ, PHI_CENTERED_SUM_SQ, PHI_COUNT};
 pub use information_theory::{
     InformationEngine,
     shannon_entropy, shannon_entropy_from_counts, renyi_entropy, tsallis_entropy,
@@ -229,6 +233,7 @@ pub mod spectral_gap;
 pub mod fold_irreversibility;
 pub mod spec_compiler;
 pub mod superposition;
+pub mod scatter_engine;
 pub mod tam;
 pub mod equipartition;
 pub mod multi_adic;

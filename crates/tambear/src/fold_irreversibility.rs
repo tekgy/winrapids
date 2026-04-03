@@ -517,12 +517,12 @@ pub fn ratio_contraction_extremals(k_max: u32, max_steps: usize) -> RatioContrac
     let (sup_k, sup_ratio) = if ratio_bounded {
         ratios.iter()
             .filter(|(k, _)| *k >= threshold_k)
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .max_by(|a, b| a.1.total_cmp(&b.1))
             .map(|&(k, r)| (k, r))
             .unwrap_or((0, 0.0))
     } else {
         ratios.iter()
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .max_by(|a, b| a.1.total_cmp(&b.1))
             .map(|&(k, r)| (k, r))
             .unwrap_or((0, 0.0))
     };

@@ -81,6 +81,26 @@ For d = 3: the coprime classes are {1, 2} mod 3. With m = 5: 5(1)+1 = 6 ≡ 0 mo
 
 **Remark.** The symmetric map T_{5,3} partially overcomes this limitation by choosing c ∈ {1, 2} per residue class. This restores guaranteed division but breaks the uniformity of the perturbation. As Section 3 demonstrates, the symmetric (5,3) map contracts on average (ρ = 0.962) but admits non-trivial 2-cycles — the residue-dependent perturbation creates exactly the structure that sustains periodic orbits.
 
+### 2.5 Layer Uniformity (Universal Mixing)
+
+The contraction factor ρ(m,d) (Section 2.2) is a spatial average — it describes the expected contraction over all starting residue classes. For this average to govern individual orbits, the orbit must visit residue classes approximately uniformly. The following theorem provides the structural guarantee.
+
+**Theorem (Layer Uniformity).** Fix d = 2, odd m, and precision j. Consider the j-step Collatz map F_{a,j}(k) = T^{j-1}(a + 2^j k) mod 2^j, where a is odd. Within each v-sequence σ = (v₀, ..., v_{j-2}) with sum s = Σv_i, the function F restricted to the inputs with halving pattern σ is affine in k with slope:
+
+  Δ = m^{j-1} · 2^{j-s} · 2^{s-j+1} = 2 · m^{j-1} mod 2^j
+
+The slope is **independent of σ**. Since gcd(2 · m^{j-1}, 2^j) = 2 (as m is odd), the period is 2^{j-1} = |odd residues mod 2^j|. Each v-sequence stratum maps onto all odd residues exactly once per period.
+
+*Proof sketch.* Each of j−1 Collatz steps contributes a factor of m (from mn+c) and removes 2^{v_i} (from division). The net multiplier on k is m^{j-1} · 2^{j-s}. The valid k-values for v-sequence σ are spaced by 2^{s-j+1} (since s bits of k are consumed). The output spacing is:
+
+  m^{j-1} · 2^{j-s} · 2^{s-j+1} = m^{j-1} · 2^{(j-s)+(s-j+1)} = 2 · m^{j-1}
+
+The s cancels. Higher consumption (larger s) means wider k-spacing, but proportionally smaller per-unit multiplier. The product is always 2 · m^{j-1}. ∎
+
+**Universality.** This result holds for ALL odd m — including m = 5 (the (5,3) map projected to d = 2), m = 9, etc. The mixing is structural, not specific to m = 3. What distinguishes d = 2 (with m = 3) is not the mixing but the contraction and cycle-freeness (Sections 2.2–2.4).
+
+**Connection to the three-layer decomposition**: The Collatz dynamics decomposes into: (1) MIXING (layer uniformity, universal for all odd m), (2) CONTRACTION (ρ < 1, requires m < 4), and (3) CARRY STRUCTURE (carry depth {0,1,j}, specific to m = 3). Layers 1 is free; Layers 2–3 are what make d = 2 special.
+
 ---
 
 ## 3. Experimental Results

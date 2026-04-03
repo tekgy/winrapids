@@ -295,7 +295,7 @@ pub fn k_wise_folds(scales: &[f64], k: usize) -> Vec<FoldPoint> {
     loop {
         // Extract subset scales and sort them
         let mut subset: Vec<(usize, f64)> = indices.iter().map(|&i| (i, scales[i])).collect();
-        subset.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        subset.sort_by(|a, b| a.1.total_cmp(&b.1));
 
         let sub_scales: Vec<f64> = subset.iter().map(|&(_, s)| s).collect();
         let sub_indices: Vec<usize> = subset.iter().map(|&(i, _)| i).collect();
@@ -362,7 +362,7 @@ pub fn nucleation_hierarchy(scales: &[f64]) -> NucleationHierarchy {
 
     // Sort scales for consistent ordering
     let mut sorted: Vec<f64> = scales.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.total_cmp(b));
 
     // All pairwise folds
     let mut all_folds = all_pairwise_folds(&sorted);
@@ -388,7 +388,7 @@ pub fn nucleation_hierarchy(scales: &[f64]) -> NucleationHierarchy {
     }
 
     // Sort by decreasing s* (nucleation order)
-    all_folds.sort_by(|a, b| b.s_star.partial_cmp(&a.s_star).unwrap());
+    all_folds.sort_by(|a, b| b.s_star.total_cmp(&a.s_star));
 
     // Check boundedness: the fold surface is closed and bounded if
     // all fugacities are < 1 at the fold point (system is in convergent regime)
@@ -417,7 +417,7 @@ pub fn nucleation_hierarchy_full(scales: &[f64]) -> NucleationHierarchy {
     }
 
     let mut sorted: Vec<f64> = scales.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.total_cmp(b));
 
     let mut all_folds = Vec::new();
     let mut full_fold = None;
@@ -432,7 +432,7 @@ pub fn nucleation_hierarchy_full(scales: &[f64]) -> NucleationHierarchy {
         }
     }
 
-    all_folds.sort_by(|a, b| b.s_star.partial_cmp(&a.s_star).unwrap());
+    all_folds.sort_by(|a, b| b.s_star.total_cmp(&a.s_star));
 
     let is_bounded = all_folds.iter().all(|fp| {
         fp.diagnostics.fugacities.iter().all(|&x| x < 1.0)
@@ -473,7 +473,7 @@ pub fn verify_fold_surface(scales: &[f64]) -> (bool, Vec<String>) {
     }
 
     let mut sorted: Vec<f64> = scales.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.total_cmp(b));
 
     let target = fold_target(&sorted);
     let s = match solve_fold(&sorted, target) {
@@ -1029,7 +1029,7 @@ mod tests {
         for i in 0..3 {
             let mut perturbed = scales.to_vec();
             perturbed[i] += eps;
-            perturbed.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            perturbed.sort_by(|a, b| a.total_cmp(b));
             let s_pert = solve_fold(&perturbed, fold_target(&perturbed)).unwrap();
             let numerical = (s_pert - s) / eps;
             // Sensitivity should at least have the right sign and order of magnitude

@@ -274,7 +274,7 @@ where
     let mut eig_mags: Vec<((f64, f64), f64)> = eigs.iter()
         .map(|&(re, im)| ((re, im), (re * re + im * im).sqrt()))
         .collect();
-    eig_mags.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    eig_mags.sort_by(|a, b| b.1.total_cmp(&a.1));
 
     let n_ret = n_eigenvalues.min(eig_mags.len());
     ArnoldiResult {
@@ -1003,7 +1003,7 @@ mod tests {
         let h = Mat::from_vec(2, 2, vec![2.0, 1.0, 1.0, 3.0]);
         let eigs = hessenberg_qr_eigenvalues(&h);
         let mut mags: Vec<f64> = eigs.iter().map(|&(r, i)| (r*r + i*i).sqrt()).collect();
-        mags.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        mags.sort_by(|a, b| b.total_cmp(a));
         let expected_1 = 2.5 + (1.25_f64).sqrt();
         let expected_2 = 2.5 - (1.25_f64).sqrt();
         assert!((mags[0] - expected_1).abs() < 1e-8, "λ₁={} expected {}", mags[0], expected_1);
@@ -1020,7 +1020,7 @@ mod tests {
         ]);
         let eigs = hessenberg_qr_eigenvalues(&h);
         let mut mags: Vec<f64> = eigs.iter().map(|&(r, i)| (r*r + i*i).sqrt()).collect();
-        mags.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        mags.sort_by(|a, b| b.total_cmp(a));
         assert!((mags[0] - 5.0).abs() < 1e-8, "λ₁={}", mags[0]);
         assert!((mags[1] - 3.0).abs() < 1e-8, "λ₂={}", mags[1]);
         assert!((mags[2] - 1.0).abs() < 1e-8, "λ₃={}", mags[2]);

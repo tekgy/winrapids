@@ -200,7 +200,7 @@ impl PartialOrd for DijkstraState {
 impl Ord for DijkstraState {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reversed for min-heap
-        other.cost.partial_cmp(&self.cost).unwrap_or(Ordering::Equal)
+        other.cost.total_cmp(&self.cost)
     }
 }
 
@@ -371,7 +371,7 @@ pub fn kruskal(g: &Graph) -> MstResult {
             }
         }
     }
-    edges.sort_by(|a, b| a.w.partial_cmp(&b.w).unwrap_or(Ordering::Equal));
+    edges.sort_by(|a, b| a.w.total_cmp(&b.w));
 
     let mut uf = UnionFind::new(n);
     let mut mst_edges = Vec::new();

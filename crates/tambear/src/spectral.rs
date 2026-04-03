@@ -45,7 +45,7 @@ pub fn lomb_scargle(times: &[f64], values: &[f64], n_freqs: usize) -> LombScargl
 
     // Frequency grid: 0 to Nyquist (estimated from median sampling interval)
     let mut dt: Vec<f64> = (1..n).map(|i| (times[i] - times[i - 1]).abs()).collect();
-    dt.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    dt.sort_by(|a, b| a.total_cmp(b));
     let median_dt = dt[dt.len() / 2];
     let f_nyquist = 0.5 / median_dt;
     let df = f_nyquist / n_freqs as f64;
@@ -271,7 +271,7 @@ pub fn spectral_peaks(freqs: &[f64], psd: &[f64], threshold_ratio: f64) -> Vec<S
             });
         }
     }
-    peaks.sort_by(|a, b| b.power.partial_cmp(&a.power).unwrap_or(std::cmp::Ordering::Equal));
+    peaks.sort_by(|a, b| b.power.total_cmp(&a.power));
     peaks
 }
 
@@ -336,7 +336,7 @@ mod tests {
         let res = lomb_scargle(&times, &values, 50);
         // Peak should be near 10 Hz
         let peak_idx = res.power.iter().enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
+            .max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
         let peak_freq = res.freqs[peak_idx];
         assert!((peak_freq - 10.0).abs() < 2.0, "Peak at {peak_freq} Hz, expected ~10 Hz");
     }
@@ -357,7 +357,7 @@ mod tests {
         }
         let res = lomb_scargle(&times, &values, 50);
         let peak_idx = res.power.iter().enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
+            .max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
         let peak_freq = res.freqs[peak_idx];
         assert!((peak_freq - freq).abs() < 3.0, "Peak at {peak_freq} Hz, expected ~{freq} Hz");
     }
@@ -455,7 +455,7 @@ mod tests {
         }).collect();
         let (freqs, psd) = multitaper_psd(&data, fs, 4);
         let peak_idx = psd.iter().enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
+            .max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
         let peak_freq = freqs[peak_idx];
         assert!((peak_freq - freq).abs() < 2.0, "Multitaper peak at {peak_freq} Hz, expected {freq} Hz");
     }

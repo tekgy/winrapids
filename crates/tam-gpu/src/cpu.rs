@@ -63,6 +63,8 @@ pub(crate) struct CpuKernel {
     /// For `tiled_accumulate`: the params key parsed from the second line
     /// (`// params: euclidean`, `// params: poincare(c=-1.0000)`, etc.).
     pub params_key: String,
+    /// For scatter/map entries: phi expression(s) parsed from source comments.
+    pub phi_exprs: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +130,50 @@ impl TamGpu for CpuBackend {
                         entry: entry.to_string(),
                         op_name: Some(op_name_parsed),
                         params_key: params_key_parsed,
+                        phi_exprs: vec![],
+                    }),
+                    entry: entry.to_string(),
+                });
+            }
+
+            // Scatter/map entries: parse phi expression(s) from source comment.
+            // Source format (single phi):
+            //   "// Scatter phi kernel: v * v\n..."
+            //   "// Map phi kernel: exp(v)\n..."
+            //   "// Map phi2 kernel: a * b\n..."
+            // Source format (multi phi):
+            //   "// Scatter multi-phi kernel: v|v * v|1.0\n..."
+            "scatter_phi" | "map_phi" | "map_phi2" => {
+                let first = source.lines().next().unwrap_or("");
+                let phi = first.rsplit("kernel: ").next()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "v".to_string());
+                return Ok(Kernel {
+                    inner: Box::new(CpuKernel {
+                        entry: entry.to_string(),
+                        op_name: None,
+                        params_key: String::new(),
+                        phi_exprs: vec![phi],
+                    }),
+                    entry: entry.to_string(),
+                });
+            }
+
+            "scatter_multi_phi" => {
+                let first = source.lines().next().unwrap_or("");
+                let phis_str = first.rsplit("kernel: ").next()
+                    .unwrap_or("v")
+                    .trim();
+                let phi_exprs: Vec<String> = phis_str.split('|')
+                    .map(|s| s.trim().to_string())
+                    .collect();
+                return Ok(Kernel {
+                    inner: Box::new(CpuKernel {
+                        entry: entry.to_string(),
+                        op_name: None,
+                        params_key: String::new(),
+                        phi_exprs,
                     }),
                     entry: entry.to_string(),
                 });
@@ -137,11 +183,12 @@ impl TamGpu for CpuBackend {
                 "CpuBackend has no implementation for '{}'. \
                  Supported: scatter_sum, scatter_count, gather_f64, \
                  scatter_back_f64, argmin_f64, argmax_f64, noop, \
-                 tiled_accumulate", other
+                 tiled_accumulate, scatter_phi, scatter_multi_phi, \
+                 map_phi, map_phi2", other
             ))),
         };
         Ok(Kernel {
-            inner: Box::new(CpuKernel { entry: entry.to_string(), op_name, params_key: String::new() }),
+            inner: Box::new(CpuKernel { entry: entry.to_string(), op_name, params_key: String::new(), phi_exprs: vec![] }),
             entry: entry.to_string(),
         })
     }
@@ -504,6 +551,99 @@ impl TamGpu for CpuBackend {
                                  covariance, softmax_weighted, manifold_distance, \
                                  manifold_mixture", other)
                     )),
+                }
+            }
+
+            // ----------------------------------------------------------------
+            // scatter_phi: output[keys[i]] += phi(values[i], refs[keys[i]], keys[i])
+            // bufs: [keys:i32, values:f64, refs:f64, output:f64]
+            "scatter_phi" => {
+                use crate::phi_eval::{eval_phi, PhiCtx};
+                let phi = k.phi_exprs.first().map(|s| s.as_str()).unwrap_or("v");
+                let keys_arc = buf(0)?;
+                let vals_arc = buf(1)?;
+                let refs_arc = buf(2)?;
+                let out_arc  = buf(3)?;
+                let keys: Vec<i32> = read_as::<i32>(&keys_arc.lock().unwrap()).to_vec();
+                let vals: Vec<f64> = read_as::<f64>(&vals_arc.lock().unwrap()).to_vec();
+                let refs: Vec<f64> = read_as::<f64>(&refs_arc.lock().unwrap()).to_vec();
+                let n = keys.len();
+                let mut out_g = out_arc.lock().unwrap();
+                let out: &mut [f64] = write_as::<f64>(&mut out_g);
+                for i in 0..n {
+                    let g = keys[i] as usize;
+                    let r = if g < refs.len() { refs[g] } else { 0.0 };
+                    let ctx = PhiCtx::scatter(vals[i], r, keys[i]);
+                    out[g] += eval_phi(phi, &ctx);
+                }
+            }
+
+            // ----------------------------------------------------------------
+            // scatter_multi_phi: out_j[keys[i]] += phi_j(v, r, g) for each j
+            // bufs: [keys:i32, values:f64, refs:f64, out0:f64, ..., outK-1:f64]
+            "scatter_multi_phi" => {
+                use crate::phi_eval::{eval_phi, PhiCtx};
+                let n_phi = k.phi_exprs.len();
+                let keys_arc = buf(0)?;
+                let vals_arc = buf(1)?;
+                let refs_arc = buf(2)?;
+                let keys: Vec<i32> = read_as::<i32>(&keys_arc.lock().unwrap()).to_vec();
+                let vals: Vec<f64> = read_as::<f64>(&vals_arc.lock().unwrap()).to_vec();
+                let refs: Vec<f64> = read_as::<f64>(&refs_arc.lock().unwrap()).to_vec();
+                let n = keys.len();
+                // Collect output buffer arcs
+                let out_arcs: Vec<_> = (0..n_phi)
+                    .map(|j| buf(3 + j))
+                    .collect::<TamResult<Vec<_>>>()?;
+                for i in 0..n {
+                    let g = keys[i] as usize;
+                    let r = if g < refs.len() { refs[g] } else { 0.0 };
+                    let ctx = PhiCtx::scatter(vals[i], r, keys[i]);
+                    for j in 0..n_phi {
+                        let phi = k.phi_exprs[j].as_str();
+                        let val = eval_phi(phi, &ctx);
+                        let mut out_g = out_arcs[j].lock().unwrap();
+                        let out: &mut [f64] = write_as::<f64>(&mut out_g);
+                        out[g] += val;
+                    }
+                }
+            }
+
+            // ----------------------------------------------------------------
+            // map_phi: output[i] = phi(values[i])
+            // bufs: [values:f64, output:f64]
+            "map_phi" => {
+                use crate::phi_eval::{eval_phi, PhiCtx};
+                let phi = k.phi_exprs.first().map(|s| s.as_str()).unwrap_or("v");
+                let vals_arc = buf(0)?;
+                let out_arc  = buf(1)?;
+                let vals: Vec<f64> = read_as::<f64>(&vals_arc.lock().unwrap()).to_vec();
+                let n = vals.len();
+                let mut out_g = out_arc.lock().unwrap();
+                let out: &mut [f64] = write_as::<f64>(&mut out_g);
+                for i in 0..n {
+                    let ctx = PhiCtx::map1(vals[i]);
+                    out[i] = eval_phi(phi, &ctx);
+                }
+            }
+
+            // ----------------------------------------------------------------
+            // map_phi2: output[i] = phi(a[i], b[i])
+            // bufs: [a:f64, b:f64, output:f64]
+            "map_phi2" => {
+                use crate::phi_eval::{eval_phi, PhiCtx};
+                let phi = k.phi_exprs.first().map(|s| s.as_str()).unwrap_or("a * b");
+                let a_arc = buf(0)?;
+                let b_arc = buf(1)?;
+                let out_arc = buf(2)?;
+                let a_vals: Vec<f64> = read_as::<f64>(&a_arc.lock().unwrap()).to_vec();
+                let b_vals: Vec<f64> = read_as::<f64>(&b_arc.lock().unwrap()).to_vec();
+                let n = a_vals.len();
+                let mut out_g = out_arc.lock().unwrap();
+                let out: &mut [f64] = write_as::<f64>(&mut out_g);
+                for i in 0..n {
+                    let ctx = PhiCtx::map2(a_vals[i], b_vals[i]);
+                    out[i] = eval_phi(phi, &ctx);
                 }
             }
 

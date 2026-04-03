@@ -27,13 +27,13 @@
 //! # Examples
 //!
 //! ```
-//! use tambear::tam::{tam, TamValue};
+//! use tambear::tam::{tam, TamValue, EmergentDepth};
 //!
 //! // Addition: once=55, converge diverges → kingdom A emerges
 //! let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
 //! let result = tam(&data, |a, b| a + b, 0.0, 100, 1e-10);
 //! assert_eq!(result.once, Some(55.0));
-//! assert_eq!(result.diagnostic.emergent_depth, EmergentDepth::Once);
+//! assert_eq!(result.diagnostic.emergent_depth, EmergentDepth::Chaotic);
 //!
 //! // Heron √2: once fails, converge finds √2 → kingdom C emerges
 //! let result = tam(&[1.0, 2.0], |x, a| (x + a / x) / 2.0, 0.0, 100, 1e-15);

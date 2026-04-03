@@ -202,9 +202,8 @@ pub fn welch_t(stats1: &MomentStats, stats2: &MomentStats) -> TestResult {
     let df = num / denom;
 
     let p = t_two_tail_p(t, df);
-    // Cohen's d using pooled SD (even for Welch, this is the standard effect size)
-    let pooled_sd = ((var1 + var2) / 2.0).sqrt();
-    let d = (stats1.mean() - stats2.mean()) / pooled_sd;
+    // Cohen's d using proper pooled SD: sqrt((m2₁ + m2₂) / (n₁ + n₂ - 2))
+    let d = cohens_d(stats1, stats2);
 
     TestResult {
         test_name: "Welch's t-test",
@@ -513,7 +512,7 @@ pub fn holm(p_values: &[f64]) -> Vec<f64> {
     let m = p_values.len();
     // Sort indices by p-value
     let mut order: Vec<usize> = (0..m).collect();
-    order.sort_by(|&a, &b| p_values[a].partial_cmp(&p_values[b]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| p_values[a].total_cmp(&p_values[b]));
 
     let mut adjusted = vec![0.0; m];
     let mut running_max: f64 = 0.0;
@@ -532,7 +531,7 @@ pub fn holm(p_values: &[f64]) -> Vec<f64> {
 pub fn benjamini_hochberg(p_values: &[f64]) -> Vec<f64> {
     let m = p_values.len();
     let mut order: Vec<usize> = (0..m).collect();
-    order.sort_by(|&a, &b| p_values[a].partial_cmp(&p_values[b]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| p_values[a].total_cmp(&p_values[b]));
 
     let mut adjusted = vec![0.0; m];
     let mut running_min: f64 = 1.0;

@@ -37,6 +37,7 @@
 
 mod error;
 pub mod cpu;
+pub mod phi_eval;
 #[cfg(feature = "cuda")]
 pub mod cuda;
 

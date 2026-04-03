@@ -14,10 +14,10 @@
 //! labels, centroids = tb.kmeans(data, k=5)
 //! ```
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
-use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 use std::sync::Arc;
 use std::time::Instant;
+
+use tam_gpu::{Kernel, ShaderLang, TamGpu};
 
 /// KMeans result: cluster assignments + final centroids
 pub struct KMeansResult {
@@ -31,91 +31,19 @@ pub struct KMeansResult {
 
 /// GPU KMeans engine
 pub struct KMeansEngine {
-    ctx: Arc<CudaContext>,
-    stream: Arc<CudaStream>,
+    gpu: Arc<dyn TamGpu>,
 }
-
-// CUDA kernel: compute distances + assign clusters in ONE fused kernel
-// This IS tiled_accumulate + reduce(argmin) fused together
-const ASSIGN_KERNEL: &str = r#"
-extern "C" __global__ void assign_clusters(
-    const float* __restrict__ data,       // n × d, row-major
-    const float* __restrict__ centroids,  // k × d, row-major
-    unsigned int* __restrict__ labels,    // n assignments
-    float* __restrict__ distances,        // n min-distances (for convergence check)
-    int n, int k, int d
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) return;
-
-    float min_dist = 1e30f;
-    unsigned int min_label = 0;
-
-    // For each centroid, compute squared L2 distance
-    for (int c = 0; c < k; c++) {
-        float dist = 0.0f;
-        for (int j = 0; j < d; j++) {
-            float diff = data[idx * d + j] - centroids[c * d + j];
-            dist += diff * diff;
-        }
-        if (dist < min_dist) {
-            min_dist = dist;
-            min_label = (unsigned int)c;
-        }
-    }
-
-    labels[idx] = min_label;
-    distances[idx] = min_dist;
-}
-"#;
-
-// CUDA kernel: update centroids via scatter-add + count
-// This IS scatter(sum) + scatter(count) → divide = scatter(mean)
-const UPDATE_KERNEL: &str = r#"
-extern "C" __global__ void update_centroids(
-    const float* __restrict__ data,       // n × d
-    const unsigned int* __restrict__ labels, // n assignments
-    float* __restrict__ new_centroids,    // k × d (accumulator, zeroed before call)
-    unsigned int* __restrict__ counts,    // k counts (zeroed before call)
-    int n, int k, int d
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) return;
-
-    unsigned int label = labels[idx];
-
-    // Atomic add each dimension to the centroid accumulator
-    for (int j = 0; j < d; j++) {
-        atomicAdd(&new_centroids[label * d + j], data[idx * d + j]);
-    }
-    atomicAdd(&counts[label], 1u);
-}
-
-extern "C" __global__ void normalize_centroids(
-    float* __restrict__ centroids,        // k × d
-    const unsigned int* __restrict__ counts, // k
-    int k, int d
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= k) return;
-
-    unsigned int count = counts[idx];
-    if (count > 0) {
-        for (int j = 0; j < d; j++) {
-            centroids[idx * d + j] /= (float)count;
-        }
-    }
-}
-"#;
 
 impl KMeansEngine {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let ctx = CudaContext::new(0)?;
-        let stream = ctx.default_stream();
-        Ok(Self { ctx, stream })
+        Ok(Self { gpu: tam_gpu::detect() })
     }
 
-    /// Run KMeans clustering on GPU.
+    pub fn with_backend(gpu: Arc<dyn TamGpu>) -> Self {
+        Self { gpu }
+    }
+
+    /// Run KMeans clustering.
     /// data: n × d matrix (row-major, f32)
     /// k: number of clusters
     /// max_iter: maximum iterations (hard cap)
@@ -133,73 +61,71 @@ impl KMeansEngine {
         assert_eq!(data.len(), n * d, "data length must be n * d");
         assert!(k <= n, "k must be <= n");
 
+        match self.gpu.shader_lang() {
+            ShaderLang::Cuda => self.fit_cuda(data, n, d, k, max_iter),
+            _ => self.fit_cpu(data, n, d, k, max_iter),
+        }
+    }
+
+    fn fit_cuda(
+        &self,
+        data: &[f32],
+        n: usize,
+        d: usize,
+        k: usize,
+        max_iter: usize,
+    ) -> Result<KMeansResult, Box<dyn std::error::Error>> {
         let t_start = Instant::now();
 
-        // Compile kernels
-        let assign_opts = CompileOptions { arch: Some("sm_120"), ..Default::default() };
-        let assign_ptx = compile_ptx_with_opts(ASSIGN_KERNEL, assign_opts)?;
-        let assign_module = self.ctx.load_module(assign_ptx)?;
-        let assign_fn = assign_module.load_function("assign_clusters")?;
+        // Compile kernels with n,k,d baked in (constant for this fit() call)
+        let assign_source = emit_assign_kernel(n, k, d);
+        let update_source = emit_update_kernel(n, k, d);
 
-        let update_ptx = compile_ptx_with_opts(UPDATE_KERNEL, CompileOptions { arch: Some("sm_120"), ..Default::default() })?;
-        let update_module = self.ctx.load_module(update_ptx)?;
-        let update_fn = update_module.load_function("update_centroids")?;
-        let normalize_fn = update_module.load_function("normalize_centroids")?;
+        let assign_kernel = self.gpu.compile(&assign_source, "assign_clusters")?;
+        let update_kernel = self.gpu.compile(&update_source, "update_centroids")?;
+        let normalize_kernel = self.gpu.compile(&update_source, "normalize_centroids")?;
 
         let t_compile = t_start.elapsed().as_millis();
 
         // Upload data to GPU
-        let d_data = self.stream.clone_htod(data)?;
+        let d_data = tam_gpu::upload(&*self.gpu, data)?;
 
-        // Initialize centroids: evenly spaced across dataset (deterministic, avoids cold-start collapse)
+        // Initialize centroids: evenly spaced across dataset (deterministic)
         let step = n / k;
         let init_centroids: Vec<f32> = (0..k)
             .flat_map(|c| data[c * step * d..(c * step * d + d)].iter().copied())
             .collect();
-        let mut d_centroids = self.stream.clone_htod(&init_centroids)?;
+        let mut d_centroids = tam_gpu::upload(&*self.gpu, &init_centroids)?;
 
         // Allocate working buffers
-        let mut d_labels: CudaSlice<u32> = self.stream.alloc_zeros(n)?;
-        let mut d_distances: CudaSlice<f32> = self.stream.alloc_zeros(n)?;
-        let mut d_new_centroids: CudaSlice<f32> = self.stream.alloc_zeros(k * d)?;
-        let mut d_counts: CudaSlice<u32> = self.stream.alloc_zeros(k)?;
+        let mut d_labels = self.gpu.alloc(n * 4)?;       // u32
+        let mut d_distances = self.gpu.alloc(n * 4)?;     // f32
+        let mut d_new_centroids = self.gpu.alloc(k * d * 4)?; // f32
+        let mut d_counts = self.gpu.alloc(k * 4)?;        // u32
 
         let threads = 256u32;
         let blocks_n = ((n as u32) + threads - 1) / threads;
         let blocks_k = ((k as u32) + threads - 1) / threads;
 
-        let n_i = n as i32;
-        let k_i = k as i32;
-        let d_i = d as i32;
-
         let mut iterations = 0;
         let mut converged = false;
-        let mut prev_labels: Vec<u32> = vec![u32::MAX; n]; // sentinel: no previous labels
+        let mut prev_labels: Vec<u32> = vec![u32::MAX; n];
 
         let t_iter_start = Instant::now();
 
         for _iter in 0..max_iter {
             // Step 1: Assign clusters (fused distance + argmin)
-            unsafe {
-                self.stream.launch_builder(&assign_fn)
-                    .arg(&d_data)
-                    .arg(&d_centroids)
-                    .arg(&mut d_labels)
-                    .arg(&mut d_distances)
-                    .arg(&n_i)
-                    .arg(&k_i)
-                    .arg(&d_i)
-                    .launch(LaunchConfig {
-                        grid_dim: (blocks_n, 1, 1),
-                        block_dim: (threads, 1, 1),
-                        shared_mem_bytes: 0,
-                    })?;
-            }
+            self.gpu.dispatch(
+                &assign_kernel,
+                [blocks_n, 1, 1],
+                [threads, 1, 1],
+                &[&d_data, &d_centroids, &d_labels, &d_distances],
+                0,
+            )?;
 
-            // Check convergence: label stability (discrete — immune to f32 atomicAdd noise)
-            // Label stability is the correct stopping criterion: if no point changes cluster,
-            // further iterations are guaranteed to produce identical centroids.
-            let curr_labels = self.stream.clone_dtoh(&d_labels)?;
+            // Check convergence: label stability
+            self.gpu.sync()?;
+            let curr_labels: Vec<u32> = tam_gpu::download(&*self.gpu, &d_labels, n)?;
             iterations += 1;
             if curr_labels == prev_labels {
                 converged = true;
@@ -207,40 +133,29 @@ impl KMeansEngine {
             }
             prev_labels = curr_labels;
 
-            // Step 2: Update centroids (scatter mean)
-            // Zero accumulators
-            self.stream.memset_zeros(&mut d_new_centroids)?;
-            self.stream.memset_zeros(&mut d_counts)?;
+            // Step 2: Reset accumulators (free + alloc = zero-initialized)
+            self.gpu.free(d_new_centroids)?;
+            self.gpu.free(d_counts)?;
+            d_new_centroids = self.gpu.alloc(k * d * 4)?;
+            d_counts = self.gpu.alloc(k * 4)?;
 
-            unsafe {
-                self.stream.launch_builder(&update_fn)
-                    .arg(&d_data)
-                    .arg(&d_labels)
-                    .arg(&mut d_new_centroids)
-                    .arg(&mut d_counts)
-                    .arg(&n_i)
-                    .arg(&k_i)
-                    .arg(&d_i)
-                    .launch(LaunchConfig {
-                        grid_dim: (blocks_n, 1, 1),
-                        block_dim: (threads, 1, 1),
-                        shared_mem_bytes: 0,
-                    })?;
-            }
+            // Step 3: Update centroids (scatter mean)
+            self.gpu.dispatch(
+                &update_kernel,
+                [blocks_n, 1, 1],
+                [threads, 1, 1],
+                &[&d_data, &d_labels, &d_new_centroids, &d_counts],
+                0,
+            )?;
 
             // Normalize: divide by counts
-            unsafe {
-                self.stream.launch_builder(&normalize_fn)
-                    .arg(&mut d_new_centroids)
-                    .arg(&d_counts)
-                    .arg(&k_i)
-                    .arg(&d_i)
-                    .launch(LaunchConfig {
-                        grid_dim: (blocks_k, 1, 1),
-                        block_dim: (threads, 1, 1),
-                        shared_mem_bytes: 0,
-                    })?;
-            }
+            self.gpu.dispatch(
+                &normalize_kernel,
+                [blocks_k, 1, 1],
+                [threads, 1, 1],
+                &[&d_new_centroids, &d_counts],
+                0,
+            )?;
 
             // Swap centroids
             std::mem::swap(&mut d_centroids, &mut d_new_centroids);
@@ -249,23 +164,164 @@ impl KMeansEngine {
         let t_total = t_iter_start.elapsed().as_micros();
 
         // Read back results
-        let labels_host = self.stream.clone_dtoh(&d_labels)?;
-        let centroids_host = self.stream.clone_dtoh(&d_centroids)?;
+        self.gpu.sync()?;
+        let labels_host: Vec<u32> = tam_gpu::download(&*self.gpu, &d_labels, n)?;
+        let centroids_host: Vec<f32> = tam_gpu::download(&*self.gpu, &d_centroids, k * d)?;
 
         eprintln!(
             "KMeans: n={} d={} k={} iters={} converged={} compile={}ms compute={}us ({:.0}us/iter)",
             n, d, k, iterations, converged, t_compile, t_total, t_total as f64 / iterations as f64
         );
 
-        Ok(KMeansResult {
-            labels: labels_host,
-            centroids: centroids_host,
-            k,
-            d,
-            iterations,
-            converged,
-        })
+        Ok(KMeansResult { labels: labels_host, centroids: centroids_host, k, d, iterations, converged })
     }
+
+    fn fit_cpu(
+        &self,
+        data: &[f32],
+        n: usize,
+        d: usize,
+        k: usize,
+        max_iter: usize,
+    ) -> Result<KMeansResult, Box<dyn std::error::Error>> {
+        // Initialize centroids: evenly spaced
+        let step = n / k;
+        let mut centroids: Vec<f32> = (0..k)
+            .flat_map(|c| data[c * step * d..(c * step * d + d)].iter().copied())
+            .collect();
+
+        let mut labels = vec![0u32; n];
+        let mut iterations = 0;
+        let mut converged = false;
+
+        for _iter in 0..max_iter {
+            let prev_labels = labels.clone();
+
+            // Assign: each point to nearest centroid
+            for i in 0..n {
+                let mut min_dist = f32::MAX;
+                let mut min_label = 0u32;
+                for c in 0..k {
+                    let mut dist = 0.0f32;
+                    for j in 0..d {
+                        let diff = data[i * d + j] - centroids[c * d + j];
+                        dist += diff * diff;
+                    }
+                    if dist < min_dist {
+                        min_dist = dist;
+                        min_label = c as u32;
+                    }
+                }
+                labels[i] = min_label;
+            }
+
+            iterations += 1;
+            if labels == prev_labels {
+                converged = true;
+                break;
+            }
+
+            // Update centroids
+            let mut new_centroids = vec![0.0f32; k * d];
+            let mut counts = vec![0u32; k];
+            for i in 0..n {
+                let c = labels[i] as usize;
+                counts[c] += 1;
+                for j in 0..d {
+                    new_centroids[c * d + j] += data[i * d + j];
+                }
+            }
+            for c in 0..k {
+                if counts[c] > 0 {
+                    for j in 0..d {
+                        new_centroids[c * d + j] /= counts[c] as f32;
+                    }
+                }
+            }
+            centroids = new_centroids;
+        }
+
+        Ok(KMeansResult { labels, centroids, k, d, iterations, converged })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CUDA kernel source generators (n, k, d baked in at compile time)
+// ---------------------------------------------------------------------------
+
+fn emit_assign_kernel(n: usize, k: usize, d: usize) -> String {
+    format!(r#"
+#define N {}
+#define K {}
+#define D {}
+
+extern "C" __global__ void assign_clusters(
+    const float* __restrict__ data,
+    const float* __restrict__ centroids,
+    unsigned int* __restrict__ labels,
+    float* __restrict__ distances
+) {{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= N) return;
+
+    float min_dist = 1e30f;
+    unsigned int min_label = 0;
+
+    for (int c = 0; c < K; c++) {{
+        float dist = 0.0f;
+        for (int j = 0; j < D; j++) {{
+            float diff = data[idx * D + j] - centroids[c * D + j];
+            dist += diff * diff;
+        }}
+        if (dist < min_dist) {{
+            min_dist = dist;
+            min_label = (unsigned int)c;
+        }}
+    }}
+
+    labels[idx] = min_label;
+    distances[idx] = min_dist;
+}}
+"#, n, k, d)
+}
+
+fn emit_update_kernel(n: usize, k: usize, d: usize) -> String {
+    format!(r#"
+#define N {}
+#define K {}
+#define D {}
+
+extern "C" __global__ void update_centroids(
+    const float* __restrict__ data,
+    const unsigned int* __restrict__ labels,
+    float* __restrict__ new_centroids,
+    unsigned int* __restrict__ counts
+) {{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= N) return;
+
+    unsigned int label = labels[idx];
+    for (int j = 0; j < D; j++) {{
+        atomicAdd(&new_centroids[label * D + j], data[idx * D + j]);
+    }}
+    atomicAdd(&counts[label], 1u);
+}}
+
+extern "C" __global__ void normalize_centroids(
+    float* __restrict__ centroids,
+    const unsigned int* __restrict__ counts
+) {{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= K) return;
+
+    unsigned int count = counts[idx];
+    if (count > 0) {{
+        for (int j = 0; j < D; j++) {{
+            centroids[idx * D + j] /= (float)count;
+        }}
+    }}
+}}
+"#, n, k, d)
 }
 
 #[cfg(test)]

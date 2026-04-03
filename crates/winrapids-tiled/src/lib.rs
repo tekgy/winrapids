@@ -18,7 +18,9 @@
 pub mod ops;
 pub mod engine;
 pub mod cache;
+pub mod dispatch;
 
 pub use ops::{TiledOp, DotProductOp, OuterProductOp, CovarianceOp, DistanceOp, SoftmaxWeightedOp};
-pub use engine::generate_tiled_kernel;
+pub use engine::{generate_tiled_kernel, generate_tiled_kernel_wgsl};
 pub use cache::{TiledCache, cache_key};
+pub use dispatch::TiledEngine;

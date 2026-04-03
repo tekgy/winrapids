@@ -206,9 +206,10 @@ pub fn qn_scale(data: &[f64]) -> f64 {
     }
     diffs.sort_by(|a, b| a.total_cmp(b));
 
-    // k-th order statistic where k ≈ m/4
-    let k = (m + 3) / 4; // ⌊(m-1)/4⌋ + 1 ≈ first quartile
-    let raw = diffs[k.min(m - 1)];
+    // Rousseeuw & Croux (1993): k = C(h, 2) where h = ⌊n/2⌋ + 1
+    let h = n / 2 + 1;
+    let k = h * (h - 1) / 2;
+    let raw = diffs[(k - 1).min(m - 1)];
 
     // Consistency factor for normal: 2.2191
     // Finite-sample correction
@@ -699,7 +700,7 @@ mod tests {
         // Outlier (100, 200) should have the largest Mahalanobis distance
         assert!(!r.subset.is_empty(), "Should find a valid subset");
         let max_idx = r.distances.iter().enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| a.1.total_cmp(b.1))
             .map(|(i, _)| i).unwrap();
         assert_eq!(max_idx, 9, "Outlier should have largest distance, got idx={}", max_idx);
     }

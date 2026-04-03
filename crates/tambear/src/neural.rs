@@ -1220,7 +1220,7 @@ pub fn temperature_scale(logits: &[f64], temperature: f64) -> Vec<f64> {
 /// Top-k sampling: zeros out all but top k logits, returns modified logits.
 pub fn top_k_logits(logits: &[f64], k: usize) -> Vec<f64> {
     let mut indexed: Vec<(usize, f64)> = logits.iter().copied().enumerate().collect();
-    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    indexed.sort_by(|a, b| b.1.total_cmp(&a.1));
     let threshold = if k < indexed.len() { indexed[k].1 } else { f64::NEG_INFINITY };
     logits.iter().map(|&x| if x >= threshold { x } else { f64::NEG_INFINITY }).collect()
 }
@@ -1229,7 +1229,7 @@ pub fn top_k_logits(logits: &[f64], k: usize) -> Vec<f64> {
 pub fn top_p_logits(logits: &[f64], p: f64) -> Vec<f64> {
     let probs = softmax(logits);
     let mut indexed: Vec<(usize, f64)> = probs.iter().copied().enumerate().collect();
-    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    indexed.sort_by(|a, b| b.1.total_cmp(&a.1));
 
     let mut cumsum = 0.0;
     let mut cutoff = indexed.len();

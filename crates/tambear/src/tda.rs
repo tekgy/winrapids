@@ -124,7 +124,7 @@ pub fn rips_h0(dist: &[f64], n: usize) -> PersistenceDiagram {
             edges.push((dist[i * n + j], i, j));
         }
     }
-    edges.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    edges.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let mut uf = UnionFind::new(n);
     let mut pairs = Vec::new();
@@ -184,7 +184,7 @@ pub fn rips_h1(dist: &[f64], n: usize, max_edge: f64) -> PersistenceDiagram {
             if d <= max_edge { edges.push((d, i, j)); }
         }
     }
-    edges.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    edges.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let n_edges = edges.len();
 
@@ -209,7 +209,7 @@ pub fn rips_h1(dist: &[f64], n: usize, max_edge: f64) -> PersistenceDiagram {
             }
         }
     }
-    triangles.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    triangles.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     // Boundary matrix reduction (standard persistence algorithm)
     // Simplices in filtration order: vertices, then edges, then triangles
@@ -426,7 +426,7 @@ mod tests {
 
         // First merge at distance 1, second at distance 2
         let mut deaths: Vec<f64> = finite.iter().map(|p| p.death).collect();
-        deaths.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        deaths.sort_by(|a, b| a.total_cmp(b));
         assert!((deaths[0] - 1.0).abs() < 1e-10);
         assert!((deaths[1] - 2.0).abs() < 1e-10);
     }

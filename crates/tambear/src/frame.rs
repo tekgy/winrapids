@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
+use tam_gpu::{Buffer, TamGpu};
 
 /// Element data type. Mirrors winrapids-store DType — unified later.
 #[repr(u8)]
@@ -60,8 +60,8 @@ pub struct Column {
     pub dtype: DType,
     pub encoding: ColumnEncoding,
     pub len: usize,
-    /// Raw byte buffer on GPU. Length = len * dtype.byte_size().
-    pub data: CudaSlice<u8>,
+    /// Raw byte buffer on GPU (or CPU backend). Length = len * dtype.byte_size().
+    pub data: Buffer,
 }
 
 impl Column {
@@ -94,12 +94,12 @@ pub struct Frame {
     /// `None` means all rows are active (no filter applied).
     /// Length (in u64 words) = ceil(n_rows / 64).
     /// "Tam doesn't filter. Tam knows which rows matter."
-    pub row_mask: Option<CudaSlice<u64>>,
+    pub row_mask: Option<Buffer>,
     /// Pipeline-wide numeric dtype. Declared once at construction.
     /// All numeric kernels JIT for this type. No per-operation type dispatch.
     /// "Tam doesn't check types. Tam knows the schema."
     pub pipeline_dtype: DType,
-    pub(crate) stream: Arc<CudaStream>,
+    pub(crate) gpu: Arc<dyn TamGpu>,
 }
 
 impl Frame {
@@ -107,16 +107,15 @@ impl Frame {
     ///
     /// `pipeline_dtype` is the declared numeric type for this pipeline.
     /// All JIT kernels will be generated for this type.
-    pub fn new(ctx: &Arc<CudaContext>, pipeline_dtype: DType) -> Result<Self, cudarc::driver::DriverError> {
-        let stream = ctx.default_stream();
-        Ok(Frame {
+    pub fn new(gpu: Arc<dyn TamGpu>, pipeline_dtype: DType) -> Self {
+        Frame {
             n_rows: 0,
             columns: HashMap::new(),
             group_indices: HashMap::new(),
             row_mask: None,
             pipeline_dtype,
-            stream,
-        })
+            gpu,
+        }
     }
 
     /// Number of u64 words needed to hold the row mask.
@@ -153,7 +152,7 @@ impl Frame {
         // Build or rebuild. max_key from caller (from .tb header).
         let col = self.columns.get(key_col)
             .ok_or_else(|| format!("column '{}' not found", key_col))?;
-        let idx = crate::GroupIndex::build(col, max_key, &self.stream)?;
+        let idx = crate::GroupIndex::build(col, max_key, &self.gpu)?;
         self.group_indices.insert(key_col.to_string(), idx);
         Ok(self.group_indices.get(key_col).unwrap())
     }

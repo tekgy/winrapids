@@ -223,7 +223,7 @@ mod tests {
 
         // Means should be near 0 and 10
         let mut sorted_means: Vec<f64> = res.means.iter().map(|m| m[0]).collect();
-        sorted_means.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted_means.sort_by(|a, b| a.total_cmp(b));
         assert!((sorted_means[0] - 0.0).abs() < 1.0, "Mean 1={}", sorted_means[0]);
         assert!((sorted_means[1] - 10.0).abs() < 1.0, "Mean 2={}", sorted_means[1]);
     }

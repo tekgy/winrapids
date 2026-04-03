@@ -73,6 +73,38 @@ pub trait TiledOp: Send + Sync {
 
     /// Whether B should be transposed before tiling.
     fn transpose_b(&self) -> bool { false }
+
+    // -----------------------------------------------------------------------
+    // WGSL variants (default: adapt from CUDA methods)
+    // -----------------------------------------------------------------------
+
+    /// WGSL type for the accumulator. Defaults to `f32` (WGSL doesn't have f64).
+    ///
+    /// Override for struct accumulators (e.g. SoftmaxWeighted).
+    fn wgsl_acc_type(&self) -> String {
+        "f32".into()
+    }
+
+    /// WGSL expression for the identity (zero) accumulator.
+    fn wgsl_identity(&self) -> String {
+        self.cuda_identity()
+    }
+
+    /// WGSL function body that accumulates one element pair (f32).
+    ///
+    /// Default: translate the CUDA body by replacing `double ` with `let `.
+    /// `a_val`, `b_val`, and `acc` are in scope (all `f32`).
+    ///
+    /// Override when the CUDA body uses C-specific constructs.
+    fn wgsl_accumulate_body(&self) -> String {
+        self.cuda_accumulate_body()
+            .replace("double ", "var ")
+    }
+
+    /// WGSL expression that extracts the output from the accumulator.
+    fn wgsl_extract(&self) -> String {
+        self.cuda_extract()
+    }
 }
 
 // ============================================================

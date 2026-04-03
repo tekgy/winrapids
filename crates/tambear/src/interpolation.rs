@@ -1076,7 +1076,7 @@ pub fn gp_regression(
         let mut ks = kstar.clone();
         let v = solve_linear_system(&kxx2, &ks);
 
-        let mut var = rbf(x_query[q], x_query[q]) + noise_var;
+        let mut var = rbf(x_query[q], x_query[q]);
         for i in 0..n {
             var -= kstar[i] * v[i];
         }

@@ -186,7 +186,7 @@ impl AccumulateEngine {
         let gpu = tam_gpu::detect();
         Ok(Self {
             compute: ComputeEngine::new(gpu.clone()),
-            reduce:  ReduceOp::new()?,
+            reduce:  ReduceOp::with_backend(gpu.clone()),
             tiled: TiledEngine::new(gpu),
         })
     }

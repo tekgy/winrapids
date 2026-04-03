@@ -655,3 +655,78 @@ Tested: ||Product_{t} M_{h_t} - Uniform||_F = constant (≈ sqrt(2^{j-1} - 1)) f
 Together: marginal equidistribution of residues over the trajectory. Post-fold chi²/dof ≈ 0.4-1.2 for all tested k=20..500 and j=3..7.
 
 **Important caveat**: consecutive residues are CORRELATED (pair chi²/dof = 8-33). The marginal distribution is uniform but the joint is not. This is expected (deterministic dynamics, each step determines the next) and does not affect the contraction argument, which depends only on marginal E[v_2].
+
+### 10.13 Four-Pillar Adversarial Analysis: The Debt-Repayment Gap
+
+**Setup**: Team-lead proposed four pillars as sufficient for convergence:
+1. BOUNDED (comma = log₂(3)/2 < 1)
+2. NO MISSED INPUTS (phi(d) = 1)
+3. NO CYCLES (log₂(3) irrational)
+4. TRANSITIVE MIXING (layer bijection + uniform slope)
+
+**Adversarial result: The four pillars are INSUFFICIENT.**
+
+The gap is larger than initially expected. Key findings:
+
+**The deterministic bound is avg v₂ ≥ 1.0, not 1.5.** The all-ones chain (2^k-1) has k-1 consecutive v₂=1 steps. Average v₂ = 1.0 during the chain. The deep halving afterward has v₂ ≈ 5-7 regardless of k (ratio v₂/k → 0). The compensation is bounded, not proportional. The number GROWS from k bits to log₂(3)·k ≈ 1.585k bits.
+
+**Debt-repayment structure**: The all-ones chain creates debt of 0.585k (threshold minus deterministic avg). The post-chain orbit has avg v₂ ≈ 2.0, surplus rate ≈ 0.415/step. Needs ~1.41k steps to repay. Always has enough — 2.7x safety margin empirically for k = 20..200.
+
+**Post-chain carry-0 chains are O(log k)**: Mihailescu self-correction prevents all-ones recurrence. Post-chain max carry-0 chain ≈ log₂(k). Debt cannot compound.
+
+| k | chain | rest | chain avg | rest avg | total avg | safety margin |
+|---|-------|------|-----------|----------|-----------|---------------|
+| 20 | 19 | 42 | 1.000 | 2.333 | 1.918 | 2.8x |
+| 60 | 59 | 250 | 1.000 | 1.964 | 1.780 | 2.7x |
+| 100 | 99 | 429 | 1.000 | 1.953 | 1.775 | 2.7x |
+| 200 | 199 | 780 | 1.000 | 1.991 | 1.790 | 2.7x |
+
+**Divergence threshold**: Among carry-1 steps, need 83% to have v₂=2 for divergence. Equidistribution predicts 50%. No orbit tested exceeds 60%.
+
+**What the four pillars DON'T prove**: That the post-chain orbit's avg v₂ ≈ 2.0. They prove the SPATIAL average is 2.0, but a specific orbit might (in principle) have biased v₂ distribution. This is temporal equidistribution at j=3 — just 4 odd residue classes.
+
+**What would close the gap**: A 5th pillar: **Self-correction + generic orbit surplus**. Specifically:
+1. Mihailescu self-correction: all-ones → generic bit density (PROVED)
+2. Generic orbits have avg v₂ > 1.74 (the 2.7x margin threshold) — OPEN
+3. Post-chain surplus repays debt (follows quantitatively from #2) — OPEN
+
+This reduces the Collatz conjecture to: "orbits from generic (bit density ≈ 0.5) starting points have time-averaged v₂ > 1.74 at level j=3." Strictly weaker than full temporal equidistribution, but still unproved.
+
+### 10.14 The j=3 Return Map: Structural Independence of Carry-1 Steps
+
+**Key correction**: Carry-0 outputs at j=3 are NOT deterministic. Class 3 outputs to {1, 5} equally (depends on high bits). Class 7 outputs to {3, 7} equally. Verified for h=0..1023.
+
+**The j=3 transition matrix** on odd residues {1, 3, 5, 7} mod 8:
+
+```
+         to: 1    3    5    7
+from 1:    1/4  1/4  1/4  1/4   (carry-1, v2=2, uniform)
+from 3:    1/2  0    1/2  0     (carry-0, v2=1, output {1,5})
+from 5:    1/4  1/4  1/4  1/4   (carry-1, v2>=3, uniform)
+from 7:    0    1/2  0    1/2   (carry-0, v2=1, output {3,7})
+```
+
+**Eigenvalues: {1, 0, 0, 0}.** M² = pi EXACTLY. The j=3 chain is nilpotent with spectral gap = 1.
+
+**Return map to carry-1 states {1, 5}**:
+
+```
+R = [[1/2, 1/2],
+     [1/2, 1/2]]
+```
+
+Spectral gap of R = 1. The return map mixes PERFECTLY in 1 step. Both rows are identical: regardless of whether the current carry-1 class is 1 or 5, the NEXT carry-1 class is 50/50 between 1 and 5.
+
+**Consequence**: The carry-1 v₂ sequence is structurally i.i.d. with P(v₂=2) = 1/2 (class 1) and P(v₂≥3) = 1/2 (class 5, mean v₂=4).
+
+**Contraction arithmetic**:
+- Carry-0 fraction: 3/7 ≈ 0.43 (from return time analysis)
+- Carry-1 fraction: 4/7 ≈ 0.57
+- E[v₂] = (3/7)(1) + (4/7)(3.0) = 15/7 ≈ 2.14
+- Contraction factor: 3/2^{2.14} ≈ 0.68
+
+**Divergence condition**: Need f₁ + 3f₅ < 0.585 where f_i is the fraction at class i. With return map symmetry (f₁ = f₅ among carry-1): f₁ + 3f₅ = f₁ + 3f₁ = 4f₁. Need 4f₁ < 0.585, i.e., f₁ < 0.146. But equilibrium has f₁ = 0.25. Divergence requires f₁ to be less than 58% of its equilibrium value — while the return map constantly pushes it back.
+
+**The remaining gap for the Markov chain**: The return map R = [[1/2, 1/2], [1/2, 1/2]] is a MARKOV property — it assumes the high bits h at each carry-0 intermediary are independent. For the actual orbit, h follows h → ⌊(3h+c)/2⌋, which is multiplication by 3/2 on the high bits. Since log₂(3/2) is irrational, Weyl's equidistribution theorem suggests the parity of h equidistributes — but formalizing this for the specific Collatz orbit requires quantitative bounds on the equidistribution rate.
+
+**Connection to ultrametric bootstrap**: The carry-0 chain IS the bootstrap mechanism. Each carry-0 step scrambles one bit of h (multiplication by 3/2). Each carry-1 step shifts h down by v₂ bits (bringing fresh high bits into play). Together, all B = log₂(n) levels are mixed in O(B) steps — matching the orbit length.

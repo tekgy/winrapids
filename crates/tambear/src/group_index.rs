@@ -31,7 +31,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaSlice, CudaStream};
+use tam_gpu::{Buffer, TamGpu};
 
 use crate::frame::{Column, DType};
 
@@ -60,23 +60,25 @@ pub struct GroupIndex {
     /// Which group each row belongs to. Length = n_rows.
     /// Primary input to every scatter operation on this column.
     /// For direct-index key columns: row_to_group[i] = key_column[i].
-    pub row_to_group: CudaSlice<u32>,
+    pub row_to_group: Buffer,
     /// Per-group row counts. Length = accumulator_size.
     /// group_counts[g] = number of rows with key == g. 0 for absent groups.
-    pub group_counts: CudaSlice<u32>,
+    pub group_counts: Buffer,
     /// Prefix sum of group_counts. Length = accumulator_size + 1.
     /// group_offsets[g]   = start of group g in rows_by_group.
     /// group_offsets[g+1] = end of group g in rows_by_group (= group_offsets[g] + group_counts[g]).
     /// group_offsets[accumulator_size] = n_rows (total rows, as a convenient sentinel).
-    pub group_offsets: CudaSlice<u32>,
+    pub group_offsets: Buffer,
     /// Inverted index: row indices sorted by group, preserving within-group order.
     /// Length = n_rows. rows_by_group[group_offsets[g]..group_offsets[g+1]] are
     /// the row indices belonging to group g, in their original (temporal) order.
     /// Enables O(n) gather: `gathered[i] = values[rows_by_group[i]]`.
-    pub rows_by_group: CudaSlice<u32>,
+    pub rows_by_group: Buffer,
     /// Accumulator array size = max_key + 1. From .tb header.
     /// Scatter accumulators are ALWAYS this size — no counting pass needed.
     pub accumulator_size: usize,
+    /// Number of rows in this index.
+    pub n_rows: usize,
     /// Actual number of groups with count > 0.
     /// `None` until first build; populated immediately by `build()`.
     pub n_active: Option<usize>,
@@ -94,7 +96,7 @@ impl GroupIndex {
     ///
     /// For mutable column scenarios: use `is_valid_for_exact()` instead.
     pub fn is_valid_for(&self, col: &Column) -> bool {
-        col.len == self.row_to_group.len()
+        col.len == self.n_rows
     }
 
     /// Build a GroupIndex for an integer key column.
@@ -112,7 +114,7 @@ impl GroupIndex {
     ///
     /// `max_key`: from the `.tb` header column descriptor. No scan to discover.
     /// Accumulators sized to `max_key + 1`. Over-allocation is intentional.
-    pub fn build(col: &Column, max_key: u32, stream: &Arc<CudaStream>) -> Result<Self, String> {
+    pub fn build(col: &Column, max_key: u32, gpu: &Arc<dyn TamGpu>) -> Result<Self, String> {
         if col.dtype != DType::I32 {
             return Err(format!(
                 "GroupIndex::build requires I32 column, got {:?} — \
@@ -128,9 +130,8 @@ impl GroupIndex {
         let accumulator_size = max_key as usize + 1;
 
         // Download key column bytes from GPU.
-        let cpu_bytes: Vec<u8> = stream.clone_dtoh(&col.data)
+        let cpu_bytes: Vec<u8> = tam_gpu::download::<u8>(&**gpu, &col.data, col.byte_len())
             .map_err(|e| e.to_string())?;
-        stream.synchronize().map_err(|e| e.to_string())?;
 
         // BLAKE3 provenance hash of raw column bytes.
         let provenance: [u8; 32] = *blake3::hash(&cpu_bytes).as_bytes();
@@ -170,8 +171,6 @@ impl GroupIndex {
 
         // Inverted index: rows_by_group[group_offsets[g]..group_offsets[g+1]]
         // = row indices of group g, in their original (temporal) order.
-        // Build by iterating rows 0..n and writing each row to its group's
-        // current write cursor (initially = group_offsets[g]).
         let mut cursor = group_offsets_cpu[..accumulator_size].to_vec();
         let mut rows_by_group_cpu = vec![0u32; n];
         for (i, &k) in keys.iter().enumerate() {
@@ -183,13 +182,13 @@ impl GroupIndex {
         }
 
         // Upload all four arrays to GPU.
-        let row_to_group: CudaSlice<u32> = stream.clone_htod(&row_to_group_cpu)
+        let row_to_group = tam_gpu::upload(&**gpu, &row_to_group_cpu)
             .map_err(|e| e.to_string())?;
-        let group_counts: CudaSlice<u32> = stream.clone_htod(&group_counts_cpu)
+        let group_counts = tam_gpu::upload(&**gpu, &group_counts_cpu)
             .map_err(|e| e.to_string())?;
-        let group_offsets: CudaSlice<u32> = stream.clone_htod(&group_offsets_cpu)
+        let group_offsets = tam_gpu::upload(&**gpu, &group_offsets_cpu)
             .map_err(|e| e.to_string())?;
-        let rows_by_group: CudaSlice<u32> = stream.clone_htod(&rows_by_group_cpu)
+        let rows_by_group = tam_gpu::upload(&**gpu, &rows_by_group_cpu)
             .map_err(|e| e.to_string())?;
 
         Ok(GroupIndex {
@@ -198,6 +197,7 @@ impl GroupIndex {
             group_offsets,
             rows_by_group,
             accumulator_size,
+            n_rows: n,
             n_active: Some(n_active),
             provenance,
         })

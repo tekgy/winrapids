@@ -81,7 +81,7 @@ fn main() {
     
     eprintln!("\n  Nucleation order (which pair couples most strongly?):");
     let mut pairs = vec![("(2,3)", s_23), ("(2,5)", s_25), ("(3,5)", s_35), ("(2,7)", s_27)];
-    pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    pairs.sort_by(|a, b| b.1.total_cmp(&a.1));
     for (i, (name, s)) in pairs.iter().enumerate() {
         eprintln!("    {}. {} at s* = {:.4}", i+1, name, s);
     }

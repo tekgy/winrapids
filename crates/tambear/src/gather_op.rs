@@ -22,36 +22,34 @@
 //!
 //! Both kernels are fixed (no JIT parameterization). They compile once per
 //! GatherOp instance and are reused for all subsequent calls.
+//! Works on any TamGpu backend (CUDA, CPU, future Vulkan/Metal).
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
-use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
+use tam_gpu::{Buffer, Kernel, ShaderLang, TamGpu};
 
 const BLOCK_SIZE: u32 = 256;
 
 /// GPU gather and scatter-back operator.
 ///
 /// Compiles the two fixed kernels once at construction. Subsequent calls
-/// reuse the compiled PTX — no re-compilation overhead.
+/// reuse the compiled kernels — no re-compilation overhead.
+/// Works on any TamGpu backend.
 pub struct GatherOp {
-    ctx: Arc<CudaContext>,
-    stream: Arc<CudaStream>,
-    gather_fn: Option<CudaFunction>,
-    scatter_back_fn: Option<CudaFunction>,
+    gpu: Arc<dyn TamGpu>,
+    gather_kernel: Option<Kernel>,
+    scatter_back_kernel: Option<Kernel>,
 }
 
 impl GatherOp {
-    /// Create a GatherOp on GPU 0. Kernels are compiled lazily on first use.
+    /// Create a GatherOp using the auto-detected backend.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        Self::on_device(0)
+        Ok(Self::with_backend(tam_gpu::detect()))
     }
 
-    /// Create a GatherOp on a specific GPU.
-    pub fn on_device(ordinal: usize) -> Result<Self, Box<dyn std::error::Error>> {
-        let ctx = CudaContext::new(ordinal)?;
-        let stream = ctx.default_stream();
-        Ok(Self { ctx, stream, gather_fn: None, scatter_back_fn: None })
+    /// Create a GatherOp with a specific backend.
+    pub fn with_backend(gpu: Arc<dyn TamGpu>) -> Self {
+        Self { gpu, gather_kernel: None, scatter_back_kernel: None }
     }
 
     /// Gather: `gathered[i] = values[rows_by_group[i]]` for all i.
@@ -70,37 +68,32 @@ impl GatherOp {
         rows_by_group: &[u32],
     ) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
         let n_out = rows_by_group.len();
+        self.ensure_kernels()?;
 
-        let values_dev = self.stream.clone_htod(values)?;
-        let rows_dev = self.stream.clone_htod(rows_by_group)?;
-        let gathered = self.gather_gpu(&values_dev, &rows_dev, n_out)?;
-        self.stream.synchronize()?;
-        Ok(self.stream.clone_dtoh(&gathered)?)
+        let values_buf = tam_gpu::upload(&*self.gpu, values)?;
+        let rows_buf = tam_gpu::upload(&*self.gpu, rows_by_group)?;
+        let gathered_buf = self.gpu.alloc(n_out * 8)?; // f64
+
+        self.dispatch_gather(&values_buf, &rows_buf, &gathered_buf, n_out)?;
+        self.gpu.sync()?;
+
+        let gathered: Vec<f64> = tam_gpu::download(&*self.gpu, &gathered_buf, n_out)?;
+        Ok(gathered)
     }
 
-    /// Gather on GPU-resident data. Returns GPU-resident output.
+    /// Gather on device-resident buffers. Returns device-resident output.
     ///
     /// `n_out`: number of output elements (= rows_by_group length).
     /// `values` must have at least `max(rows_by_group) + 1` elements.
-    pub fn gather_gpu(
+    pub fn gather_buf(
         &mut self,
-        values: &CudaSlice<f64>,
-        rows_by_group: &CudaSlice<u32>,
+        values: &Buffer,
+        rows_by_group: &Buffer,
         n_out: usize,
-    ) -> Result<CudaSlice<f64>, Box<dyn std::error::Error>> {
+    ) -> Result<Buffer, Box<dyn std::error::Error>> {
         self.ensure_kernels()?;
-        let f = self.gather_fn.as_ref().unwrap();
-        let mut gathered: CudaSlice<f64> = self.stream.alloc_zeros(n_out)?;
-        let cfg = launch_cfg(n_out);
-        let n_i32 = n_out as i32;
-        unsafe {
-            self.stream.launch_builder(f)
-                .arg(values)
-                .arg(rows_by_group)
-                .arg(&mut gathered)
-                .arg(&n_i32)
-                .launch(cfg)?;
-        }
+        let gathered = self.gpu.alloc(n_out * 8)?;
+        self.dispatch_gather(values, rows_by_group, &gathered, n_out)?;
         Ok(gathered)
     }
 
@@ -117,49 +110,108 @@ impl GatherOp {
         let n = gathered.len();
         assert_eq!(n, rows_by_group.len(), "gathered and rows_by_group must have same length");
         assert_eq!(n, n_rows, "gathered length must equal n_rows");
-
-        let gathered_dev = self.stream.clone_htod(gathered)?;
-        let rows_dev = self.stream.clone_htod(rows_by_group)?;
-        let output = self.scatter_back_gpu(&gathered_dev, &rows_dev, n)?;
-        self.stream.synchronize()?;
-        Ok(self.stream.clone_dtoh(&output)?)
-    }
-
-    /// ScatterBack on GPU-resident data. Returns GPU-resident output.
-    pub fn scatter_back_gpu(
-        &mut self,
-        gathered: &CudaSlice<f64>,
-        rows_by_group: &CudaSlice<u32>,
-        n: usize,
-    ) -> Result<CudaSlice<f64>, Box<dyn std::error::Error>> {
         self.ensure_kernels()?;
-        let f = self.scatter_back_fn.as_ref().unwrap();
-        let mut output: CudaSlice<f64> = self.stream.alloc_zeros(n)?;
-        let cfg = launch_cfg(n);
-        let n_i32 = n as i32;
-        unsafe {
-            self.stream.launch_builder(f)
-                .arg(gathered)
-                .arg(rows_by_group)
-                .arg(&mut output)
-                .arg(&n_i32)
-                .launch(cfg)?;
-        }
+
+        let gathered_buf = tam_gpu::upload(&*self.gpu, gathered)?;
+        let rows_buf = tam_gpu::upload(&*self.gpu, rows_by_group)?;
+        let output_buf = self.gpu.alloc(n * 8)?;
+
+        self.dispatch_scatter_back(&gathered_buf, &rows_buf, &output_buf, n)?;
+        self.gpu.sync()?;
+
+        let output: Vec<f64> = tam_gpu::download(&*self.gpu, &output_buf, n)?;
         Ok(output)
     }
 
-    pub fn stream(&self) -> &Arc<CudaStream> { &self.stream }
-    pub fn ctx(&self) -> &Arc<CudaContext> { &self.ctx }
+    /// ScatterBack on device-resident buffers. Returns device-resident output.
+    pub fn scatter_back_buf(
+        &mut self,
+        gathered: &Buffer,
+        rows_by_group: &Buffer,
+        n: usize,
+    ) -> Result<Buffer, Box<dyn std::error::Error>> {
+        self.ensure_kernels()?;
+        let output = self.gpu.alloc(n * 8)?;
+        self.dispatch_scatter_back(gathered, rows_by_group, &output, n)?;
+        Ok(output)
+    }
 
-    /// Compile both kernels from the shared source in one pass, if not yet compiled.
-    /// Subsequent calls are no-ops. Both kernels live in the same CUDA compilation unit.
+    fn dispatch_gather(
+        &self,
+        values: &Buffer,
+        rows_by_group: &Buffer,
+        gathered: &Buffer,
+        n: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let kernel = self.gather_kernel.as_ref().unwrap();
+        match self.gpu.shader_lang() {
+            ShaderLang::Cuda => {
+                let n_blocks = ((n as u32) + BLOCK_SIZE - 1) / BLOCK_SIZE;
+                let n_buf = tam_gpu::upload(&*self.gpu, &[n as i32])?;
+                self.gpu.dispatch(
+                    kernel,
+                    [n_blocks, 1, 1],
+                    [BLOCK_SIZE, 1, 1],
+                    &[values, rows_by_group, gathered, &n_buf],
+                    0,
+                )?;
+            }
+            _ => {
+                // CpuBackend gather_f64: [values, rows_by_group, output]
+                self.gpu.dispatch(
+                    kernel,
+                    [1, 1, 1],
+                    [1, 1, 1],
+                    &[values, rows_by_group, gathered],
+                    0,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn dispatch_scatter_back(
+        &self,
+        gathered: &Buffer,
+        rows_by_group: &Buffer,
+        output: &Buffer,
+        n: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let kernel = self.scatter_back_kernel.as_ref().unwrap();
+        match self.gpu.shader_lang() {
+            ShaderLang::Cuda => {
+                let n_blocks = ((n as u32) + BLOCK_SIZE - 1) / BLOCK_SIZE;
+                let n_buf = tam_gpu::upload(&*self.gpu, &[n as i32])?;
+                self.gpu.dispatch(
+                    kernel,
+                    [n_blocks, 1, 1],
+                    [BLOCK_SIZE, 1, 1],
+                    &[gathered, rows_by_group, output, &n_buf],
+                    0,
+                )?;
+            }
+            _ => {
+                // CpuBackend scatter_back_f64: [gathered, rows_by_group, output]
+                self.gpu.dispatch(
+                    kernel,
+                    [1, 1, 1],
+                    [1, 1, 1],
+                    &[gathered, rows_by_group, output],
+                    0,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     fn ensure_kernels(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if self.gather_fn.is_none() || self.scatter_back_fn.is_none() {
-            let opts = CompileOptions { arch: Some("sm_120"), ..Default::default() };
-            let ptx = compile_ptx_with_opts(GATHER_SCATTER_BACK_SOURCE, opts)?;
-            let module = self.ctx.load_module(ptx)?;
-            self.gather_fn = Some(module.load_function("gather_f64")?);
-            self.scatter_back_fn = Some(module.load_function("scatter_back_f64")?);
+        if self.gather_kernel.is_none() {
+            let source = match self.gpu.shader_lang() {
+                ShaderLang::Cuda => GATHER_SCATTER_BACK_SOURCE_CUDA,
+                _ => "",
+            };
+            self.gather_kernel = Some(self.gpu.compile(source, "gather_f64")?);
+            self.scatter_back_kernel = Some(self.gpu.compile(source, "scatter_back_f64")?);
         }
         Ok(())
     }
@@ -170,7 +222,9 @@ impl GatherOp {
 /// Both kernels are plain memory permutations: O(n) work, fully coalesced
 /// when rows_by_group contains a random-but-uniform permutation (typical for
 /// tickers interleaved in time order). GPU bandwidth-bound: ~16μs for 2M rows.
-const GATHER_SCATTER_BACK_SOURCE: &str = r#"
+///
+/// n is passed as a single-element i32 buffer (TamGpu convention).
+const GATHER_SCATTER_BACK_SOURCE_CUDA: &str = r#"
 // gather_f64: gathered[i] = values[rows_by_group[i]]
 // Reorders values from row order into group-sorted order.
 // rows_by_group: inverted index from GroupIndex. Length = n.
@@ -178,8 +232,9 @@ extern "C" __global__ void gather_f64(
     const double* __restrict__ values,
     const unsigned int* __restrict__ rows_by_group,
     double* __restrict__ gathered,
-    int n
+    const int* __restrict__ n_ptr
 ) {
+    int n = *n_ptr;
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) {
         gathered[i] = values[rows_by_group[i]];
@@ -193,8 +248,9 @@ extern "C" __global__ void scatter_back_f64(
     const double* __restrict__ gathered,
     const unsigned int* __restrict__ rows_by_group,
     double* __restrict__ output,
-    int n
+    const int* __restrict__ n_ptr
 ) {
+    int n = *n_ptr;
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) {
         output[rows_by_group[i]] = gathered[i];
@@ -237,15 +293,6 @@ pub fn lag_indices(bin_starts: &[usize], n_ticks: usize, lag: usize) -> Vec<u32>
         }
     }
     indices
-}
-
-fn launch_cfg(n: usize) -> LaunchConfig {
-    let n_blocks = ((n as u32) + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    LaunchConfig {
-        grid_dim: (n_blocks, 1, 1),
-        block_dim: (BLOCK_SIZE, 1, 1),
-        shared_mem_bytes: 0,
-    }
 }
 
 #[cfg(test)]

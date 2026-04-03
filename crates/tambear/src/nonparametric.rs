@@ -191,11 +191,29 @@ pub fn mann_whitney_u(x: &[f64], y: &[f64]) -> NonparametricResult {
     let u2 = (n1 * n2) as f64 - u1;
     let u = u1.min(u2); // Use smaller U for two-tailed test
 
-    // Normal approximation
+    // Normal approximation with tie correction
     let n1f = n1 as f64;
     let n2f = n2 as f64;
+    let nf = n1f + n2f;
     let mu = n1f * n2f / 2.0;
-    let sigma = (n1f * n2f * (n1f + n2f + 1.0) / 12.0).sqrt();
+
+    // Tie correction: σ² = n1·n2/12 × [(N+1) - Σ(tᵢ³-tᵢ)/(N(N-1))]
+    let mut sorted_combined = combined.clone();
+    sorted_combined.sort_by(|a, b| a.total_cmp(b));
+    let mut tie_sum = 0.0;
+    let mut ti = 0;
+    while ti < sorted_combined.len() {
+        let mut t = 1usize;
+        while ti + t < sorted_combined.len() && sorted_combined[ti + t] == sorted_combined[ti] {
+            t += 1;
+        }
+        if t > 1 {
+            let tf = t as f64;
+            tie_sum += tf * tf * tf - tf;
+        }
+        ti += t;
+    }
+    let sigma = (n1f * n2f / 12.0 * ((nf + 1.0) - tie_sum / (nf * (nf - 1.0)))).sqrt();
 
     let z = if sigma > 0.0 { (u - mu) / sigma } else { 0.0 };
     let p = normal_two_tail_p(z);
@@ -240,9 +258,26 @@ pub fn wilcoxon_signed_rank(differences: &[f64]) -> NonparametricResult {
         .map(|(_, &r)| r)
         .sum();
 
+    // Tie correction: subtract Σ t_j(t_j-1)(t_j+1)/48 from variance
+    let mut sorted_abs = abs_vals.clone();
+    sorted_abs.sort_by(|a, b| a.total_cmp(b));
+    let mut tie_correction = 0.0;
+    let mut ti = 0;
+    while ti < sorted_abs.len() {
+        let mut t = 1usize;
+        while ti + t < sorted_abs.len() && sorted_abs[ti + t] == sorted_abs[ti] {
+            t += 1;
+        }
+        if t > 1 {
+            let tf = t as f64;
+            tie_correction += tf * (tf - 1.0) * (tf + 1.0);
+        }
+        ti += t;
+    }
+
     let nf = n as f64;
     let mu = nf * (nf + 1.0) / 4.0;
-    let sigma = (nf * (nf + 1.0) * (2.0 * nf + 1.0) / 24.0).sqrt();
+    let sigma = (nf * (nf + 1.0) * (2.0 * nf + 1.0) / 24.0 - tie_correction / 48.0).sqrt();
 
     let z = if sigma > 0.0 { (w_plus - mu) / sigma } else { 0.0 };
     let p = normal_two_tail_p(z);
@@ -352,22 +387,18 @@ pub fn ks_test_two_sample(x: &[f64], y: &[f64]) -> NonparametricResult {
     let mut i = 0;
     let mut j = 0;
     while i < n1 || j < n2 {
+        // Advance tied values simultaneously
+        let advance_x = i < n1 && (j >= n2 || sx[i] <= sy[j]);
+        let advance_y = j < n2 && (i >= n1 || sy[j] <= sx[i]);
+        if advance_x { i += 1; }
+        if advance_y { j += 1; }
         let fx = i as f64 / n1 as f64;
         let gy = j as f64 / n2 as f64;
         d_max = d_max.max((fx - gy).abs());
-
-        // Advance the smaller value
-        if i < n1 && (j >= n2 || sx[i] <= sy[j]) {
-            i += 1;
-        } else {
-            j += 1;
-        }
     }
-    // Check final point
-    d_max = d_max.max((1.0 - n2 as f64 / n2 as f64).abs()); // = 0, just for completeness
 
     let en = ((n1 * n2) as f64 / (n1 + n2) as f64).sqrt();
-    let p = ks_p_value(d_max, (en * en) as usize);
+    let p = ks_p_value(d_max, (en * en).round() as usize);
 
     NonparametricResult {
         test_name: "KS test (two-sample)", statistic: d_max, p_value: p,
@@ -454,7 +485,7 @@ pub fn bootstrap_percentile(
         boot_stats.push(statistic(&resample));
     }
 
-    boot_stats.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    boot_stats.sort_by(|a, b| a.total_cmp(b));
 
     let lo_idx = ((alpha / 2.0) * n_resamples as f64) as usize;
     let hi_idx = ((1.0 - alpha / 2.0) * n_resamples as f64) as usize;
@@ -1036,7 +1067,7 @@ mod tests {
         let (grid, density) = kde_fft(&data, 256, Some(0.5));
         // Peak should be near x=5.0
         let peak_idx = density.iter().enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .max_by(|a, b| a.1.total_cmp(b.1))
             .unwrap().0;
         assert!((grid[peak_idx] - 5.0).abs() < 0.5,
             "Peak at x={} should be near 5.0", grid[peak_idx]);

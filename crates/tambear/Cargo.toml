@@ -6,9 +6,10 @@ description = "Sort-free DataFrame engine. Tam doesn't sort. Tam knows."
 
 [features]
 wgpu = ["dep:tambear-wgpu"]
+legacy-cudarc = ["dep:cudarc"]
 
 [dependencies]
-cudarc = { version = "0.19", features = ["nvrtc", "cuda-version-from-build-system"] }
+cudarc = { version = "0.19", features = ["nvrtc", "cuda-version-from-build-system"], optional = true }
 blake3 = "1"
 
 [dependencies.winrapids-tiled]
@@ -24,30 +25,37 @@ optional = true
 [[bin]]
 name = "tambear-test"
 path = "src/main.rs"
+required-features = ["legacy-cudarc"]
 
 [[bin]]
 name = "tam-real-data"
 path = "src/real_data.rs"
+required-features = ["legacy-cudarc"]
 
 [[bin]]
 name = "tb-demo"
 path = "src/tb_demo.rs"
+required-features = ["legacy-cudarc"]
 
 [[bin]]
 name = "io-bench"
 path = "src/io_bench.rs"
+required-features = ["legacy-cudarc"]
 
 [[bin]]
 name = "scatter-bench"
 path = "src/scatter_bench.rs"
+required-features = ["legacy-cudarc"]
 
 [[bin]]
 name = "train-demo"
 path = "src/train_demo.rs"
+required-features = ["legacy-cudarc"]
 
 [[bin]]
 name = "compile-budget"
 path = "src/compile_budget.rs"
+required-features = ["legacy-cudarc"]
 
 [[bin]]
 name = "collatz-search"

@@ -750,7 +750,7 @@ pub fn lyapunov_spectrum(
 
     // Lyapunov exponents = accumulated log / total time
     let mut exponents: Vec<f64> = log_r.iter().map(|&lr| lr / total_time).collect();
-    exponents.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    exponents.sort_by(|a, b| b.total_cmp(a));
 
     let sum = exponents.iter().sum();
     let n_positive = exponents.iter().filter(|&&e| e > 0.0).count();

@@ -337,7 +337,7 @@ impl BigFloat {
         // Compare via f64 approximation (sufficient for ordering)
         let af = a.to_f64();
         let bf = b.to_f64();
-        af.partial_cmp(&bf).unwrap_or(std::cmp::Ordering::Equal)
+        af.total_cmp(&bf)
     }
 
     /// Riemann zeta function ζ(s) for real s > 1.
@@ -1996,7 +1996,7 @@ mod tests {
 
         // Find the top 10 spectral peaks
         let mut indexed: Vec<(usize, f64)> = power.iter().cloned().enumerate().collect();
-        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        indexed.sort_by(|a, b| b.1.total_cmp(&a.1));
         let top10 = &indexed[..10.min(indexed.len())];
 
         eprintln!("═══ Collatz stopping time power spectrum (N={}) ═══", n);
@@ -2430,7 +2430,7 @@ mod tests {
 
             // Sort eigenvalues (sym_eigen returns descending, we need ascending)
             let mut sorted = eigenvalues.clone();
-            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            sorted.sort_by(|a, b| a.total_cmp(b));
 
             let r = level_spacing_r_stat(&sorted);
             if !r.is_nan() {
@@ -2526,7 +2526,7 @@ mod tests {
 
         // Find the minimum |Z(t)| in the region (the near-miss)
         let (t_min, z_min) = z_vals.iter()
-            .min_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
+            .min_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
             .unwrap();
         eprintln!("\nMinimum |Z(t)| in region:");
         eprintln!("  t = {:.3}, Z(t) = {:+.6}", t_min, z_min);
@@ -2570,7 +2570,7 @@ mod tests {
 
         // The key diagnostic: minimum |Z(t)|
         let (ft_min, fz_min) = fine_vals.iter()
-            .min_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
+            .min_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
             .unwrap();
         eprintln!("Absolute minimum: Z({:.6}) = {:+.10}", ft_min, fz_min);
         eprintln!("  (Known Lehmer minimum: ≈ -0.0068)");

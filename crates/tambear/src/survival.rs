@@ -32,7 +32,7 @@ pub fn kaplan_meier(times: &[f64], events: &[bool]) -> Vec<KmStep> {
 
     // Sort by time
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| times[a].partial_cmp(&times[b]).unwrap());
+    order.sort_by(|&a, &b| times[a].total_cmp(&times[b]));
 
     let mut steps = Vec::new();
     let mut at_risk = n;
@@ -93,7 +93,7 @@ pub fn log_rank_test(times: &[f64], events: &[bool], groups: &[usize]) -> LogRan
     assert_eq!(groups.len(), n);
 
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| times[a].partial_cmp(&times[b]).unwrap());
+    order.sort_by(|&a, &b| times[a].total_cmp(&times[b]));
 
     let mut n1 = groups.iter().filter(|&&g| g == 0).count();
     let mut n2 = groups.iter().filter(|&&g| g == 1).count();
@@ -170,7 +170,7 @@ pub fn cox_ph(x: &[f64], times: &[f64], events: &[bool], n: usize, d: usize, max
     assert_eq!(events.len(), n);
 
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| times[a].partial_cmp(&times[b]).unwrap());
+    order.sort_by(|&a, &b| times[a].total_cmp(&times[b]));
 
     let mut beta = vec![0.0; d];
     let mut iterations = 0;
@@ -207,29 +207,44 @@ pub fn cox_ph(x: &[f64], times: &[f64], events: &[bool], n: usize, d: usize, max
         }
 
         // Process from earliest to latest; risk set R(t_i) = {j: t_j >= t_i}
-        for idx in 0..n {
-            let i = order[idx];
-            if events[i] {
-                // Gradient contribution
-                for j in 0..d {
-                    grad[j] += x[i * d + j] - s1[j] / s0;
-                }
-                // Hessian contribution
-                for j in 0..d {
-                    for k in 0..d {
-                        hess[j * d + k] -= s2[j * d + k] / s0 - (s1[j] * s1[k]) / (s0 * s0);
+        // Breslow: tied events share the same risk set
+        let mut idx = 0;
+        while idx < n {
+            // Find tie group: all observations with the same time
+            let mut end = idx + 1;
+            while end < n && times[order[end]] == times[order[idx]] {
+                end += 1;
+            }
+
+            // All events in tie group contribute using the same risk set
+            for tidx in idx..end {
+                let i = order[tidx];
+                if events[i] {
+                    for j in 0..d {
+                        grad[j] += x[i * d + j] - s1[j] / s0;
+                    }
+                    for j in 0..d {
+                        for k in 0..d {
+                            hess[j * d + k] -= s2[j * d + k] / s0
+                                - (s1[j] * s1[k]) / (s0 * s0);
+                        }
                     }
                 }
             }
 
-            // Remove this observation from risk set
-            s0 -= exp_xb[i];
-            for j in 0..d {
-                s1[j] -= x[i * d + j] * exp_xb[i];
-                for k in 0..d {
-                    s2[j * d + k] -= x[i * d + j] * x[i * d + k] * exp_xb[i];
+            // Remove entire tie group from risk set
+            for tidx in idx..end {
+                let i = order[tidx];
+                s0 -= exp_xb[i];
+                for j in 0..d {
+                    s1[j] -= x[i * d + j] * exp_xb[i];
+                    for k in 0..d {
+                        s2[j * d + k] -= x[i * d + j] * x[i * d + k] * exp_xb[i];
+                    }
                 }
             }
+
+            idx = end;
         }
 
         // Newton step: β_new = β - H⁻¹ g

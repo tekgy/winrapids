@@ -102,7 +102,7 @@ pub fn principal_axis_factoring(corr: &Mat, n_factors: usize, max_iter: usize) -
         // Eigendecomposition
         let (evals, evecs) = crate::linear_algebra::sym_eigen(&reduced);
         let mut idx: Vec<usize> = (0..p).collect();
-        idx.sort_by(|&a, &b| evals[b].partial_cmp(&evals[a]).unwrap());
+        idx.sort_by(|&a, &b| evals[b].total_cmp(&evals[a]));
 
         // Extract loadings: L_jf = sqrt(λ_f) · v_jf
         let mut new_comm = vec![0.0; p];
@@ -133,7 +133,7 @@ pub fn principal_axis_factoring(corr: &Mat, n_factors: usize, max_iter: usize) -
     for j in 0..p { reduced.set(j, j, communalities[j]); }
     let (evals, evecs) = crate::linear_algebra::sym_eigen(&reduced);
     let mut idx: Vec<usize> = (0..p).collect();
-    idx.sort_by(|&a, &b| evals[b].partial_cmp(&evals[a]).unwrap());
+    idx.sort_by(|&a, &b| evals[b].total_cmp(&evals[a]));
 
     let mut loadings = Mat::zeros(p, n_factors);
     let mut eigenvalues = Vec::with_capacity(n_factors);

@@ -1,12 +1,14 @@
 //! Parallel reduction primitives: argmin, argmax.
 //!
-//! Two-phase design:
+//! Two-phase design (GPU backends):
 //! 1. **GPU phase**: each block reduces its 256 elements to one (value, index) pair,
 //!    writing n_blocks results to device memory.
 //! 2. **Host phase**: reduce the n_blocks pairs to the global result.
 //!
 //! Phase 2 is O(n_blocks) = O(n/256) — for 2M rows: 8K pairs, microseconds on CPU.
 //! The GPU phase is O(n/n_blocks) = O(256) depth per block, fully parallel.
+//!
+//! CPU backend uses a single-pass reduction (no blocks).
 //!
 //! **NaN handling**: NaN rows are excluded. Argmin maps NaN → +∞ (neutral);
 //! argmax maps NaN → −∞ (neutral). If all values are NaN, returns the sentinel
@@ -16,8 +18,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
-use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
+use tam_gpu::{Buffer, Kernel, ShaderLang, TamGpu};
 
 const REDUCE_BLOCK_SIZE: u32 = 256;
 /// Shared memory per block: REDUCE_BLOCK_SIZE doubles (svals) + REDUCE_BLOCK_SIZE ints (sidxs).
@@ -26,22 +27,22 @@ const REDUCE_SMEM_BYTES: u32 = REDUCE_BLOCK_SIZE * (8 + 4);
 /// GPU argmin / argmax operator.
 ///
 /// Kernels are compiled lazily on first use and cached for reuse.
+/// Works on any TamGpu backend (CUDA, CPU, future Vulkan/Metal).
 pub struct ReduceOp {
-    ctx: Arc<CudaContext>,
-    stream: Arc<CudaStream>,
-    argmin_fn: Option<CudaFunction>,
-    argmax_fn: Option<CudaFunction>,
+    gpu: Arc<dyn TamGpu>,
+    argmin_kernel: Option<Kernel>,
+    argmax_kernel: Option<Kernel>,
 }
 
 impl ReduceOp {
+    /// Create a ReduceOp using the auto-detected backend.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        Self::on_device(0)
+        Ok(Self::with_backend(tam_gpu::detect()))
     }
 
-    pub fn on_device(ordinal: usize) -> Result<Self, Box<dyn std::error::Error>> {
-        let ctx = CudaContext::new(ordinal)?;
-        let stream = ctx.default_stream();
-        Ok(Self { ctx, stream, argmin_fn: None, argmax_fn: None })
+    /// Create a ReduceOp with a specific backend.
+    pub fn with_backend(gpu: Arc<dyn TamGpu>) -> Self {
+        Self { gpu, argmin_kernel: None, argmax_kernel: None }
     }
 
     /// Argmin over a host slice. Returns `(min_value, index_of_min)`.
@@ -50,8 +51,9 @@ impl ReduceOp {
         if values.is_empty() {
             return Ok((f64::INFINITY, usize::MAX));
         }
-        let values_dev = self.stream.clone_htod(values)?;
-        self.argmin_gpu(&values_dev, values.len())
+        self.ensure_kernels()?;
+        let values_buf = tam_gpu::upload(&*self.gpu, values)?;
+        self.argmin_dispatch(&values_buf, values.len())
     }
 
     /// Argmax over a host slice. Returns `(max_value, index_of_max)`.
@@ -60,68 +62,128 @@ impl ReduceOp {
         if values.is_empty() {
             return Ok((f64::NEG_INFINITY, usize::MAX));
         }
-        let values_dev = self.stream.clone_htod(values)?;
-        self.argmax_gpu(&values_dev, values.len())
+        self.ensure_kernels()?;
+        let values_buf = tam_gpu::upload(&*self.gpu, values)?;
+        self.argmax_dispatch(&values_buf, values.len())
     }
 
-    /// Argmin on GPU-resident data. Synchronizes before returning.
-    pub fn argmin_gpu(
+    /// Argmin on a device-resident buffer. `n` is the number of f64 elements.
+    pub fn argmin_buf(
         &mut self,
-        values: &CudaSlice<f64>,
+        values: &Buffer,
         n: usize,
     ) -> Result<(f64, usize), Box<dyn std::error::Error>> {
         self.ensure_kernels()?;
-        let n_blocks = ((n as u32) + REDUCE_BLOCK_SIZE - 1) / REDUCE_BLOCK_SIZE;
-        let mut block_vals: CudaSlice<f64> = self.stream.alloc_zeros(n_blocks as usize)?;
-        let mut block_idxs: CudaSlice<i32> = self.stream.alloc_zeros(n_blocks as usize)?;
-        let n_i32 = n as i32;
-        let f = self.argmin_fn.as_ref().unwrap();
-        let cfg = reduce_launch_cfg(n);
-        unsafe {
-            self.stream.launch_builder(f)
-                .arg(values).arg(&mut block_vals).arg(&mut block_idxs).arg(&n_i32)
-                .launch(cfg)?;
-        }
-        self.stream.synchronize()?;
-        let bvals = self.stream.clone_dtoh(&block_vals)?;
-        let bidxs = self.stream.clone_dtoh(&block_idxs)?;
-        Ok(final_argmin(&bvals, &bidxs))
+        self.argmin_dispatch(values, n)
     }
 
-    /// Argmax on GPU-resident data. Synchronizes before returning.
-    pub fn argmax_gpu(
+    /// Argmax on a device-resident buffer. `n` is the number of f64 elements.
+    pub fn argmax_buf(
         &mut self,
-        values: &CudaSlice<f64>,
+        values: &Buffer,
         n: usize,
     ) -> Result<(f64, usize), Box<dyn std::error::Error>> {
         self.ensure_kernels()?;
-        let n_blocks = ((n as u32) + REDUCE_BLOCK_SIZE - 1) / REDUCE_BLOCK_SIZE;
-        let mut block_vals: CudaSlice<f64> = self.stream.alloc_zeros(n_blocks as usize)?;
-        let mut block_idxs: CudaSlice<i32> = self.stream.alloc_zeros(n_blocks as usize)?;
-        let n_i32 = n as i32;
-        let f = self.argmax_fn.as_ref().unwrap();
-        let cfg = reduce_launch_cfg(n);
-        unsafe {
-            self.stream.launch_builder(f)
-                .arg(values).arg(&mut block_vals).arg(&mut block_idxs).arg(&n_i32)
-                .launch(cfg)?;
-        }
-        self.stream.synchronize()?;
-        let bvals = self.stream.clone_dtoh(&block_vals)?;
-        let bidxs = self.stream.clone_dtoh(&block_idxs)?;
-        Ok(final_argmax(&bvals, &bidxs))
+        self.argmax_dispatch(values, n)
     }
 
-    pub fn stream(&self) -> &Arc<CudaStream> { &self.stream }
-    pub fn ctx(&self) -> &Arc<CudaContext> { &self.ctx }
+    fn argmin_dispatch(
+        &self,
+        values: &Buffer,
+        n: usize,
+    ) -> Result<(f64, usize), Box<dyn std::error::Error>> {
+        let kernel = self.argmin_kernel.as_ref().unwrap();
+        match self.gpu.shader_lang() {
+            ShaderLang::Cuda => self.reduce_two_phase(kernel, values, n, true),
+            _ => self.reduce_single_pass(kernel, values, true),
+        }
+    }
+
+    fn argmax_dispatch(
+        &self,
+        values: &Buffer,
+        n: usize,
+    ) -> Result<(f64, usize), Box<dyn std::error::Error>> {
+        let kernel = self.argmax_kernel.as_ref().unwrap();
+        match self.gpu.shader_lang() {
+            ShaderLang::Cuda => self.reduce_two_phase(kernel, values, n, false),
+            _ => self.reduce_single_pass(kernel, values, false),
+        }
+    }
+
+    /// Two-phase block reduction (CUDA path).
+    ///
+    /// GPU produces per-block (value, index) pairs → host does final reduce.
+    fn reduce_two_phase(
+        &self,
+        kernel: &Kernel,
+        values: &Buffer,
+        n: usize,
+        is_min: bool,
+    ) -> Result<(f64, usize), Box<dyn std::error::Error>> {
+        let n_blocks = ((n as u32) + REDUCE_BLOCK_SIZE - 1) / REDUCE_BLOCK_SIZE;
+        let block_vals = self.gpu.alloc(n_blocks as usize * 8)?;
+        let block_idxs = self.gpu.alloc(n_blocks as usize * 4)?;
+        let n_buf = tam_gpu::upload(&*self.gpu, &[n as i32])?;
+
+        self.gpu.dispatch(
+            kernel,
+            [n_blocks, 1, 1],
+            [REDUCE_BLOCK_SIZE, 1, 1],
+            &[values, &block_vals, &block_idxs, &n_buf],
+            REDUCE_SMEM_BYTES,
+        )?;
+        self.gpu.sync()?;
+
+        let bvals: Vec<f64> = tam_gpu::download(&*self.gpu, &block_vals, n_blocks as usize)?;
+        let bidxs: Vec<i32> = tam_gpu::download(&*self.gpu, &block_idxs, n_blocks as usize)?;
+
+        if is_min {
+            Ok(final_argmin(&bvals, &bidxs))
+        } else {
+            Ok(final_argmax(&bvals, &bidxs))
+        }
+    }
+
+    /// Single-pass reduction (CPU path).
+    ///
+    /// CpuBackend's argmin_f64/argmax_f64: 3 buffers [values, out_val, out_idx].
+    fn reduce_single_pass(
+        &self,
+        kernel: &Kernel,
+        values: &Buffer,
+        is_min: bool,
+    ) -> Result<(f64, usize), Box<dyn std::error::Error>> {
+        let out_val = self.gpu.alloc(8)?;
+        let out_idx = self.gpu.alloc(4)?;
+
+        self.gpu.dispatch(
+            kernel,
+            [1, 1, 1],
+            [1, 1, 1],
+            &[values, &out_val, &out_idx],
+            0,
+        )?;
+
+        let val: Vec<f64> = tam_gpu::download(&*self.gpu, &out_val, 1)?;
+        let idx: Vec<i32> = tam_gpu::download(&*self.gpu, &out_idx, 1)?;
+
+        let sentinel = if is_min { f64::INFINITY } else { f64::NEG_INFINITY };
+        if idx[0] == i32::MAX {
+            Ok((sentinel, usize::MAX))
+        } else {
+            Ok((val[0], idx[0] as usize))
+        }
+    }
 
     fn ensure_kernels(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if self.argmin_fn.is_none() {
-            let opts = CompileOptions { arch: Some("sm_120"), ..Default::default() };
-            let ptx = compile_ptx_with_opts(REDUCE_OP_SOURCE, opts)?;
-            let module = self.ctx.load_module(ptx)?;
-            self.argmin_fn = Some(module.load_function("argmin_f64")?);
-            self.argmax_fn = Some(module.load_function("argmax_f64")?);
+        if self.argmin_kernel.is_none() {
+            let source = match self.gpu.shader_lang() {
+                ShaderLang::Cuda => REDUCE_OP_SOURCE_CUDA,
+                _ => "",
+            };
+            self.argmin_kernel = Some(self.gpu.compile(source, "argmin_f64")?);
+            self.argmax_kernel = Some(self.gpu.compile(source, "argmax_f64")?);
         }
         Ok(())
     }
@@ -151,7 +213,11 @@ fn final_argmax(bvals: &[f64], bidxs: &[i32]) -> (f64, usize) {
 // CUDA source — two kernels in one compilation unit
 // ---------------------------------------------------------------------------
 
-const REDUCE_OP_SOURCE: &str = r#"
+/// CUDA kernel source for two-phase block reduction.
+///
+/// Each block reduces blockDim.x elements to one (value, index) pair.
+/// n is passed as a single-element i32 buffer (TamGpu convention).
+const REDUCE_OP_SOURCE_CUDA: &str = r#"
 // Two-phase argmin/argmax reduction.
 //
 // Each block reduces blockDim.x elements to one (value, index) pair.
@@ -169,8 +235,9 @@ extern "C" __global__ void argmin_f64(
     const double* __restrict__ values,
     double* __restrict__ block_vals,
     int* __restrict__ block_idxs,
-    int n
+    const int* __restrict__ n_ptr
 ) {
+    int n = *n_ptr;
     extern __shared__ double svals[];
     int* sidxs = (int*)(svals + blockDim.x);
 
@@ -212,8 +279,9 @@ extern "C" __global__ void argmax_f64(
     const double* __restrict__ values,
     double* __restrict__ block_vals,
     int* __restrict__ block_idxs,
-    int n
+    const int* __restrict__ n_ptr
 ) {
+    int n = *n_ptr;
     extern __shared__ double svals[];
     int* sidxs = (int*)(svals + blockDim.x);
 
@@ -251,15 +319,6 @@ extern "C" __global__ void argmax_f64(
     }
 }
 "#;
-
-fn reduce_launch_cfg(n: usize) -> LaunchConfig {
-    let n_blocks = ((n as u32) + REDUCE_BLOCK_SIZE - 1) / REDUCE_BLOCK_SIZE;
-    LaunchConfig {
-        grid_dim: (n_blocks, 1, 1),
-        block_dim: (REDUCE_BLOCK_SIZE, 1, 1),
-        shared_mem_bytes: REDUCE_SMEM_BYTES,
-    }
-}
 
 #[cfg(test)]
 mod tests {

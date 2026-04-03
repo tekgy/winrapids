@@ -44,15 +44,34 @@
 //! // [3.0, 7.0, 5.0] — group 0: 1+2, group 1: 3+4, group 2: 5
 //! ```
 
+pub mod accumulate;
+pub mod clustering;
+pub mod codegen;
+pub mod compute_engine;
+pub mod descriptive;
+pub mod complexity;
+pub mod hypothesis;
+pub mod information_theory;
+pub mod nonparametric;
+pub mod numerical;
+pub mod optimization;
+pub mod robust;
+pub mod linear_algebra;
+pub mod intermediates;
 pub mod dictionary;
 pub mod filter_jit;
 pub mod format;
+pub mod graph;
 pub mod gather_op;
 pub mod frame;
 pub mod group_index;
 pub mod hash_scatter;
 pub mod reduce_op;
+pub mod rng;
 pub mod scatter_jit;
+pub mod signal_processing;
+pub mod spatial;
+pub mod special_functions;
 pub mod stats;
 pub mod tb_io;
 
@@ -72,6 +91,226 @@ pub use filter_jit::{
     PRED_NOT_NAN, PRED_FINITE, PRED_POSITIVE,
 };
 pub use gather_op::GatherOp;
+pub use accumulate::{AccumulateEngine, Grouping, Expr, Op, AccResult};
+pub use clustering::{ClusteringEngine, ClusterResult};
+pub use intermediates::{DistanceMatrix, Metric, SufficientStatistics, IntermediateTag, TamSession, DataId};
 pub use reduce_op::ReduceOp;
 pub use scatter_jit::{ScatterJit, PHI_SUM, PHI_SUM_SQ, PHI_CENTERED_SUM, PHI_CENTERED_SUM_SQ, PHI_COUNT};
+pub use information_theory::{
+    InformationEngine,
+    shannon_entropy, shannon_entropy_from_counts, renyi_entropy, tsallis_entropy,
+    kl_divergence, js_divergence, cross_entropy,
+    mutual_information, normalized_mutual_information, variation_of_information,
+    conditional_entropy, probabilities,
+    mutual_info_score, normalized_mutual_info_score, adjusted_mutual_info_score,
+    entropy_histogram,
+};
+pub use descriptive::{
+    DescriptiveEngine, DescriptiveResult, MomentStats, GroupedMomentStats,
+    moments_ungrouped, moments_session, quantile, median, quartiles, iqr,
+    geometric_mean, harmonic_mean, trimmed_mean, winsorized_mean,
+    sorted_nan_free, mad, gini, bowley_skewness, pearson_first_skewness,
+    QuantileMethod,
+    PHI_CENTERED_CU, PHI_CENTERED_QU,
+};
 pub use tb_io::{TbFile, TbColumnWrite, write_tb};
+pub use special_functions::{
+    erf, erfc, log_gamma, gamma, log_beta, digamma, trigamma,
+    regularized_incomplete_beta, regularized_gamma_p, regularized_gamma_q,
+    normal_cdf, normal_sf, t_cdf, f_cdf, chi2_cdf, chi2_sf,
+    normal_two_tail_p, t_two_tail_p, f_right_tail_p, chi2_right_tail_p,
+};
+pub use hypothesis::{
+    TestResult, AnovaResult, ChiSquareResult, HypothesisEngine,
+    one_sample_t, two_sample_t, welch_t, paired_t,
+    one_way_anova,
+    chi2_goodness_of_fit, chi2_independence,
+    one_proportion_z, two_proportion_z,
+    cohens_d, glass_delta, hedges_g, point_biserial_r,
+    odds_ratio, log_odds_ratio, log_odds_ratio_se,
+    bonferroni, holm, benjamini_hochberg,
+};
+pub use nonparametric::{
+    rank, spearman, kendall_tau,
+    NonparametricResult,
+    mann_whitney_u, wilcoxon_signed_rank, kruskal_wallis,
+    ks_test_normal, ks_test_two_sample,
+    bootstrap_percentile, BootstrapResult,
+    permutation_test_mean_diff,
+    kde, kde_fft, silverman_bandwidth, KernelType,
+    runs_test, runs_test_numeric, sign_test,
+    level_spacing_r_stat,
+};
+pub use complexity::{
+    sample_entropy, approx_entropy, permutation_entropy, normalized_permutation_entropy,
+    hurst_rs, dfa, higuchi_fd, lempel_ziv_complexity,
+    correlation_dimension, largest_lyapunov,
+    LyapunovSpectrum, lyapunov_spectrum,
+};
+pub use numerical::{
+    RootResult, bisection, newton, secant, brent, fixed_point,
+    derivative_central, derivative2_central, derivative_richardson,
+    simpson, gauss_legendre_5, adaptive_simpson, trapezoid,
+    OdeSolution, euler, rk4, rk45, rk4_system,
+};
+pub use linear_algebra::{
+    Mat, mat_mul, mat_add, mat_sub, mat_scale, mat_vec, dot, vec_norm, outer,
+    LuResult, lu, lu_solve, det, inv,
+    cholesky, cholesky_solve,
+    QrResult, qr, qr_solve, lstsq,
+    SvdResult, svd, pinv,
+    sym_eigen, power_iteration,
+    cond, solve, solve_spd,
+};
+pub use graph::{
+    Edge, Graph, MstResult,
+    bfs, dfs, topological_sort, connected_components,
+    dijkstra, bellman_ford, floyd_warshall, reconstruct_path,
+    kruskal, prim,
+    degree_centrality, closeness_centrality, pagerank,
+    label_propagation, modularity,
+    max_flow, diameter, density, clustering_coefficient,
+};
+pub use optimization::{
+    OptResult,
+    backtracking_line_search, golden_section,
+    gradient_descent, adam, adagrad, rmsprop, lbfgs,
+    nelder_mead, coordinate_descent, projected_gradient,
+};
+pub use robust::{
+    huber_weight, bisquare_weight, hampel_weight,
+    MEstimateResult, huber_m_estimate, bisquare_m_estimate, hampel_m_estimate,
+    qn_scale, sn_scale, tau_scale,
+    LtsResult, lts_simple,
+    McdResult2D, mcd_2d,
+    medcouple,
+};
+pub use rng::{
+    TamRng, SplitMix64, Xoshiro256, Lcg64,
+    normal_pair, sample_normal, sample_exponential, sample_gamma, sample_beta,
+    sample_chi2, sample_t, sample_f, sample_cauchy, sample_lognormal,
+    sample_bernoulli, sample_poisson, sample_binomial, sample_geometric,
+    shuffle, sample_without_replacement, sample_weighted,
+    fill_uniform, fill_normal, randn, randu,
+};
+pub mod bigint;
+pub mod bigfloat;
+pub mod copa;
+pub mod interpolation;
+pub mod multivariate;
+pub mod causal;
+pub mod spectral;
+pub mod mixed_effects;
+pub mod panel;
+pub mod survival;
+pub mod mixture;
+pub mod bayesian;
+pub mod time_series;
+pub mod volatility;
+pub mod factor_analysis;
+pub mod irt;
+pub mod dim_reduction;
+pub mod tda;
+pub mod kmeans;
+pub mod knn;
+pub mod manifold;
+pub mod neural;
+pub mod pipeline;
+pub mod tbs_executor;
+pub mod tbs_jit;
+pub mod tbs_lint;
+pub mod tbs_parser;
+pub mod train;
+pub mod proof;
+pub mod extremal_orbit;
+pub mod layer_bijection;
+pub mod series_accel;
+pub mod spectral_gap;
+pub mod fold_irreversibility;
+pub mod spec_compiler;
+pub mod superposition;
+pub mod tam;
+pub mod equipartition;
+pub mod multi_adic;
+pub mod collatz_parallel;
+pub use equipartition::{
+    free_energy, euler_factor, fugacity, fold_target,
+    solve_fold, solve_pairwise, diagnose_fold,
+    FoldDiagnostics, FoldPoint, NucleationHierarchy, Phase,
+    all_pairwise_folds, k_wise_folds, batch_pairwise_folds, BatchFoldResult,
+    nucleation_hierarchy, nucleation_hierarchy_full,
+    verify_fold_surface, classify_phase, phase_sweep, fold_sensitivity,
+};
+pub use spatial::{
+    SpatialPoint, euclidean_2d, haversine,
+    VariogramBin, VariogramModel, empirical_variogram,
+    spherical_variogram, exponential_variogram, gaussian_variogram,
+    KrigingResult, ordinary_kriging,
+    SpatialWeights, morans_i, gearys_c,
+    ripleys_k, ripleys_l, nn_distances, clark_evans_r,
+};
+pub use interpolation::{
+    lagrange, newton_divided_diff, newton_eval, neville, lerp, nearest,
+    SplineSegment, CubicSpline, natural_cubic_spline, clamped_cubic_spline,
+    monotone_hermite, akima, pchip,
+    chebyshev_nodes, chebyshev_coefficients, chebyshev_eval, chebyshev_approximate,
+    PolyFit, polyfit,
+    RbfKernel, RbfInterpolant, rbf_interpolate,
+    BarycentricRational, barycentric_rational,
+    bspline_basis, bspline_eval, uniform_knots,
+    GpResult, gp_regression,
+    PadeApproximant, pade,
+};
+pub use signal_processing::{
+    Complex, next_pow2, fft, ifft, rfft, irfft, fft2d,
+    window_hann, window_hamming, window_blackman, window_bartlett, window_kaiser, window_flat_top,
+    periodogram, welch, stft, spectrogram,
+    convolve, cross_correlate, autocorrelation,
+    dct2, dct3,
+    fir_lowpass, fir_highpass, fir_bandpass, fir_filter,
+    Biquad, biquad_cascade, butterworth_lowpass_cascade,
+    moving_average, ema, savgol_filter,
+    hilbert, envelope, instantaneous_frequency,
+    real_cepstrum,
+    haar_dwt, haar_idwt, haar_wavedec, haar_waverec,
+    db4_dwt, db4_idwt,
+    goertzel, goertzel_mag,
+    zero_crossing_rate, median_filter,
+};
+pub use pipeline::{TamFrame, TamPipeline, ClusterSpec, ClusterView, ColumnDescribe, DescribeResult, DiscoveryResult};
+pub use manifold::{Manifold, ManifoldMixture, ManifoldDistanceOp};
+pub use neural::{
+    relu, relu_vec, relu_backward,
+    leaky_relu, leaky_relu_vec, leaky_relu_backward,
+    elu, elu_vec, elu_backward,
+    selu, selu_vec, SELU_ALPHA, SELU_LAMBDA,
+    gelu, gelu_vec, gelu_backward,
+    swish, swish_vec, swish_backward,
+    mish, mish_vec,
+    sigmoid, sigmoid_vec, sigmoid_backward,
+    tanh_vec, tanh_backward,
+    softmax, log_softmax, softmax_backward,
+    softplus, softplus_vec, softsign, softsign_vec,
+    hard_sigmoid, hard_sigmoid_vec, hard_swish, hard_swish_vec,
+    conv1d, conv1d_multi, conv2d, conv2d_transpose,
+    max_pool1d, avg_pool1d, max_pool2d, avg_pool2d,
+    global_avg_pool2d, adaptive_avg_pool1d,
+    BatchNormResult, batch_norm, layer_norm, rms_norm, group_norm, instance_norm,
+    dropout, dropout_backward,
+    linear, linear_backward, bilinear,
+    embedding, positional_encoding, rope,
+    AttentionResult, scaled_dot_product_attention, multi_head_attention,
+    mse_loss, mse_loss_backward,
+    bce_loss, bce_loss_backward,
+    cross_entropy_loss, cross_entropy_loss_backward,
+    huber_loss, huber_loss_backward,
+    cosine_similarity_loss, hinge_loss, focal_loss,
+    flatten_shape, residual_add,
+    clip_grad_norm, clip_grad_value,
+    label_smooth, temperature_scale,
+    top_k_logits, top_p_logits,
+};
+pub use bigint::{U256, BigInt};
+pub use bigfloat::{BigFloat, BigComplex, zeta_complex, hardy_z, find_zeta_zero, euler_factor_complex, euler_product_complex};
+pub use superposition::{Superposition, SuperpositionView};
+pub use tam::{tam, TamValue, TamResult, ConvergeResult, Diagnostic, EmergentDepth, tam_f64};

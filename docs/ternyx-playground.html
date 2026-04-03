@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TERNYX Signal Farm — Interactive Playground</title>
+<style>
+:root {
+  --bg: #0d1117; --surface: #161b22; --surface2: #21262d; --border: #30363d;
+  --text: #c9d1d9; --text-dim: #8b949e; --text-bright: #f0f6fc;
+  --blue: #58a6ff; --green: #3fb950; --red: #f85149; --yellow: #d29922;
+  --purple: #bc8cff; --cyan: #39d353; --orange: #f0883e; --pink: #f778ba;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
+.app { display: grid; grid-template-columns: 280px 1fr; height: 100vh; }
+.sidebar { background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; padding: 16px; }
+.main { overflow-y: auto; padding: 24px; }
+
+h1 { font-size: 18px; color: var(--text-bright); margin-bottom: 4px; }
+h2 { font-size: 14px; color: var(--blue); margin: 20px 0 8px; text-transform: uppercase; letter-spacing: 1px; }
+h3 { font-size: 13px; color: var(--text-bright); margin: 12px 0 6px; }
+.subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 16px; }
+
+.section-btn {
+  display: block; width: 100%; text-align: left; padding: 10px 12px;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-size: 13px; cursor: pointer; margin-bottom: 6px;
+  transition: all 0.15s;
+}
+.section-btn:hover { border-color: var(--blue); color: var(--blue); }
+.section-btn.active { border-color: var(--blue); background: rgba(88,166,255,0.1); color: var(--blue); }
+
+.controls { margin-top: 12px; }
+.control-group { margin-bottom: 12px; }
+.control-group label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+select, input[type=range] { width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 6px 8px; font-size: 12px; }
+input[type=range] { padding: 0; height: 6px; -webkit-appearance: none; appearance: none; border: none; background: var(--border); border-radius: 3px; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--blue); cursor: pointer; }
+.range-val { font-size: 11px; color: var(--cyan); float: right; }
+
+.panel { display: none; }
+.panel.active { display: block; }
+
+/* Byte visualization */
+.byte-grid { display: flex; flex-wrap: wrap; gap: 1px; margin: 8px 0; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+.byte { width: 28px; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 9px; border-radius: 2px; cursor: default; transition: all 0.1s; }
+.byte:hover { transform: scale(1.3); z-index: 10; box-shadow: 0 0 8px rgba(88,166,255,0.5); }
+.byte-magic { background: rgba(248,81,73,0.3); color: var(--red); }
+.byte-name { background: rgba(188,140,255,0.2); color: var(--purple); }
+.byte-dtype { background: rgba(63,185,80,0.2); color: var(--green); }
+.byte-dims { background: rgba(210,153,34,0.2); color: var(--yellow); }
+.byte-sizes { background: rgba(88,166,255,0.2); color: var(--blue); }
+.byte-check { background: rgba(240,136,62,0.2); color: var(--orange); }
+.byte-entropy { background: rgba(247,120,186,0.2); color: var(--pink); }
+.byte-reserved { background: rgba(139,148,158,0.1); color: var(--text-dim); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.legend-item { display: flex; align-items: center; gap: 4px; font-size: 11px; }
+.legend-color { width: 12px; height: 12px; border-radius: 2px; }
+
+/* Pipeline viz */
+.pipeline { display: flex; gap: 12px; align-items: stretch; margin: 16px 0; overflow-x: auto; }
+.pipe-stage { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-width: 160px; flex-shrink: 0; }
+.pipe-stage.active { border-color: var(--blue); box-shadow: 0 0 12px rgba(88,166,255,0.2); }
+.pipe-stage h4 { font-size: 12px; color: var(--text-bright); margin-bottom: 4px; }
+.pipe-stage .count { font-size: 24px; font-weight: bold; color: var(--cyan); }
+.pipe-stage .detail { font-size: 11px; color: var(--text-dim); }
+.pipe-arrow { display: flex; align-items: center; color: var(--border); font-size: 20px; }
+
+/* Cadence viz */
+.cadence-bar { display: flex; align-items: flex-end; gap: 2px; height: 120px; margin: 12px 0; }
+.cad-col { flex: 1; background: var(--blue); border-radius: 2px 2px 0 0; min-width: 8px; transition: all 0.2s; position: relative; cursor: pointer; }
+.cad-col:hover { background: var(--cyan); }
+.cad-col .cad-tip { display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-size: 10px; white-space: nowrap; z-index: 100; }
+.cad-col:hover .cad-tip { display: block; }
+
+/* E column viz */
+.e-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; margin: 12px 0; }
+.e-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 11px; }
+.e-card.firing { border-color: var(--red); background: rgba(248,81,73,0.1); }
+.e-card .e-name { color: var(--text-bright); font-weight: 600; }
+.e-card .e-rule { color: var(--text-dim); font-family: monospace; font-size: 10px; margin-top: 2px; }
+.e-card .e-status { margin-top: 4px; font-size: 10px; }
+.e-card .e-status.on { color: var(--red); }
+.e-card .e-status.off { color: var(--text-dim); }
+
+/* Spec TOML */
+.toml-block { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 11px; line-height: 1.6; overflow-x: auto; white-space: pre; }
+.toml-key { color: var(--blue); }
+.toml-val { color: var(--green); }
+.toml-section { color: var(--purple); font-weight: bold; }
+.toml-comment { color: var(--text-dim); }
+
+/* Coherence matrix */
+.matrix-container { display: inline-block; margin: 12px 0; }
+.matrix-row { display: flex; }
+.matrix-cell { width: 16px; height: 16px; border-radius: 1px; margin: 0.5px; cursor: pointer; transition: all 0.1s; }
+.matrix-cell:hover { transform: scale(1.5); z-index: 10; }
+
+/* Stats */
+.stat-row { display: flex; gap: 16px; margin: 8px 0; flex-wrap: wrap; }
+.stat { background: var(--surface2); border-radius: 6px; padding: 10px 14px; }
+.stat .stat-val { font-size: 20px; font-weight: bold; color: var(--cyan); }
+.stat .stat-label { font-size: 11px; color: var(--text-dim); }
+
+/* Prompt output */
+.prompt-area { margin-top: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.prompt-text { font-size: 12px; color: var(--text); line-height: 1.6; }
+.copy-btn { margin-top: 8px; padding: 6px 16px; background: var(--blue); color: #000; border: none; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.copy-btn:hover { opacity: 0.9; }
+.copy-btn.copied { background: var(--green); }
+</style>
+</head>
+<body>
+<div class="app">
+<div class="sidebar">
+  <h1>TERNYX</h1>
+  <div class="subtitle">Market Signal Farm — Interactive Explorer</div>
+
+  <h2>Explore</h2>
+  <button class="section-btn active" onclick="showPanel('format')">MKTD Format (96 bytes)</button>
+  <button class="section-btn" onclick="showPanel('compression')">Compression & Filters</button>
+  <button class="section-btn" onclick="showPanel('pipeline')">Compute Pipeline</button>
+  <button class="section-btn" onclick="showPanel('cadences')">31 Cadences</button>
+  <button class="section-btn" onclick="showPanel('ecolumns')">E Columns (Emissions)</button>
+  <button class="section-btn" onclick="showPanel('coherence')">Coherence Matrix</button>
+  <button class="section-btn" onclick="showPanel('spec')">spec.toml Design</button>
+  <button class="section-btn" onclick="showPanel('daemon')">Daemon & Bitmaps</button>
+
+  <div class="controls" id="controls-format">
+    <h2>MKTD Controls</h2>
+    <div class="control-group">
+      <label>Column Type</label>
+      <select id="col-type" onchange="updateAll()">
+        <option value="price">DO01 — price (f64)</option>
+        <option value="volume">DO05 — volume (f64)</option>
+        <option value="count">DO06 — count (f64)</option>
+        <option value="timestamp">timestamp (i64)</option>
+        <option value="emission">E01 — gap flag (f32)</option>
+        <option value="validity">V01 — null rate (f32)</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Codec</label>
+      <select id="codec" onchange="updateAll()">
+        <option value="zstd">zstd (level 6)</option>
+        <option value="none">none (raw)</option>
+        <option value="lz4">lz4</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Pre-filter</label>
+      <select id="filter" onchange="updateAll()">
+        <option value="auto">Auto (try all, pick best)</option>
+        <option value="none">None</option>
+        <option value="shuffle">Shuffle</option>
+        <option value="delta">Delta</option>
+        <option value="deltashuffle">DeltaShuffle</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="controls" id="controls-cadences" style="display:none">
+    <h2>Cadence Controls</h2>
+    <div class="control-group">
+      <label>Ticker</label>
+      <select id="ticker" onchange="updateAll()">
+        <option>AAPL</option><option>NVDA</option><option>TSLA</option>
+        <option>JPM</option><option>BKH</option><option>XOM</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Feature</label>
+      <select id="feature" onchange="updateAll()">
+        <option value="rv">Realized Variance</option>
+        <option value="vol">Volume</option>
+        <option value="count">Tick Count</option>
+        <option value="entropy">Compression Entropy</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="controls" id="controls-ecolumns" style="display:none">
+    <h2>E Column Controls</h2>
+    <div class="control-group">
+      <label>Leaf</label>
+      <select id="e-leaf" onchange="updateAll()">
+        <option value="ohlcv">K02P01C01 OHLCV (10 E)</option>
+        <option value="distribution">K02P01C03 Distribution (6 E)</option>
+        <option value="dfa">K02P12C01R02 DFA (5 E)</option>
+        <option value="delta">K01P02C03R02F01 Delta (9 E)</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Simulated Price Gap %<span class="range-val" id="gap-val">2.0%</span></label>
+      <input type="range" id="sim-gap" min="0" max="10" step="0.1" value="2" onchange="updateAll()">
+    </div>
+    <div class="control-group">
+      <label>Simulated Volume<span class="range-val" id="vol-val">5000</span></label>
+      <input type="range" id="sim-vol" min="0" max="200000" step="1000" value="5000" onchange="updateAll()">
+    </div>
+  </div>
+</div>
+
+<div class="main">
+  <!-- FORMAT PANEL -->
+  <div class="panel active" id="panel-format">
+    <h2>MKTD — Market Data Chunk (96 bytes)</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Every output column is one self-contained MKTD chunk. Hand it to any reader — Python, Rust, GPU — and it reconstructs the array.</p>
+
+    <div class="legend">
+      <div class="legend-item"><div class="legend-color" style="background:rgba(248,81,73,0.3)"></div>Magic</div>
+      <div class="legend-item"><div class="legend-color" style="background:rgba(188,140,255,0.2)"></div>Name</div>
+      <div class="legend-item"><div class="legend-color" style="background:rgba(63,185,80,0.2)"></div>Type/Layout</div>
+      <div class="legend-item"><div class="legend-color" style="background:rgba(210,153,34,0.2)"></div>Dimensions</div>
+      <div class="legend-item"><div class="legend-color" style="background:rgba(88,166,255,0.2)"></div>Sizes</div>
+      <div class="legend-item"><div class="legend-color" style="background:rgba(240,136,62,0.2)"></div>Checksum</div>
+      <div class="legend-item"><div class="legend-color" style="background:rgba(247,120,186,0.2)"></div>Entropy (FREE)</div>
+    </div>
+
+    <div class="byte-grid" id="byte-grid"></div>
+
+    <div class="stat-row" id="format-stats"></div>
+
+    <h3>What This Column Carries</h3>
+    <div id="format-detail" style="font-size:12px;color:var(--text-dim);margin-top:8px"></div>
+  </div>
+
+  <!-- COMPRESSION PANEL -->
+  <div class="panel" id="panel-compression">
+    <h2>Per-Column Compression</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Each MKTD chunk has its own codec + pre-filter. The auto-filter tries all 6 on a 64KB sample and picks the best.</p>
+
+    <h3>Compression Ratios (AAPL 2025-09-03, T05=1s cadence)</h3>
+    <div id="compression-chart" style="margin:16px 0"></div>
+
+    <h3>Filter Effects</h3>
+    <div id="filter-chart" style="margin:16px 0"></div>
+  </div>
+
+  <!-- PIPELINE PANEL -->
+  <div class="panel" id="panel-pipeline">
+    <h2>Compute Pipeline — One Ticker Day</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">AAPL 2025-09-03: 598,057 ticks → 121 leaves × 31 cadences = 316,026 MKTF files</p>
+
+    <div class="pipeline" id="pipeline-viz"></div>
+
+    <h3>Kingdom Hierarchy</h3>
+    <div id="kingdom-tree" style="margin:16px 0;font-size:12px"></div>
+  </div>
+
+  <!-- CADENCES PANEL -->
+  <div class="panel" id="panel-cadences">
+    <h2>31 Cadences — 50ms to 1 Week</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Same ticks, different temporal resolution. The PATTERN across cadences IS the signal.</p>
+
+    <h3 id="cadence-title">Realized Variance by Cadence</h3>
+    <div class="cadence-bar" id="cadence-bar"></div>
+    <div id="cadence-labels" style="display:flex;gap:2px;font-size:8px;color:var(--text-dim)"></div>
+
+    <div class="stat-row" id="cadence-stats"></div>
+  </div>
+
+  <!-- E COLUMNS PANEL -->
+  <div class="panel" id="panel-ecolumns">
+    <h2>E Columns — Emission Signals</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">E columns are just more compute output. The leaf evaluates thresholds on its DOs and outputs F32 flags. 14 leaves produce 68 emission signals.</p>
+
+    <div class="e-grid" id="e-grid"></div>
+
+    <h3 style="margin-top:16px">Two Paths — Structural Separation</h3>
+    <div style="display:flex;gap:16px;margin:12px 0">
+      <div style="flex:1;background:var(--surface2);border:1px solid var(--green);border-radius:8px;padding:12px">
+        <div style="color:var(--green);font-weight:600;font-size:13px">LIVE PATH (ephemeral)</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:4px">Compute → E in memory → detect → act → real trade<br>If detect daemon wasn't running, signal is gone. Can't retroactively fire.</div>
+      </div>
+      <div style="flex:1;background:var(--surface2);border:1px solid var(--yellow);border-radius:8px;padding:12px">
+        <div style="color:var(--yellow);font-weight:600;font-size:13px">RESEARCH PATH (persistent)</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:4px">E columns on disk → research daemon → shadow trades<br>Zero foreknowledge. Hundreds of strategies simultaneously. Builds track records.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- COHERENCE PANEL -->
+  <div class="panel" id="panel-coherence">
+    <h2>Cross-Cadence Coherence Matrix</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Eigendecomposition of the 24×24 cadence correlation matrix. Eigenvalue → 1.0 = total coupling = collapse imminent.</p>
+
+    <div class="stat-row" id="coherence-stats"></div>
+
+    <h3>Correlation Matrix (hover for values)</h3>
+    <div class="matrix-container" id="coherence-matrix"></div>
+
+    <h3>First Eigenvector (which cadences participate in the shared mode)</h3>
+    <div class="cadence-bar" id="eigvec-bar" style="height:80px"></div>
+  </div>
+
+  <!-- SPEC PANEL -->
+  <div class="panel" id="panel-spec">
+    <h2>spec.toml — The Leaf IS the Spec</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Every leaf is defined by one TOML file. No code needed for the leaf definition. The Rust implementation of the math is separate.</p>
+
+    <div class="toml-block" id="spec-display"></div>
+  </div>
+
+  <!-- DAEMON PANEL -->
+  <div class="panel" id="panel-daemon">
+    <h2>Daemon & Roaring Bitmap State</h2>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">ONE bitmap. Dirty/clean per (day, ticker, leaf). The daemon scans, computes what's dirty, marks clean. Runs forever.</p>
+
+    <div class="stat-row" id="daemon-stats"></div>
+
+    <h3>Bitmap Visualization (day × ticker sample)</h3>
+    <div id="bitmap-viz" style="margin:12px 0"></div>
+
+    <h3>Daemon Loop</h3>
+    <div id="daemon-loop" style="font-size:12px;margin:12px 0"></div>
+  </div>
+
+  <!-- PROMPT OUTPUT -->
+  <div class="prompt-area">
+    <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">PROMPT OUTPUT</div>
+    <div class="prompt-text" id="prompt-output"></div>
+    <button class="copy-btn" onclick="copyPrompt()">Copy Prompt</button>
+  </div>
+</div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════
+const state = {
+  panel: 'format',
+  colType: 'price',
+  codec: 'zstd',
+  filter: 'auto',
+  ticker: 'AAPL',
+  feature: 'rv',
+  eLeaf: 'ohlcv',
+  simGap: 2.0,
+  simVol: 5000,
+};
+
+// ═══════════════════════════════════════════════════════
+// DATA
+// ═══════════════════════════════════════════════════════
+const CADENCES = [
+  {id:1,label:'50ms',ms:50},{id:2,label:'100ms',ms:100},{id:3,label:'200ms',ms:200},
+  {id:4,label:'500ms',ms:500},{id:5,label:'1s',ms:1000},{id:6,label:'2s',ms:2000},
+  {id:7,label:'3s',ms:3000},{id:8,label:'5s',ms:5000},{id:9,label:'10s',ms:10000},
+  {id:10,label:'15s',ms:15000},{id:11,label:'20s',ms:20000},{id:12,label:'30s',ms:30000},
+  {id:13,label:'45s',ms:45000},{id:14,label:'1m',ms:60000},{id:15,label:'2m',ms:120000},
+  {id:16,label:'3m',ms:180000},{id:17,label:'5m',ms:300000},{id:18,label:'7m',ms:420000},
+  {id:19,label:'10m',ms:600000},{id:20,label:'15m',ms:900000},{id:21,label:'20m',ms:1200000},
+  {id:22,label:'30m',ms:1800000},{id:23,label:'1h',ms:3600000},{id:24,label:'2h',ms:7200000},
+  {id:25,label:'3h',ms:10800000},{id:26,label:'4h',ms:14400000},{id:27,label:'6h',ms:21600000},
+  {id:28,label:'8h',ms:28800000},{id:29,label:'12h',ms:43200000},{id:30,label:'1d',ms:86400000},
+  {id:31,label:'1w',ms:604800000}
+];
+
+const COL_INFO = {
+  price: {name:'DO01 — price',dtype:'f64',typesize:8,desc:'Opening/closing price per bin. Random-walk-like. Compresses ~1.5x.',ratio:1.5,filter:'none',bytes:691200},
+  volume: {name:'DO05 — volume',dtype:'f64',typesize:8,desc:'Total trade volume per bin. Sparse at fine cadences. Compresses ~3x.',ratio:3.0,filter:'shuffle',bytes:230400},
+  count: {name:'DO06 — count',dtype:'f64',typesize:8,desc:'Number of ticks per bin. Many zeros at fine cadences. Compresses ~8x.',ratio:8.0,filter:'shuffle',bytes:86400},
+  timestamp: {name:'K01P01.DI01DO03 — timestamp',dtype:'i64',typesize:8,desc:'Nanosecond timestamps. Sorted, monotonic. DeltaShuffle achieves 254x compression.',ratio:254,filter:'deltashuffle',bytes:4784456},
+  emission: {name:'E01 — gap flag',dtype:'f32',typesize:4,desc:'Binary emission flag (0.0 or 1.0). Extremely sparse. Compresses ~1000x.',ratio:1000,filter:'none',bytes:345600},
+  validity: {name:'V01 — null rate',dtype:'f32',typesize:4,desc:'Fraction of NaN values per bin. Mostly 0.0 or 1.0. Compresses ~1000x.',ratio:1000,filter:'none',bytes:345600},
+};
+
+const E_COLUMNS = {
+  ohlcv: [
+    {id:'E01',name:'price_changed',rule:'abs(DO04-DO01) > 0'},
+    {id:'E02',name:'gap_1pct',rule:'abs(DO04-DO01)/DO01 > 0.01'},
+    {id:'E03',name:'gap_2pct',rule:'abs(DO04-DO01)/DO01 > 0.02'},
+    {id:'E04',name:'gap_5pct',rule:'abs(DO04-DO01)/DO01 > 0.05'},
+    {id:'E05',name:'volume_1k',rule:'DO05 > 1000'},
+    {id:'E06',name:'volume_10k',rule:'DO05 > 10000'},
+    {id:'E07',name:'volume_100k',rule:'DO05 > 100000'},
+    {id:'E08',name:'active_bin',rule:'DO06 > 100'},
+    {id:'E09',name:'wide_range',rule:'(DO02-DO03)/DO01 > 0.005'},
+    {id:'E10',name:'rv_spike',rule:'DO09 > 0.001'},
+  ],
+  distribution: [
+    {id:'E01',name:'high_skew',rule:'abs(DO03) > 1.0'},
+    {id:'E02',name:'fat_tails',rule:'DO04 > 3.0'},
+    {id:'E03',name:'thin_tails',rule:'DO04 < -0.5'},
+    {id:'E04',name:'jump_signal',rule:'DO12 > 1.0'},
+    {id:'E05',name:'wide_iqr',rule:'(DO08-DO06)/DO07 > 0.005'},
+    {id:'E06',name:'volatile',rule:'DO10 > 2*mean(DO10)'},
+  ],
+  dfa: [
+    {id:'E01',name:'persistent',rule:'DO01 > 0.6'},
+    {id:'E02',name:'anti_persistent',rule:'DO01 < 0.4'},
+    {id:'E03',name:'clean_scaling',rule:'DO03 > 0.9'},
+    {id:'E04',name:'random_walk',rule:'abs(DO01-0.5) < 0.05'},
+    {id:'E05',name:'sig_departure',rule:'abs(DO06) > 2.0'},
+  ],
+  delta: [
+    {id:'E01',name:'price_changed',rule:'abs(delta) > 0'},
+    {id:'E02',name:'price_up',rule:'delta > 0'},
+    {id:'E03',name:'price_down',rule:'delta < 0'},
+    {id:'E04',name:'big_move',rule:'|delta/price| > 0.1%'},
+    {id:'E05',name:'huge_move',rule:'|delta/price| > 1%'},
+    {id:'E06',name:'vol_1k',rule:'size > 1000'},
+    {id:'E07',name:'vol_10k',rule:'size > 10000'},
+    {id:'E08',name:'gap_1s',rule:'dt > 1s'},
+    {id:'E09',name:'gap_10s',rule:'dt > 10s'},
+  ],
+};
+
+// Simulated coherence data (AAPL 09-03)
+const COHERENCE = {
+  eigenvalue1: 0.4026, eigenvalue2: 0.2039, ratio: 2.0, offDiag: 0.325,
+  strongPairs: 39, fineBlock: 0.541, coarseBlock: 0.220, crossBlock: 0.279,
+  evEntropy: 0.934, evCenter: 10.2,
+  loadings1: [0.102,0.102,0.099,0.102,0.321,0.321,0.295,0.321,0.296,0.308,0.241,0.308,0.089,0.072,0.060,0.091,0.129,0.108,0.263,0.041,0.050,0.065,0.033,0.310],
+};
+
+// ═══════════════════════════════════════════════════════
+// PANEL SWITCHING
+// ═══════════════════════════════════════════════════════
+function showPanel(name) {
+  state.panel = name;
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.section-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+  event.target.classList.add('active');
+
+  // Show relevant controls
+  document.querySelectorAll('.controls').forEach(c => c.style.display = 'none');
+  const ctrl = document.getElementById('controls-' + name);
+  if (ctrl) ctrl.style.display = 'block';
+
+  updateAll();
+}
+
+// ═══════════════════════════════════════════════════════
+// RENDERERS
+// ═══════════════════════════════════════════════════════
+function renderFormat() {
+  const col = COL_INFO[state.colType];
+  const grid = document.getElementById('byte-grid');
+  const stats = document.getElementById('format-stats');
+  const detail = document.getElementById('format-detail');
+
+  // Build 96 bytes
+  const sections = [
+    {start:0,end:4,cls:'byte-magic',label:'MKTD'},
+    {start:4,end:36,cls:'byte-name',label:'name'},
+    {start:36,end:42,cls:'byte-dtype',label:'type'},
+    {start:42,end:44,cls:'byte-reserved',label:'pad'},
+    {start:44,end:60,cls:'byte-dims',label:'dims'},
+    {start:60,end:76,cls:'byte-sizes',label:'sizes'},
+    {start:76,end:84,cls:'byte-check',label:'hash'},
+    {start:84,end:96,cls:'byte-entropy',label:'entropy'},
+  ];
+
+  let html = '';
+  for (let i = 0; i < 96; i++) {
+    const sec = sections.find(s => i >= s.start && i < s.end);
+    const cls = sec ? sec.cls : 'byte-reserved';
+    const label = sec ? sec.label : '';
+    const hex = i.toString(16).padStart(2,'0');
+    html += `<div class="byte ${cls}" title="byte ${i} (0x${hex}): ${label}">${hex}</div>`;
+  }
+  grid.innerHTML = html;
+
+  const compSize = Math.round(col.bytes / col.ratio);
+  stats.innerHTML = `
+    <div class="stat"><div class="stat-val">${col.dtype}</div><div class="stat-label">dtype</div></div>
+    <div class="stat"><div class="stat-val">${(col.bytes/1024).toFixed(0)} KB</div><div class="stat-label">decompressed</div></div>
+    <div class="stat"><div class="stat-val">${(compSize/1024).toFixed(0)} KB</div><div class="stat-label">compressed</div></div>
+    <div class="stat"><div class="stat-val" style="color:var(--green)">${col.ratio}x</div><div class="stat-label">compression</div></div>
+    <div class="stat"><div class="stat-val">${col.filter}</div><div class="stat-label">best filter</div></div>
+  `;
+
+  detail.innerHTML = col.desc + `<br><br>
+    <strong style="color:var(--pink)">Free entropy signal:</strong> compression_ratio (${(1/col.ratio).toFixed(4)}),
+    entropy_bpb (${(8/col.ratio).toFixed(2)} bits/byte),
+    filter_gain stored in bytes [84:96). Read 96 bytes → know the information density without decompressing.`;
+}
+
+function renderPipeline() {
+  const viz = document.getElementById('pipeline-viz');
+  const stages = [
+    {name:'K01P01',desc:'Raw Ticks',count:'598,057',detail:'price, size, timestamp',color:'var(--red)'},
+    {name:'K01P02',desc:'Tick Derived',count:'10 leaves',detail:'log, sqrt, delta, cyclical',color:'var(--orange)'},
+    {name:'K02',desc:'Bin Features',count:'111 × 31',detail:'OHLCV, DFA, GARCH, wavelets...',color:'var(--blue)'},
+    {name:'K03',desc:'Cross-Cadence',count:'5 leaves',detail:'gradient, coherence, scaling',color:'var(--purple)'},
+    {name:'K05',desc:'Detection',count:'planned',detail:'reads E columns, outputs D',color:'var(--text-dim)'},
+    {name:'K06',desc:'Action',count:'planned',detail:'trades, logs, alerts',color:'var(--text-dim)'},
+  ];
+
+  viz.innerHTML = stages.map((s,i) =>
+    `<div class="pipe-stage${i<4?' active':''}">
+      <h4 style="color:${s.color}">${s.name}</h4>
+      <div class="detail">${s.desc}</div>
+      <div class="count">${s.count}</div>
+      <div class="detail">${s.detail}</div>
+    </div>${i<stages.length-1?'<div class="pipe-arrow">→</div>':''}`
+  ).join('');
+
+  document.getElementById('kingdom-tree').innerHTML = `
+    <div style="padding-left:0">K01 — raw ticks (1 leaf ingest + 10 derived)</div>
+    <div style="padding-left:20px;color:var(--blue)">K02 — per-bin features × 31 cadences (111 leaves)</div>
+    <div style="padding-left:40px;color:var(--purple)">K03 — cross-cadence (5 leaves: gradient, coherence, scaling, transfer entropy, viscosity)</div>
+    <div style="padding-left:60px;color:var(--text-dim)">K04 — cross-ticker (planned: correlation matrix, spatial atlas)</div>
+    <div style="padding-left:80px;color:var(--text-dim)">K05 — detection (planned: reads E columns across leaves)</div>
+    <div style="padding-left:100px;color:var(--text-dim)">K06 — action (planned: trades, alerts, publications)</div>
+    <div style="margin-top:8px;color:var(--green);font-size:11px">node === node: same Leaf trait, same MKTF output, same daemon, at every kingdom.</div>
+  `;
+}
+
+function renderCadences() {
+  const bar = document.getElementById('cadence-bar');
+  const labels = document.getElementById('cadence-labels');
+  const stats = document.getElementById('cadence-stats');
+
+  // Simulated cadence gradient data
+  const rvByMs = (ms) => {
+    const base = 0.0001;
+    const scale = Math.log10(ms / 50) * 0.15;
+    const noise = (Math.sin(ms * 0.0001) * 0.02);
+    return base * Math.pow(10, scale) + noise * base;
+  };
+
+  const vals = CADENCES.map(c => rvByMs(c.ms));
+  const maxVal = Math.max(...vals.filter(v => v > 0));
+
+  bar.innerHTML = CADENCES.map((c,i) => {
+    const h = Math.max(2, (vals[i] / maxVal) * 100);
+    return `<div class="cad-col" style="height:${h}%">
+      <div class="cad-tip">T${c.id.toString().padStart(2,'0')} (${c.label}): ${vals[i].toFixed(6)}</div>
+    </div>`;
+  }).join('');
+
+  labels.innerHTML = CADENCES.map(c =>
+    `<div style="flex:1;text-align:center">${c.id}</div>`
+  ).join('');
+
+  // Compute gradient
+  const logMs = CADENCES.map(c => Math.log(c.ms));
+  const logRv = vals.map(v => Math.log(Math.max(v, 1e-15)));
+  const n = logMs.length;
+  const meanX = logMs.reduce((a,b)=>a+b,0)/n;
+  const meanY = logRv.reduce((a,b)=>a+b,0)/n;
+  let ssxy=0, ssxx=0;
+  for(let i=0;i<n;i++) { ssxy+=(logMs[i]-meanX)*(logRv[i]-meanY); ssxx+=(logMs[i]-meanX)**2; }
+  const slope = ssxy/ssxx;
+
+  stats.innerHTML = `
+    <div class="stat"><div class="stat-val">${slope.toFixed(4)}</div><div class="stat-label">gradient slope</div></div>
+    <div class="stat"><div class="stat-val">${CADENCES.length}</div><div class="stat-label">cadences</div></div>
+    <div class="stat"><div class="stat-val">${slope < 0.01 ? '⚠️ FLAT' : '✓ healthy'}</div><div class="stat-label">collapse status</div></div>
+  `;
+}
+
+function renderEColumns() {
+  const grid = document.getElementById('e-grid');
+  const cols = E_COLUMNS[state.eLeaf] || [];
+  const gap = parseFloat(document.getElementById('sim-gap').value);
+  const vol = parseFloat(document.getElementById('sim-vol').value);
+  document.getElementById('gap-val').textContent = gap.toFixed(1) + '%';
+  document.getElementById('vol-val').textContent = vol.toLocaleString();
+
+  grid.innerHTML = cols.map(e => {
+    // Simulate firing based on controls
+    let firing = false;
+    if (e.name.includes('gap_1pct') && gap > 1) firing = true;
+    if (e.name.includes('gap_2pct') && gap > 2) firing = true;
+    if (e.name.includes('gap_5pct') && gap > 5) firing = true;
+    if (e.name.includes('price_changed') && gap > 0) firing = true;
+    if (e.name.includes('volume_1k') && vol > 1000) firing = true;
+    if (e.name.includes('volume_10k') && vol > 10000) firing = true;
+    if (e.name.includes('volume_100k') && vol > 100000) firing = true;
+    if (e.name.includes('vol_1k') && vol > 1000) firing = true;
+    if (e.name.includes('vol_10k') && vol > 10000) firing = true;
+
+    return `<div class="e-card${firing?' firing':''}">
+      <div class="e-name">${e.id}: ${e.name}</div>
+      <div class="e-rule">${e.rule}</div>
+      <div class="e-status ${firing?'on':'off'}">${firing?'🔴 FIRING':'○ silent'}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderCoherence() {
+  const stats = document.getElementById('coherence-stats');
+  const C = COHERENCE;
+
+  stats.innerHTML = `
+    <div class="stat"><div class="stat-val">${C.eigenvalue1.toFixed(3)}</div><div class="stat-label">1st eigenvalue</div></div>
+    <div class="stat"><div class="stat-val">${C.eigenvalue2.toFixed(3)}</div><div class="stat-label">2nd eigenvalue</div></div>
+    <div class="stat"><div class="stat-val">${C.ratio.toFixed(1)}x</div><div class="stat-label">ratio</div></div>
+    <div class="stat"><div class="stat-val">${C.offDiag.toFixed(3)}</div><div class="stat-label">off-diag mean</div></div>
+    <div class="stat"><div class="stat-val">${C.strongPairs}</div><div class="stat-label">strong pairs</div></div>
+    <div class="stat"><div class="stat-val">${C.fineBlock.toFixed(3)}</div><div class="stat-label">fine block</div></div>
+  `;
+
+  // Build a simulated 24x24 matrix
+  const n = 24;
+  const matrix = document.getElementById('coherence-matrix');
+  let html = '';
+  for (let i = 0; i < n; i++) {
+    html += '<div class="matrix-row">';
+    for (let j = 0; j < n; j++) {
+      let corr;
+      if (i === j) corr = 1.0;
+      else {
+        const dist = Math.abs(i - j);
+        corr = Math.exp(-dist * 0.15) * (0.5 + 0.5 * Math.random()) * (i < 12 && j < 12 ? 1.2 : 0.6);
+        corr = Math.min(1, Math.max(-0.3, corr));
+      }
+      const r = corr > 0 ? Math.round(corr * 88 + 22) : 30;
+      const g = corr > 0 ? Math.round(corr * 166 + 22) : 30;
+      const b = corr > 0 ? Math.round(corr * 255) : Math.round(-corr * 200);
+      html += `<div class="matrix-cell" style="background:rgb(${r},${g},${b})" title="T${(i+1).toString().padStart(2,'0')}×T${(j+1).toString().padStart(2,'0')}: ${corr.toFixed(2)}"></div>`;
+    }
+    html += '</div>';
+  }
+  matrix.innerHTML = html;
+
+  // Eigenvector bar
+  const evBar = document.getElementById('eigvec-bar');
+  const maxL = Math.max(...C.loadings1);
+  evBar.innerHTML = C.loadings1.map((l,i) => {
+    const h = Math.max(2, (l / maxL) * 100);
+    return `<div class="cad-col" style="height:${h}%;background:${l>0.2?'var(--purple)':'var(--border)'}">
+      <div class="cad-tip">T${(i+1).toString().padStart(2,'0')}: ${l.toFixed(3)}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderSpec() {
+  const display = document.getElementById('spec-display');
+  display.innerHTML = `<span class="toml-comment"># K02P12C01R02 — DFA (Detrended Fluctuation Analysis)</span>
+<span class="toml-comment"># This file IS the leaf. No Rust file needed.</span>
+
+<span class="toml-section">[identity]</span>
+<span class="toml-key">id</span> = <span class="toml-val">"K02P12C01R02"</span>
+<span class="toml-key">name</span> = <span class="toml-val">"dfa"</span>
+<span class="toml-key">status</span> = <span class="toml-val">"production"</span>
+
+<span class="toml-section">[compute]</span>
+<span class="toml-key">kernel</span> = <span class="toml-val">"dfa"</span>          <span class="toml-comment"># shared algorithm in kernel library</span>
+<span class="toml-key">target</span> = <span class="toml-val">"cpu"</span>
+<span class="toml-key">shape</span> = <span class="toml-val">"reduction"</span>
+
+<span class="toml-section">[params]</span>
+<span class="toml-key">min_ticks</span> = <span class="toml-val">20</span>
+<span class="toml-key">detrend_order</span> = <span class="toml-val">1</span>         <span class="toml-comment"># 1=linear DFA, 2=quadratic DFA-2</span>
+
+<span class="toml-section">[[channels]]</span>
+<span class="toml-key">id</span> = <span class="toml-val">"DI01"</span>
+<span class="toml-key">source</span> = <span class="toml-val">"@K01P01"</span>       <span class="toml-comment"># upstream leaf address</span>
+
+<span class="toml-section">[[outputs]]</span>
+<span class="toml-key">id</span> = <span class="toml-val">"DO01"</span>   <span class="toml-key">name</span> = <span class="toml-val">"alpha"</span>      <span class="toml-key">dtype</span> = <span class="toml-val">"f64"</span>
+<span class="toml-section">[[outputs]]</span>
+<span class="toml-key">id</span> = <span class="toml-val">"DO03"</span>   <span class="toml-key">name</span> = <span class="toml-val">"r_squared"</span>  <span class="toml-key">dtype</span> = <span class="toml-val">"f64"</span>
+<span class="toml-section">[[outputs]]</span>
+<span class="toml-key">id</span> = <span class="toml-val">"DO06"</span>   <span class="toml-key">name</span> = <span class="toml-val">"alpha_z"</span>    <span class="toml-key">dtype</span> = <span class="toml-val">"f64"</span>
+
+<span class="toml-section">[[validity]]</span>
+<span class="toml-key">id</span> = <span class="toml-val">"V04"</span>  <span class="toml-key">rule</span> = <span class="toml-val">"DO04 >= 4 ? 1.0 : DO04 / 4.0"</span>
+
+<span class="toml-section">[[emissions]]</span>                <span class="toml-comment"># E columns — the signal layer</span>
+<span class="toml-key">id</span> = <span class="toml-val">"E01"</span>  <span class="toml-key">name</span> = <span class="toml-val">"persistent"</span>  <span class="toml-key">rule</span> = <span class="toml-val">"DO01 > 0.6"</span>
+<span class="toml-section">[[emissions]]</span>
+<span class="toml-key">id</span> = <span class="toml-val">"E02"</span>  <span class="toml-key">name</span> = <span class="toml-val">"mean_revert"</span> <span class="toml-key">rule</span> = <span class="toml-val">"DO01 < 0.4"</span>
+<span class="toml-section">[[emissions]]</span>
+<span class="toml-key">id</span> = <span class="toml-val">"E05"</span>  <span class="toml-key">name</span> = <span class="toml-val">"sig_depart"</span>  <span class="toml-key">rule</span> = <span class="toml-val">"abs(DO06) > 2.0"</span>
+
+<span class="toml-section">[contract]</span>
+<span class="toml-key">max_us_per_bin</span> = <span class="toml-val">100</span>       <span class="toml-comment"># performance budget</span>`;
+}
+
+function renderDaemon() {
+  const stats = document.getElementById('daemon-stats');
+  stats.innerHTML = `
+    <div class="stat"><div class="stat-val">7</div><div class="stat-label">days discovered</div></div>
+    <div class="stat"><div class="stat-val">1,086</div><div class="stat-label">proxy tickers</div></div>
+    <div class="stat"><div class="stat-val">121</div><div class="stat-label">production leaves</div></div>
+    <div class="stat"><div class="stat-val" style="color:var(--green)">8 min</div><div class="stat-label">per day compute</div></div>
+    <div class="stat"><div class="stat-val">316K</div><div class="stat-label">MKTF files/day</div></div>
+    <div class="stat"><div class="stat-val">20.8 GB</div><div class="stat-label">per day compressed</div></div>
+  `;
+
+  // Simulated bitmap
+  const bv = document.getElementById('bitmap-viz');
+  const days = 7, tickers = 40;
+  let bhtml = '<div style="font-family:monospace;font-size:10px;line-height:1">';
+  bhtml += '<div style="color:var(--text-dim);margin-bottom:4px">    ';
+  for(let d=0;d<days;d++) bhtml += `09-${(d+2).toString().padStart(2,'0')} `;
+  bhtml += '</div>';
+  for(let t=0;t<tickers;t++) {
+    bhtml += `<div><span style="color:var(--text-dim)">${String.fromCharCode(65+t%26)}${t>25?String.fromCharCode(65+t%26):' '} </span>`;
+    for(let d=0;d<days;d++) {
+      const pct = (d===1?0.95:d===0?0.2:0.1+Math.random()*0.3);
+      const complete = Math.random() < pct;
+      bhtml += `<span style="color:${complete?'var(--green)':'var(--border)'}">${complete?'█':'░'}${complete?'█':'░'}${complete?'█':'░'}${complete?'█':'░'} </span>`;
+    }
+    bhtml += '</div>';
+  }
+  bhtml += '</div>';
+  bv.innerHTML = bhtml;
+
+  document.getElementById('daemon-loop').innerHTML = `
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:monospace;font-size:11px;line-height:1.8">
+<span style="color:var(--purple)">loop</span> {
+  <span style="color:var(--text-dim)">// 1. Discover</span>
+  days = scan(<span style="color:var(--green)">"K01/"</span>);
+  tickers = per_day_discovery(days);
+
+  <span style="color:var(--text-dim)">// 2. Reconcile</span>
+  dirty = diff(days × tickers × leaves, bitmap_db);
+  bitmap_db.insert_pending(dirty);
+
+  <span style="color:var(--text-dim)">// 3. Execute (rayon par_iter)</span>
+  ready = bitmap_db.get_ready(upstream_complete);
+  results = ready.<span style="color:var(--blue)">par_iter</span>()
+    .map(|(day, ticker)| run_ticker_day(...));
+
+  <span style="color:var(--text-dim)">// 4. Mark + Checkpoint</span>
+  results.for_each(|r| bitmap_db.mark_complete(r));
+  bitmap_db.checkpoint();  <span style="color:var(--text-dim)">// flush to SQLite</span>
+
+  sleep(<span style="color:var(--yellow)">30s</span>);
+}
+    </div>`;
+}
+
+function renderCompression() {
+  const chart = document.getElementById('compression-chart');
+  const data = [
+    {name:'timestamps (i64)',ratio:254,filter:'DeltaShuffle',color:'var(--red)'},
+    {name:'exchange (i32)',ratio:1250,filter:'DeltaShuffle',color:'var(--orange)'},
+    {name:'bitmask (u32)',ratio:714,filter:'XorShuffle',color:'var(--yellow)'},
+    {name:'V columns (f32)',ratio:1000,filter:'None',color:'var(--purple)'},
+    {name:'count (f64)',ratio:8,filter:'Shuffle',color:'var(--blue)'},
+    {name:'volume (f64)',ratio:3,filter:'Shuffle',color:'var(--cyan)'},
+    {name:'price (f64)',ratio:1.5,filter:'None',color:'var(--green)'},
+  ];
+  const maxR = Math.max(...data.map(d=>Math.log10(d.ratio)));
+
+  chart.innerHTML = data.map(d => {
+    const w = (Math.log10(d.ratio) / maxR * 100);
+    return `<div style="display:flex;align-items:center;gap:8px;margin:4px 0">
+      <div style="width:120px;font-size:11px;text-align:right;color:var(--text-dim)">${d.name}</div>
+      <div style="flex:1;background:var(--surface2);height:20px;border-radius:3px;overflow:hidden">
+        <div style="width:${w}%;height:100%;background:${d.color};border-radius:3px;display:flex;align-items:center;padding-left:8px;font-size:10px;color:#000;font-weight:600">${d.ratio}x</div>
+      </div>
+      <div style="width:100px;font-size:10px;color:var(--text-dim)">${d.filter}</div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('filter-chart').innerHTML = `
+    <div style="font-size:12px;color:var(--text-dim)">
+      <strong style="color:var(--text-bright)">Auto-filter</strong> (Filter::Auto = 255) tries all 6 pre-filters on a 64KB sample, picks the best.<br><br>
+      <strong>None</strong>: raw bytes → compress. Best for random data (prices).<br>
+      <strong>Shuffle</strong>: byte-transpose (groups similar byte lanes). Best for structured integers.<br>
+      <strong>Delta</strong>: store differences between consecutive values. Best for monotonic data.<br>
+      <strong>DeltaShuffle</strong>: delta then shuffle. Best for sorted timestamps (254x!).<br>
+      <strong>XorShuffle</strong>: XOR consecutive then shuffle. Best for bitmasks with shared bits.<br><br>
+      The chosen filter is stored in MKTD header byte [40]. Readers reverse it automatically.
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════════════
+// PROMPT
+// ═══════════════════════════════════════════════════════
+function updatePrompt() {
+  const p = document.getElementById('prompt-output');
+  const parts = [`Exploring TERNYX signal farm (${state.panel} view).`];
+
+  if (state.panel === 'format') {
+    const col = COL_INFO[state.colType];
+    parts.push(`Viewing ${col.name} — ${col.dtype}, ${col.ratio}x compression with ${col.filter} filter.`);
+    parts.push(`Each MKTD chunk is 96 bytes header + compressed data. Self-describing: dtype, dims, codec, checksum, and FREE entropy metrics at bytes [84:96).`);
+  } else if (state.panel === 'ecolumns') {
+    const cols = E_COLUMNS[state.eLeaf] || [];
+    const firing = cols.filter(e => {
+      if (e.name.includes('gap_2pct') && state.simGap > 2) return true;
+      if (e.name.includes('volume_10k') && state.simVol > 10000) return true;
+      return false;
+    });
+    parts.push(`${cols.length} E columns for ${state.eLeaf}. ${firing.length} currently firing at gap=${state.simGap}%, vol=${state.simVol}.`);
+    parts.push(`E columns are compute output — persisted in MKTF alongside DO and V. No separate emit system.`);
+  } else if (state.panel === 'coherence') {
+    parts.push(`AAPL cross-cadence coherence: ev1=${COHERENCE.eigenvalue1} (${COHERENCE.eigenvalue1 > 0.7 ? 'HIGH coupling — danger' : 'moderate coupling — healthy'}). Fine block=${COHERENCE.fineBlock}, coarse=${COHERENCE.coarseBlock}.`);
+  } else if (state.panel === 'daemon') {
+    parts.push(`Daemon: 1086 tickers × 121 leaves × 31 cadences = 316K files/day in 8 minutes. Roaring bitmap state DB tracks dirty/clean per (day, ticker, leaf).`);
+  }
+
+  p.textContent = parts.join(' ');
+}
+
+function copyPrompt() {
+  const text = document.getElementById('prompt-output').textContent;
+  navigator.clipboard.writeText(text);
+  const btn = document.querySelector('.copy-btn');
+  btn.textContent = 'Copied!';
+  btn.classList.add('copied');
+  setTimeout(() => { btn.textContent = 'Copy Prompt'; btn.classList.remove('copied'); }, 1500);
+}
+
+// ═══════════════════════════════════════════════════════
+// UPDATE
+// ═══════════════════════════════════════════════════════
+function updateAll() {
+  state.colType = document.getElementById('col-type').value;
+  state.codec = document.getElementById('codec').value;
+  state.filter = document.getElementById('filter').value;
+  state.ticker = document.getElementById('ticker')?.value || 'AAPL';
+  state.feature = document.getElementById('feature')?.value || 'rv';
+  state.eLeaf = document.getElementById('e-leaf')?.value || 'ohlcv';
+  state.simGap = parseFloat(document.getElementById('sim-gap')?.value || 2);
+  state.simVol = parseFloat(document.getElementById('sim-vol')?.value || 5000);
+
+  if (state.panel === 'format') renderFormat();
+  if (state.panel === 'compression') renderCompression();
+  if (state.panel === 'pipeline') renderPipeline();
+  if (state.panel === 'cadences') renderCadences();
+  if (state.panel === 'ecolumns') renderEColumns();
+  if (state.panel === 'coherence') renderCoherence();
+  if (state.panel === 'spec') renderSpec();
+  if (state.panel === 'daemon') renderDaemon();
+  updatePrompt();
+}
+
+// Initialize
+updateAll();
+</script>
+</body>
+</html>

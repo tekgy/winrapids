@@ -27,6 +27,8 @@ use std::sync::Arc;
 use cudarc::driver::{CudaContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 
+use crate::intermediates::{DataId, IntermediateTag, SufficientStatistics, TamSession};
+
 const BLOCK_SIZE: u32 = 256;
 
 // ---------------------------------------------------------------------------
@@ -188,15 +190,20 @@ impl GroupByResult {
     }
 
     /// Per-group variances (Bessel-corrected, sample variance).
-    /// Uses naive formula: var = (sum_sq - sum²/n) / (n-1).
-    /// For numerically stable version, see RefCenteredStatsEngine.
+    ///
+    /// **DEPRECATED**: Uses naive one-pass `sum_sq/n - mean²` which suffers
+    /// catastrophic cancellation at large offsets (>1e6). Use `MomentStats`
+    /// from `descriptive.rs` for numerically stable variance via centered two-pass.
+    #[deprecated(note = "naive formula; use descriptive::MomentStats for stable variance")]
     pub fn variances(&self) -> Vec<f64> {
         self.sums.iter()
             .zip(&self.sum_sqs)
             .zip(&self.counts)
             .map(|((&s, &sq), &c)| {
                 if c > 1.0 {
-                    (sq - s * s / c) / (c - 1.0)
+                    let mean = s / c;
+                    // sum_sq/c - mean² then Bessel-correct: * c/(c-1)
+                    ((sq / c - mean * mean) * c / (c - 1.0)).max(0.0)
                 } else {
                     f64::NAN
                 }
@@ -205,8 +212,50 @@ impl GroupByResult {
     }
 
     /// Per-group standard deviations.
+    ///
+    /// **DEPRECATED**: Delegates to `variances()` which uses the naive formula.
+    /// Use `MomentStats` from `descriptive.rs` instead.
+    #[deprecated(note = "naive formula; use descriptive::MomentStats for stable std")]
     pub fn stds(&self) -> Vec<f64> {
+        #[allow(deprecated)]
         self.variances().into_iter().map(|v| v.sqrt()).collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GroupByResult ↔ SufficientStatistics conversion
+// ---------------------------------------------------------------------------
+
+impl From<GroupByResult> for SufficientStatistics {
+    /// Convert a GroupByResult into a SufficientStatistics.
+    ///
+    /// `GroupByResult` holds raw GPU output `(sums, sum_sqs, counts)`.
+    /// `SufficientStatistics` stores Welford's `m2 = Σ(v - mean)²` internally.
+    /// The conversion `m2 = sum_sqs - sum²/count` happens in `from_vecs`.
+    fn from(r: GroupByResult) -> Self {
+        SufficientStatistics::from_vecs(r.n_groups, r.sums, r.sum_sqs, r.counts)
+    }
+}
+
+impl From<SufficientStatistics> for GroupByResult {
+    /// Convert back to GroupByResult (reconstructs sum_sqs from m2).
+    ///
+    /// `sum_sqs = m2 + sum²/count`. This is the inverse of the `from_vecs`
+    /// conversion. Useful if GPU kernels need raw sum_sqs for further work.
+    fn from(s: SufficientStatistics) -> Self {
+        let sum_sqs: Vec<f64> = s.sums.iter()
+            .zip(s.m2.iter())
+            .zip(s.counts.iter())
+            .map(|((&sum, &m2), &c)| {
+                if c > 0.0 { m2 + sum * sum / c } else { 0.0 }
+            })
+            .collect();
+        GroupByResult {
+            n_groups: s.n_groups,
+            sums:     (*s.sums).clone(),
+            sum_sqs,
+            counts:   (*s.counts).clone(),
+        }
     }
 }
 
@@ -351,6 +400,59 @@ impl HashScatterEngine {
             sum_sqs: self.stream.clone_dtoh(&sum_sqs_dev)?,
             counts: self.stream.clone_dtoh(&counts_dev)?,
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // Session-aware API — automatic SufficientStatistics sharing
+    // -----------------------------------------------------------------------
+
+    /// Session-aware groupby: returns `Arc<SufficientStatistics>`, cached in session.
+    ///
+    /// The tag key is `IntermediateTag::SufficientStatistics { data_id, grouping_id }`.
+    /// Two calls with the same `values` content AND the same `keys` content will
+    /// hit the cache — zero GPU work on the second call.
+    ///
+    /// ## When this matters
+    ///
+    /// A training pipeline that normalizes features (needs per-column mean+std) AND
+    /// computes Pearson correlation (also needs per-column sum, sum_sq, count) would
+    /// currently run two scatter passes. With session: one pass, two consumers.
+    ///
+    /// ## Session wiring
+    ///
+    /// ```no_run
+    /// # use tambear::{TamSession, HashScatterEngine};
+    /// # use std::sync::Arc;
+    /// # let keys: Vec<i32> = vec![0, 0, 1];
+    /// # let values: Vec<f64> = vec![1.0, 2.0, 3.0];
+    /// # let n_groups: usize = 2;
+    /// let mut engine = HashScatterEngine::new().unwrap();
+    /// let mut session = TamSession::new();
+    ///
+    /// let stats = engine.groupby_session(&mut session, &keys, &values, n_groups).unwrap();
+    /// // Second call on same data: cache hit, no GPU work
+    /// let stats2 = engine.groupby_session(&mut session, &keys, &values, n_groups).unwrap();
+    /// assert!(Arc::ptr_eq(&stats, &stats2));
+    /// ```
+    pub fn groupby_session(
+        &self,
+        session: &mut TamSession,
+        keys: &[i32],
+        values: &[f64],
+        n_groups: usize,
+    ) -> Result<Arc<SufficientStatistics>, Box<dyn std::error::Error>> {
+        let data_id     = DataId::from_f64(values);
+        let grouping_id = DataId::from_i32(keys);
+        let tag = IntermediateTag::SufficientStatistics { data_id, grouping_id };
+
+        if let Some(cached) = session.get::<SufficientStatistics>(&tag) {
+            return Ok(cached);
+        }
+
+        let result = self.groupby(keys, values, n_groups)?;
+        let stats  = Arc::new(SufficientStatistics::from(result));
+        session.register(tag, Arc::clone(&stats));
+        Ok(stats)
     }
 
     // -----------------------------------------------------------------------

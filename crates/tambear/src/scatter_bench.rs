@@ -64,7 +64,7 @@ fn bench_groupby_gpu(
         engine.stream().synchronize().unwrap();
         times.push(t0.elapsed().as_secs_f64() * 1e6);
     }
-    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    times.sort_by(|a, b| a.total_cmp(b));
     times[n_iters / 2]
 }
 

@@ -1,0 +1,26 @@
+# Goldbach Conjecture Verification
+# =================================
+# Every even integer > 2 is the sum of two primes.
+# Current record: verified to 4 × 10^18 (some claims to 9 × 10^18)
+# Target: push past 10^19
+#
+# Algorithm: segmented sieve + bitmask AND
+# 1. Sieve primes in segment [lo, lo+seg_size) → bitmask
+# 2. For each even n in segment: check if prime_mask AND shift(prime_mask, n) has any set bit
+# 3. If no bit set for some n: COUNTEREXAMPLE (extremely unlikely)
+#
+# This IS tambear's FilterJit:
+#   - Sieve = scatter (mark composites at stride p)
+#   - Check = mask_and(prime_bits, rotate(prime_bits, n))
+#   - Result = mask_popcount > 0
+
+# The .tbs dream:
+read_range(start=4e18, count=1e9)
+  .filter(is_even)
+  .sieve_segment(seg_size=1e6)
+  .goldbach_check()
+  .filter(has_representation=false)
+  .collect()
+
+# If empty: record extended.
+# If non-empty: Goldbach is FALSE. World-shaking.

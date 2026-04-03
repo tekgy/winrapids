@@ -339,7 +339,7 @@ fn bench_path1_pinned(
 
     // Compute device pointers to column data within the file
     let price_dev_ptr = dev_ptr + price_data_offset as u64;
-    let key_dev_ptr = dev_ptr + key_data_offset as u64;
+    let _key_dev_ptr = dev_ptr + key_data_offset as u64;
 
     // -----------------------------------------------------------------------
     // Benchmark 1: reduce_sum on file-mapped vs cudaMalloc'd
@@ -395,7 +395,7 @@ fn bench_path1_pinned(
     let (keys_dev_ptr, _guard2) = keys_dev.device_ptr(&engine.stream);
 
     // File-mapped scatter (keys from cudaMalloc, values from mmap)
-    let (sums_m, _, counts_m) = engine.scatter_stats_dev(keys_dev_ptr, price_dev_ptr, n, n_groups)?;
+    let (_sums_m, _, counts_m) = engine.scatter_stats_dev(keys_dev_ptr, price_dev_ptr, n, n_groups)?;
     let active_m = counts_m.iter().filter(|&&c| c > 0.0).count();
     println!("  File-mapped: {} active groups", active_m);
 
@@ -655,7 +655,7 @@ fn bench_path3_vmm(
     // -----------------------------------------------------------------------
     println!("\n  --- scatter_stats ({} elements, {} groups) ---", n, n_groups);
 
-    let (sums_v, _, counts_v) = engine.scatter_stats_dev(key_dev_ptr, price_dev_ptr, n, n_groups)?;
+    let (_sums_v, _, counts_v) = engine.scatter_stats_dev(key_dev_ptr, price_dev_ptr, n, n_groups)?;
     let active_v = counts_v.iter().filter(|&&c| c > 0.0).count();
     println!("  VMM: {} active groups", active_v);
 

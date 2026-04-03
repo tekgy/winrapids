@@ -56,36 +56,43 @@ impl GatherOp {
 
     /// Gather: `gathered[i] = values[rows_by_group[i]]` for all i.
     ///
-    /// Reorders `values` from original row order into group-sorted order.
-    /// `rows_by_group`: from `GroupIndex::rows_by_group` (the inverted index).
-    /// `values` and `rows_by_group` must have the same length n.
+    /// Reorders `values` using the permutation in `rows_by_group`.
+    /// `rows_by_group` has length `n_out` — the number of output elements.
+    /// `values` must have at least `max(rows_by_group) + 1` elements.
+    ///
+    /// For standard group-reorder use: `values.len() == rows_by_group.len()`.
+    /// For lag-gather use: `values` has one extra "default" element at position
+    /// `n_ticks`; `rows_by_group` has length `n_ticks` with sentinel index
+    /// `n_ticks` pointing at the default. See [`lag_indices`].
     pub fn gather(
         &mut self,
         values: &[f64],
         rows_by_group: &[u32],
     ) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
-        let n = values.len();
-        assert_eq!(n, rows_by_group.len(), "values and rows_by_group must have same length");
+        let n_out = rows_by_group.len();
 
         let values_dev = self.stream.clone_htod(values)?;
         let rows_dev = self.stream.clone_htod(rows_by_group)?;
-        let gathered = self.gather_gpu(&values_dev, &rows_dev, n)?;
+        let gathered = self.gather_gpu(&values_dev, &rows_dev, n_out)?;
         self.stream.synchronize()?;
         Ok(self.stream.clone_dtoh(&gathered)?)
     }
 
     /// Gather on GPU-resident data. Returns GPU-resident output.
+    ///
+    /// `n_out`: number of output elements (= rows_by_group length).
+    /// `values` must have at least `max(rows_by_group) + 1` elements.
     pub fn gather_gpu(
         &mut self,
         values: &CudaSlice<f64>,
         rows_by_group: &CudaSlice<u32>,
-        n: usize,
+        n_out: usize,
     ) -> Result<CudaSlice<f64>, Box<dyn std::error::Error>> {
         self.ensure_kernels()?;
         let f = self.gather_fn.as_ref().unwrap();
-        let mut gathered: CudaSlice<f64> = self.stream.alloc_zeros(n)?;
-        let cfg = launch_cfg(n);
-        let n_i32 = n as i32;
+        let mut gathered: CudaSlice<f64> = self.stream.alloc_zeros(n_out)?;
+        let cfg = launch_cfg(n_out);
+        let n_i32 = n_out as i32;
         unsafe {
             self.stream.launch_builder(f)
                 .arg(values)
@@ -195,6 +202,43 @@ extern "C" __global__ void scatter_back_f64(
 }
 "#;
 
+/// Generate permutation indices for a lag-k gather within bins.
+///
+/// For tick i at position ≥ k within its bin, `lag_indices[i] = i - k`.
+/// For tick i within the first k positions of its bin (no predecessor), the
+/// index points to position `n_ticks` — the caller must append a default
+/// value at that position in the values array (typically 0.0).
+///
+/// **Constraint:** ticks must be in original temporal order within each bin.
+/// The output is undefined if the tick stream has been reordered (e.g.,
+/// group-sorted via GatherOp + GroupIndex) before calling this function.
+///
+/// # Example
+/// ```
+/// use tambear::gather_op::lag_indices;
+/// // Two bins: bin 0 = ticks 0..3, bin 1 = ticks 3..5
+/// let bin_starts = vec![0usize, 3];
+/// let n = 5;
+/// let idx = lag_indices(&bin_starts, n, 1);
+/// // tick 0 (bin 0 start): sentinel (n=5)
+/// // tick 1: 0, tick 2: 1 (within bin 0)
+/// // tick 3 (bin 1 start): sentinel
+/// // tick 4: 3 (within bin 1)
+/// assert_eq!(idx, vec![5, 0, 1, 5, 3]);
+/// ```
+pub fn lag_indices(bin_starts: &[usize], n_ticks: usize, lag: usize) -> Vec<u32> {
+    let sentinel = n_ticks as u32; // caller appends default at this position
+    let mut indices = vec![sentinel; n_ticks];
+    for b in 0..bin_starts.len() {
+        let start = bin_starts[b];
+        let end = if b + 1 < bin_starts.len() { bin_starts[b + 1] } else { n_ticks };
+        for i in (start + lag)..end {
+            indices[i] = (i - lag) as u32;
+        }
+    }
+    indices
+}
+
 fn launch_cfg(n: usize) -> LaunchConfig {
     let n_blocks = ((n as u32) + BLOCK_SIZE - 1) / BLOCK_SIZE;
     LaunchConfig {
@@ -243,6 +287,71 @@ mod tests {
         // group 0: rows 0,2 → values 1.0, 2.0 (temporal order preserved)
         // group 1: rows 1,3 → values 10.0, 20.0 (temporal order preserved)
         assert_eq!(gathered, vec![1.0, 2.0, 10.0, 20.0]);
+    }
+
+    /// lag_indices: sentinel positions at bin boundaries, predecessors elsewhere.
+    #[test]
+    fn lag_indices_two_bins() {
+        // bin 0: ticks 0..3, bin 1: ticks 3..5
+        let idx = lag_indices(&[0, 3], 5, 1);
+        // tick 0: bin start → sentinel (5)
+        // tick 1: predecessor 0
+        // tick 2: predecessor 1
+        // tick 3: bin start → sentinel (5)
+        // tick 4: predecessor 3
+        assert_eq!(idx, vec![5, 0, 1, 5, 3]);
+    }
+
+    /// lag_indices: lag-2 skips the first two ticks of each bin.
+    #[test]
+    fn lag_indices_lag2() {
+        // single bin: ticks 0..5
+        let idx = lag_indices(&[0], 5, 2);
+        // ticks 0,1: no lag-2 predecessor → sentinel (5)
+        // tick 2: predecessor 0
+        // tick 3: predecessor 1
+        // tick 4: predecessor 2
+        assert_eq!(idx, vec![5, 5, 0, 1, 2]);
+    }
+
+    /// Bipower variation via lag-gather + pointwise multiply + sum.
+    ///
+    /// Bipower = Σ |r_i| · |r_{i-1}|. Normally computed with a carry register.
+    /// Here: expressed as lag-1 GatherOp + pointwise multiply + scalar sum.
+    /// Proves the carry-augmented → K01 lag-gather + K02 Add decomposition.
+    #[test]
+    fn bipower_via_lag_gather() {
+        let mut op = GatherOp::new().unwrap();
+
+        // 5 ticks in one bin: abs_r values (already absolute)
+        let abs_r = vec![0.0_f64, 0.1, 0.05, 0.2, 0.15];
+        let n = abs_r.len();
+
+        // Expected bipower: sum of abs_r[i] * abs_r[i-1] for i >= 1
+        // (first tick contributes 0 because no predecessor within the bin)
+        let expected: f64 = abs_r[1] * abs_r[0]   // 0.1 * 0.0 = 0.0
+                          + abs_r[2] * abs_r[1]   // 0.05 * 0.1 = 0.005
+                          + abs_r[3] * abs_r[2]   // 0.2 * 0.05 = 0.01
+                          + abs_r[4] * abs_r[3];  // 0.15 * 0.2 = 0.03
+
+        // Step 1: generate lag-1 indices for one bin (bin_start = 0)
+        let idx = lag_indices(&[0], n, 1);
+        // idx = [5, 0, 1, 2, 3]  (tick 0 → sentinel 5, rest → predecessor)
+
+        // Step 2: append default value 0.0 at position n (the sentinel index)
+        let mut abs_r_with_default = abs_r.clone();
+        abs_r_with_default.push(0.0);
+
+        // Step 3: lag-gather (GatherOp permutation)
+        let lagged = op.gather(&abs_r_with_default, &idx).unwrap();
+        // lagged = [0.0, abs_r[0], abs_r[1], abs_r[2], abs_r[3]]
+        //        = [0.0, 0.0, 0.1, 0.05, 0.2]
+
+        // Step 4: pointwise multiply and sum (K02 accumulate)
+        let bipower: f64 = abs_r.iter().zip(lagged.iter()).map(|(a, b)| a * b).sum();
+
+        assert!((bipower - expected).abs() < 1e-12,
+            "bipower via lag-gather = {bipower}, expected {expected}");
     }
 
     /// Single-element permutation: trivial identity.

@@ -95,7 +95,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ref_vars: Vec<f64> = (0..n_groups).map(|g| {
         let c = ref_counts[g];
         if c > 1.0 {
-            (ref_sum_sqs[g] - ref_sums[g] * ref_sums[g] / c) / (c - 1.0)
+            let mean = ref_sums[g] / c;
+            ((ref_sum_sqs[g] / c - mean * mean) * c / (c - 1.0)).max(0.0)
         } else {
             f64::NAN
         }

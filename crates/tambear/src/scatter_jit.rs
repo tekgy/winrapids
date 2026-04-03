@@ -33,6 +33,9 @@
 //! ```no_run
 //! use tambear::{ScatterJit, PHI_SUM, PHI_SUM_SQ, PHI_COUNT};
 //! let mut jit = ScatterJit::new().unwrap();
+//! # let keys: &[i32] = &[0, 0, 1];
+//! # let values: &[f64] = &[1.0, 2.0, 3.0];
+//! # let n_groups: usize = 2;
 //! // Three aggregates, one memory pass — the compiler's scatter fusion rule:
 //! let results = jit.scatter_multi_phi(
 //!     &[PHI_SUM, PHI_SUM_SQ, PHI_COUNT],
@@ -490,6 +493,299 @@ impl ScatterJit {
         }
         Ok(())
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Dual-target scatter: same φ, two independent groupings — one kernel pass
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Scatter `φ(values[i])` to TWO independent targets in one kernel pass.
+    ///
+    /// `out0[keys0[i]] += phi(v)` and `out1[keys1[i]] += phi(v)` — φ computed once.
+    ///
+    /// This is the multi-target fusion primitive: two accumulates sharing `(data, expr)`
+    /// but differing in grouping. Common use:
+    /// - Target 0: `keys0` = all zeros, `n_groups0` = 1 → global reduce
+    /// - Target 1: `keys1` = ticker IDs, `n_groups1` = n_tickers → scatter by ticker
+    ///
+    /// φ does not have access to `r` (refs). For centered scatter, bake the
+    /// reference values into the expression string using `format!`.
+    ///
+    /// Returns `(out0, out1)` where `out0.len() == n_groups0` and `out1.len() == n_groups1`.
+    pub fn scatter_phi_dual_target(
+        &mut self,
+        phi_expr: &str,
+        keys0: &[i32], n_groups0: usize,
+        keys1: &[i32], n_groups1: usize,
+        values: &[f64],
+    ) -> Result<(Vec<f64>, Vec<f64>), Box<dyn std::error::Error>> {
+        let n = values.len();
+        assert_eq!(keys0.len(), n, "keys0 length must match values");
+        assert_eq!(keys1.len(), n, "keys1 length must match values");
+        if n == 0 {
+            return Ok((vec![0.0; n_groups0], vec![0.0; n_groups1]));
+        }
+
+        let cache_key = format!("dual:{phi_expr}");
+        if !self.cache.contains_key(&cache_key) {
+            let src = build_scatter_phi_dual_target_source(phi_expr);
+            let opts = CompileOptions { arch: Some("sm_120"), ..Default::default() };
+            let ptx = compile_ptx_with_opts(&src, opts)?;
+            let module = self.ctx.load_module(ptx)?;
+            let f = module.load_function("scatter_phi_dual_target")?;
+            self.cache.insert(cache_key.clone(), f);
+        }
+
+        let keys0_dev = self.stream.clone_htod(keys0)?;
+        let keys1_dev = self.stream.clone_htod(keys1)?;
+        let values_dev = self.stream.clone_htod(values)?;
+        let mut out0: CudaSlice<f64> = self.stream.alloc_zeros(n_groups0)?;
+        let mut out1: CudaSlice<f64> = self.stream.alloc_zeros(n_groups1)?;
+
+        let f = self.cache.get(&cache_key).unwrap();
+        let cfg = launch_cfg(n);
+        unsafe {
+            self.stream.launch_builder(f)
+                .arg(&keys0_dev)
+                .arg(&keys1_dev)
+                .arg(&values_dev)
+                .arg(&mut out0)
+                .arg(&mut out1)
+                .arg(&(n as i32))
+                .launch(cfg)?;
+        }
+        self.stream.synchronize()?;
+
+        Ok((
+            self.stream.clone_dtoh(&out0)?,
+            self.stream.clone_dtoh(&out1)?,
+        ))
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Warp-aggregated scatter: __match_any_sync collapses intra-warp peers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Warp-aggregated scatter: `output[g] += φ(v)` with intra-warp peer reduction.
+    ///
+    /// Threads in the same warp with the same key (`keys[i]`) detect each other via
+    /// `__match_any_sync`, reduce φ values via shuffle, then only one elected leader
+    /// per peer group performs `atomicAdd`. This halves or eliminates atomic contention
+    /// when keys are temporally clustered.
+    ///
+    /// **When to use**: time-series data where adjacent elements share the same group
+    /// (e.g., tick data grouped into minute bins — adjacent ticks hit the same bin).
+    /// With 20–32 peers per warp, atomic writes drop by ~20–32×.
+    ///
+    /// **When NOT to use**: uniform random key distribution (peer_count ≈ 1, the
+    /// shuffle loop adds overhead without reducing atomicAdd count). For random keys,
+    /// use `scatter_phi`.
+    ///
+    /// Same φ variables as `scatter_phi`: `v` (value), `r` (group ref), `g` (group index).
+    pub fn scatter_phi_warp(
+        &mut self,
+        phi_expr: &str,
+        keys: &[i32],
+        values: &[f64],
+        refs: Option<&[f64]>,
+        n_groups: usize,
+    ) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+        let n = values.len();
+        assert_eq!(keys.len(), n, "keys length must match values");
+        if n == 0 {
+            return Ok(vec![0.0; n_groups]);
+        }
+
+        let cache_key = format!("warp:{phi_expr}");
+        if !self.cache.contains_key(&cache_key) {
+            let src = build_scatter_phi_warp_source(phi_expr);
+            let opts = CompileOptions { arch: Some("sm_120"), ..Default::default() };
+            let ptx = compile_ptx_with_opts(&src, opts)?;
+            let module = self.ctx.load_module(ptx)?;
+            let f = module.load_function("scatter_phi_warp")?;
+            self.cache.insert(cache_key.clone(), f);
+        }
+
+        let zeros = vec![0.0f64; n_groups];
+        let refs_host = refs.unwrap_or(&zeros);
+        let refs_dev  = self.stream.clone_htod(refs_host)?;
+        let keys_dev  = self.stream.clone_htod(keys)?;
+        let vals_dev  = self.stream.clone_htod(values)?;
+        let mut out: CudaSlice<f64> = self.stream.alloc_zeros(n_groups)?;
+
+        let f = self.cache.get(&cache_key).unwrap();
+        let cfg = launch_cfg(n);
+        unsafe {
+            self.stream.launch_builder(f)
+                .arg(&keys_dev)
+                .arg(&vals_dev)
+                .arg(&refs_dev)
+                .arg(&mut out)
+                .arg(&(n as i32))
+                .launch(cfg)?;
+        }
+        self.stream.synchronize()?;
+        Ok(self.stream.clone_dtoh(&out)?)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Element-wise map: output[i] = φ(values[i])
+    // This is the "broadcast → fused_expr" leg of the reduce-broadcast-divide
+    // pattern (e.g., softmax: reduce sum_exp, then map exp(v)/sum_exp).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Apply `φ(values[i])` element-wise: `output[i] = phi(v)`.
+    ///
+    /// Unlike scatter (which accumulates into groups), map writes each element
+    /// independently — no atomics, no grouping. Used for the "broadcast" leg of
+    /// any reduce → broadcast → fused_expr pipeline.
+    ///
+    /// Constants from the preceding reduce step should be baked into `phi_expr`
+    /// at call time via format!. NVRTC sees them as compile-time constants.
+    ///
+    /// # Example — softmax normalization
+    /// ```no_run
+    /// # let mut jit = tambear::ScatterJit::new().unwrap();
+    /// let values = vec![1.0f64, 2.0, 3.0];
+    /// let max_val = 3.0f64;
+    /// let sum_exp = 0.09003 + 0.24473 + 0.66524; // sum(exp(v - max))
+    /// let phi = format!("exp(v - {max_val:.17}) / {sum_exp:.17}");
+    /// let probs = jit.map_phi(&phi, &values).unwrap();
+    /// // probs ≈ [0.090, 0.245, 0.665]
+    /// ```
+    pub fn map_phi(
+        &mut self,
+        phi_expr: &str,
+        values: &[f64],
+    ) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+        let n = values.len();
+        if n == 0 { return Ok(vec![]); }
+
+        let values_dev = self.stream.clone_htod(values)?;
+        let output = self.map_phi_gpu(phi_expr, &values_dev, n)?;
+        self.stream.synchronize()?;
+        Ok(self.stream.clone_dtoh(&output)?)
+    }
+
+    /// GPU-resident version of [`map_phi`](Self::map_phi).
+    ///
+    /// Input and output stay on-device — avoids round-trips when chaining with
+    /// other GPU kernels.
+    pub fn map_phi_gpu(
+        &mut self,
+        phi_expr: &str,
+        values: &CudaSlice<f64>,
+        n: usize,
+    ) -> Result<CudaSlice<f64>, Box<dyn std::error::Error>> {
+        let cache_key = format!("map:{phi_expr}");
+
+        if !self.cache.contains_key(&cache_key) {
+            let src = build_map_phi_source(phi_expr);
+            let opts = CompileOptions { arch: Some("sm_120"), ..Default::default() };
+            let ptx = compile_ptx_with_opts(&src, opts)?;
+            let module = self.ctx.load_module(ptx)?;
+            let f = module.load_function("map_phi_kernel")?;
+            self.cache.insert(cache_key.clone(), f);
+        }
+
+        let f = self.cache.get(&cache_key).unwrap();
+        let cfg = launch_cfg(n);
+        let mut output: CudaSlice<f64> = self.stream.alloc_zeros(n)?;
+        unsafe {
+            self.stream.launch_builder(f)
+                .arg(values)
+                .arg(&mut output)
+                .arg(&(n as i32))
+                .launch(cfg)?;
+        }
+        Ok(output)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Two-input element-wise map: output[i] = φ(a[i], b[i])
+    // This is the gradient communication primitive:
+    //   scatter_phi backward → map_phi2("a * b", upstream_gathered, d_phi_at_v)
+    //   parameter update     → map_phi2("a - lr * b", params, grad)
+    //   ReLU backward        → map_phi2("b > 0.0 ? a : 0.0", upstream, activations)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Apply `φ(a[i], b[i])` element-wise: `output[i] = phi(a, b)`.
+    ///
+    /// Variables available in `phi_expr`: `a` and `b` (both f64).
+    ///
+    /// This is the gradient communication primitive. The backward pass of any
+    /// tambear primitive is another tambear operation, but many require multiplying
+    /// two element-wise arrays (e.g., upstream gradient × local derivative).
+    ///
+    /// # Common expressions
+    ///
+    /// | phi_expr            | meaning                             |
+    /// |---------------------|-------------------------------------|
+    /// | `"a * b"`           | element-wise multiply (gradient)    |
+    /// | `"a - lr * b"`      | SGD parameter update (bake lr in)   |
+    /// | `"b > 0.0 ? a : 0.0"` | ReLU backward (a=upstream, b=fwd) |
+    /// | `"a + b"`           | element-wise add                    |
+    /// | `"a / (b + eps)"`   | safe element-wise divide            |
+    ///
+    /// # Example — ReLU backward
+    /// ```no_run
+    /// # let mut jit = tambear::ScatterJit::new().unwrap();
+    /// let upstream = vec![1.0, 2.0, 3.0];
+    /// let activations = vec![-1.0, 0.5, -0.2]; // pre-activation values
+    /// let grad = jit.map_phi2("b > 0.0 ? a : 0.0", &upstream, &activations).unwrap();
+    /// // grad = [0.0, 2.0, 0.0]  — ReLU masks out negative activations
+    /// ```
+    pub fn map_phi2(
+        &mut self,
+        phi_expr: &str,
+        a: &[f64],
+        b: &[f64],
+    ) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+        let n = a.len();
+        assert_eq!(b.len(), n, "a and b must have the same length");
+        if n == 0 { return Ok(vec![]); }
+
+        let a_dev = self.stream.clone_htod(a)?;
+        let b_dev = self.stream.clone_htod(b)?;
+        let output = self.map_phi2_gpu(phi_expr, &a_dev, &b_dev, n)?;
+        self.stream.synchronize()?;
+        Ok(self.stream.clone_dtoh(&output)?)
+    }
+
+    /// GPU-resident version of [`map_phi2`](Self::map_phi2).
+    ///
+    /// Both inputs and the output stay on-device — zero host round-trips.
+    /// Use this when chaining gradient computations without leaving the GPU.
+    pub fn map_phi2_gpu(
+        &mut self,
+        phi_expr: &str,
+        a: &CudaSlice<f64>,
+        b: &CudaSlice<f64>,
+        n: usize,
+    ) -> Result<CudaSlice<f64>, Box<dyn std::error::Error>> {
+        let cache_key = format!("map2:{phi_expr}");
+
+        if !self.cache.contains_key(&cache_key) {
+            let src = build_map_phi2_source(phi_expr);
+            let opts = CompileOptions { arch: Some("sm_120"), ..Default::default() };
+            let ptx = compile_ptx_with_opts(&src, opts)?;
+            let module = self.ctx.load_module(ptx)?;
+            let f = module.load_function("map_phi2_kernel")?;
+            self.cache.insert(cache_key.clone(), f);
+        }
+
+        let f = self.cache.get(&cache_key).unwrap();
+        let cfg = launch_cfg(n);
+        let mut output: CudaSlice<f64> = self.stream.alloc_zeros(n)?;
+        unsafe {
+            self.stream.launch_builder(f)
+                .arg(a)
+                .arg(b)
+                .arg(&mut output)
+                .arg(&(n as i32))
+                .launch(cfg)?;
+        }
+        Ok(output)
+    }
 }
 
 /// Build CUDA source for a scatter kernel with the given φ expression.
@@ -639,6 +935,147 @@ extern "C" __global__ void scatter_multi_phi_masked(
         out_params = out_params,
         atomic_adds = atomic_adds,
     )
+}
+
+/// Build CUDA source for a dual-target scatter kernel.
+///
+/// Computes φ ONCE per element, then atomicAdds to TWO output arrays with
+/// independent key arrays and independent accumulator sizes.
+///
+/// This is the multi-target fusion primitive: when two accumulates share
+/// `(data, expr)` but differ in grouping, one kernel pass replaces two.
+///
+/// Variables available to φ:
+/// - `v`: the current value (double)
+///
+/// Neither refs array is exposed to φ — bake constants into the expression
+/// string if needed (e.g., for centered scatter).
+fn build_scatter_phi_dual_target_source(phi_expr: &str) -> String {
+    format!(r#"
+// JIT dual-target scatter: phi computed ONCE, scattered to two independent targets.
+// phi = {phi}
+// out0[keys0[i]] += phi(v)
+// out1[keys1[i]] += phi(v)   (same phi, different grouping)
+extern "C" __global__ void scatter_phi_dual_target(
+    const int* __restrict__ keys0,
+    const int* __restrict__ keys1,
+    const double* __restrict__ values,
+    double* __restrict__ out0,
+    double* __restrict__ out1,
+    int n
+) {{
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid < n) {{
+        double v = values[gid];
+        double phi_val = ({phi});
+        atomicAdd(&out0[keys0[gid]], phi_val);
+        atomicAdd(&out1[keys1[gid]], phi_val);
+    }}
+}}
+"#, phi = phi_expr)
+}
+
+/// Build CUDA source for a warp-aggregated scatter kernel with the given φ expression.
+///
+/// Uses `__match_any_sync` to find intra-warp peers (threads with matching key).
+/// Each thread shuffles φ(v) across all 32 lanes, accumulating only peer values.
+/// The lowest-lane leader per peer group performs a single `atomicAdd`.
+///
+/// For temporally-clustered data (adjacent ticks share a group) this reduces
+/// atomic contention by peer_count × (typically 20–32× for minute-bin market data).
+fn build_scatter_phi_warp_source(phi_expr: &str) -> String {
+    format!(r#"
+// JIT warp-aggregated scatter: output[g] += phi(v), peers reduce before atomicAdd.
+// phi = {phi}
+extern "C" __global__ void scatter_phi_warp(
+    const int* __restrict__ keys,
+    const double* __restrict__ values,
+    const double* __restrict__ refs,    // per-group ref values (0.0 if unused)
+    double* __restrict__ output,
+    int n
+) {{
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= n) return;
+
+    int g = keys[gid];
+    double v = values[gid];
+    double r = refs[g];
+    double phi_val = ({phi});
+    int lane = threadIdx.x & 31;
+
+    // Find all threads in this warp with the same key
+    unsigned int peers = __match_any_sync(0xFFFFFFFF, (unsigned int)g);
+
+    // Reduce phi_val within peer group via full-warp broadcast + conditional add
+    double sum_phi = 0.0;
+    for (int src = 0; src < 32; src++) {{
+        double sphi = __shfl_sync(0xFFFFFFFF, phi_val, src);
+        if (peers & (1u << src)) sum_phi += sphi;
+    }}
+
+    // Elected leader (lowest lane) does one atomicAdd per peer group
+    int leader = __ffs(peers) - 1;
+    if (lane == leader) {{
+        atomicAdd(&output[g], sum_phi);
+    }}
+}}
+"#, phi = phi_expr)
+}
+
+/// Build CUDA source for a two-input element-wise map kernel.
+///
+/// Variables available to φ:
+/// - `a`: value from the first array (double)
+/// - `b`: value from the second array (double)
+///
+/// This is the gradient communication primitive: multiply upstream gradient `a` by
+/// local derivative `b`, or implement any binary element-wise operation.
+fn build_map_phi2_source(phi_expr: &str) -> String {
+    format!(r#"
+// JIT two-input map kernel: output[i] = phi(a[i], b[i]).
+// phi = {phi}
+extern "C" __global__ void map_phi2_kernel(
+    const double* __restrict__ vals_a,
+    const double* __restrict__ vals_b,
+    double* __restrict__ output,
+    int n
+) {{
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid < n) {{
+        double a = vals_a[gid];
+        double b = vals_b[gid];
+        output[gid] = ({phi});
+    }}
+}}
+"#, phi = phi_expr)
+}
+
+/// Build CUDA source for an element-wise map kernel with the given φ expression.
+///
+/// Unlike scatter (which writes to `output[keys[i]]`), map writes to `output[i]`.
+/// There is no group key, no atomicAdd — each thread writes exactly one element.
+///
+/// Variables available to φ:
+/// - `v`: the current value (double)
+///
+/// Constants can be baked into the expression string by the caller at compile time:
+/// `format!("exp(v - {max_val}) / {sum_exp}")` — NVRTC sees them as compile-time constants.
+fn build_map_phi_source(phi_expr: &str) -> String {
+    format!(r#"
+// JIT map kernel: output[i] = phi(v[i]) for each element.
+// phi = {phi}
+extern "C" __global__ void map_phi_kernel(
+    const double* __restrict__ values,
+    double* __restrict__ output,
+    int n
+) {{
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid < n) {{
+        double v = values[gid];
+        output[gid] = ({phi});
+    }}
+}}
+"#, phi = phi_expr)
 }
 
 fn launch_cfg(n: usize) -> LaunchConfig {
@@ -869,5 +1306,82 @@ mod tests {
         for g in 0..3 {
             assert_eq!(result[g], 0.0, "group {} should be 0 with empty mask", g);
         }
+    }
+
+    /// Warp scatter: correctness matches scatter_phi for small spread key set.
+    #[test]
+    fn scatter_phi_warp_matches_naive() {
+        let mut jit = ScatterJit::new().unwrap();
+        // 3 groups, mixed ordering — verify sum result matches scatter_phi
+        let keys   = vec![0i32, 1, 2, 0, 1, 2, 0, 0];
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+
+        let naive = jit.scatter_phi(PHI_SUM, &keys, &values, None, 3).unwrap();
+        let warp  = jit.scatter_phi_warp(PHI_SUM, &keys, &values, None, 3).unwrap();
+
+        for g in 0..3 {
+            assert!((warp[g] - naive[g]).abs() < 1e-9,
+                "group {g}: warp={} naive={}", warp[g], naive[g]);
+        }
+        println!("scatter_phi_warp: {:?} (naive: {:?})", warp, naive);
+    }
+
+    // ── map_phi2 tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn map_phi2_element_wise_multiply() {
+        let mut jit = ScatterJit::new().unwrap();
+        let a = vec![2.0, 3.0, 4.0];
+        let b = vec![5.0, 6.0, 7.0];
+        let result = jit.map_phi2("a * b", &a, &b).unwrap();
+        assert!((result[0] - 10.0).abs() < 1e-10, "2*5=10, got {}", result[0]);
+        assert!((result[1] - 18.0).abs() < 1e-10, "3*6=18, got {}", result[1]);
+        assert!((result[2] - 28.0).abs() < 1e-10, "4*7=28, got {}", result[2]);
+    }
+
+    /// ReLU backward: pass gradient where activation > 0, zero otherwise.
+    #[test]
+    fn map_phi2_relu_backward() {
+        let mut jit = ScatterJit::new().unwrap();
+        let upstream = vec![1.0, 2.0, 3.0, 4.0];
+        let activations = vec![-0.5, 0.3, -1.0, 2.0]; // pre-activation values
+        // ReLU' = 1 if act > 0 else 0; multiply by upstream
+        let grad = jit.map_phi2("b > 0.0 ? a : 0.0", &upstream, &activations).unwrap();
+        assert_eq!(grad[0], 0.0, "negative activation → zero grad");
+        assert!((grad[1] - 2.0).abs() < 1e-10, "positive → pass through");
+        assert_eq!(grad[2], 0.0, "negative activation → zero grad");
+        assert!((grad[3] - 4.0).abs() < 1e-10, "positive → pass through");
+    }
+
+    /// SGD parameter update: w = w - lr * grad.
+    #[test]
+    fn map_phi2_sgd_update() {
+        let mut jit = ScatterJit::new().unwrap();
+        let lr = 0.1f64;
+        let params = vec![1.0, 2.0, 3.0];
+        let grads  = vec![0.5, 1.0, 1.5];
+        let phi = format!("a - {lr:.17} * b");
+        let updated = jit.map_phi2(&phi, &params, &grads).unwrap();
+        assert!((updated[0] - 0.95).abs() < 1e-10, "1.0 - 0.1*0.5 = 0.95");
+        assert!((updated[1] - 1.90).abs() < 1e-10, "2.0 - 0.1*1.0 = 1.90");
+        assert!((updated[2] - 2.85).abs() < 1e-10, "3.0 - 0.1*1.5 = 2.85");
+    }
+
+    /// Warp scatter: clustered keys (all 32+ elements in same group) — peak case.
+    #[test]
+    fn scatter_phi_warp_clustered_keys() {
+        let mut jit = ScatterJit::new().unwrap();
+        // 320 elements all in group 0 — all warp threads share a key: 1 atomicAdd per warp
+        let n = 320usize;
+        let keys: Vec<i32>  = vec![0i32; n];
+        let values: Vec<f64> = (1..=n as u64).map(|x| x as f64).collect();
+
+        let naive = jit.scatter_phi(PHI_SUM, &keys, &values, None, 1).unwrap();
+        let warp  = jit.scatter_phi_warp(PHI_SUM, &keys, &values, None, 1).unwrap();
+
+        let expected = (n * (n + 1) / 2) as f64; // n*(n+1)/2
+        assert!((naive[0] - expected).abs() < 1e-6, "naive sum wrong: {}", naive[0]);
+        assert!((warp[0]  - expected).abs() < 1e-6, "warp sum wrong: {}", warp[0]);
+        println!("clustered warp: warp={} naive={} expected={}", warp[0], naive[0], expected);
     }
 }

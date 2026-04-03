@@ -15,6 +15,15 @@
 //! | `argmin_f64`       | values:f64, out_val:f64(1), out_idx:i32(1)  | values.len()             |
 //! | `argmax_f64`       | values:f64, out_val:f64(1), out_idx:i32(1)  | values.len()             |
 //! | `noop`             | (any)                                       | —                        |
+//! | `tiled_accumulate` | A:f64(M×K), B:f64(K×N), C:f64(M×N), dims:i32(3) | M*K = A.len()       |
+//!
+//! The `tiled_accumulate` entry supports DotProduct, L2Distance, OuterProduct,
+//! Covariance, SoftmaxWeighted, ManifoldDistance, and ManifoldMixture operations.
+//! The specific op is determined from the first-line comment of the kernel source
+//! passed to [`compile`]:
+//! ```text
+//! // Tiled accumulation kernel for operator: dot_product
+//! ```
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -48,6 +57,12 @@ impl CpuBuffer {
 
 pub(crate) struct CpuKernel {
     pub entry: String,
+    /// For `tiled_accumulate`: the operator name parsed from the kernel source
+    /// comment (e.g. `"dot_product"`, `"l2_distance"`).
+    pub op_name: Option<String>,
+    /// For `tiled_accumulate`: the params key parsed from the second line
+    /// (`// params: euclidean`, `// params: poincare(c=-1.0000)`, etc.).
+    pub params_key: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -77,24 +92,56 @@ impl TamGpu for CpuBackend {
     fn shader_lang(&self) -> ShaderLang { ShaderLang::Cpu }
 
     /// Look up `entry` in the CPU kernel registry.
-    /// `source` is ignored — no shader compilation on CPU.
-    fn compile(&self, _source: &str, entry: &str) -> TamResult<Kernel> {
-        match entry {
+    ///
+    /// For most entries `source` is ignored. For `"tiled_accumulate"`, the
+    /// first line of `source` is parsed to extract the operator name (e.g.
+    /// `"dot_product"`, `"l2_distance"`).
+    fn compile(&self, source: &str, entry: &str) -> TamResult<Kernel> {
+        let op_name = match entry {
             "scatter_sum"      |
             "scatter_count"    |
             "gather_f64"       |
             "scatter_back_f64" |
             "argmin_f64"       |
             "argmax_f64"       |
-            "noop"             => {}
+            "noop"             => None,
+
+            "tiled_accumulate" => {
+                // Parse op name from the first-line comment emitted by
+                // generate_tiled_kernel / generate_tiled_kernel_wgsl:
+                //   "// Tiled accumulation kernel for operator: dot_product"
+                //   "// WGSL tiled accumulation kernel for operator: l2_distance"
+                // Parse params_key from the second-line comment:
+                //   "// params: poincare(c=-1.0000)"
+                let mut lines = source.lines();
+                let first = lines.next().unwrap_or("");
+                let op_name_parsed = first.rsplit("operator: ").next()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "dot_product".to_string());
+                let second = lines.next().unwrap_or("");
+                let params_key_parsed = second.strip_prefix("// params: ")
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
+                return Ok(Kernel {
+                    inner: Box::new(CpuKernel {
+                        entry: entry.to_string(),
+                        op_name: Some(op_name_parsed),
+                        params_key: params_key_parsed,
+                    }),
+                    entry: entry.to_string(),
+                });
+            }
+
             other => return Err(TamGpuError::EntryNotFound(format!(
                 "CpuBackend has no implementation for '{}'. \
                  Supported: scatter_sum, scatter_count, gather_f64, \
-                 scatter_back_f64, argmin_f64, argmax_f64, noop", other
+                 scatter_back_f64, argmin_f64, argmax_f64, noop, \
+                 tiled_accumulate", other
             ))),
-        }
+        };
         Ok(Kernel {
-            inner: Box::new(CpuKernel { entry: entry.to_string() }),
+            inner: Box::new(CpuKernel { entry: entry.to_string(), op_name, params_key: String::new() }),
             entry: entry.to_string(),
         })
     }
@@ -239,6 +286,227 @@ impl TamGpu for CpuBackend {
                 write_scalar_i32(&buf(2)?, best_idx as i32)?;
             }
 
+            // ----------------------------------------------------------------
+            // tiled_accumulate: C[i,j] = op(A[i,:], B[:,j]) over K
+            // bufs: [A:f64(M×K), B:f64(K×N), C:f64(M×N), dims:i32(3)]
+            "tiled_accumulate" => {
+                let a_arc   = buf(0)?;
+                let b_arc   = buf(1)?;
+                let c_arc   = buf(2)?;
+                let dim_arc = buf(3)?;
+
+                let dims: Vec<i32> = read_as::<i32>(&dim_arc.lock().unwrap()).to_vec();
+                if dims.len() < 3 {
+                    return Err(TamGpuError::InvalidArgument(
+                        format!("tiled_accumulate: dims buffer has {} elements, need 3", dims.len())
+                    ));
+                }
+                let m = dims[0] as usize;
+                let n = dims[1] as usize;
+                let kd = dims[2] as usize;
+
+                let a: Vec<f64> = read_as::<f64>(&a_arc.lock().unwrap()).to_vec();
+                let b: Vec<f64> = read_as::<f64>(&b_arc.lock().unwrap()).to_vec();
+
+                let op = k.op_name.as_deref().unwrap_or("dot_product");
+
+                let mut c_g = c_arc.lock().unwrap();
+                let c: &mut [f64] = write_as::<f64>(&mut c_g);
+
+                match op {
+                    // GEMM: C[i,j] = sum_k(A[i,k] * B[k,j])
+                    "dot_product" | "outer_product" => {
+                        for i in 0..m {
+                            for j in 0..n {
+                                let mut acc = 0.0_f64;
+                                for ki in 0..kd {
+                                    acc += a[i * kd + ki] * b[ki * n + j];
+                                }
+                                c[i * n + j] = acc;
+                            }
+                        }
+                    }
+
+                    // L2 distance: C[i,j] = sum_k((A[i,k] - B[k,j])^2)
+                    "l2_distance" => {
+                        for i in 0..m {
+                            for j in 0..n {
+                                let mut acc = 0.0_f64;
+                                for ki in 0..kd {
+                                    let diff = a[i * kd + ki] - b[ki * n + j];
+                                    acc += diff * diff;
+                                }
+                                c[i * n + j] = acc;
+                            }
+                        }
+                    }
+
+                    // Covariance: C[i,j] = sum_k(A[i,k] * B[k,j]) / (kd - 1)
+                    // Note: centering (pre-transform) must be applied to A, B
+                    // before calling TiledEngine. This is the raw accumulation.
+                    "covariance" => {
+                        let denom = if kd > 1 { (kd - 1) as f64 } else { 1.0 };
+                        for i in 0..m {
+                            for j in 0..n {
+                                let mut acc = 0.0_f64;
+                                for ki in 0..kd {
+                                    acc += a[i * kd + ki] * b[ki * n + j];
+                                }
+                                c[i * n + j] = acc / denom;
+                            }
+                        }
+                    }
+
+                    // SoftmaxWeightedOp: online softmax — FlashAttention pattern
+                    // C[i,j] = sum_k softmax(A[i,:])[k] * B[k,j]
+                    // One-pass numerically stable: carry (max, exp_sum, weighted_sum)
+                    "softmax_weighted" => {
+                        for i in 0..m {
+                            for j in 0..n {
+                                let mut max_val = f64::NEG_INFINITY;
+                                let mut exp_sum = 0.0_f64;
+                                let mut weighted_sum = 0.0_f64;
+                                for ki in 0..kd {
+                                    let score = a[i * kd + ki];
+                                    if score > max_val {
+                                        let scale = (max_val - score).exp();
+                                        exp_sum *= scale;
+                                        weighted_sum *= scale;
+                                        max_val = score;
+                                    }
+                                    let w = (score - max_val).exp();
+                                    exp_sum += w;
+                                    weighted_sum += w * b[ki * n + j];
+                                }
+                                c[i * n + j] = if exp_sum > 0.0 { weighted_sum / exp_sum } else { 0.0 };
+                            }
+                        }
+                    }
+
+                    // ManifoldDistanceOp: geometry-parameterized distance
+                    // params_key distinguishes euclidean / sphere / poincare
+                    "manifold_distance" => {
+                        let params = k.params_key.as_str();
+                        if let Some(kappa) = poincare_kappa_from_params(params) {
+                            // Poincaré ball: 3-field per-dimension accumulation
+                            // d(x,y) = (2/√κ) * arccosh(1 + 2κ*||x-y||²/((1-κ||x||²)(1-κ||y||²)))
+                            for i in 0..m {
+                                for j in 0..n {
+                                    let mut sq_dist   = 0.0_f64;
+                                    let mut sq_norm_x = 0.0_f64;
+                                    let mut sq_norm_y = 0.0_f64;
+                                    for ki in 0..kd {
+                                        let ax = a[i * kd + ki];
+                                        let by = b[ki * n + j];
+                                        let diff = ax - by;
+                                        sq_dist   += diff * diff;
+                                        sq_norm_x += ax * ax;
+                                        sq_norm_y += by * by;
+                                    }
+                                    let denom = ((1.0 - kappa * sq_norm_x) * (1.0 - kappa * sq_norm_y)).max(1e-15);
+                                    let arg   = (1.0 + 2.0 * kappa * sq_dist / denom).max(1.0);
+                                    c[i * n + j] = (2.0 / kappa.sqrt()) * arg.acosh();
+                                }
+                            }
+                        } else if params.starts_with("sphere_geodesic") {
+                            // SphericalGeodesic: arccos(dot / sqrt(sq_norm_x · sq_norm_y))
+                            // Must check sphere_geodesic before sphere (prefix match).
+                            for i in 0..m {
+                                for j in 0..n {
+                                    let mut sq_norm_x = 0.0_f64;
+                                    let mut sq_norm_y = 0.0_f64;
+                                    let mut dot_prod  = 0.0_f64;
+                                    for ki in 0..kd {
+                                        let ax = a[i * kd + ki];
+                                        let by = b[ki * n + j];
+                                        sq_norm_x += ax * ax;
+                                        sq_norm_y += by * by;
+                                        dot_prod  += ax * by;
+                                    }
+                                    let denom = (sq_norm_x * sq_norm_y).max(1e-60).sqrt();
+                                    let cos_theta = (dot_prod / denom).clamp(-1.0, 1.0);
+                                    c[i * n + j] = cos_theta.acos();
+                                }
+                            }
+                        } else if params.starts_with("sphere") {
+                            // Sphere: dot product → cosine distance = 1 - dot(a, b)
+                            // Input vectors must be unit-normalized by the caller.
+                            for i in 0..m {
+                                for j in 0..n {
+                                    let mut acc = 0.0_f64;
+                                    for ki in 0..kd {
+                                        acc += a[i * kd + ki] * b[ki * n + j];
+                                    }
+                                    c[i * n + j] = 1.0 - acc;
+                                }
+                            }
+                        } else {
+                            // Euclidean L2Sq (default, includes params = "euclidean")
+                            for i in 0..m {
+                                for j in 0..n {
+                                    let mut acc = 0.0_f64;
+                                    for ki in 0..kd {
+                                        let diff = a[i * kd + ki] - b[ki * n + j];
+                                        acc += diff * diff;
+                                    }
+                                    c[i * n + j] = acc;
+                                }
+                            }
+                        }
+                    }
+
+                    // ManifoldMixtureOp: composite 3-field kernel for all manifolds at once.
+                    // C has shape M×N×n_manifolds; params_key is pipe-separated manifold names.
+                    "manifold_mixture" => {
+                        let specs = parse_manifold_mixture_specs(&k.params_key);
+                        let nm = specs.len();
+                        if nm == 0 {
+                            return Err(TamGpuError::InvalidArgument("manifold_mixture: empty params_key".into()));
+                        }
+                        for i in 0..m {
+                            for j in 0..n {
+                                let mut sq_norm_x = 0.0_f64;
+                                let mut sq_norm_y = 0.0_f64;
+                                let mut dot_prod  = 0.0_f64;
+                                for ki in 0..kd {
+                                    let ax = a[i * kd + ki];
+                                    let by = b[ki * n + j];
+                                    sq_norm_x += ax * ax;
+                                    sq_norm_y += by * by;
+                                    dot_prod  += ax * by;
+                                }
+                                let sq_dist = sq_norm_x + sq_norm_y - 2.0 * dot_prod;
+                                let base = (i * n + j) * nm;
+                                for (mk, spec) in specs.iter().enumerate() {
+                                    c[base + mk] = match spec {
+                                        CpuMixtureManifold::Euclidean =>
+                                            sq_dist,
+                                        CpuMixtureManifold::Poincare { kappa } => {
+                                            let denom = ((1.0 - kappa * sq_norm_x) * (1.0 - kappa * sq_norm_y)).max(1e-15);
+                                            let arg = (1.0 + 2.0 * kappa * sq_dist / denom).max(1.0);
+                                            (2.0 / kappa.sqrt()) * arg.acosh()
+                                        }
+                                        CpuMixtureManifold::Sphere =>
+                                            1.0 - dot_prod,
+                                        CpuMixtureManifold::SphereGeodesic => {
+                                            let denom = (sq_norm_x * sq_norm_y).max(1e-60).sqrt();
+                                            (dot_prod / denom).clamp(-1.0, 1.0).acos()
+                                        }
+                                    };
+                                }
+                            }
+                        }
+                    }
+
+                    other => return Err(TamGpuError::EntryNotFound(
+                        format!("CpuBackend tiled_accumulate: unknown op '{}'. \
+                                 Supported: dot_product, outer_product, l2_distance, \
+                                 covariance, softmax_weighted, manifold_distance, \
+                                 manifold_mixture", other)
+                    )),
+                }
+            }
+
             other => return Err(TamGpuError::EntryNotFound(other.to_string())),
         }
 
@@ -254,6 +522,45 @@ impl TamGpu for CpuBackend {
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
+
+/// Mixture manifold specification (CPU-local, no dependency on tambear types).
+enum CpuMixtureManifold {
+    Euclidean,
+    Poincare { kappa: f64 },
+    Sphere,
+    SphereGeodesic,
+}
+
+/// Parse mixture params_key (e.g. `"euclidean|poincare(c=-1.0000)|sphere_geodesic(r=1.0000)"`)
+/// into a list of `CpuMixtureManifold` variants.
+fn parse_manifold_mixture_specs(params_key: &str) -> Vec<CpuMixtureManifold> {
+    params_key.split('|').filter_map(|s| {
+        let s = s.trim();
+        if s.is_empty() {
+            None
+        } else if s.starts_with("poincare") {
+            let kappa = poincare_kappa_from_params(s).unwrap_or(1.0);
+            Some(CpuMixtureManifold::Poincare { kappa })
+        } else if s.starts_with("sphere_geodesic") {
+            // Must check sphere_geodesic before sphere (prefix match)
+            Some(CpuMixtureManifold::SphereGeodesic)
+        } else if s.starts_with("sphere") {
+            Some(CpuMixtureManifold::Sphere)
+        } else {
+            Some(CpuMixtureManifold::Euclidean)
+        }
+    }).collect()
+}
+
+/// Parse the Poincaré curvature magnitude κ = |c| from a params_key string.
+///
+/// Expects format `"poincare(c=-1.0000)"` (emitted by `Manifold::name()`).
+/// Returns `Some(kappa)` where kappa > 0 if parsing succeeds, `None` otherwise.
+fn poincare_kappa_from_params(params: &str) -> Option<f64> {
+    let s = params.strip_prefix("poincare(c=")?;
+    let s = s.strip_suffix(')')?;
+    s.parse::<f64>().ok().map(f64::abs)
+}
 
 fn cpu_buf(buf: &Buffer) -> TamResult<&CpuBuffer> {
     buf.inner.downcast_ref::<CpuBuffer>()
@@ -449,5 +756,153 @@ mod tests {
     fn cpu_sync_is_noop() {
         let g = gpu();
         g.sync().unwrap();
+    }
+
+    // ---------------------------------------------------------------
+    // tiled_accumulate tests
+    // ---------------------------------------------------------------
+
+    /// Helper: dispatch tiled_accumulate with given op_name comment.
+    fn tiled_run(op_name: &str, a: &[f64], b: &[f64], m: usize, n: usize, k: usize) -> Vec<f64> {
+        let g = gpu();
+        let source = format!("// Tiled accumulation kernel for operator: {op_name}");
+        let kernel = g.compile(&source, "tiled_accumulate").unwrap();
+
+        let a_buf   = upload(&g, a).unwrap();
+        let b_buf   = upload(&g, b).unwrap();
+        let c_buf   = g.alloc(m * n * 8).unwrap();
+        let dim_buf = upload(&g, &[m as i32, n as i32, k as i32]).unwrap();
+
+        g.dispatch(&kernel, [1,1,1], [1,1,1], &[&a_buf, &b_buf, &c_buf, &dim_buf], 0).unwrap();
+        download(&g, &c_buf, m * n).unwrap()
+    }
+
+    #[test]
+    fn cpu_tiled_dot_product_2x3_times_3x2() {
+        // A(2×3) = [[1,2,3],[4,5,6]]
+        // B(3×2) = [[7,8],[9,10],[11,12]]
+        // C = A*B = [[58,64],[139,154]]
+        let a = vec![1.0, 2.0, 3.0,  4.0, 5.0, 6.0];
+        let b = vec![7.0, 8.0,  9.0, 10.0,  11.0, 12.0];
+        let c = tiled_run("dot_product", &a, &b, 2, 2, 3);
+        assert_eq!(c, vec![58.0, 64.0, 139.0, 154.0]);
+    }
+
+    #[test]
+    fn cpu_tiled_dot_product_1x1() {
+        // Scalar: [3] * [4] = [12]
+        let c = tiled_run("dot_product", &[3.0], &[4.0], 1, 1, 1);
+        assert_eq!(c, vec![12.0]);
+    }
+
+    #[test]
+    fn cpu_tiled_dot_product_identity() {
+        // A(2×2) * I(2×2) = A
+        let a = vec![1.0, 2.0, 3.0, 4.0];
+        let i = vec![1.0, 0.0, 0.0, 1.0];
+        let c = tiled_run("dot_product", &a, &i, 2, 2, 2);
+        assert_eq!(c, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn cpu_tiled_l2_distance() {
+        // A(2×2) = [[1,0],[0,1]], B(2×2) = [[1,0],[0,1]] (B = A^T for self-distance)
+        // dist[0,0] = (1-1)^2 + (0-0)^2 = 0
+        // dist[0,1] = (1-0)^2 + (0-1)^2 = 2
+        // dist[1,0] = (0-1)^2 + (1-0)^2 = 2
+        // dist[1,1] = (0-0)^2 + (1-1)^2 = 0
+        let a = vec![1.0, 0.0,  0.0, 1.0];
+        let b = vec![1.0, 0.0,  0.0, 1.0]; // K×N = 2×2 (same as A here)
+        let c = tiled_run("l2_distance", &a, &b, 2, 2, 2);
+        assert_eq!(c, vec![0.0, 2.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn cpu_tiled_covariance() {
+        // Pre-centered A(2×3) = [[-1,0,1],[1,0,-1]], B(3×2) = A^T
+        // cov = A*A^T / (3-1) = [[2, -2],[-2, 2]] / 2 = [[1,-1],[-1,1]]
+        let a = vec![-1.0, 0.0, 1.0,  1.0, 0.0, -1.0];
+        let b = vec![-1.0, 1.0,  0.0, 0.0,  1.0, -1.0]; // K×N = 3×2
+        let c = tiled_run("covariance", &a, &b, 2, 2, 3);
+        assert_eq!(c, vec![1.0, -1.0, -1.0, 1.0]);
+    }
+
+    #[test]
+    fn cpu_tiled_outer_product() {
+        // Same as dot_product mathematically
+        let a = vec![1.0, 2.0, 3.0,  4.0, 5.0, 6.0];
+        let b = vec![7.0, 8.0,  9.0, 10.0,  11.0, 12.0];
+        let c = tiled_run("outer_product", &a, &b, 2, 2, 3);
+        assert_eq!(c, vec![58.0, 64.0, 139.0, 154.0]);
+    }
+
+    #[test]
+    fn cpu_tiled_compile_wgsl_source() {
+        // WGSL source has different comment prefix — should still parse op name
+        let g = gpu();
+        let source = "// WGSL tiled accumulation kernel for operator: l2_distance\n@compute...";
+        let kernel = g.compile(source, "tiled_accumulate").unwrap();
+        assert_eq!(kernel.entry, "tiled_accumulate");
+    }
+
+    #[test]
+    fn cpu_tiled_unknown_op_errors() {
+        let g = gpu();
+        let source = "// Tiled accumulation kernel for operator: unknown_op";
+        let kernel = g.compile(source, "tiled_accumulate").unwrap();
+        let a_buf = upload(&g, &[1.0_f64]).unwrap();
+        let b_buf = upload(&g, &[1.0_f64]).unwrap();
+        let c_buf = g.alloc(8).unwrap();
+        let d_buf = upload(&g, &[1_i32, 1, 1]).unwrap();
+        let err = g.dispatch(&kernel, [1,1,1], [1,1,1], &[&a_buf, &b_buf, &c_buf, &d_buf], 0);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn cpu_tiled_softmax_weighted_uniform_scores() {
+        // A has uniform scores → softmax is uniform → output = mean of B column
+        // A: 1×3, all zeros → softmax([0,0,0]) = [1/3, 1/3, 1/3]
+        // B: 3×1, values [3, 6, 9] → weighted sum = (3+6+9)/3 = 6
+        let c = tiled_run("softmax_weighted", &[0.0, 0.0, 0.0], &[3.0, 6.0, 9.0], 1, 1, 3);
+        assert!((c[0] - 6.0).abs() < 1e-10, "expected 6.0, got {}", c[0]);
+    }
+
+    #[test]
+    fn cpu_tiled_softmax_weighted_dominant_score() {
+        // One score much larger → softmax concentrates on that row's B value
+        // A: 1×3, scores [0, 100, 0] → softmax ≈ [0, 1, 0]
+        // B: 3×1, values [10, 20, 30] → output ≈ 20
+        let c = tiled_run("softmax_weighted", &[0.0, 100.0, 0.0], &[10.0, 20.0, 30.0], 1, 1, 3);
+        assert!((c[0] - 20.0).abs() < 1e-6, "expected ~20.0, got {}", c[0]);
+    }
+
+    #[test]
+    fn cpu_tiled_softmax_weighted_numerical_stability() {
+        // Large scores that would overflow naive exp() — online softmax handles this
+        // A: 1×2, scores [1000, 1001] → softmax = [e^(-1)/(1+e^(-1)), 1/(1+e^(-1))]
+        // B: 2×1, values [0, 1] → output = softmax[1] ≈ 1/(1+e^(-1)) ≈ 0.7311
+        let c = tiled_run("softmax_weighted", &[1000.0, 1001.0], &[0.0, 1.0], 1, 1, 2);
+        let expected = 1.0 / (1.0 + (-1.0_f64).exp()); // sigmoid(1)
+        assert!((c[0] - expected).abs() < 1e-10,
+            "expected {expected}, got {} (numerical stability)", c[0]);
+    }
+
+    #[test]
+    fn cpu_tiled_softmax_weighted_2x2() {
+        // A: 2×2 (scores), B: 2×2 (values)
+        // Row 0 of A: [0, 0] → uniform softmax [0.5, 0.5]
+        // Row 1 of A: [0, 100] → concentrated softmax [~0, ~1]
+        // B = [[1, 2], [3, 4]]
+        // C[0,0] = 0.5*1 + 0.5*3 = 2.0
+        // C[0,1] = 0.5*2 + 0.5*4 = 3.0
+        // C[1,0] ≈ 0*1 + 1*3 = 3.0
+        // C[1,1] ≈ 0*2 + 1*4 = 4.0
+        let a = [0.0, 0.0, 0.0, 100.0];
+        let b = [1.0, 2.0, 3.0, 4.0];
+        let c = tiled_run("softmax_weighted", &a, &b, 2, 2, 2);
+        assert!((c[0] - 2.0).abs() < 1e-10, "C[0,0]={}", c[0]);
+        assert!((c[1] - 3.0).abs() < 1e-10, "C[0,1]={}", c[1]);
+        assert!((c[2] - 3.0).abs() < 1e-6, "C[1,0]={}", c[2]);
+        assert!((c[3] - 4.0).abs() < 1e-6, "C[1,1]={}", c[3]);
     }
 }

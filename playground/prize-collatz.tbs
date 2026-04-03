@@ -1,0 +1,31 @@
+# Collatz Conjecture Verification
+# ================================
+# For every starting value n, iterate: even → n/2, odd → 3n+1
+# Conjecture: always reaches 1.
+# Current record: 2^71 ≈ 2.36 × 10^21
+# Target: push to 2^80 (1024× beyond record)
+#
+# This is embarrassingly parallel: each starting value is independent.
+# On Blackwell (96GB VRAM): ~12 billion 64-bit values = the search space.
+# Each thread: iterate until reaching a value below verified threshold.
+#
+# The .tbs dream:
+#   read_range(2^71, 2^72)
+#     .collatz_verify(threshold=2^71)
+#     .filter(reached_one=false)
+#     .collect()
+#
+# If the result is empty: we just extended the record to 2^72.
+# If non-empty: we found a counterexample. World news.
+
+# For now, prototype in Python-callable tambear style:
+
+read_range(start=2361183241434822607000, count=1000000)
+  .map(collatz_steps)
+  .describe()
+  .filter(steps > 1000)
+  .collect()
+
+# Expected: all reach 1. The describe() gives us statistics on
+# path lengths — how many steps each starting value takes.
+# The filter catches any anomalously long paths for inspection.

@@ -1,0 +1,39 @@
+# Riemann Hypothesis — Zero Verification
+# ========================================
+# All non-trivial zeros of zeta(s) have Re(s) = 1/2.
+# Current record: 10^13 zeros verified on the critical line.
+# Prize: $1,000,000 (Clay Mathematics Institute)
+#
+# Algorithm: Riemann-Siegel formula evaluates zeta(1/2 + it) at height t.
+# Each zero is independent → embarrassingly parallel across t values.
+#
+# The computation:
+# 1. For a range of t values, evaluate Z(t) (the Hardy Z-function)
+# 2. Z(t) = exp(iθ(t)) · ζ(1/2 + it) — real-valued on the critical line
+# 3. Sign changes in Z(t) indicate zeros
+# 4. Verify each zero is ON the critical line (not off it)
+#
+# Z(t) via Riemann-Siegel:
+#   Z(t) ≈ 2 Σ_{n=1}^{N} n^{-1/2} cos(θ(t) - t·ln(n)) + remainder
+#   where N = floor(sqrt(t/(2π)))
+#
+# For t ~ 10^13: N ~ 10^6 terms per evaluation. Each evaluation is a reduce:
+#   accumulate(1..N, All, "cos(theta - t*ln(n)) / sqrt(n)", Add)
+#
+# This IS a tambear accumulate. Kingdom A. Each t-value independent.
+# 10^6 terms × 10^6 t-values = 10^12 operations. GPU in seconds.
+#
+# The .tbs dream:
+
+read_range(t_start=3.0e12, t_end=3.1e12, step=0.001)
+  .map(z_value = riemann_siegel_z(t))
+  .scan(sign_changes)                    # prefix scan detecting sign flips
+  .filter(is_sign_change)                # candidate zeros
+  .map(refined_t = brent_root(z, t))     # refine zero location
+  .map(verified = verify_on_critical_line(refined_t))
+  .filter(verified == false)              # OFF the critical line??
+  .collect()
+
+# If empty: all zeros in this range are on the critical line. Record extended.
+# If non-empty: RIEMANN HYPOTHESIS IS FALSE. $1M. Nobel equivalent.
+# (But also: every zero ever computed has been on the line. 10^13 and counting.)

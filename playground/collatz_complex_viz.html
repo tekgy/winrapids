@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Complex Collatz Trajectories</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    background: #0a0a0f;
+    color: #c8c8d0;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* ── Sidebar ── */
+.sidebar {
+    width: 320px;
+    min-width: 320px;
+    background: #12121a;
+    border-right: 1px solid #2a2a35;
+    padding: 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.sidebar h1 {
+    font-size: 15px;
+    color: #e0e0e8;
+    border-bottom: 1px solid #2a2a35;
+    padding-bottom: 8px;
+    letter-spacing: 0.5px;
+}
+.sidebar h2 {
+    font-size: 12px;
+    color: #8888a0;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 4px;
+}
+label {
+    font-size: 12px;
+    color: #9999b0;
+    display: block;
+    margin-bottom: 3px;
+}
+select, input[type="number"], input[type="text"] {
+    width: 100%;
+    background: #1a1a25;
+    border: 1px solid #2a2a35;
+    color: #d0d0d8;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 13px;
+}
+select:focus, input:focus {
+    outline: none;
+    border-color: #5577cc;
+}
+button {
+    background: #2244aa;
+    color: #e0e0f0;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    width: 100%;
+    transition: background 0.15s;
+}
+button:hover { background: #3355bb; }
+button.secondary {
+    background: #222230;
+    border: 1px solid #333345;
+}
+button.secondary:hover { background: #2a2a3a; }
+
+.row { display: flex; gap: 8px; }
+.row > * { flex: 1; }
+
+.info-box {
+    background: #16161e;
+    border: 1px solid #2a2a35;
+    border-radius: 4px;
+    padding: 8px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: #8888a0;
+    max-height: 200px;
+    overflow-y: auto;
+}
+.info-box .val { color: #66aaff; }
+.info-box .highlight { color: #ffaa44; }
+
+/* ── Canvas ── */
+.canvas-wrap {
+    flex: 1;
+    position: relative;
+    background: #0d0d14;
+}
+canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+.axis-label {
+    position: absolute;
+    font-size: 10px;
+    color: #555568;
+    pointer-events: none;
+}
+.axis-label.x { bottom: 4px; right: 8px; }
+.axis-label.y { top: 4px; left: 8px; }
+
+/* ── Legend ── */
+.legend {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(18,18,26,0.9);
+    border: 1px solid #2a2a35;
+    border-radius: 4px;
+    padding: 8px;
+    font-size: 11px;
+}
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 2px 0;
+}
+.legend-swatch {
+    width: 12px;
+    height: 3px;
+    border-radius: 1px;
+}
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+    <h1>Complex Collatz</h1>
+
+    <h2>Variant</h2>
+    <select id="variant">
+        <option value="standard">Standard Collatz (step vs log2)</option>
+        <option value="gaussian">Gaussian Integer T(z)</option>
+        <option value="rotation">Forced Rotation T(z)</option>
+        <option value="perturbed">Imaginary Perturbation</option>
+        <option value="eigenvalues">Markov Eigenvalues</option>
+    </select>
+
+    <div id="standard-opts">
+        <label>Starting value n</label>
+        <input type="number" id="start-n" value="27" min="1" max="999999999">
+        <label style="margin-top:6px">Max steps</label>
+        <input type="number" id="max-steps" value="500" min="10" max="10000">
+    </div>
+
+    <div id="rotation-opts" style="display:none">
+        <label>Angle theta (degrees)</label>
+        <input type="number" id="theta" value="15" min="0" max="360" step="5">
+        <label style="margin-top:6px">Magnitude exponent r</label>
+        <input type="number" id="mag-r" value="0.5" min="0" max="1" step="0.05">
+        <label style="margin-top:6px">Starting value</label>
+        <input type="number" id="rot-start" value="27" min="1">
+    </div>
+
+    <div id="perturbed-opts" style="display:none">
+        <label>Starting real part</label>
+        <input type="number" id="pert-real" value="27" min="1">
+        <label style="margin-top:6px">Epsilon (imaginary perturbation)</label>
+        <select id="pert-eps">
+            <option value="0.01">0.01</option>
+            <option value="0.1" selected>0.1</option>
+            <option value="1.0">1.0</option>
+            <option value="5.0">5.0</option>
+        </select>
+    </div>
+
+    <div id="gaussian-opts" style="display:none">
+        <label>Starting value (real part)</label>
+        <input type="number" id="gauss-start" value="27" min="1">
+    </div>
+
+    <div id="eigen-opts" style="display:none">
+        <label>Modulus range: 2^j for j =</label>
+        <div class="row">
+            <div>
+                <label>min j</label>
+                <input type="number" id="eigen-jmin" value="3" min="2" max="12">
+            </div>
+            <div>
+                <label>max j</label>
+                <input type="number" id="eigen-jmax" value="10" min="3" max="14">
+            </div>
+        </div>
+    </div>
+
+    <div class="row" style="margin-top:4px">
+        <button id="run-btn" onclick="run()">Run</button>
+        <button class="secondary" onclick="clearCanvas()">Clear</button>
+    </div>
+
+    <h2>Info</h2>
+    <div class="info-box" id="info">
+        Select a variant and click Run.
+    </div>
+
+    <h2>Trajectories</h2>
+    <div class="info-box" id="traj-info" style="min-height:60px">
+        No trajectories yet.
+    </div>
+</div>
+
+<div class="canvas-wrap">
+    <canvas id="canvas"></canvas>
+    <span class="axis-label x">Re</span>
+    <span class="axis-label y">Im</span>
+    <div class="legend" id="legend" style="display:none"></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// Complex arithmetic
+// ═══════════════════════════════════════════════════════════════
+const C = {
+    add: (a, b) => [a[0]+b[0], a[1]+b[1]],
+    sub: (a, b) => [a[0]-b[0], a[1]-b[1]],
+    mul: (a, b) => [a[0]*b[0]-a[1]*b[1], a[0]*b[1]+a[1]*b[0]],
+    div: (a, b) => {
+        const d = b[0]*b[0]+b[1]*b[1];
+        return [(a[0]*b[0]+a[1]*b[1])/d, (a[1]*b[0]-a[0]*b[1])/d];
+    },
+    abs2: (a) => a[0]*a[0]+a[1]*a[1],
+    abs: (a) => Math.sqrt(a[0]*a[0]+a[1]*a[1]),
+    scale: (a, s) => [a[0]*s, a[1]*s],
+    exp_i: (theta) => [Math.cos(theta), Math.sin(theta)],
+    real: (a) => a[0],
+    imag: (a) => a[1],
+};
+
+// ═══════════════════════════════════════════════════════════════
+// Collatz variants
+// ═══════════════════════════════════════════════════════════════
+
+function standardCollatz(n, maxSteps) {
+    // Returns trajectory as [(step, log2(n)), ...]
+    const traj = [];
+    let current = n;
+    for (let i = 0; i <= maxSteps && current > 0; i++) {
+        traj.push([i, Math.log2(current)]);
+        if (current === 1 && i > 0) break;
+        if (current % 2 === 0) {
+            current = current / 2;
+        } else {
+            current = 3 * current + 1;
+        }
+        if (current > Number.MAX_SAFE_INTEGER) break;
+    }
+    return traj;
+}
+
+function gaussianCollatz(startReal, maxSteps) {
+    // T(z) = z/2 if z divisible by (1+i), else (3z+1) then divide out (1+i) factors
+    // Divisibility by (1+i): z = a+bi, z/(1+i) = ((a+b) + (b-a)i)/2
+    // z is divisible by (1+i) iff a+b is even
+    let z = [startReal, 0];
+    const traj = [z.slice()];
+
+    for (let i = 0; i < maxSteps; i++) {
+        const a = z[0], b = z[1];
+        // Check divisibility by (1+i): need a+b even (for Gaussian integer case)
+        // For real integers, this is just checking if even
+        const sum = Math.round(a) + Math.round(b);
+        if (sum % 2 === 0) {
+            // Divide by (1+i): z/(1+i) = z*(1-i)/2
+            z = C.scale(C.mul(z, [1, -1]), 0.5);
+        } else {
+            // 3z + 1
+            z = C.add(C.scale(z, 3), [1, 0]);
+            // Now divide out (1+i) factors
+            let safety = 0;
+            while (safety < 50) {
+                const s = Math.round(z[0]) + Math.round(z[1]);
+                if (s % 2 !== 0) break;
+                z = C.scale(C.mul(z, [1, -1]), 0.5);
+                safety++;
+            }
+        }
+        traj.push(z.slice());
+        if (C.abs(z) < 0.01) break;
+        if (C.abs(z) > 1e10) break;
+    }
+    return traj;
+}
+
+function rotationCollatz(start, theta_deg, r, maxSteps) {
+    // T(z) = (3z+1) * e^{i*theta} / |3z+1|^{1-r}  if odd-like
+    // For even: z/2 as usual
+    // "odd-like" = real part rounds to odd
+    const theta = theta_deg * Math.PI / 180;
+    let z = [start, 0];
+    const traj = [z.slice()];
+
+    for (let i = 0; i < maxSteps; i++) {
+        const n = Math.round(z[0]);
+        if (n <= 0 && C.abs(z) < 1) break;
+
+        if (Math.abs(n) % 2 === 0 || n === 0) {
+            // "Even" branch: divide by 2
+            z = C.scale(z, 0.5);
+        } else {
+            // "Odd" branch: 3z+1 with rotation and magnitude control
+            let w = C.add(C.scale(z, 3), [1, 0]);
+            const mag = C.abs(w);
+            if (mag < 1e-10) break;
+            // Apply rotation and magnitude rescaling
+            const rot = C.exp_i(theta);
+            w = C.mul(w, rot);
+            const newMag = Math.pow(mag, r);
+            w = C.scale(w, newMag / mag);
+            z = w;
+
+            // Divide out factors of 2 from the real part
+            let safety = 0;
+            while (Math.abs(Math.round(z[0])) % 2 === 0 && Math.abs(z[0]) > 1 && safety < 20) {
+                z = C.scale(z, 0.5);
+                safety++;
+            }
+        }
+        traj.push(z.slice());
+        if (C.abs(z) > 1e8) break;
+        if (C.abs(z) < 0.5 && i > 5) break;
+    }
+    return traj;
+}
+
+function perturbedCollatz(startReal, epsilon, maxSteps) {
+    // Start from n + epsilon*i, apply standard complex Collatz
+    // T(z) = z/2 if Re(z) rounds even, else (3z+1)/2^v
+    let z = [startReal, epsilon];
+    const traj = [z.slice()];
+
+    for (let i = 0; i < maxSteps; i++) {
+        const n = Math.round(z[0]);
+        if (n <= 0) break;
+
+        if (n % 2 === 0) {
+            z = C.scale(z, 0.5);
+        } else {
+            z = C.add(C.scale(z, 3), [1, 0]);
+            // Divide by 2 repeatedly while "even-like"
+            let safety = 0;
+            while (Math.abs(Math.round(z[0])) % 2 === 0 && safety < 40) {
+                z = C.scale(z, 0.5);
+                safety++;
+                if (C.abs(z) < 0.5) break;
+            }
+        }
+        traj.push(z.slice());
+        if (C.abs(z) > 1e10) break;
+        if (C.abs(z) < 0.5 && i > 3) break;
+    }
+    return traj;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Markov eigenvalues of Collatz mod 2^j
+// ═══════════════════════════════════════════════════════════════
+
+function collatzMarkovMatrix(j) {
+    // Build transition matrix for Collatz map on residues mod 2^j
+    const n = 1 << j;
+    // M[to][from] = 1 if Collatz maps `from` to `to` (mod n)
+    const M = Array.from({length: n}, () => new Float64Array(n));
+
+    for (let x = 0; x < n; x++) {
+        let next;
+        if (x % 2 === 0) {
+            next = (x / 2) % n;
+        } else {
+            next = (3 * x + 1) % n;
+            // Divide by 2 until odd
+            while (next % 2 === 0) {
+                next = (next / 2) % n;
+            }
+        }
+        // Actually for the Markov chain: even numbers go to x/2, odd go to (3x+1)
+        // But we want the deterministic map, not the probabilistic one
+        if (x % 2 === 0) {
+            next = (x / 2) % n;
+        } else {
+            next = ((3 * x + 1)) % n;
+        }
+        M[next][x] = 1.0;
+    }
+    return M;
+}
+
+function eigenvaluesQR(M, maxIter) {
+    // Simple QR iteration for eigenvalue estimation
+    const n = M.length;
+    // Work on a copy
+    let A = M.map(row => Float64Array.from(row));
+
+    for (let iter = 0; iter < maxIter; iter++) {
+        // QR decomposition via Gram-Schmidt
+        const Q = Array.from({length: n}, () => new Float64Array(n));
+        const R = Array.from({length: n}, () => new Float64Array(n));
+
+        for (let j = 0; j < n; j++) {
+            // Column j of A
+            let v = new Float64Array(n);
+            for (let i = 0; i < n; i++) v[i] = A[i][j];
+
+            // Subtract projections onto previous Q columns
+            for (let k = 0; k < j; k++) {
+                let dot = 0;
+                for (let i = 0; i < n; i++) dot += Q[i][k] * v[i];
+                R[k][j] = dot;
+                for (let i = 0; i < n; i++) v[i] -= dot * Q[i][k];
+            }
+
+            let norm = 0;
+            for (let i = 0; i < n; i++) norm += v[i] * v[i];
+            norm = Math.sqrt(norm);
+            R[j][j] = norm;
+
+            if (norm > 1e-14) {
+                for (let i = 0; i < n; i++) Q[i][j] = v[i] / norm;
+            }
+        }
+
+        // A = R * Q
+        const newA = Array.from({length: n}, () => new Float64Array(n));
+        for (let i = 0; i < n; i++) {
+            for (let j = 0; j < n; j++) {
+                let sum = 0;
+                for (let k = 0; k < n; k++) sum += R[i][k] * Q[k][j];
+                newA[i][j] = sum;
+            }
+        }
+        A = newA;
+    }
+
+    // Diagonal elements approximate eigenvalues (real parts)
+    // For complex eigenvalues, check 2x2 blocks
+    const eigs = [];
+    let i = 0;
+    while (i < n) {
+        if (i + 1 < n && Math.abs(A[i+1][i]) > 1e-8) {
+            // 2x2 block — complex eigenvalue pair
+            const a = A[i][i], b = A[i][i+1], c = A[i+1][i], d = A[i+1][i+1];
+            const tr = a + d;
+            const det = a*d - b*c;
+            const disc = tr*tr - 4*det;
+            if (disc < 0) {
+                const re = tr / 2;
+                const im = Math.sqrt(-disc) / 2;
+                eigs.push([re, im]);
+                eigs.push([re, -im]);
+            } else {
+                eigs.push([(tr + Math.sqrt(disc)) / 2, 0]);
+                eigs.push([(tr - Math.sqrt(disc)) / 2, 0]);
+            }
+            i += 2;
+        } else {
+            eigs.push([A[i][i], 0]);
+            i++;
+        }
+    }
+    return eigs;
+}
+
+function computeAllEigenvalues(jMin, jMax) {
+    const allEigs = [];
+    for (let j = jMin; j <= jMax; j++) {
+        const M = collatzMarkovMatrix(j);
+        const eigs = eigenvaluesQR(M, 200);
+        allEigs.push({ j, eigs });
+    }
+    return allEigs;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Canvas rendering
+// ═══════════════════════════════════════════════════════════════
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let trajectories = []; // [{points, color, label}]
+let viewBounds = { xMin: -10, xMax: 10, yMin: -10, yMax: 10 };
+
+function resizeCanvas() {
+    const wrap = canvas.parentElement;
+    canvas.width = wrap.clientWidth * devicePixelRatio;
+    canvas.height = wrap.clientHeight * devicePixelRatio;
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+    draw();
+}
+window.addEventListener('resize', resizeCanvas);
+
+function worldToScreen(x, y) {
+    const w = canvas.width / devicePixelRatio;
+    const h = canvas.height / devicePixelRatio;
+    const sx = (x - viewBounds.xMin) / (viewBounds.xMax - viewBounds.xMin) * w;
+    const sy = h - (y - viewBounds.yMin) / (viewBounds.yMax - viewBounds.yMin) * h;
+    return [sx, sy];
+}
+
+function autoBounds(allPoints) {
+    if (allPoints.length === 0) return;
+    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+    for (const p of allPoints) {
+        if (isFinite(p[0]) && isFinite(p[1])) {
+            xMin = Math.min(xMin, p[0]);
+            xMax = Math.max(xMax, p[0]);
+            yMin = Math.min(yMin, p[1]);
+            yMax = Math.max(yMax, p[1]);
+        }
+    }
+    const dx = (xMax - xMin) || 1;
+    const dy = (yMax - yMin) || 1;
+    const pad = 0.1;
+    viewBounds = {
+        xMin: xMin - dx * pad,
+        xMax: xMax + dx * pad,
+        yMin: yMin - dy * pad,
+        yMax: yMax + dy * pad,
+    };
+}
+
+function draw() {
+    const w = canvas.width / devicePixelRatio;
+    const h = canvas.height / devicePixelRatio;
+    ctx.clearRect(0, 0, w, h);
+
+    // Grid
+    drawGrid(w, h);
+
+    // Trajectories
+    for (const traj of trajectories) {
+        drawTrajectory(traj, w, h);
+    }
+}
+
+function drawGrid(w, h) {
+    ctx.strokeStyle = '#1a1a28';
+    ctx.lineWidth = 0.5;
+
+    // Determine grid spacing
+    const xRange = viewBounds.xMax - viewBounds.xMin;
+    const yRange = viewBounds.yMax - viewBounds.yMin;
+    const xStep = niceStep(xRange / 8);
+    const yStep = niceStep(yRange / 8);
+
+    // Vertical lines
+    const xStart = Math.ceil(viewBounds.xMin / xStep) * xStep;
+    for (let x = xStart; x <= viewBounds.xMax; x += xStep) {
+        const [sx] = worldToScreen(x, 0);
+        ctx.beginPath();
+        ctx.moveTo(sx, 0);
+        ctx.lineTo(sx, h);
+        ctx.stroke();
+
+        // Label
+        ctx.fillStyle = '#333348';
+        ctx.font = '9px monospace';
+        ctx.fillText(formatNum(x), sx + 2, h - 3);
+    }
+
+    // Horizontal lines
+    const yStart = Math.ceil(viewBounds.yMin / yStep) * yStep;
+    for (let y = yStart; y <= viewBounds.yMax; y += yStep) {
+        const [, sy] = worldToScreen(0, y);
+        ctx.beginPath();
+        ctx.moveTo(0, sy);
+        ctx.lineTo(w, sy);
+        ctx.stroke();
+
+        ctx.fillStyle = '#333348';
+        ctx.font = '9px monospace';
+        ctx.fillText(formatNum(y), 3, sy - 2);
+    }
+
+    // Axes
+    ctx.strokeStyle = '#2a2a40';
+    ctx.lineWidth = 1;
+    const [ax] = worldToScreen(0, 0);
+    const [, ay] = worldToScreen(0, 0);
+    ctx.beginPath(); ctx.moveTo(ax, 0); ctx.lineTo(ax, h); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, ay); ctx.lineTo(w, ay); ctx.stroke();
+}
+
+function drawTrajectory(traj, w, h) {
+    const pts = traj.points;
+    if (pts.length < 2) return;
+
+    const n = pts.length;
+
+    // Draw lines with step-based coloring
+    for (let i = 1; i < n; i++) {
+        const t = i / n;
+        const [x0, y0] = worldToScreen(pts[i-1][0], pts[i-1][1]);
+        const [x1, y1] = worldToScreen(pts[i][0], pts[i][1]);
+
+        if (!isFinite(x0) || !isFinite(y0) || !isFinite(x1) || !isFinite(y1)) continue;
+
+        // Color by step: start=blue, middle=green, end=red
+        const color = stepColor(t, traj.baseHue || 220);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.7 + 0.3 * (1 - t);
+
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+    }
+
+    // Draw dots
+    ctx.globalAlpha = 1;
+    for (let i = 0; i < n; i++) {
+        const t = i / n;
+        const [sx, sy] = worldToScreen(pts[i][0], pts[i][1]);
+        if (!isFinite(sx) || !isFinite(sy)) continue;
+
+        const radius = i === 0 ? 4 : i === n - 1 ? 3.5 : 1.5;
+        ctx.fillStyle = stepColor(t, traj.baseHue || 220);
+        ctx.beginPath();
+        ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // Start label
+    if (pts.length > 0) {
+        const [sx, sy] = worldToScreen(pts[0][0], pts[0][1]);
+        ctx.fillStyle = '#aaaacc';
+        ctx.font = '10px monospace';
+        ctx.fillText(traj.label || '', sx + 6, sy - 4);
+    }
+}
+
+function stepColor(t, baseHue) {
+    // Blue → cyan → green → yellow → red
+    const hue = baseHue + t * 160;
+    const sat = 70 + t * 20;
+    const light = 55 + (1-t) * 15;
+    return `hsl(${hue % 360}, ${sat}%, ${light}%)`;
+}
+
+function niceStep(rough) {
+    const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+    const norm = rough / pow;
+    if (norm < 1.5) return pow;
+    if (norm < 3.5) return 2 * pow;
+    if (norm < 7.5) return 5 * pow;
+    return 10 * pow;
+}
+
+function formatNum(x) {
+    if (Math.abs(x) < 0.001) return '0';
+    if (Math.abs(x) >= 1000) return x.toExponential(0);
+    return x.toPrecision(3);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// UI logic
+// ═══════════════════════════════════════════════════════════════
+
+const variantEl = document.getElementById('variant');
+const optsSections = {
+    standard: document.getElementById('standard-opts'),
+    rotation: document.getElementById('rotation-opts'),
+    perturbed: document.getElementById('perturbed-opts'),
+    gaussian: document.getElementById('gaussian-opts'),
+    eigenvalues: document.getElementById('eigen-opts'),
+};
+
+variantEl.addEventListener('change', () => {
+    for (const [k, el] of Object.entries(optsSections)) {
+        el.style.display = variantEl.value === k ? 'block' : 'none';
+    }
+});
+
+const hues = [220, 120, 30, 300, 180, 60, 0, 280];
+let hueIdx = 0;
+
+function run() {
+    const variant = variantEl.value;
+    const info = document.getElementById('info');
+    const trajInfo = document.getElementById('traj-info');
+    const legend = document.getElementById('legend');
+
+    switch (variant) {
+        case 'standard': {
+            const n = parseInt(document.getElementById('start-n').value);
+            const maxSteps = parseInt(document.getElementById('max-steps').value);
+            const traj = standardCollatz(n, maxSteps);
+            const baseHue = hues[hueIdx++ % hues.length];
+            trajectories.push({ points: traj, label: `n=${n}`, baseHue });
+
+            const allPts = trajectories.flatMap(t => t.points);
+            autoBounds(allPts);
+            draw();
+
+            const maxVal = Math.max(...traj.map(p => Math.pow(2, p[1])));
+            info.innerHTML = `
+                <div>Start: <span class="val">${n}</span></div>
+                <div>Steps to 1: <span class="val">${traj.length - 1}</span></div>
+                <div>Max value: <span class="val">${Math.round(maxVal).toLocaleString()}</span></div>
+                <div>Max log2: <span class="val">${Math.max(...traj.map(p => p[1])).toFixed(2)}</span></div>
+            `;
+            break;
+        }
+
+        case 'gaussian': {
+            const start = parseInt(document.getElementById('gauss-start').value);
+            const traj = gaussianCollatz(start, 200);
+            const baseHue = hues[hueIdx++ % hues.length];
+            trajectories.push({ points: traj, label: `z=${start}`, baseHue });
+
+            const allPts = trajectories.flatMap(t => t.points);
+            autoBounds(allPts);
+            draw();
+
+            const maxMag = Math.max(...traj.map(p => C.abs(p)));
+            const finalIm = traj[traj.length-1][1];
+            info.innerHTML = `
+                <div>Start: <span class="val">${start}</span></div>
+                <div>Steps: <span class="val">${traj.length}</span></div>
+                <div>Max |z|: <span class="val">${maxMag.toFixed(2)}</span></div>
+                <div>Final Im: <span class="val">${finalIm.toFixed(4)}</span></div>
+                <div>Enters complex: <span class="highlight">${Math.abs(finalIm) > 0.01 ? 'YES' : 'stays real'}</span></div>
+            `;
+            break;
+        }
+
+        case 'rotation': {
+            const start = parseInt(document.getElementById('rot-start').value);
+            const theta = parseFloat(document.getElementById('theta').value);
+            const r = parseFloat(document.getElementById('mag-r').value);
+            const traj = rotationCollatz(start, theta, r, 300);
+            const baseHue = hues[hueIdx++ % hues.length];
+            trajectories.push({ points: traj, label: `${theta}\u00b0`, baseHue });
+
+            const allPts = trajectories.flatMap(t => t.points);
+            autoBounds(allPts);
+            draw();
+
+            const maxMag = Math.max(...traj.map(p => C.abs(p)));
+            info.innerHTML = `
+                <div>Start: <span class="val">${start}</span></div>
+                <div>\u03b8: <span class="val">${theta}\u00b0</span>, r: <span class="val">${r}</span></div>
+                <div>Steps: <span class="val">${traj.length}</span></div>
+                <div>Max |z|: <span class="val">${maxMag.toFixed(2)}</span></div>
+                <div>Spiral: <span class="highlight">${traj.some(p => Math.abs(p[1]) > 1) ? 'YES' : 'near real axis'}</span></div>
+            `;
+            break;
+        }
+
+        case 'perturbed': {
+            const start = parseInt(document.getElementById('pert-real').value);
+            const eps = parseFloat(document.getElementById('pert-eps').value);
+            const traj = perturbedCollatz(start, eps, 300);
+            const baseHue = hues[hueIdx++ % hues.length];
+            trajectories.push({ points: traj, label: `${start}+${eps}i`, baseHue });
+
+            const allPts = trajectories.flatMap(t => t.points);
+            autoBounds(allPts);
+            draw();
+
+            const imParts = traj.map(p => Math.abs(p[1]));
+            const maxIm = Math.max(...imParts);
+            const finalIm = traj[traj.length-1][1];
+            info.innerHTML = `
+                <div>Start: <span class="val">${start} + ${eps}i</span></div>
+                <div>Steps: <span class="val">${traj.length}</span></div>
+                <div>Max |Im|: <span class="val">${maxIm.toFixed(4)}</span></div>
+                <div>Final Im: <span class="val">${finalIm.toFixed(6)}</span></div>
+                <div>Im behavior: <span class="highlight">${maxIm > eps * 10 ? 'GROWS' : maxIm < eps * 0.5 ? 'DECAYS' : 'OSCILLATES'}</span></div>
+            `;
+            break;
+        }
+
+        case 'eigenvalues': {
+            const jMin = parseInt(document.getElementById('eigen-jmin').value);
+            const jMax = Math.min(parseInt(document.getElementById('eigen-jmax').value), 12);
+
+            trajectories = []; // Clear for eigenvalues
+
+            const allData = computeAllEigenvalues(jMin, jMax);
+            let totalEigs = 0;
+            let realEigs = 0;
+            let complexEigs = 0;
+            let zeroEigs = 0;
+
+            for (const {j, eigs} of allData) {
+                const pts = eigs.filter(e =>
+                    isFinite(e[0]) && isFinite(e[1]) && C.abs(e) > 1e-10
+                );
+                const baseHue = hues[(j - jMin) % hues.length];
+                if (pts.length > 0) {
+                    trajectories.push({
+                        points: pts,
+                        label: `mod 2^${j}`,
+                        baseHue,
+                    });
+                }
+                totalEigs += eigs.length;
+                for (const e of eigs) {
+                    if (C.abs(e) < 1e-8) zeroEigs++;
+                    else if (Math.abs(e[1]) < 1e-8) realEigs++;
+                    else complexEigs++;
+                }
+            }
+
+            const allPts = trajectories.flatMap(t => t.points);
+            if (allPts.length > 0) {
+                autoBounds(allPts);
+            } else {
+                viewBounds = { xMin: -2, xMax: 2, yMin: -2, yMax: 2 };
+            }
+            draw();
+
+            info.innerHTML = `
+                <div>Eigenvalues of Collatz mod 2^j</div>
+                <div>j range: <span class="val">${jMin}..${jMax}</span></div>
+                <div>Total eigenvalues: <span class="val">${totalEigs}</span></div>
+                <div>Zero (\u2248 nilpotent): <span class="highlight">${zeroEigs}</span></div>
+                <div>Real nonzero: <span class="val">${realEigs}</span></div>
+                <div>Complex: <span class="val">${complexEigs}</span></div>
+                <div style="margin-top:4px;color:#ffaa44">
+                    ${zeroEigs > totalEigs * 0.8 ? 'Strongly nilpotent structure!' : 'Mixed spectrum'}
+                </div>
+            `;
+
+            // Show legend
+            legend.style.display = 'block';
+            legend.innerHTML = allData.map(({j}, i) => `
+                <div class="legend-item">
+                    <div class="legend-swatch" style="background: hsl(${hues[(j-jMin)%hues.length]}, 70%, 60%)"></div>
+                    <span>mod 2^${j}</span>
+                </div>
+            `).join('');
+
+            break;
+        }
+    }
+
+    // Update trajectory list
+    trajInfo.innerHTML = trajectories.map((t, i) =>
+        `<div>${i+1}. ${t.label} (${t.points.length} pts)</div>`
+    ).join('');
+}
+
+function clearCanvas() {
+    trajectories = [];
+    hueIdx = 0;
+    viewBounds = { xMin: -10, xMax: 10, yMin: -10, yMax: 10 };
+    draw();
+    document.getElementById('info').innerHTML = 'Cleared.';
+    document.getElementById('traj-info').innerHTML = 'No trajectories.';
+    document.getElementById('legend').style.display = 'none';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Pan and zoom
+// ═══════════════════════════════════════════════════════════════
+
+let isPanning = false;
+let panStart = [0, 0];
+let panBoundsStart = {};
+
+canvas.addEventListener('mousedown', (e) => {
+    isPanning = true;
+    panStart = [e.clientX, e.clientY];
+    panBoundsStart = {...viewBounds};
+});
+
+canvas.addEventListener('mousemove', (e) => {
+    if (!isPanning) return;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    const dx = (e.clientX - panStart[0]) / w * (panBoundsStart.xMax - panBoundsStart.xMin);
+    const dy = (e.clientY - panStart[1]) / h * (panBoundsStart.yMax - panBoundsStart.yMin);
+    viewBounds.xMin = panBoundsStart.xMin - dx;
+    viewBounds.xMax = panBoundsStart.xMax - dx;
+    viewBounds.yMin = panBoundsStart.yMin + dy;
+    viewBounds.yMax = panBoundsStart.yMax + dy;
+    draw();
+});
+
+canvas.addEventListener('mouseup', () => { isPanning = false; });
+canvas.addEventListener('mouseleave', () => { isPanning = false; });
+
+canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 1.15 : 0.87;
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width;
+    const my = 1 - (e.clientY - rect.top) / rect.height;
+    const cx = viewBounds.xMin + mx * (viewBounds.xMax - viewBounds.xMin);
+    const cy = viewBounds.yMin + my * (viewBounds.yMax - viewBounds.yMin);
+
+    viewBounds.xMin = cx + (viewBounds.xMin - cx) * factor;
+    viewBounds.xMax = cx + (viewBounds.xMax - cx) * factor;
+    viewBounds.yMin = cy + (viewBounds.yMin - cy) * factor;
+    viewBounds.yMax = cy + (viewBounds.yMax - cy) * factor;
+    draw();
+}, { passive: false });
+
+// Init
+resizeCanvas();
+</script>
+</body>
+</html>

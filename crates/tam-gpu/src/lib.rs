@@ -72,7 +72,9 @@ pub enum Backend { Cuda, Vulkan, Metal, Dx12, Cpu }
 pub enum ShaderLang {
     /// CUDA C (NVRTC → PTX).
     Cuda,
-    /// SPIR-V binary (Vulkan compute pipeline).
+    /// WGSL source (wgpu → SPIR-V/MSL/DX12 at runtime).
+    Wgsl,
+    /// SPIR-V binary (raw Vulkan compute pipeline).
     SpirV,
     /// Metal Shading Language (macOS/iOS).
     Msl,
@@ -96,6 +98,20 @@ pub struct Buffer {
     pub size: usize,
 }
 
+impl Buffer {
+    /// Construct a buffer wrapping a backend-specific inner value.
+    ///
+    /// Backend implementors outside this crate use this to create `Buffer` handles.
+    pub fn new(inner: Box<dyn std::any::Any + Send + Sync>, size: usize) -> Self {
+        Self { inner, size }
+    }
+
+    /// Downcast the opaque inner value to a concrete backend type.
+    pub fn downcast_inner<T: 'static>(&self) -> Option<&T> {
+        self.inner.downcast_ref::<T>()
+    }
+}
+
 /// Compiled GPU kernel handle.
 ///
 /// Created by [`TamGpu::compile`]. Reuse across multiple dispatches — each
@@ -106,6 +122,18 @@ pub struct Kernel {
     pub(crate) inner: Box<dyn std::any::Any + Send + Sync>,
     /// Entry point name (e.g. `"scatter_phi"`, `"argmin_f64"`).
     pub entry: String,
+}
+
+impl Kernel {
+    /// Construct a kernel wrapping a backend-specific inner value.
+    pub fn new(inner: Box<dyn std::any::Any + Send + Sync>, entry: impl Into<String>) -> Self {
+        Self { inner, entry: entry.into() }
+    }
+
+    /// Downcast the opaque inner value to a concrete backend type.
+    pub fn downcast_inner<T: 'static>(&self) -> Option<&T> {
+        self.inner.downcast_ref::<T>()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -179,12 +207,19 @@ pub trait TamGpu: Send + Sync {
 /// → **CPU fallback** (always available).
 ///
 /// Vulkan and Metal will be inserted ahead of CPU when implemented.
-pub fn detect() -> Box<dyn TamGpu> {
-    #[cfg(feature = "cuda")]
-    if let Ok(b) = CudaBackend::new() {
-        return Box::new(b);
-    }
-    Box::new(CpuBackend::new())
+///
+/// The result is cached in a process-wide [`OnceLock`] — CUDA initialisation
+/// only happens once, regardless of how many concurrent callers race here.
+pub fn detect() -> std::sync::Arc<dyn TamGpu> {
+    use std::sync::{Arc, OnceLock};
+    static GLOBAL_GPU: OnceLock<Arc<dyn TamGpu>> = OnceLock::new();
+    GLOBAL_GPU.get_or_init(|| {
+        #[cfg(feature = "cuda")]
+        if let Ok(b) = CudaBackend::new() {
+            return Arc::new(b);
+        }
+        Arc::new(CpuBackend::new())
+    }).clone()
 }
 
 // ---------------------------------------------------------------------------

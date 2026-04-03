@@ -1,0 +1,51 @@
+# Navier-Stokes — Blowup Detection
+# ===================================
+# Do smooth solutions to 3D incompressible Navier-Stokes always exist?
+# Or can singularities (blowup) occur in finite time?
+# Prize: $1,000,000 (Clay Mathematics Institute)
+#
+# The equation: ∂u/∂t + (u·∇)u = -∇p + ν∇²u
+#   - (u·∇)u = advection (Kingdom B — directional, sequential)
+#   - ν∇²u = diffusion (Kingdom A — symmetric, Laplacian)
+#   - ∇p = pressure (Kingdom C — Poisson solve, iterative)
+#
+# The naturalist's insight: NS = A + B + C in one equation.
+# The Millennium Prize question: does the Kingdom C iteration
+# (pressure Poisson solve) always converge? Or can it blow up?
+#
+# Approach: pseudo-spectral DNS (Direct Numerical Simulation)
+# 1. FFT the velocity field → Fourier space
+# 2. Compute nonlinear term in physical space (pointwise multiply)
+# 3. Advance in time with RK4/RK45
+# 4. Monitor enstrophy (integral of vorticity²) — if it diverges, blowup candidate
+#
+# Through tambear:
+#   - 3D FFT = fft(fft(fft(u, axis=0), axis=1), axis=2) — three 1D FFTs
+#   - Nonlinear term = fused_expr("u * grad_u") — pointwise
+#   - Time stepping = RK45 in numerical.rs
+#   - Enstrophy = accumulate(All, "vorticity^2", Add) — one reduce
+#
+# The .tbs dream (2D version first):
+
+read_grid(nx=256, ny=256)
+  .init_velocity(taylor_green_vortex)      # classic test case
+  .fft2d()                                  # to spectral space
+  .time_step(method="rk4", dt=0.001, steps=10000)
+  .monitor(enstrophy, energy, max_vorticity)
+  .filter(enstrophy > 1e10)                 # blowup candidate?
+  .collect()
+
+# The Taylor-Green vortex is the standard test case —
+# it develops complex vortex structure but is NOT expected to blow up.
+# The real search: find initial conditions that DO blow up.
+# That would prove NS can develop singularities = $1M.
+#
+# More realistically: run at progressively higher Reynolds numbers,
+# document the vortex stretching cascade, look for candidate singularities.
+# This doesn't PROVE anything but provides computational EVIDENCE
+# that guides theoretical work.
+#
+# The Reynolds number IS the ρ (contraction constant) of the NS Kingdom C.
+# Low Re: smooth, ρ << 1, Kingdom A dominates.
+# High Re: turbulent, ρ → 1, Kingdom C barely converges.
+# Re → ∞: does ρ cross 1? That's the Millennium Prize question.

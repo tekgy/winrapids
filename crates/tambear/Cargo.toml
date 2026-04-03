@@ -4,9 +4,22 @@ version = "0.1.0"
 edition = "2021"
 description = "Sort-free DataFrame engine. Tam doesn't sort. Tam knows."
 
+[features]
+wgpu = ["dep:tambear-wgpu"]
+
 [dependencies]
 cudarc = { version = "0.19", features = ["nvrtc", "cuda-version-from-build-system"] }
 blake3 = "1"
+
+[dependencies.winrapids-tiled]
+path = "../winrapids-tiled"
+
+[dependencies.tam-gpu]
+path = "../tam-gpu"
+
+[dependencies.tambear-wgpu]
+path = "../tambear-wgpu"
+optional = true
 
 [[bin]]
 name = "tambear-test"
@@ -27,3 +40,46 @@ path = "src/io_bench.rs"
 [[bin]]
 name = "scatter-bench"
 path = "src/scatter_bench.rs"
+
+[[bin]]
+name = "train-demo"
+path = "src/train_demo.rs"
+
+[[bin]]
+name = "compile-budget"
+path = "src/compile_budget.rs"
+
+[[bin]]
+name = "collatz-search"
+path = "src/collatz_search.rs"
+
+[[bin]]
+name = "beal-search"
+path = "src/beal_search.rs"
+
+[[bin]]
+name = "collatz-structural"
+path = "src/collatz_structural.rs"
+
+[[bin]]
+name = "experiment0"
+path = "src/experiment0.rs"
+
+[[bin]]
+name = "experiment1"
+path = "src/experiment1.rs"
+
+[[bin]]
+name = "experiment1b"
+path = "src/experiment1b.rs"
+
+[[bin]]
+name = "experiment2"
+path = "src/experiment2.rs"
+
+[[bin]]
+name = "naturalist-obs"
+path = "src/naturalist_observation.rs"
+
+[dev-dependencies]
+faer = "0.24"

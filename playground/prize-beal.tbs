@@ -1,0 +1,40 @@
+# Beal Conjecture Counterexample Search ($1M Prize)
+# ===================================================
+# If A^x + B^y = C^z where A,B,C,x,y,z positive integers, x,y,z >= 3,
+# then A,B,C share a common prime factor.
+#
+# Finding a counterexample (coprime A,B,C with A^x + B^y = C^z) = $1,000,000
+# Current record: A,B,C < 250,000 with x,y,z <= 7
+# Target: push to A,B,C < 10^6 (64× beyond record)
+#
+# Algorithm:
+# 1. For each (x, y, z) with x,y,z >= 3:
+# 2.   For each A: compute A^x (bigint if needed)
+# 3.   For each B: compute B^y
+# 4.   S = A^x + B^y
+# 5.   Test if S is a perfect z-th power (Newton integer root)
+# 6.   If yes: check gcd(A, B, C) = 1
+# 7.   If coprime: COUNTEREXAMPLE → $1M
+#
+# The computation decomposes into:
+#   - Power computation: fused_expr("pow(a, x)") — embarrassingly parallel
+#   - Addition: A^x + B^y — parallel (or bigint prefix scan for carry)
+#   - Root test: Newton's method for z-th root — already in numerical.rs
+#   - GCD: Euclidean algorithm — already in F38/numerical
+#
+# The .tbs dream:
+
+# Fix exponents, sweep bases
+read_grid(A=1..1000000, B=1..1000000)
+  .map(sum = pow(A, 3) + pow(B, 3))       # A^3 + B^3 for each pair
+  .map(C = integer_cube_root(sum))          # is the sum a perfect cube?
+  .filter(C^3 == sum)                       # exact match only
+  .filter(gcd(A, B, C) == 1)               # coprime?
+  .collect()
+
+# If non-empty: BEAL COUNTEREXAMPLE. $1M.
+# If empty: record extended for (3,3,3). Repeat for (3,3,4), (3,4,3), etc.
+
+# Note: for A,B > ~2000 with x=3, A^3 > 8×10^9 — exceeds u32.
+# For A > ~2×10^6 with x=3, A^3 > 8×10^18 — exceeds u64.
+# Beyond that: need BigInt (F38). BigInt multiply = FFT convolution + carry prefix scan.

@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Collatz Spiral Geometry</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    background: #0a0a0f;
+    color: #c8c8d0;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+.sidebar {
+    width: 340px;
+    min-width: 340px;
+    background: #12121a;
+    border-right: 1px solid #2a2a35;
+    padding: 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.sidebar h1 { font-size: 15px; color: #e0e0e8; border-bottom: 1px solid #2a2a35; padding-bottom: 8px; }
+.sidebar h2 { font-size: 11px; color: #8888a0; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+label { font-size: 12px; color: #9999b0; display: block; margin-bottom: 2px; }
+select, input[type="number"], input[type="text"] {
+    width: 100%;
+    background: #1a1a25;
+    border: 1px solid #2a2a35;
+    color: #d0d0d8;
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 13px;
+}
+select:focus, input:focus { outline: none; border-color: #5577cc; }
+button {
+    background: #2244aa;
+    color: #e0e0f0;
+    border: none;
+    padding: 7px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    width: 100%;
+}
+button:hover { background: #3355bb; }
+button.secondary { background: #222230; border: 1px solid #333345; }
+button.secondary:hover { background: #2a2a3a; }
+button.accent { background: #884422; }
+button.accent:hover { background: #995533; }
+.row { display: flex; gap: 6px; }
+.row > * { flex: 1; }
+.info-box {
+    background: #16161e;
+    border: 1px solid #2a2a35;
+    border-radius: 4px;
+    padding: 8px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: #8888a0;
+    max-height: 300px;
+    overflow-y: auto;
+}
+.val { color: #66aaff; }
+.hot { color: #ff6644; }
+.cold { color: #44aaff; }
+.fold-mark { color: #ffcc44; font-weight: bold; }
+.comma { color: #88ffaa; }
+.canvas-wrap { flex: 1; position: relative; background: #0d0d14; }
+canvas { width: 100%; height: 100%; display: block; }
+.mode-label {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    color: #555568;
+    pointer-events: none;
+}
+.legend {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    background: rgba(18,18,26,0.92);
+    border: 1px solid #2a2a35;
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-size: 10px;
+    line-height: 1.8;
+}
+.legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+    <h1>Collatz Spiral Geometry</h1>
+
+    <h2>Mode</h2>
+    <select id="mode">
+        <option value="spiral">Shape Space Spiral</option>
+        <option value="polar">Polar Spiral (r=log2, theta=phase)</option>
+        <option value="phase">Phase Accumulation (step vs phase)</option>
+    </select>
+
+    <h2>Starting values</h2>
+    <label>Enter n (odd) or comma-separated list</label>
+    <input type="text" id="start-values" value="27,31,63,127,255" placeholder="e.g. 27,31,63">
+    <label style="margin-top:4px">Max steps</label>
+    <input type="number" id="max-steps" value="500" min="10" max="50000">
+
+    <div class="row" style="margin-top:4px">
+        <button onclick="run()">Run</button>
+        <button class="secondary" onclick="clearAll()">Clear</button>
+    </div>
+
+    <h2>Presets</h2>
+    <div class="row">
+        <button class="accent" onclick="preset('extremal')">Extremals 2^k-1</button>
+        <button class="accent" onclick="preset('famous')">Famous numbers</button>
+    </div>
+    <div class="row">
+        <button class="accent" onclick="preset('selfsimilar')">Self-similar</button>
+        <button class="accent" onclick="preset('hightemp')">High-temp</button>
+    </div>
+
+    <h2>Spiral analysis</h2>
+    <div class="info-box" id="info">Click Run to compute trajectories.</div>
+
+    <h2>Trajectories</h2>
+    <div class="info-box" id="traj-list" style="min-height:40px">No trajectories.</div>
+</div>
+
+<div class="canvas-wrap">
+    <canvas id="canvas"></canvas>
+    <div class="mode-label" id="mode-label">x: log2(value) | y: accumulated geometric phase</div>
+    <div class="legend" id="legend" style="display:none"></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// Collatz trajectory with fold/phase tracking
+// ═══════════════════════════════════════════════════════════════
+
+const LOG2_3 = Math.log2(3);
+
+function trailingOnes(n) {
+    if (n <= 0) return 0;
+    let count = 0;
+    let v = n;
+    while ((v & 1) === 1) { count++; v = Math.floor(v / 2); }
+    return count;
+}
+
+function v2(n) {
+    if (n === 0) return 64;
+    let count = 0;
+    let v = n;
+    while ((v & 1) === 0 && v > 0) { count++; v = Math.floor(v / 2); }
+    return count;
+}
+
+function collatzTrace(n0, maxSteps) {
+    if (n0 % 2 === 0) n0++; // force odd
+    if (n0 < 1) n0 = 1;
+
+    const initialTau = trailingOnes(n0);
+    const steps = [];
+    let n = n0;
+    let cumulativePhase = 0;
+    let cumulativeLog = Math.log2(n);
+    let foundFold = false;
+    let foldIdx = -1;
+    let maxPostFoldTau = 0;
+
+    for (let i = 0; i <= maxSteps; i++) {
+        const tau = trailingOnes(n);
+        const val3n1 = 3 * n + 1;
+        const valuation = v2(val3n1);
+
+        // Geometric phase: each step contributes (v2 - log2(3))
+        // Positive = contracting turn, negative = expanding turn
+        const phaseStep = i === 0 ? 0 : valuation - LOG2_3;
+
+        cumulativePhase += phaseStep;
+
+        // Shadow detection
+        const inShadow = !foundFold && i < initialTau;
+        if (!foundFold && i >= initialTau) {
+            foundFold = true;
+            foldIdx = i;
+        }
+        if (foundFold && i > foldIdx && tau > maxPostFoldTau) {
+            maxPostFoldTau = tau;
+        }
+
+        steps.push({
+            value: n,
+            log2val: Math.log2(n),
+            tau,
+            v2: valuation,
+            phase: cumulativePhase,
+            phaseStep,
+            inShadow,
+            step: i,
+        });
+
+        if (n === 1 && i > 0) break;
+        if (n > Number.MAX_SAFE_INTEGER / 3) break;
+
+        // Collatz step (odd → odd)
+        let next = 3 * n + 1;
+        while (next % 2 === 0) next /= 2;
+        n = next;
+    }
+
+    // Compute comma: net log growth per step
+    const totalSteps = steps.length - 1;
+    const netLogGrowth = totalSteps > 0 ? (Math.log2(steps[steps.length-1].value) - Math.log2(n0)) : 0;
+    const avgGrowthPerStep = totalSteps > 0 ? netLogGrowth / totalSteps : 0;
+
+    return {
+        n0,
+        initialTau,
+        foldIdx,
+        maxPostFoldTau,
+        foldReversed: maxPostFoldTau >= initialTau,
+        converged: steps[steps.length - 1].value === 1,
+        steps,
+        totalSteps,
+        avgGrowthPerStep,
+        finalPhase: cumulativePhase,
+        // "Comma" = ratio of total expansion to total contraction in log space
+        // comma = 1 means they exactly balance
+        comma: totalSteps > 0 ? -netLogGrowth / (cumulativePhase * LOG2_3 || 1) : 0,
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Canvas
+// ═══════════════════════════════════════════════════════════════
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let traces = []; // [{trace, color, label}]
+let viewBounds = { xMin: -2, xMax: 30, yMin: -20, yMax: 5 };
+
+function resizeCanvas() {
+    const wrap = canvas.parentElement;
+    canvas.width = wrap.clientWidth * devicePixelRatio;
+    canvas.height = wrap.clientHeight * devicePixelRatio;
+    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    draw();
+}
+window.addEventListener('resize', resizeCanvas);
+
+function w2s(x, y) {
+    const w = canvas.width / devicePixelRatio;
+    const h = canvas.height / devicePixelRatio;
+    return [
+        (x - viewBounds.xMin) / (viewBounds.xMax - viewBounds.xMin) * w,
+        h - (y - viewBounds.yMin) / (viewBounds.yMax - viewBounds.yMin) * h
+    ];
+}
+
+function autoBounds(allPts) {
+    if (allPts.length === 0) return;
+    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+    for (const [x, y] of allPts) {
+        if (isFinite(x) && isFinite(y)) {
+            xMin = Math.min(xMin, x); xMax = Math.max(xMax, x);
+            yMin = Math.min(yMin, y); yMax = Math.max(yMax, y);
+        }
+    }
+    const dx = (xMax - xMin) || 1, dy = (yMax - yMin) || 1;
+    viewBounds = { xMin: xMin - dx*0.08, xMax: xMax + dx*0.08, yMin: yMin - dy*0.08, yMax: yMax + dy*0.08 };
+}
+
+function draw() {
+    const w = canvas.width / devicePixelRatio;
+    const h = canvas.height / devicePixelRatio;
+    ctx.clearRect(0, 0, w, h);
+    drawGrid(w, h);
+    for (const t of traces) drawTrace(t, w, h);
+}
+
+function drawGrid(w, h) {
+    const xRange = viewBounds.xMax - viewBounds.xMin;
+    const yRange = viewBounds.yMax - viewBounds.yMin;
+    const xStep = niceStep(xRange / 10);
+    const yStep = niceStep(yRange / 10);
+
+    ctx.strokeStyle = '#181828';
+    ctx.lineWidth = 0.5;
+
+    for (let x = Math.ceil(viewBounds.xMin / xStep) * xStep; x <= viewBounds.xMax; x += xStep) {
+        const [sx] = w2s(x, 0);
+        ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, h); ctx.stroke();
+        ctx.fillStyle = '#2a2a40'; ctx.font = '9px monospace';
+        ctx.fillText(fmt(x), sx + 2, h - 3);
+    }
+    for (let y = Math.ceil(viewBounds.yMin / yStep) * yStep; y <= viewBounds.yMax; y += yStep) {
+        const [, sy] = w2s(0, y);
+        ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(w, sy); ctx.stroke();
+        ctx.fillStyle = '#2a2a40'; ctx.font = '9px monospace';
+        ctx.fillText(fmt(y), 3, sy - 2);
+    }
+
+    // Phase = 0 line
+    ctx.strokeStyle = '#333350';
+    ctx.lineWidth = 1;
+    const [, y0] = w2s(0, 0);
+    ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(w, y0); ctx.stroke();
+}
+
+function drawTrace(t, w, h) {
+    const mode = document.getElementById('mode').value;
+    const pts = t.points;
+    if (pts.length < 2) return;
+
+    const n = pts.length;
+    const trace = t.trace;
+    const foldIdx = trace.foldIdx;
+
+    // Draw path segments
+    for (let i = 1; i < n; i++) {
+        const [x0, y0] = w2s(pts[i-1][0], pts[i-1][1]);
+        const [x1, y1] = w2s(pts[i][0], pts[i][1]);
+        if (!isFinite(x0+y0+x1+y1)) continue;
+
+        const step = trace.steps[i];
+        const inShadow = step && step.inShadow;
+
+        // Color: shadow=warm (expanding), post-shadow=cool (contracting)
+        if (inShadow) {
+            const t_norm = i / (foldIdx || n);
+            ctx.strokeStyle = `hsl(${15 + t_norm * 25}, 85%, ${60 - t_norm*10}%)`;
+            ctx.lineWidth = 2.5;
+        } else {
+            const t_norm = (i - (foldIdx || 0)) / (n - (foldIdx || 0));
+            ctx.strokeStyle = `hsl(${200 + t_norm * 60}, 70%, ${55 - t_norm*15}%)`;
+            ctx.lineWidth = 1.5;
+        }
+
+        ctx.globalAlpha = 0.85;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // Mark the fold point
+    if (foldIdx >= 0 && foldIdx < n) {
+        const [fx, fy] = w2s(pts[foldIdx][0], pts[foldIdx][1]);
+        if (isFinite(fx + fy)) {
+            // Gold diamond
+            ctx.fillStyle = '#ffcc44';
+            ctx.beginPath();
+            ctx.moveTo(fx, fy - 5);
+            ctx.lineTo(fx + 4, fy);
+            ctx.lineTo(fx, fy + 5);
+            ctx.lineTo(fx - 4, fy);
+            ctx.closePath();
+            ctx.fill();
+        }
+    }
+
+    // Start dot
+    const [sx, sy] = w2s(pts[0][0], pts[0][1]);
+    if (isFinite(sx + sy)) {
+        ctx.fillStyle = '#ff6644';
+        ctx.beginPath(); ctx.arc(sx, sy, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ccbbaa';
+        ctx.font = '10px monospace';
+        ctx.fillText(t.label, sx + 6, sy - 4);
+    }
+
+    // End dot
+    if (n > 1) {
+        const [ex, ey] = w2s(pts[n-1][0], pts[n-1][1]);
+        if (isFinite(ex + ey)) {
+            ctx.fillStyle = '#44ff66';
+            ctx.beginPath(); ctx.arc(ex, ey, 3, 0, Math.PI * 2); ctx.fill();
+        }
+    }
+}
+
+function niceStep(rough) {
+    const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+    const n = rough / pow;
+    return (n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10) * pow;
+}
+function fmt(x) {
+    if (Math.abs(x) < 0.001) return '0';
+    if (Math.abs(x) >= 1000) return x.toExponential(0);
+    return x.toPrecision(3);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Point generation for each mode
+// ═══════════════════════════════════════════════════════════════
+
+function traceToPoints(trace, mode) {
+    const pts = [];
+    switch (mode) {
+        case 'spiral':
+            // x = log2(value), y = accumulated geometric phase
+            for (const s of trace.steps) {
+                pts.push([s.log2val, s.phase]);
+            }
+            break;
+
+        case 'polar':
+            // Convert to polar: r = log2(value), theta = phase
+            // Then map to Cartesian for display
+            for (const s of trace.steps) {
+                const r = s.log2val;
+                const theta = s.phase * 0.5; // scale for visual clarity
+                pts.push([r * Math.cos(theta), r * Math.sin(theta)]);
+            }
+            break;
+
+        case 'phase':
+            // x = step index, y = accumulated phase
+            for (const s of trace.steps) {
+                pts.push([s.step, s.phase]);
+            }
+            break;
+    }
+    return pts;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// UI
+// ═══════════════════════════════════════════════════════════════
+
+const HUES = [10, 200, 140, 280, 40, 320, 170, 80, 240, 350];
+let hueIdx = 0;
+
+function run() {
+    const maxSteps = parseInt(document.getElementById('max-steps').value);
+    const mode = document.getElementById('mode').value;
+    const input = document.getElementById('start-values').value;
+    const values = input.split(',').map(s => parseInt(s.trim())).filter(n => n > 0 && !isNaN(n));
+
+    updateModeLabel(mode);
+    traces = [];
+    hueIdx = 0;
+
+    const infoParts = [];
+
+    for (const n0 of values) {
+        const odd_n = n0 % 2 === 0 ? n0 + 1 : n0;
+        const trace = collatzTrace(odd_n, maxSteps);
+        const points = traceToPoints(trace, mode);
+        const hue = HUES[hueIdx++ % HUES.length];
+
+        traces.push({
+            trace,
+            points,
+            label: `${odd_n}`,
+            hue,
+        });
+
+        const shadowSteps = trace.foldIdx >= 0 ? trace.foldIdx : trace.totalSteps;
+        const postShadow = trace.totalSteps - shadowSteps;
+
+        infoParts.push(`<div style="border-bottom:1px solid #222230;padding:4px 0">
+            <b style="color:hsl(${hue},70%,65%)">${odd_n}</b>
+            <span style="color:#666"> (${trace.totalSteps} steps)</span><br>
+            <span class="val">tau_0=${trace.initialTau}</span>
+            shadow=<span class="hot">${shadowSteps}</span>
+            post=<span class="cold">${postShadow}</span><br>
+            fold_reversed=<span class="${trace.foldReversed?'hot':'cold'}">${trace.foldReversed}</span>
+            max_post_tau=<span class="val">${trace.maxPostFoldTau}</span><br>
+            final_phase=<span class="val">${trace.finalPhase.toFixed(2)}</span>
+            growth/step=<span class="val">${trace.avgGrowthPerStep.toFixed(4)}</span><br>
+            converged=<span class="${trace.converged?'comma':'hot'}">${trace.converged}</span>
+        </div>`);
+    }
+
+    // Auto-fit
+    const allPts = traces.flatMap(t => t.points);
+    autoBounds(allPts);
+    draw();
+
+    document.getElementById('info').innerHTML = infoParts.join('');
+    document.getElementById('traj-list').innerHTML = traces.map((t, i) =>
+        `<div><span style="color:hsl(${t.hue},70%,65%)">\u25cf</span> n=${t.label} (${t.trace.totalSteps} steps, fold@${t.trace.foldIdx})</div>`
+    ).join('');
+
+    // Legend
+    document.getElementById('legend').style.display = 'block';
+    document.getElementById('legend').innerHTML = `
+        <div><span class="legend-dot" style="background:#ff6644"></span> Start</div>
+        <div><span class="legend-dot" style="background:#ffcc44"></span> Fold (shadow \u2192 post-shadow)</div>
+        <div><span class="legend-dot" style="background:#44ff66"></span> End (=1)</div>
+        <div style="color:#cc6644">Warm = shadow (expanding)</div>
+        <div style="color:#4488cc">Cool = post-shadow (contracting)</div>
+    `;
+}
+
+function clearAll() {
+    traces = [];
+    hueIdx = 0;
+    viewBounds = { xMin: -2, xMax: 30, yMin: -20, yMax: 5 };
+    draw();
+    document.getElementById('info').innerHTML = 'Cleared.';
+    document.getElementById('traj-list').innerHTML = 'No trajectories.';
+    document.getElementById('legend').style.display = 'none';
+}
+
+function updateModeLabel(mode) {
+    const label = document.getElementById('mode-label');
+    switch (mode) {
+        case 'spiral': label.textContent = 'x: log\u2082(value)  |  y: accumulated geometric phase \u03a3(v\u2082 - log\u2082 3)'; break;
+        case 'polar': label.textContent = 'Polar spiral: r = log\u2082(value), \u03b8 = phase'; break;
+        case 'phase': label.textContent = 'x: step  |  y: accumulated geometric phase'; break;
+    }
+}
+
+function preset(name) {
+    const el = document.getElementById('start-values');
+    switch (name) {
+        case 'extremal':
+            el.value = [3,7,15,31,63,127,255,511,1023].join(',');
+            break;
+        case 'famous':
+            el.value = [27,97,871,6171,77031,837799].join(',');
+            break;
+        case 'selfsimilar':
+            // Numbers with same tau but different magnitudes
+            el.value = [7,7+8,7+16,7+32,7+64,7+128].join(',');
+            break;
+        case 'hightemp':
+            // All numbers with high trailing-ones (high temperature)
+            el.value = [15,31,63,127,255,511,1023,2047,4095,8191].join(',');
+            break;
+    }
+    run();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Pan/zoom
+// ═══════════════════════════════════════════════════════════════
+let isPanning = false, panStart = [0,0], panBoundsStart = {};
+
+canvas.addEventListener('mousedown', e => {
+    isPanning = true;
+    panStart = [e.clientX, e.clientY];
+    panBoundsStart = {...viewBounds};
+});
+canvas.addEventListener('mousemove', e => {
+    if (!isPanning) return;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const dx = (e.clientX-panStart[0])/w*(panBoundsStart.xMax-panBoundsStart.xMin);
+    const dy = (e.clientY-panStart[1])/h*(panBoundsStart.yMax-panBoundsStart.yMin);
+    viewBounds = {
+        xMin: panBoundsStart.xMin-dx, xMax: panBoundsStart.xMax-dx,
+        yMin: panBoundsStart.yMin+dy, yMax: panBoundsStart.yMax+dy,
+    };
+    draw();
+});
+canvas.addEventListener('mouseup', () => isPanning = false);
+canvas.addEventListener('mouseleave', () => isPanning = false);
+canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const f = e.deltaY > 0 ? 1.12 : 0.89;
+    const r = canvas.getBoundingClientRect();
+    const mx = (e.clientX-r.left)/r.width;
+    const my = 1-(e.clientY-r.top)/r.height;
+    const cx = viewBounds.xMin + mx*(viewBounds.xMax-viewBounds.xMin);
+    const cy = viewBounds.yMin + my*(viewBounds.yMax-viewBounds.yMin);
+    viewBounds = {
+        xMin: cx+(viewBounds.xMin-cx)*f, xMax: cx+(viewBounds.xMax-cx)*f,
+        yMin: cy+(viewBounds.yMin-cy)*f, yMax: cy+(viewBounds.yMax-cy)*f,
+    };
+    draw();
+}, { passive: false });
+
+// Mode change recomputes
+document.getElementById('mode').addEventListener('change', () => {
+    if (traces.length > 0) run();
+});
+
+// Init
+resizeCanvas();
+</script>
+</body>
+</html>

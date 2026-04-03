@@ -68,8 +68,8 @@ pub struct TileColumnStats {
     pub count: u32,
     /// Number of non-null rows. Equal to `count` for dense columns.
     pub n_valid: u32,
-    /// Reserved: sum of squares for variance pushdown. Not yet populated.
-    /// When populated: `sum_sq / count - (sum / count)^2` = tile variance.
+    /// Reserved: sum of centered squares for variance pushdown. Not yet populated.
+    /// When populated: `sum_csq / count` = tile variance (center during accumulation).
     pub _reserved: u64,
 }
 

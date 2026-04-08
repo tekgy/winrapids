@@ -7,6 +7,9 @@ description = "Tiled accumulation primitive — 2D blocked reduction with plugga
 [dependencies]
 blake3 = "1"
 
+[dependencies.tam-gpu]
+path = "../tam-gpu"
+
 [[bin]]
 name = "tiled-test"
 path = "src/main.rs"

@@ -134,7 +134,17 @@
       "Bash(.venv/Scripts/python.exe -c \"\nimport sys\nsys.path.insert\\(0, 'R:/winrapids'\\)\nfrom experiments.exp015_gpu_memory_management import exp_e_wddm_pool, exp_f_cold_start\nexp_e_wddm_pool\\(\\)\nexp_f_cold_start\\(\\)\nprint\\('DONE'\\)\n\" 2>&1)",
       "Bash(.venv/Scripts/python.exe -c \"\nimport sys\nsys.path.insert\\(0, 'R:/winrapids'\\)\nfrom experiments.exp015_gpu_memory_management import exp_d_pinned_memory\nexp_d_pinned_memory\\(\\)\nprint\\('DONE'\\)\n\" 2>&1)",
       "Bash(cp:*)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Read(//r/pith/**)",
+      "Bash(mkdir -p R:/tam-ide)",
+      "Read(//r//**)",
+      "Bash(cargo install:*)",
+      "Bash(npm create:*)",
+      "Read(//r/tam-ide-app/**)",
+      "Bash(npm install:*)",
+      "Bash(cargo tauri:*)",
+      "Bash(npx vite:*)",
+      "Skill(remember)"
     ]
   }
 }

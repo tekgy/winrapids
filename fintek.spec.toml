@@ -1,0 +1,249 @@
+# K02P12C01R02 — DFA (Detrended Fluctuation Analysis)
+#
+# This file IS the leaf. There is no Rust file for this leaf.
+# The trunk machinery reads this spec, resolves channels, runs
+# the compute kernel, evaluates V/E rules, writes MKTF output.
+#
+# The compute kernel "dfa" is a SHARED ALGORITHM registered in
+# trunk-rs's kernel library. Many leaves can use the same kernel
+# with different params. The kernel knows how to: receive a bin
+# slice, read params, compute, return named outputs.
+
+# ═══════════════════════════════════════════════════════════════
+# IDENTITY — who am I in the tree
+# ═══════════════════════════════════════════════════════════════
+
+[identity]
+id = "K02P12C01R02"
+name = "dfa"
+version = "2.0.0"
+status = "production"           # production | development | deprecated
+description = "Detrended Fluctuation Analysis — scaling exponent from tick log-returns"
+
+# ═══════════════════════════════════════════════════════════════
+# TREE — where I live in the fractal
+# ═══════════════════════════════════════════════════════════════
+
+[tree]
+kingdom = 2                     # K02 = per-bin features
+phylum = 12                     # P12 = fractal/scaling family
+class = 1                       # C01 = Hurst estimators
+rank = 2                        # R02 = DFA variant (R01 = R/S)
+# family, genus, species default to 0
+
+# ═══════════════════════════════════════════════════════════════
+# COMPUTE — how to run me
+# ═══════════════════════════════════════════════════════════════
+
+[compute]
+kernel = "dfa"                  # registered kernel in trunk-rs kernel library
+target = "cpu"                  # cpu | gpu | either
+shape = "reduction"             # pointwise | reduction | cross_cadence | cross_ticker
+domain = "time"                 # time | fft | wavelet | sufficient | correlation | eigenvector
+cadences = "all"                # "all" | [5, 14, 23] | "coarse_only"
+
+# ═══════════════════════════════════════════════════════════════
+# PARAMS — algorithm configuration (kernel reads these)
+# ═══════════════════════════════════════════════════════════════
+
+[params]
+min_ticks = 20                  # skip bins with fewer ticks
+min_scales = 3                  # minimum scale points for valid regression
+window_min = 4                  # smallest detrending window
+window_max_fraction = 0.25      # largest window = n * this
+window_progression = "powers_of_2"  # powers_of_2 | linear | fibonacci
+detrend_order = 1               # polynomial order (1=linear, 2=quadratic DFA-2)
+null_value = "NaN"              # what to output for insufficient data
+
+# ═══════════════════════════════════════════════════════════════
+# CHANNELS — my inputs (what upstream data I consume)
+# ═══════════════════════════════════════════════════════════════
+
+[[channels]]
+id = "DI01"
+name = "tick_data"
+source = "@K01P01"              # full leaf address
+columns = ["DO01", "DO02", "DO03"]  # price, size, timestamps — which outputs I need
+description = "Raw tick data for log-return computation"
+
+# ═══════════════════════════════════════════════════════════════
+# OUTPUTS — my DO columns (the computed values)
+# ═══════════════════════════════════════════════════════════════
+
+[[outputs]]
+id = "DO01"
+name = "alpha"
+dtype = "f64"
+description = "DFA scaling exponent (0.5 = random walk, >0.5 persistent, <0.5 antipersistent)"
+unit = "dimensionless"
+range = [0.0, 2.0]             # expected range for sanity checking
+
+[[outputs]]
+id = "DO02"
+name = "alpha_se"
+dtype = "f64"
+description = "Standard error of alpha estimate"
+unit = "dimensionless"
+
+[[outputs]]
+id = "DO03"
+name = "r_squared"
+dtype = "f64"
+description = "R-squared of log-log fit (quality of scaling)"
+range = [0.0, 1.0]
+
+[[outputs]]
+id = "DO04"
+name = "n_scales"
+dtype = "f64"
+description = "Number of scale points used in regression"
+
+[[outputs]]
+id = "DO05"
+name = "intercept"
+dtype = "f64"
+description = "Log-log fit intercept"
+
+[[outputs]]
+id = "DO06"
+name = "alpha_z"
+dtype = "f64"
+description = "Z-score: (alpha - 0.5) / se — significance of departure from random walk"
+
+# ═══════════════════════════════════════════════════════════════
+# VALIDITY — my V columns (self-assessment of trustworthiness)
+# V01-V03 are system-wide (executor computes). V04+ are mine.
+# Rules reference DO addresses. Evaluated per-bin after compute.
+# ═══════════════════════════════════════════════════════════════
+
+[[validity]]
+id = "V04"
+name = "scale_sufficiency"
+dtype = "f32"
+description = "Confidence based on number of scale points used"
+rule = "DO04 >= 4 ? 1.0 : DO04 / 4.0"
+
+[[validity]]
+id = "V05"
+name = "fit_quality"
+dtype = "f32"
+description = "R-squared passthrough — how well the scaling model fits"
+rule = "DO03"
+
+[[validity]]
+id = "V06"
+name = "data_sufficiency"
+dtype = "f32"
+description = "Did this bin have enough ticks for meaningful DFA?"
+rule = "DO04 > 0 ? 1.0 : 0.0"
+
+# ═══════════════════════════════════════════════════════════════
+# EMISSIONS — my E columns (signals that something happened)
+# Rules reference DO addresses. Evaluated per-bin after compute.
+# These are the raw material for K05 detection leaves.
+# ═══════════════════════════════════════════════════════════════
+
+[[emissions]]
+id = "E01"
+name = "persistent_regime"
+dtype = "f32"
+description = "Alpha > 0.6 — trend-following regime detected"
+rule = "DO01 > 0.6"
+
+[[emissions]]
+id = "E02"
+name = "mean_reverting_regime"
+dtype = "f32"
+description = "Alpha < 0.4 — mean-reverting regime detected"
+rule = "DO01 < 0.4"
+
+[[emissions]]
+id = "E03"
+name = "clean_scaling"
+dtype = "f32"
+description = "R-squared > 0.9 — DFA model fits cleanly (trust alpha)"
+rule = "DO03 > 0.9"
+
+[[emissions]]
+id = "E04"
+name = "random_walk"
+dtype = "f32"
+description = "Alpha near 0.5 — efficient market hypothesis holds"
+rule = "abs(DO01 - 0.5) < 0.05"
+
+[[emissions]]
+id = "E05"
+name = "significant_departure"
+dtype = "f32"
+description = "Z-score > 2 — alpha is statistically different from random walk"
+rule = "abs(DO06) > 2.0"
+
+# ═══════════════════════════════════════════════════════════════
+# ARRAY OUTPUTS — DO columns that produce A### sub-arrays
+# (for leaves that output multiple values per output, like
+#  wavelets with M coefficients or FFT with N frequency bins)
+# DFA doesn't use these — included for completeness.
+# ═══════════════════════════════════════════════════════════════
+
+# [[arrays]]
+# id = "DO07"
+# name = "fluctuation_function"
+# dtype = "f64"
+# n_array = 20                 # up to 20 scale points
+# description = "F(s) values at each window size"
+
+# ═══════════════════════════════════════════════════════════════
+# CONTRACT — performance and quality guarantees
+# The system VERIFIES these. Violations go to V columns.
+# ═══════════════════════════════════════════════════════════════
+
+[contract]
+max_null_rate = 0.8             # at most 80% NaN (fine cadences have many empty bins)
+min_row_survival = 0.0          # no minimum (empty days valid)
+max_us_per_bin = 100            # performance budget: 100 microseconds per bin
+complexity = "O(n_ticks * log(n_ticks))"  # asymptotic complexity per bin
+memory_model = "streaming"      # streaming | batch | external
+
+# ═══════════════════════════════════════════════════════════════
+# METADATA — for humans, search, CLI, visualization
+# ═══════════════════════════════════════════════════════════════
+
+[meta]
+tags = ["fractal", "hurst", "dfa", "detrended-fluctuation", "long-memory", "scaling"]
+about = """
+Detrended Fluctuation Analysis. Measures the scaling exponent of
+cumulative deviations from the mean, after polynomial detrending.
+Alpha = 0.5 is random walk (white noise), >0.5 is persistent
+(long memory), <0.5 is antipersistent (mean-reverting).
+
+Handles nonstationarity better than R/S analysis. Sensitive to
+polynomial trends (controlled by detrend_order param).
+
+Cross-validate with: spectral slope (beta = 2*alpha - 1 for fBm),
+R/S Hurst, and MF-DFA width for multifractality.
+"""
+references = [
+    "Peng et al. (1994) Mosaic organization of DNA nucleotides",
+    "Kantelhardt et al. (2002) Multifractal DFA",
+]
+
+[math]
+expression = "alpha = slope(log F(s) vs log s)"
+inputs = "log-return profile per bin"
+output = "DFA scaling exponent and diagnostics"
+assumptions = [
+    "Returns are approximately stationary within each bin",
+    "Sufficient ticks for multi-scale analysis (min_ticks param)",
+    "Power-law scaling holds across window sizes",
+]
+
+# ═══════════════════════════════════════════════════════════════
+# UPSTREAM RELATIONSHIPS — for K03+ leaves that read other leaves
+# (DFA reads K01 directly so this is empty, but K03 scaling_triple
+#  would declare its upstream DFA/RS/MFDFA dependencies here)
+# ═══════════════════════════════════════════════════════════════
+
+# [[upstream]]
+# leaf = "@K02P12C01R02"       # this leaf's address (for K03+)
+# outputs = ["DO01", "DO06"]   # which outputs to read
+# cadences = "all"             # read at all cadences (for cross-cadence K03)

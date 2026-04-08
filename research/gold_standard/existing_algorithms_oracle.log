@@ -1,0 +1,14 @@
+R:\winrapids\.venv\Lib\site-packages\sklearn\linear_model\_logistic.py:1135: FutureWarning: 'penalty' was deprecated in version 1.8 and will be removed in 1.10. To avoid this warning, leave 'penalty' set to its default value and use 'l1_ratio' or 'C' instead. Use l1_ratio=0 instead of penalty='l2', l1_ratio=1 instead of penalty='l1', and C=np.inf instead of penalty=None.
+  warnings.warn(
+R:\winrapids\.venv\Lib\site-packages\sklearn\linear_model\_logistic.py:1135: FutureWarning: 'penalty' was deprecated in version 1.8 and will be removed in 1.10. To avoid this warning, leave 'penalty' set to its default value and use 'l1_ratio' or 'C' instead. Use l1_ratio=0 instead of penalty='l2', l1_ratio=1 instead of penalty='l1', and C=np.inf instead of penalty=None.
+  warnings.warn(
+
+8 algorithms, 22 test cases
+  linear_regression: 4 tests (oracle: sklearn.LinearRegression)
+  logistic_regression: 2 tests (oracle: sklearn.LogisticRegression)
+  dbscan: 4 tests (oracle: sklearn.cluster.DBSCAN)
+  kmeans: 1 tests (oracle: sklearn.cluster.KMeans)
+  knn: 1 tests (oracle: sklearn.neighbors.NearestNeighbors)
+  softmax: 5 tests (oracle: scipy.special.softmax)
+  dot_product: 3 tests (oracle: numpy.matmul)
+  l2_distance_matrix: 2 tests (oracle: scipy.spatial.distance.cdist)

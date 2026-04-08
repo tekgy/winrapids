@@ -1,0 +1,125 @@
+{
+  "euclidean_pythagorean": {
+    "p1": [
+      0.0,
+      0.0
+    ],
+    "p2": [
+      3.0,
+      4.0
+    ],
+    "distance": 5.0
+  },
+  "euclidean_same_point": {
+    "p1": [
+      1.0,
+      2.0
+    ],
+    "p2": [
+      1.0,
+      2.0
+    ],
+    "distance": 0.0
+  },
+  "euclidean_diagonal": {
+    "p1": [
+      0.0,
+      0.0
+    ],
+    "p2": [
+      1.0,
+      1.0
+    ],
+    "distance": 1.4142135623730951
+  },
+  "haversine_nyc_london": {
+    "lat1": 40.7128,
+    "lon1": -74.006,
+    "lat2": 51.5074,
+    "lon2": -0.1278,
+    "distance_km": 5570.222179737958,
+    "tol_km": 10.0
+  },
+  "haversine_same_point": {
+    "lat1": 51.5074,
+    "lon1": -0.1278,
+    "lat2": 51.5074,
+    "lon2": -0.1278,
+    "distance_km": 0.0
+  },
+  "haversine_equator_1deg": {
+    "lat1": 0.0,
+    "lon1": 0.0,
+    "lat2": 0.0,
+    "lon2": 1.0,
+    "distance_km": 111.19492664455873,
+    "tol_km": 0.5
+  },
+  "variogram_spherical_h5": {
+    "nugget": 0.0,
+    "sill": 1.0,
+    "range": 10.0,
+    "h": 5.0,
+    "gamma": 0.6875
+  },
+  "variogram_spherical_h15": {
+    "nugget": 0.0,
+    "sill": 1.0,
+    "range": 10.0,
+    "h": 15.0,
+    "gamma": 1.0
+  },
+  "variogram_exponential_h5": {
+    "nugget": 0.0,
+    "sill": 1.0,
+    "range": 10.0,
+    "h": 5.0,
+    "gamma": 0.7768698398515702
+  },
+  "variogram_gaussian_h5": {
+    "nugget": 0.0,
+    "sill": 1.0,
+    "range": 10.0,
+    "h": 5.0,
+    "gamma": 0.5276334472589853
+  },
+  "variogram_spherical_nugget": {
+    "nugget": 0.5,
+    "sill": 1.0,
+    "range": 10.0,
+    "h": 5.0,
+    "gamma": 1.1875
+  },
+  "morans_i_simple": {
+    "values": [
+      1.0,
+      0.0,
+      1.0
+    ],
+    "I": -1.0,
+    "expected_I": -0.5
+  },
+  "clark_evans_grid": {
+    "points": [
+      [
+        0.25,
+        0.25
+      ],
+      [
+        0.25,
+        0.75
+      ],
+      [
+        0.75,
+        0.25
+      ],
+      [
+        0.75,
+        0.75
+      ]
+    ],
+    "area": 1.0,
+    "n": 4,
+    "note": "regular grid, R > 1 expected"
+  }
+}

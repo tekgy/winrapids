@@ -1,0 +1,73 @@
+{
+  "sampen_periodic": {
+    "value": 0.24037219293022166,
+    "emb_dim": 2,
+    "tolerance_factor": 0.2,
+    "n": 500,
+    "note": "periodic sin(0.1*i), SampEn should be low (<1.0)"
+  },
+  "sampen_random": {
+    "value": 2.1129642337184795,
+    "emb_dim": 2,
+    "tolerance_factor": 0.2,
+    "n": 500,
+    "note": "random N(0,1), SampEn should be higher than periodic"
+  },
+  "hurst_random_walk": {
+    "value": 0.9169938042559469,
+    "n": 2000,
+    "expected_range": [
+      0.3,
+      0.7
+    ],
+    "note": "random walk, H should be near 0.5"
+  },
+  "hurst_trending": {
+    "value": 0.9345884332452625,
+    "n": 2000,
+    "note": "monotone trending, H should be > 0.5"
+  },
+  "hurst_alternating": {
+    "value": -0.5165992666140256,
+    "n": 2000,
+    "note": "alternating +-1, H should be < 0.5"
+  },
+  "dfa_white_noise": {
+    "value": 0.5381070868694968,
+    "n": 1000,
+    "expected_range": [
+      0.3,
+      0.7
+    ],
+    "note": "white noise, DFA alpha should be near 0.5"
+  },
+  "dfa_brownian": {
+    "value": 1.4105361720421021,
+    "n": 1000,
+    "expected_range": [
+      1.0,
+      2.0
+    ],
+    "note": "Brownian motion, DFA alpha should be near 1.5"
+  },
+  "corr_dim_sine": {
+    "value": 1.060821052955831,
+    "emb_dim": 3,
+    "note": "sine wave, low-dimensional attractor"
+  },
+  "pe_monotonic": {
+    "value": 0.0,
+    "m": 3,
+    "note": "monotonic [0,1,2,...] -> only one pattern -> PE=0"
+  },
+  "pe_max_m3": {
+    "max_value": 1.791759469228055,
+    "m": 3,
+    "note": "max PE = ln(m!) = ln(6) for m=3"
+  },
+  "pe_max_m4": {
+    "max_value": 3.1780538303479458,
+    "m": 4,
+    "note": "max PE = ln(m!) = ln(24) for m=4"
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "h0_collinear_4pt": {
+    "dist_matrix": [
+      [
+        0.0,
+        1.0,
+        2.0,
+        3.0
+      ],
+      [
+        1.0,
+        0.0,
+        1.0,
+        2.0
+      ],
+      [
+        2.0,
+        1.0,
+        0.0,
+        1.0
+      ],
+      [
+        3.0,
+        2.0,
+        1.0,
+        0.0
+      ]
+    ],
+    "n": 4,
+    "n_h0_pairs": 4,
+    "n_finite": 3,
+    "n_infinite": 1,
+    "finite_deaths": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "note": "4 collinear points, step=1. All merges at d=1."
+  },
+  "h0_two_clusters": {
+    "n": 6,
+    "intra_dist": 0.1,
+    "inter_dist": 10.0,
+    "max_h0_persistence_expected": 10.0,
+    "n_features_above_1": 1,
+    "note": "Two tight clusters far apart. Max persistence \u2248 inter-cluster gap."
+  },
+  "persistence_entropy_2_equal": {
+    "n_pairs": 2,
+    "persistence_each": 1.0,
+    "expected_entropy": 0.6931471805599453,
+    "note": "2 equal pairs \u2192 entropy = ln(2) = 0.6931471806"
+  },
+  "persistence_entropy_3_equal": {
+    "n_pairs": 3,
+    "persistence_each": 1.0,
+    "expected_entropy": 1.0986122886681098,
+    "note": "3 equal pairs \u2192 entropy = ln(3) = 1.0986122887"
+  },
+  "persistence_entropy_4_equal": {
+    "n_pairs": 4,
+    "persistence_each": 1.0,
+    "expected_entropy": 1.3862943611198906,
+    "note": "4 equal pairs \u2192 entropy = ln(4) = 1.3862943611"
+  },
+  "persistence_entropy_8_equal": {
+    "n_pairs": 8,
+    "persistence_each": 1.0,
+    "expected_entropy": 2.0794415416798357,
+    "note": "8 equal pairs \u2192 entropy = ln(8) = 2.0794415417"
+  },
+  "persistence_entropy_1_pair": {
+    "n_pairs": 1,
+    "expected_entropy": 0.0,
+    "note": "Single pair: p=1, -1\u00b7ln(1)=0"
+  },
+  "persistence_statistics_exact": {
+    "persistences": [
+      1.0,
+      3.0,
+      3.0
+    ],
+    "count": 3,
+    "total": 7.0,
+    "max": 3.0,
+    "mean": 2.3333333333333335,
+    "std": 0.9428090415820634,
+    "note": "Exact statistics of [1, 3, 3]"
+  },
+  "bottleneck_metric_properties": {
+    "self_distance": 0.0,
+    "triangle_inequality": true,
+    "symmetry": true,
+    "note": "Bottleneck is a metric on persistence diagrams"
+  },
+  "wasserstein_metric_properties": {
+    "self_distance": 0.0,
+    "nonnegative": true,
+    "note": "1-Wasserstein on persistence diagrams"
+  }
+}

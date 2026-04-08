@@ -1,0 +1,193 @@
+{
+  "golden_section_parabola": {
+    "x_star": 3.0,
+    "f_star": 0.0,
+    "true_x": 3.0,
+    "true_f": 0.0,
+    "tol": 1e-06
+  },
+  "golden_section_cos": {
+    "x_star": 3.141592648622993,
+    "f_star": -1.0,
+    "true_x": 3.141592653589793,
+    "true_f": -1.0,
+    "tol": 1e-06
+  },
+  "quadratic_cg": {
+    "x_star": [
+      6.696607251535646e-13,
+      4.0179643509213876e-13
+    ],
+    "f_star": 6.098858620659492e-25,
+    "true_x": [
+      0.0,
+      0.0
+    ],
+    "true_f": 0.0,
+    "converged": true,
+    "niter": 4,
+    "tol": 0.0001
+  },
+  "quadratic_bfgs": {
+    "x_star": [
+      -1.3322676295501878e-15,
+      1.9984014443252818e-15
+    ],
+    "f_star": 5.768545369428649e-30,
+    "true_x": [
+      0.0,
+      0.0
+    ],
+    "true_f": 0.0,
+    "converged": true,
+    "niter": 3,
+    "tol": 0.0001
+  },
+  "quadratic_lbfgsb": {
+    "x_star": [
+      -1.7763568394002505e-15,
+      4.440892098500626e-16
+    ],
+    "f_star": 3.3526588471893e-30,
+    "true_x": [
+      0.0,
+      0.0
+    ],
+    "true_f": 0.0,
+    "converged": true,
+    "niter": 2,
+    "tol": 0.0001
+  },
+  "quadratic_neldermead": {
+    "x_star": [
+      4.9732446945167756e-05,
+      2.7066527278988173e-05
+    ],
+    "f_star": 3.2059131780981367e-09,
+    "true_x": [
+      0.0,
+      0.0
+    ],
+    "true_f": 0.0,
+    "converged": true,
+    "niter": 46,
+    "tol": 0.0001
+  },
+  "quadratic_powell": {
+    "x_star": [
+      1.7763568394002505e-15,
+      0.0
+    ],
+    "f_star": 3.1554436208840472e-30,
+    "true_x": [
+      0.0,
+      0.0
+    ],
+    "true_f": 0.0,
+    "converged": true,
+    "niter": 2,
+    "tol": 0.0001
+  },
+  "rosenbrock_lbfgsb": {
+    "x_star": [
+      0.9999999961148853,
+      0.9999999918929924
+    ],
+    "f_star": 2.643607647823512e-17,
+    "true_x": [
+      1.0,
+      1.0
+    ],
+    "true_f": 0.0,
+    "converged": true,
+    "niter": 37,
+    "tol": 0.01
+  },
+  "rosenbrock_neldermead": {
+    "x_star": [
+      1.0000010238709347,
+      1.0000000360006123
+    ],
+    "f_star": 4.0575902202767407e-10,
+    "true_x": [
+      1.0,
+      1.0
+    ],
+    "true_f": 0.0,
+    "converged": true,
+    "niter": 100,
+    "tol": 0.01
+  },
+  "rosenbrock_cg": {
+    "x_star": [
+      0.9999999999312413,
+      0.9999999998621419
+    ],
+    "f_star": 4.7393635907019354e-21,
+    "true_x": [
+      1.0,
+      1.0
+    ],
+    "true_f": 0.0,
+    "converged": true,
+    "niter": 46,
+    "tol": 0.01
+  },
+  "rosenbrock_bfgs": {
+    "x_star": [
+      0.9999999999999926,
+      0.9999999999999719
+    ],
+    "f_star": 1.7510111320109562e-26,
+    "true_x": [
+      1.0,
+      1.0
+    ],
+    "true_f": 0.0,
+    "converged": true,
+    "niter": 33,
+    "tol": 0.01
+  },
+  "box_constrained": {
+    "x_star": [
+      1.0,
+      2.0
+    ],
+    "f_star": 5.0,
+    "true_x": [
+      1.0,
+      2.0
+    ],
+    "true_f": 5.0,
+    "converged": true,
+    "tol": 0.0001
+  },
+  "beale_nelder_mead": {
+    "x_star": [
+      2.9999999999792024,
+      0.499999999999465
+    ],
+    "f_star": 5.61940241644685e-22,
+    "true_x": [
+      3.0,
+      0.5
+    ],
+    "true_f": 0.0,
+    "converged": true,
+    "tol": 0.01
+  },
+  "booth_lbfgsb": {
+    "x_star": [
+      1.0000002203090308,
+      3.0000002835548387
+    ],
+    "f_star": 1.1444546112789728e-12,
+    "true_x": [
+      1.0,
+      3.0
+    ],
+    "true_f": 0.0,
+    "converged": true,
+    "tol": 1e-06
+  }
+}

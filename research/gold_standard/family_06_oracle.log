@@ -1,0 +1,74 @@
+  standard_normal_1000: 71 statistics computed
+  uniform_01_1000: 71 statistics computed
+  exponential_1000: 71 statistics computed
+  t_dist_df3_1000: 71 statistics computed
+  bimodal_1000: 71 statistics computed
+  lognormal_1000: 71 statistics computed
+R:\winrapids\research\gold_standard\family_06_descriptive_stats.py:50: RuntimeWarning: Precision loss occurred in moment calculation due to catastrophic cancellation. This occurs when the data are nearly identical. Results may be unreliable.
+  result["skewness_fisher_biased"] = float(sp_stats.skew(data, bias=True))
+R:\winrapids\research\gold_standard\family_06_descriptive_stats.py:51: RuntimeWarning: Precision loss occurred in moment calculation due to catastrophic cancellation. This occurs when the data are nearly identical. Results may be unreliable.
+  result["skewness_fisher_unbiased"] = float(sp_stats.skew(data, bias=False))
+R:\winrapids\research\gold_standard\family_06_descriptive_stats.py:53: RuntimeWarning: Precision loss occurred in moment calculation due to catastrophic cancellation. This occurs when the data are nearly identical. Results may be unreliable.
+  result["kurtosis_fisher_biased"] = float(sp_stats.kurtosis(data, bias=True))
+R:\winrapids\research\gold_standard\family_06_descriptive_stats.py:54: RuntimeWarning: Precision loss occurred in moment calculation due to catastrophic cancellation. This occurs when the data are nearly identical. Results may be unreliable.
+  result["kurtosis_fisher_unbiased"] = float(sp_stats.kurtosis(data, bias=False))
+R:\winrapids\research\gold_standard\family_06_descriptive_stats.py:56: RuntimeWarning: Precision loss occurred in moment calculation due to catastrophic cancellation. This occurs when the data are nearly identical. Results may be unreliable.
+  result["kurtosis_pearson_biased"] = float(sp_stats.kurtosis(data, bias=True, fisher=False))
+R:\winrapids\research\gold_standard\family_06_descriptive_stats.py:57: RuntimeWarning: Precision loss occurred in moment calculation due to catastrophic cancellation. This occurs when the data are nearly identical. Results may be unreliable.
+  result["kurtosis_pearson_unbiased"] = float(sp_stats.kurtosis(data, bias=False, fisher=False))
+R:\winrapids\.venv\Lib\site-packages\scipy\_lib\_util.py:951: RuntimeWarning: Precision loss occurred in moment calculation due to catastrophic cancellation. This occurs when the data are nearly identical. Results may be unreliable.
+  return fun(*args, **kwargs)
+R:\winrapids\.venv\Lib\site-packages\scipy\stats\_axis_nan_policy.py:592: UserWarning: scipy.stats.shapiro: Input data has range zero. The results may not be accurate.
+  res = hypotest_fun_out(*samples, **kwds)
+R:\winrapids\.venv\Lib\site-packages\scipy\stats\_stats_py.py:1677: RuntimeWarning: Precision loss occurred in moment calculation due to catastrophic cancellation. This occurs when the data are nearly identical. Results may be unreliable.
+  b2 = skew(a, axis, _no_deco=True)
+R:\winrapids\.venv\Lib\site-packages\scipy\stats\_stats_py.py:1778: RuntimeWarning: Precision loss occurred in moment calculation due to catastrophic cancellation. This occurs when the data are nearly identical. Results may be unreliable.
+  b2 = kurtosis(a, axis, fisher=False, _no_deco=True)
+  all_same_100: 70 statistics computed
+R:\winrapids\.venv\Lib\site-packages\numpy\_core\fromnumeric.py:4232: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+R:\winrapids\.venv\Lib\site-packages\numpy\_core\_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+R:\winrapids\.venv\Lib\site-packages\numpy\_core\_methods.py:219: RuntimeWarning: Degrees of freedom <= 0 for slice
+  ret = _var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+  single_element: 66 statistics computed
+  two_elements: 67 statistics computed
+  alternating_extreme_100: 71 statistics computed
+R:\winrapids\.venv\Lib\site-packages\numpy\_core\_methods.py:190: RuntimeWarning: overflow encountered in square
+  x = um.square(x, out=x)
+R:\winrapids\.venv\Lib\site-packages\scipy\stats\_stats_py.py:1234: RuntimeWarning: overflow encountered in square
+  s = a_zero_mean**2
+R:\winrapids\.venv\Lib\site-packages\scipy\stats\_stats_py.py:1238: RuntimeWarning: overflow encountered in square
+  s = s**2
+R:\winrapids\.venv\Lib\site-packages\numpy\_core\_methods.py:132: RuntimeWarning: invalid value encountered in reduce
+  ret = umr_sum(arr, axis, dtype, out, keepdims, where=where)
+R:\winrapids\research\gold_standard\family_06_descriptive_stats.py:63: RuntimeWarning: overflow encountered in square
+  result[f"raw_moment_{k}"] = float(np.mean(data ** k))
+R:\winrapids\research\gold_standard\family_06_descriptive_stats.py:63: RuntimeWarning: overflow encountered in power
+  result[f"raw_moment_{k}"] = float(np.mean(data ** k))
+R:\winrapids\research\gold_standard\family_06_descriptive_stats.py:76: RuntimeWarning: overflow encountered in square
+  result["msr_sum_p2"] = float(np.sum(data ** 2))
+R:\winrapids\research\gold_standard\family_06_descriptive_stats.py:86: RuntimeWarning: overflow encountered in square
+  result["msr_sum_r2"] = float(np.sum(returns ** 2))
+R:\winrapids\research\gold_standard\family_06_descriptive_stats.py:87: RuntimeWarning: overflow encountered in power
+  result["msr_sum_r3"] = float(np.sum(returns ** 3))
+R:\winrapids\.venv\Lib\site-packages\numpy\_core\fromnumeric.py:83: RuntimeWarning: invalid value encountered in reduce
+  return ufunc.reduce(obj, axis, dtype, out, **passkwargs)
+R:\winrapids\research\gold_standard\family_06_descriptive_stats.py:88: RuntimeWarning: overflow encountered in power
+  result["msr_sum_r4"] = float(np.sum(returns ** 4))
+  near_overflow_10: FAILED — (34, 'Result too large')
+  with_nan_10: 68 statistics computed
+R:\winrapids\.venv\Lib\site-packages\numpy\_core\_methods.py:168: RuntimeWarning: invalid value encountered in reduce
+  arrmean = umr_sum(arr, axis, dtype, keepdims=True, where=where)
+R:\winrapids\.venv\Lib\site-packages\numpy\lib\_function_base_impl.py:4597: RuntimeWarning: invalid value encountered in add
+  lerp_interpolation = add(a, diff_b_a * t, out=... if out is None else out)
+R:\winrapids\.venv\Lib\site-packages\numpy\lib\_function_base_impl.py:4598: RuntimeWarning: invalid value encountered in subtract
+  subtract(b, diff_b_a * (1 - t), out=lerp_interpolation, where=t >= 0.5,
+R:\winrapids\.venv\Lib\site-packages\scipy\stats\_morestats.py:2076: RuntimeWarning: invalid value encountered in subtract
+  y -= x[N//2]  # subtract the median (or a nearby value); see gh-15777
+  with_inf_10: 68 statistics computed
+  monotone_100: 71 statistics computed
+  tick_prices_10k: 71 statistics computed
+  large_normal_100k: 71 statistics computed
+
+Total: 16 datasets, 1049 gold standard values

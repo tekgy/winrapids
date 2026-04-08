@@ -1,0 +1,68 @@
+{
+  "correlation_matrix": {
+    "n": 100,
+    "p": 4,
+    "data_seed": 42,
+    "corr_matrix": [
+      [
+        1.0,
+        0.8615555609764848,
+        -0.10904384863520855,
+        -0.12830595344048215
+      ],
+      [
+        0.8615555609764848,
+        1.0,
+        -0.11918597503242113,
+        -0.14463249580093362
+      ],
+      [
+        -0.10904384863520855,
+        -0.11918597503242113,
+        1.0,
+        0.8572983704904658
+      ],
+      [
+        -0.12830595344048215,
+        -0.14463249580093365,
+        0.8572983704904656,
+        1.0
+      ]
+    ],
+    "diagonal_all_ones": true,
+    "symmetric": true,
+    "note": "numpy.corrcoef ground truth. Diagonal=1, symmetric."
+  },
+  "eigenvalues_for_kaiser": {
+    "eigenvalues": [
+      2.110192501351025,
+      1.6090623415118088,
+      0.144093890947752,
+      0.13665126618941328
+    ],
+    "kaiser_count": 2,
+    "note": "Eigenvalues of correlation matrix. Kaiser: retain if > 1."
+  },
+  "cronbach_alpha_high": {
+    "alpha": 0.504547165590457,
+    "n_items": 4,
+    "sum_item_var": 2.5147561406553836,
+    "total_var": 4.045685507363285,
+    "note": "Factor-structured data: \u03b1 should be > 0.7"
+  },
+  "cronbach_alpha_low": {
+    "alpha": 0.12267866496273235,
+    "n_items": 4,
+    "note": "Random data: \u03b1 should be near 0 or negative"
+  },
+  "kaiser_criterion": {
+    "eigenvalues": [
+      2.110192501351025,
+      1.6090623415118088,
+      0.144093890947752,
+      0.13665126618941328
+    ],
+    "n_above_1": 2,
+    "note": "Kaiser: retain factors with eigenvalue > 1"
+  }
+}

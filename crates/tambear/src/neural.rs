@@ -554,6 +554,7 @@ pub fn avg_pool2d(
 /// Global average pooling over spatial dims. Input: [channels * h * w] → [channels].
 pub fn global_avg_pool2d(input: &[f64], channels: usize, h: usize, w: usize) -> Vec<f64> {
     let spatial = h * w;
+    if spatial == 0 { return vec![0.0; channels]; }
     let inv = 1.0 / spatial as f64;
     (0..channels).map(|c| {
         let base = c * spatial;
@@ -620,6 +621,7 @@ pub fn batch_norm(
     }
 
     // Normalize + scale + shift
+    let eps = eps.max(f64::MIN_POSITIVE);
     let mut output = vec![0.0; batch_size * features];
     for b in 0..batch_size {
         for f in 0..features {
@@ -902,6 +904,7 @@ pub fn positional_encoding(max_len: usize, d_model: usize) -> Mat {
 pub fn rope(input: &Mat, base: f64) -> Mat {
     let seq_len = input.rows;
     let d = input.cols;
+    let base = base.max(1.0); // base must be positive; default 10000
     let mut output = Mat::zeros(seq_len, d);
 
     for pos in 0..seq_len {
@@ -1213,7 +1216,7 @@ pub fn label_smooth(targets: &[usize], num_classes: usize, epsilon: f64) -> Vec<
 
 /// Temperature scaling for logits.
 pub fn temperature_scale(logits: &[f64], temperature: f64) -> Vec<f64> {
-    let inv_t = 1.0 / temperature;
+    let inv_t = 1.0 / temperature.max(f64::MIN_POSITIVE);
     logits.iter().map(|&x| x * inv_t).collect()
 }
 

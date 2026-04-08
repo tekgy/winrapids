@@ -470,6 +470,7 @@ pub fn richardson_extrapolate(
     let n = approximations.len();
     if n == 0 { return 0.0; }
     if n == 1 { return approximations[0]; }
+    if (ratio - 1.0).abs() < 1e-15 { return *approximations.last().unwrap(); }
 
     let mut tableau = vec![vec![0.0; n]; n];
     for i in 0..n {
@@ -813,9 +814,9 @@ pub fn detect_convergence(terms: &[f64], probe: usize) -> ConvergenceType {
     // Coefficient of variation of the last half of ratios
     let half = ratios.len() / 2;
     let tail = &ratios[half..];
-    let mean: f64 = tail.iter().sum::<f64>() / tail.len() as f64;
-    let var: f64 = tail.iter().map(|&r| (r - mean).powi(2)).sum::<f64>() / tail.len() as f64;
-    let cv = var.sqrt() / mean.abs().max(1e-50);
+    let m = crate::descriptive::moments_ungrouped(tail);
+    let mean = m.mean();
+    let cv = m.std(0) / mean.abs().max(1e-50);
 
     // Decision tree: alternating takes priority when ratio → 1 (algebraic envelope).
     // True geometric has ratio well below 1 (e.g., 0.5, 0.8).

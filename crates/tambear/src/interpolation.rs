@@ -1026,8 +1026,9 @@ pub fn gp_regression(
         return GpResult { mean: vec![], std: vec![] };
     }
 
+    let ls = length_scale.max(1e-10);
     let rbf = |x1: f64, x2: f64| -> f64 {
-        signal_var * (-0.5 * (x1 - x2).powi(2) / (length_scale * length_scale)).exp()
+        signal_var * (-0.5 * (x1 - x2).powi(2) / (ls * ls)).exp()
     };
 
     // K(X, X) + σ_n² I
@@ -1036,7 +1037,7 @@ pub fn gp_regression(
         for j in 0..n {
             kxx[i][j] = rbf(x_train[i], x_train[j]);
             if i == j {
-                kxx[i][j] += noise_var;
+                kxx[i][j] += noise_var.max(1e-10); // jitter for numerical stability
             }
         }
     }
@@ -1051,7 +1052,7 @@ pub fn gp_regression(
         for j in 0..n {
             kxx_orig[i][j] = rbf(x_train[i], x_train[j]);
             if i == j {
-                kxx_orig[i][j] += noise_var;
+                kxx_orig[i][j] += noise_var.max(1e-10);
             }
         }
     }

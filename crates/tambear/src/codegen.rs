@@ -764,7 +764,7 @@ mod tests {
 
     #[test]
     fn map_wgsl_basic() {
-        let ks = emit_map("v * v + 1.0", CodegenTarget::Wgsl);
+        let ks = emit_map("v * v + 1.0", CodegenTarget::Wgsl, Precision::F64);
         assert_eq!(ks.entry, "map_phi_kernel");
         assert!(ks.source.contains("output[idx] = (v * v + 1.0)"));
         assert!(!ks.source.contains("atomic"), "map should not use atomics");
@@ -776,7 +776,7 @@ mod tests {
 
     #[test]
     fn map2_cuda_basic() {
-        let ks = emit_map2("a * b + 1.0", CodegenTarget::CudaC);
+        let ks = emit_map2("a * b + 1.0", CodegenTarget::CudaC, Precision::F64);
         assert_eq!(ks.entry, "map_phi2_kernel");
         assert!(ks.source.contains("output[gid] = (a * b + 1.0)"));
         assert!(ks.source.contains("double a = vals_a[gid]"));
@@ -785,7 +785,7 @@ mod tests {
 
     #[test]
     fn map2_wgsl_basic() {
-        let ks = emit_map2("a * b + 1.0", CodegenTarget::Wgsl);
+        let ks = emit_map2("a * b + 1.0", CodegenTarget::Wgsl, Precision::F64);
         assert_eq!(ks.entry, "map_phi2_kernel");
         assert!(ks.source.contains("output[idx] = (a * b + 1.0)"));
         assert!(ks.source.contains("let a = vals_a[idx]"));
@@ -798,7 +798,7 @@ mod tests {
 
     #[test]
     fn reduce_sum_cuda_structure() {
-        let ks = emit_reduce_sum(CodegenTarget::CudaC);
+        let ks = emit_reduce_sum(CodegenTarget::CudaC, Precision::F64);
         assert_eq!(ks.entry, "reduce_sum");
         assert!(ks.source.contains("extern __shared__ double shmem[]"));
         assert!(ks.source.contains("__syncthreads()"));
@@ -807,7 +807,7 @@ mod tests {
 
     #[test]
     fn reduce_sum_wgsl_structure() {
-        let ks = emit_reduce_sum(CodegenTarget::Wgsl);
+        let ks = emit_reduce_sum(CodegenTarget::Wgsl, Precision::F64);
         assert_eq!(ks.entry, "reduce_sum");
         assert!(ks.source.contains("var<workgroup> shmem: array<f32, 256>"));
         assert!(ks.source.contains("workgroupBarrier()"));
@@ -822,8 +822,8 @@ mod tests {
     fn same_phi_both_targets_same_entry() {
         let exprs = &["v", "v * v", "(v - r) * (v - r)", "1.0"];
         for phi in exprs {
-            let cuda = emit_scatter(phi, CodegenTarget::CudaC);
-            let wgsl = emit_scatter(phi, CodegenTarget::Wgsl);
+            let cuda = emit_scatter(phi, CodegenTarget::CudaC, Precision::F64);
+            let wgsl = emit_scatter(phi, CodegenTarget::Wgsl, Precision::F64);
             assert_eq!(cuda.entry, wgsl.entry, "entry mismatch for phi={}", phi);
             assert_eq!(cuda.target, CodegenTarget::CudaC);
             assert_eq!(wgsl.target, CodegenTarget::Wgsl);
@@ -855,17 +855,33 @@ mod tests {
         assert!(ks.source.contains("@group(0) @binding(4)"));
     }
 
+    #[test]
+    fn scatter_cuda_f32_precision() {
+        let ks = emit_scatter("v * v", CodegenTarget::CudaC, Precision::F32);
+        assert!(ks.source.contains("float phi = (v * v)"), "F32 should use float");
+        assert!(ks.source.contains("const float* __restrict__ values"));
+        assert!(!ks.source.contains("double"), "F32 should not contain double");
+    }
+
+    #[test]
+    fn map_cuda_f32_precision() {
+        let ks = emit_map("v * v", CodegenTarget::CudaC, Precision::F32);
+        assert!(ks.source.contains("const float* __restrict__ values"));
+        assert!(ks.source.contains("float* __restrict__ output"));
+        assert!(!ks.source.contains("double"));
+    }
+
     /// Verify all 5 well-known phi expressions generate valid kernels for both targets.
     #[test]
     fn all_standard_phis_codegen() {
         let phis = &["v", "v * v", "(v - r)", "(v - r) * (v - r)", "1.0"];
         for target in &[CodegenTarget::CudaC, CodegenTarget::Wgsl] {
             for phi in phis {
-                let ks = emit_scatter(phi, *target);
+                let ks = emit_scatter(phi, *target, Precision::F64);
                 assert!(!ks.source.is_empty(), "empty source for {:?} phi={}", target, phi);
                 assert!(!ks.entry.is_empty());
             }
-            let ks = emit_scatter_multi(phis, *target);
+            let ks = emit_scatter_multi(phis, *target, Precision::F64);
             assert!(!ks.source.is_empty());
         }
     }

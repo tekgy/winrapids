@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tam_gpu::{Backend, Buffer, Kernel, TamGpu};
 
-use crate::codegen::CodegenTarget;
+use crate::codegen::{CodegenTarget, Precision};
 
 const BLOCK_SIZE: u32 = 256;
 
@@ -36,15 +36,34 @@ const BLOCK_SIZE: u32 = 256;
 pub struct ComputeEngine {
     gpu: Arc<dyn TamGpu>,
     cache: HashMap<String, Kernel>,
+    precision: Precision,
 }
 
 impl ComputeEngine {
     pub fn new(gpu: Arc<dyn TamGpu>) -> Self {
-        ComputeEngine { gpu, cache: HashMap::new() }
+        ComputeEngine { gpu, cache: HashMap::new(), precision: Precision::F64 }
+    }
+
+    /// Create with explicit precision (wired from Frame::pipeline_dtype).
+    pub fn with_precision(gpu: Arc<dyn TamGpu>, precision: Precision) -> Self {
+        ComputeEngine { gpu, cache: HashMap::new(), precision }
     }
 
     pub fn backend(&self) -> Backend {
         self.gpu.backend()
+    }
+
+    /// Current precision setting.
+    pub fn precision(&self) -> Precision {
+        self.precision
+    }
+
+    /// Set precision (invalidates cache — different kernels needed).
+    pub fn set_precision(&mut self, precision: Precision) {
+        if self.precision != precision {
+            self.cache.clear();
+            self.precision = precision;
+        }
     }
 
     /// Returns the codegen target for the current backend, or None for CPU.
@@ -314,7 +333,7 @@ impl ComputeEngine {
         let cache_key = format!("scatter:{}:{}", phi_expr, n);
 
         if !self.cache.contains_key(&cache_key) {
-            let source = emit_scatter_cuda_tamgpu(phi_expr, n);
+            let source = emit_scatter_cuda_tamgpu(phi_expr, n, self.precision);
             let kernel = self.gpu.compile(&source, "scatter_phi")?;
             self.cache.insert(cache_key.clone(), kernel);
         }
@@ -354,7 +373,7 @@ impl ComputeEngine {
         let cache_key = format!("scatter_multi:{}:{}", phi_exprs.join("|"), n);
 
         if !self.cache.contains_key(&cache_key) {
-            let source = emit_scatter_multi_cuda_tamgpu(phi_exprs, n);
+            let source = emit_scatter_multi_cuda_tamgpu(phi_exprs, n, self.precision);
             let kernel = self.gpu.compile(&source, "scatter_multi_phi")?;
             self.cache.insert(cache_key.clone(), kernel);
         }
@@ -408,7 +427,7 @@ impl ComputeEngine {
         let cache_key = format!("scatter_masked:{}:{}", phi_expr, n);
 
         if !self.cache.contains_key(&cache_key) {
-            let source = emit_scatter_masked_cuda_tamgpu(phi_expr, n);
+            let source = emit_scatter_masked_cuda_tamgpu(phi_expr, n, self.precision);
             let kernel = self.gpu.compile(&source, "scatter_phi_masked")?;
             self.cache.insert(cache_key.clone(), kernel);
         }
@@ -448,7 +467,7 @@ impl ComputeEngine {
         let cache_key = format!("scatter_extremum:{}:{}", op_name, n);
 
         if !self.cache.contains_key(&cache_key) {
-            let source = emit_scatter_extremum_cuda_tamgpu(is_max, n);
+            let source = emit_scatter_extremum_cuda_tamgpu(is_max, n, self.precision);
             let kernel = self.gpu.compile(&source, "scatter_extremum")?;
             self.cache.insert(cache_key.clone(), kernel);
         }
@@ -486,7 +505,7 @@ impl ComputeEngine {
         let cache_key = format!("map:{}:{}", phi_expr, n);
 
         if !self.cache.contains_key(&cache_key) {
-            let source = emit_map_cuda_tamgpu(phi_expr, n);
+            let source = emit_map_cuda_tamgpu(phi_expr, n, self.precision);
             let kernel = self.gpu.compile(&source, "map_phi_kernel")?;
             self.cache.insert(cache_key.clone(), kernel);
         }
@@ -518,7 +537,7 @@ impl ComputeEngine {
         let cache_key = format!("map2:{}:{}", phi_expr, n);
 
         if !self.cache.contains_key(&cache_key) {
-            let source = emit_map2_cuda_tamgpu(phi_expr, n);
+            let source = emit_map2_cuda_tamgpu(phi_expr, n, self.precision);
             let kernel = self.gpu.compile(&source, "map_phi2_kernel")?;
             self.cache.insert(cache_key.clone(), kernel);
         }
@@ -597,38 +616,37 @@ fn phi_map2_eval(phi_expr: &str) -> Result<Box<dyn Fn(f64, f64) -> f64>, Box<dyn
 // TamGpu-compatible CUDA kernel sources (n baked as #define)
 // ===========================================================================
 
-/// Extremum scatter kernel — CAS-loop f64 atomic max or min.
+/// Extremum scatter kernel — CAS-loop atomic max or min.
 ///
-/// Buffers: [keys:i32, values:f64, output:f64] = 3 buffers (no refs).
+/// Buffers: [keys:i32, values:T, output:T] = 3 buffers (no refs).
 /// Output must be pre-initialized to -∞ (max) or +∞ (min) before launch.
-///
-/// The CAS loop: read current bits, compute fmax/fmin with the new value,
-/// CAS the bits atomically. If the comparison wouldn't change the value,
-/// break early — no unnecessary CAS.
-fn emit_scatter_extremum_cuda_tamgpu(is_max: bool, n: usize) -> String {
+fn emit_scatter_extremum_cuda_tamgpu(is_max: bool, n: usize, precision: Precision) -> String {
     let cmp_fn = if is_max { "fmax" } else { "fmin" };
     let op_comment = if is_max { "max" } else { "min" };
+    let t = precision.cuda_type();
+    let (bits_type, as_float, as_bits) = match precision {
+        Precision::F64 => ("unsigned long long", "__longlong_as_double", "__double_as_longlong"),
+        Precision::F32 => ("unsigned int", "__int_as_float", "__float_as_int"),
+    };
     format!(
         r#"
 #define PARAM_N {n}
 // JIT scatter extremum ({op}): output[g] = {cmp}(output[g], v). n baked for TamGpu dispatch.
-// Output must be initialised to -{init_sign}infinity before launch.
-// CAS-loop: no native f64 atomicMax/Min in CUDA — use atomicCAS on bit patterns.
 extern "C" __global__ void scatter_extremum(
     const int* __restrict__ keys,
-    const double* __restrict__ values,
-    double* __restrict__ output
+    const {t}* __restrict__ values,
+    {t}* __restrict__ output
 ) {{
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     if (gid < PARAM_N) {{
         int g = keys[gid];
-        double val = values[gid];
-        unsigned long long* addr = (unsigned long long*)(&output[g]);
-        unsigned long long old_bits = *addr, assumed, new_bits;
+        {t} val = values[gid];
+        {bits_type}* addr = ({bits_type}*)(&output[g]);
+        {bits_type} old_bits = *addr, assumed, new_bits;
         do {{
             assumed = old_bits;
-            double new_val = {cmp}(__longlong_as_double(assumed), val);
-            new_bits = __double_as_longlong(new_val);
+            {t} new_val = {cmp}({as_float}(assumed), val);
+            new_bits = {as_bits}(new_val);
             if (new_bits == assumed) break;
             old_bits = atomicCAS(addr, assumed, new_bits);
         }} while (assumed != old_bits);
@@ -638,13 +656,17 @@ extern "C" __global__ void scatter_extremum(
         n = n,
         op = op_comment,
         cmp = cmp_fn,
-        init_sign = if is_max { "" } else { "+" },
+        t = t,
+        bits_type = bits_type,
+        as_float = as_float,
+        as_bits = as_bits,
     )
 }
 
 /// Scatter kernel with n baked in — no scalar args, TamGpu-compatible.
-/// Buffers: [keys:i32, values:f64, refs:f64, output:f64] = 4 buffers.
-fn emit_scatter_cuda_tamgpu(phi_expr: &str, n: usize) -> String {
+/// Buffers: [keys:i32, values:T, refs:T, output:T] = 4 buffers.
+fn emit_scatter_cuda_tamgpu(phi_expr: &str, n: usize, precision: Precision) -> String {
+    let t = precision.cuda_type();
     format!(
         r#"
 #define PARAM_N {n}
@@ -652,31 +674,33 @@ fn emit_scatter_cuda_tamgpu(phi_expr: &str, n: usize) -> String {
 // phi = {phi}
 extern "C" __global__ void scatter_phi(
     const int* __restrict__ keys,
-    const double* __restrict__ values,
-    const double* __restrict__ refs,
-    double* __restrict__ output
+    const {t}* __restrict__ values,
+    const {t}* __restrict__ refs,
+    {t}* __restrict__ output
 ) {{
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     if (gid < PARAM_N) {{
         int g = keys[gid];
-        double v = values[gid];
-        double r = refs[g];
-        double phi = ({phi});
+        {t} v = values[gid];
+        {t} r = refs[g];
+        {t} phi = ({phi});
         atomicAdd(&output[g], phi);
     }}
 }}
 "#,
         n = n,
+        t = t,
         phi = phi_expr,
     )
 }
 
 /// Multi-scatter with n baked in.
-/// Buffers: [keys:i32, values:f64, refs:f64, out0:f64, ..., outN-1:f64]
-fn emit_scatter_multi_cuda_tamgpu(phi_exprs: &[&str], n: usize) -> String {
+/// Buffers: [keys:i32, values:T, refs:T, out0:T, ..., outN-1:T]
+fn emit_scatter_multi_cuda_tamgpu(phi_exprs: &[&str], n: usize, precision: Precision) -> String {
     let n_phi = phi_exprs.len();
+    let t = precision.cuda_type();
     let out_params: String = (0..n_phi)
-        .map(|i| format!("    double* __restrict__ out{}", i))
+        .map(|i| format!("    {}* __restrict__ out{}", t, i))
         .collect::<Vec<_>>()
         .join(",\n");
 
@@ -693,77 +717,83 @@ fn emit_scatter_multi_cuda_tamgpu(phi_exprs: &[&str], n: usize) -> String {
 // JIT fused scatter: {n_phi} outputs, n baked for TamGpu dispatch.
 extern "C" __global__ void scatter_multi_phi(
     const int* __restrict__ keys,
-    const double* __restrict__ values,
-    const double* __restrict__ refs,
+    const {t}* __restrict__ values,
+    const {t}* __restrict__ refs,
 {out_params}
 ) {{
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     if (gid < PARAM_N) {{
         int g = keys[gid];
-        double v = values[gid];
-        double r = refs[g];
+        {t} v = values[gid];
+        {t} r = refs[g];
 {atomic_adds}
     }}
 }}
 "#,
         n = n,
+        t = t,
         n_phi = n_phi,
         out_params = out_params,
         atomic_adds = atomic_adds,
     )
 }
 
-/// Map kernel with n baked in. Buffers: [values:f64, output:f64] = 2 buffers.
-fn emit_map_cuda_tamgpu(phi_expr: &str, n: usize) -> String {
+/// Map kernel with n baked in. Buffers: [values:T, output:T] = 2 buffers.
+fn emit_map_cuda_tamgpu(phi_expr: &str, n: usize, precision: Precision) -> String {
+    let t = precision.cuda_type();
     format!(
         r#"
 #define PARAM_N {n}
 // JIT map: output[i] = phi(v[i]). n baked for TamGpu dispatch.
 // phi = {phi}
 extern "C" __global__ void map_phi_kernel(
-    const double* __restrict__ values,
-    double* __restrict__ output
+    const {t}* __restrict__ values,
+    {t}* __restrict__ output
 ) {{
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     if (gid < PARAM_N) {{
-        double v = values[gid];
+        {t} v = values[gid];
         output[gid] = ({phi});
     }}
 }}
 "#,
         n = n,
+        t = t,
         phi = phi_expr,
     )
 }
 
-/// Map2 kernel with n baked in. Buffers: [vals_a:f64, vals_b:f64, output:f64] = 3 buffers.
-fn emit_map2_cuda_tamgpu(phi_expr: &str, n: usize) -> String {
+/// Map2 kernel with n baked in. Buffers: [vals_a:T, vals_b:T, output:T] = 3 buffers.
+fn emit_map2_cuda_tamgpu(phi_expr: &str, n: usize, precision: Precision) -> String {
+    let t = precision.cuda_type();
     format!(
         r#"
 #define PARAM_N {n}
 // JIT map2: output[i] = phi(a[i], b[i]). n baked for TamGpu dispatch.
 // phi = {phi}
 extern "C" __global__ void map_phi2_kernel(
-    const double* __restrict__ vals_a,
-    const double* __restrict__ vals_b,
-    double* __restrict__ output
+    const {t}* __restrict__ vals_a,
+    const {t}* __restrict__ vals_b,
+    {t}* __restrict__ output
 ) {{
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     if (gid < PARAM_N) {{
-        double a = vals_a[gid];
-        double b = vals_b[gid];
+        {t} a = vals_a[gid];
+        {t} b = vals_b[gid];
         output[gid] = ({phi});
     }}
 }}
 "#,
         n = n,
+        t = t,
         phi = phi_expr,
     )
 }
 
 /// Masked scatter kernel with n baked in.
-/// Buffers: [keys:i32, values:f64, refs:f64, mask:u64, output:f64] = 5 buffers.
-fn emit_scatter_masked_cuda_tamgpu(phi_expr: &str, n: usize) -> String {
+/// Buffers: [keys:i32, values:T, refs:T, mask:u64, output:T] = 5 buffers.
+fn emit_scatter_masked_cuda_tamgpu(phi_expr: &str, n: usize, precision: Precision) -> String {
+    let t = precision.cuda_type();
     format!(
         r#"
 #define PARAM_N {n}
@@ -771,24 +801,25 @@ fn emit_scatter_masked_cuda_tamgpu(phi_expr: &str, n: usize) -> String {
 // phi = {phi}
 extern "C" __global__ void scatter_phi_masked(
     const int* __restrict__ keys,
-    const double* __restrict__ values,
-    const double* __restrict__ refs,
+    const {t}* __restrict__ values,
+    const {t}* __restrict__ refs,
     const unsigned long long* __restrict__ mask,
-    double* __restrict__ output
+    {t}* __restrict__ output
 ) {{
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     if (gid < PARAM_N) {{
         unsigned long long word = mask[gid >> 6];
         if ((word >> (gid & 63)) & 1ULL) {{
             int g = keys[gid];
-            double v = values[gid];
-            double r = refs[g];
+            {t} v = values[gid];
+            {t} r = refs[g];
             atomicAdd(&output[g], ({phi}));
         }}
     }}
 }}
 "#,
         n = n,
+        t = t,
         phi = phi_expr,
     )
 }
@@ -932,7 +963,7 @@ mod tests {
 
     #[test]
     fn cuda_tamgpu_scatter_bakes_n() {
-        let src = emit_scatter_cuda_tamgpu("v * v", 1000);
+        let src = emit_scatter_cuda_tamgpu("v * v", 1000, Precision::F64);
         assert!(src.contains("#define PARAM_N 1000"));
         assert!(src.contains("if (gid < PARAM_N)"));
         assert!(src.contains("double phi = (v * v)"));
@@ -943,7 +974,7 @@ mod tests {
 
     #[test]
     fn cuda_tamgpu_scatter_multi_bakes_n() {
-        let src = emit_scatter_multi_cuda_tamgpu(&["v", "v * v", "1.0"], 500);
+        let src = emit_scatter_multi_cuda_tamgpu(&["v", "v * v", "1.0"], 500, Precision::F64);
         assert!(src.contains("#define PARAM_N 500"));
         assert!(src.contains("out0"));
         assert!(src.contains("out1"));
@@ -954,14 +985,14 @@ mod tests {
 
     #[test]
     fn cuda_tamgpu_map_bakes_n() {
-        let src = emit_map_cuda_tamgpu("v * v", 2048);
+        let src = emit_map_cuda_tamgpu("v * v", 2048, Precision::F64);
         assert!(src.contains("#define PARAM_N 2048"));
         assert!(src.contains("output[gid] = (v * v)"));
     }
 
     #[test]
     fn cuda_tamgpu_map2_bakes_n() {
-        let src = emit_map2_cuda_tamgpu("a * b", 4096);
+        let src = emit_map2_cuda_tamgpu("a * b", 4096, Precision::F64);
         assert!(src.contains("#define PARAM_N 4096"));
         assert!(src.contains("output[gid] = (a * b)"));
     }
@@ -1008,7 +1039,7 @@ mod tests {
 
     #[test]
     fn cuda_tamgpu_scatter_masked_bakes_n() {
-        let src = emit_scatter_masked_cuda_tamgpu("v * v", 1000);
+        let src = emit_scatter_masked_cuda_tamgpu("v * v", 1000, Precision::F64);
         assert!(src.contains("#define PARAM_N 1000"));
         assert!(src.contains("unsigned long long* __restrict__ mask"));
         assert!(src.contains("mask[gid >> 6]"));

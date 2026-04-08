@@ -465,9 +465,10 @@ pub fn cross_correlate(a: &[f64], b: &[f64]) -> Vec<f64> {
 pub fn autocorrelation(data: &[f64], max_lag: usize) -> Vec<f64> {
     let n = data.len();
     if n == 0 { return vec![]; }
-    let mean: f64 = data.iter().sum::<f64>() / n as f64;
+    let moments = crate::descriptive::moments_ungrouped(data);
+    let mean = moments.mean();
     let centered: Vec<f64> = data.iter().map(|&x| x - mean).collect();
-    let var: f64 = centered.iter().map(|x| x * x).sum::<f64>();
+    let var = moments.m2; // Σ(x - x̄)² — unnormalized
     if var < 1e-300 { return vec![1.0; max_lag.min(n)]; }
 
     // Zero-pad to avoid circular correlation artifacts

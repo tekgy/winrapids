@@ -88,6 +88,9 @@ impl KnnResult {
 /// For n=5000, k=10: ~250M comparisons, <100ms on CPU.
 pub fn knn_from_distance(dist: &DistanceMatrix, k: usize) -> KnnResult {
     let n = dist.n;
+    if k == 0 || n == 0 {
+        return KnnResult { neighbors: vec![vec![]; n], n, k: 0 };
+    }
     let k = k.min(n - 1); // can't have more neighbors than n-1
 
     let mut neighbors = Vec::with_capacity(n);
@@ -102,6 +105,7 @@ pub fn knn_from_distance(dist: &DistanceMatrix, k: usize) -> KnnResult {
         for j in 0..n {
             if i == j { continue; } // skip self
             let d = row[j];
+            if d.is_nan() { continue; } // skip NaN distances
 
             if best.len() < k {
                 best.push((j, d));

@@ -326,8 +326,9 @@ pub fn trajectory_stats(traj: &MultiAdicTrajectory) -> TrajectoryStats {
     let per_prime: Vec<PrimeTrajectoryStats> = (0..n_primes).map(|i| {
         let vals = &val_series[i];
         let n = vals.len() as f64;
-        let mean = vals.iter().sum::<f64>() / n;
-        let var = vals.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / n;
+        let m = crate::descriptive::moments_ungrouped(vals);
+        let mean = m.mean();
+        let var = m.variance(0);
         let max_v = traj.steps.iter().map(|s| {
             let v = s.profile.valuations[i];
             if v == u32::MAX { 0 } else { v }

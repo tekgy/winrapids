@@ -31,6 +31,7 @@
 ///
 /// Abramowitz & Stegun approximation 7.1.26, max |ε| < 1.5 × 10⁻⁷.
 pub fn erf(x: f64) -> f64 {
+    if x == 0.0 { return 0.0; }
     let sign = if x >= 0.0 { 1.0 } else { -1.0 };
     let x = x.abs();
     let t = 1.0 / (1.0 + 0.3275911 * x);
@@ -46,6 +47,7 @@ pub fn erf(x: f64) -> f64 {
 ///
 /// Uses direct formula for positive x to avoid catastrophic cancellation.
 pub fn erfc(x: f64) -> f64 {
+    if x == 0.0 { return 1.0; }
     if x >= 0.0 {
         let t = 1.0 / (1.0 + 0.3275911 * x);
         let poly = t * (0.254829592

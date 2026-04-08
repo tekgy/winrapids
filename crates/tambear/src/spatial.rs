@@ -219,7 +219,7 @@ fn solve_system(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
 
 // ─── Spatial Autocorrelation ────────────────────────────────────────
 
-/// Spatial weights matrix (sparse, row-compressed).
+/// Spatial weights matrix (adjacency list: `neighbors[i]` = list of `(neighbor_idx, weight)`).
 #[derive(Debug, Clone)]
 pub struct SpatialWeights {
     /// For each node: list of (neighbor_idx, weight).
@@ -281,7 +281,7 @@ impl SpatialWeights {
 pub fn morans_i(values: &[f64], weights: &SpatialWeights) -> f64 {
     let n = values.len();
     if n < 2 || n != weights.n { return f64::NAN; }
-    let mean = values.iter().sum::<f64>() / n as f64;
+    let mean = crate::descriptive::moments_ungrouped(values).mean();
     let dev: Vec<f64> = values.iter().map(|&v| v - mean).collect();
     let ss: f64 = dev.iter().map(|d| d * d).sum();
     if ss < 1e-300 { return 0.0; }
@@ -306,8 +306,9 @@ pub fn morans_i(values: &[f64], weights: &SpatialWeights) -> f64 {
 pub fn gearys_c(values: &[f64], weights: &SpatialWeights) -> f64 {
     let n = values.len();
     if n < 2 || n != weights.n { return f64::NAN; }
-    let mean = values.iter().sum::<f64>() / n as f64;
-    let ss: f64 = values.iter().map(|v| (v - mean).powi(2)).sum();
+    let moments = crate::descriptive::moments_ungrouped(values);
+    let mean = moments.mean();
+    let ss = moments.m2; // Σ(x - x̄)² — the raw second central moment sum
     if ss < 1e-300 { return 0.0; }
 
     let mut s0 = 0.0;
@@ -384,7 +385,7 @@ pub fn nn_distances(points: &[(f64, f64)]) -> Vec<f64> {
 /// R < 1: clustering, R > 1: regularity, R ≈ 1: random
 pub fn clark_evans_r(points: &[(f64, f64)], area: f64) -> f64 {
     let n = points.len();
-    if n < 2 { return f64::NAN; }
+    if n < 2 || area <= 0.0 { return f64::NAN; }
     let dists = nn_distances(points);
     let mean_nn = dists.iter().sum::<f64>() / dists.len() as f64;
     let expected = 0.5 * (area / n as f64).sqrt(); // E[nn] for Poisson

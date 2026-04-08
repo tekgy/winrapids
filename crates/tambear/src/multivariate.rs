@@ -144,10 +144,16 @@ pub fn hotelling_one_sample(x: &Mat, mu0: &[f64]) -> HotellingResult {
     let n = x.rows;
     let p = x.cols;
     assert_eq!(mu0.len(), p);
+    if n <= p {
+        return HotellingResult { t2: f64::NAN, f_statistic: f64::NAN, df1: p as f64, df2: f64::NAN, p_value: f64::NAN };
+    }
 
     let means = col_means(x);
     let cov = covariance_matrix(x);
-    let l = cholesky(&cov).expect("covariance not positive definite");
+    let l = match cholesky(&cov) {
+        Some(l) => l,
+        None => return HotellingResult { t2: f64::NAN, f_statistic: f64::NAN, df1: p as f64, df2: f64::NAN, p_value: f64::NAN },
+    };
 
     // d = x̄ - μ₀
     let d: Vec<f64> = means.iter().zip(mu0).map(|(&m, &m0)| m - m0).collect();
@@ -171,6 +177,9 @@ pub fn hotelling_two_sample(x1: &Mat, x2: &Mat) -> HotellingResult {
     let n2 = x2.rows;
     let p = x1.cols;
     assert_eq!(x2.cols, p);
+    if n1 + n2 <= p + 1 {
+        return HotellingResult { t2: f64::NAN, f_statistic: f64::NAN, df1: p as f64, df2: f64::NAN, p_value: f64::NAN };
+    }
 
     let m1 = col_means(x1);
     let m2 = col_means(x2);
@@ -184,7 +193,10 @@ pub fn hotelling_two_sample(x1: &Mat, x2: &Mat) -> HotellingResult {
         let sum = mat_add(&a, &b);
         mat_scale(1.0 / (n1 + n2 - 2) as f64, &sum)
     };
-    let l = cholesky(&sp).expect("pooled covariance not positive definite");
+    let l = match cholesky(&sp) {
+        Some(l) => l,
+        None => return HotellingResult { t2: f64::NAN, f_statistic: f64::NAN, df1: p as f64, df2: f64::NAN, p_value: f64::NAN },
+    };
 
     let d: Vec<f64> = m1.iter().zip(&m2).map(|(a, b)| a - b).collect();
     let s_inv_d = cholesky_solve(&l, &d);

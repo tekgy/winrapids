@@ -64,8 +64,8 @@ pub fn lme_random_intercept(
     for &g in groups { n_g[g] += 1; }
 
     // Initialize variance components
-    let y_mean = y.iter().sum::<f64>() / n as f64;
-    let y_var = y.iter().map(|&yi| (yi - y_mean).powi(2)).sum::<f64>() / (n - 1) as f64;
+    let y_moments = crate::descriptive::moments_ungrouped(y);
+    let y_var = y_moments.variance(1);
     let mut sigma2 = y_var * 0.5;
     let mut sigma2_u = y_var * 0.5;
     let mut beta = vec![0.0; p];
@@ -132,7 +132,8 @@ pub fn lme_random_intercept(
         }
 
         // M-step: update variance components
-        // σ² = ||y - Xβ - Zu||² / n + σ² Σ_g (1 - σ⁻² n_g σ²_u / (n_g σ²_u + σ²)) / n
+        // σ²_new = (||y - Xβ - Zû||² + tr(Z'Z · Var(u|y))) / n
+        // tr(Z'Z · Var(u|y)) = Σ_g n_g · τ_g², τ_g² = σ²·σ²_u/(n_g·σ²_u+σ²)
         let mut ss_resid = 0.0;
         for i in 0..n {
             let g = groups[i];
@@ -143,12 +144,15 @@ pub fn lme_random_intercept(
             ss_resid += r * r;
         }
 
-        let trace_correction: f64 = (0..k).map(|g| {
+        // Trace correction: tr(Z'Z · Var(u|y)) = Σ_g n_g · τ_g²
+        // where τ_g² = σ²·σ²_u / (n_g·σ²_u + σ²) and Z'Z = diag(n_1,...,n_k).
+        let trace_sum: f64 = (0..k).map(|g| {
             let ng = n_g[g] as f64;
-            1.0 - ng * sigma2_u / (ng * sigma2_u + sigma2)
+            let tau2_g = sigma2 * sigma2_u / (ng * sigma2_u + sigma2);
+            ng * tau2_g
         }).sum();
 
-        let sigma2_new = ss_resid / n as f64 + sigma2 * trace_correction / n as f64;
+        let sigma2_new = (ss_resid + trace_sum) / n as f64;
 
         // σ²_u = (u'u + Σ_g Var(u_g|y)) / k
         let uu: f64 = u.iter().map(|v| v * v).sum();
@@ -191,7 +195,7 @@ pub fn icc_oneway(values: &[f64], groups: &[usize]) -> f64 {
         return f64::NAN;
     }
 
-    let grand_mean = values.iter().sum::<f64>() / n as f64;
+    let grand_mean = crate::descriptive::moments_ungrouped(values).mean();
 
     let mut g_sums = vec![0.0; k];
     let mut g_counts = vec![0usize; k];

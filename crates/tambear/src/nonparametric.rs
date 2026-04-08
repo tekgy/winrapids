@@ -500,8 +500,8 @@ pub fn bootstrap_percentile(
     let ci_lower = boot_stats[lo_idx.min(n_resamples - 1)];
     let ci_upper = boot_stats[hi_idx.min(n_resamples - 1)];
 
-    let mean: f64 = boot_stats.iter().sum::<f64>() / n_resamples as f64;
-    let se = (boot_stats.iter().map(|&s| (s - mean).powi(2)).sum::<f64>() / (n_resamples - 1) as f64).sqrt();
+    let bm = crate::descriptive::moments_ungrouped(&boot_stats);
+    let se = bm.std(1);
 
     BootstrapResult { estimate, ci_lower, ci_upper, se, n_resamples }
 }
@@ -554,8 +554,7 @@ fn lcg_next(state: u64) -> u64 {
 }
 
 fn mean_slice(data: &[f64]) -> f64 {
-    if data.is_empty() { return f64::NAN; }
-    data.iter().sum::<f64>() / data.len() as f64
+    crate::descriptive::moments_ungrouped(data).mean()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -600,9 +599,8 @@ pub fn silverman_bandwidth(data: &[f64]) -> f64 {
     let n = data.len() as f64;
     if n < 2.0 { return 1.0; }
 
-    let mean = data.iter().sum::<f64>() / n;
-    let var = data.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
-    let std = var.sqrt();
+    let sm = crate::descriptive::moments_ungrouped(data);
+    let std = sm.std(1);
 
     let mut sorted = data.to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));
@@ -611,6 +609,7 @@ pub fn silverman_bandwidth(data: &[f64]) -> f64 {
     let iqr = q3 - q1;
 
     let spread = if iqr > 0.0 { std.min(iqr / 1.34) } else { std };
+    if spread <= 0.0 { return 1.0; } // constant data: fallback to unit bandwidth
     0.9 * spread * n.powf(-0.2)
 }
 

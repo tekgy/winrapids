@@ -166,6 +166,7 @@ pub fn execute(
     let mut linear_model: Option<LinearModel> = None;
     let mut logistic_model: Option<LogisticModel> = None;
     let mut outputs: Vec<TbsStepOutput> = Vec::with_capacity(chain.steps.len());
+    let mut using_bag = crate::using::UsingBag::new();
 
     // Track state for science linting
     let mut normalized = false;
@@ -204,7 +205,7 @@ pub fn execute(
             ("mean", None) => {
                 let c = col_arg(step, 0);
                 let col = extract_col(&pipeline.frame().data, pn, pd, c);
-                let v = col.iter().sum::<f64>() / pn as f64;
+                let v = crate::descriptive::moments_ungrouped(&col).mean();
                 TbsStepOutput::Scalar { name: "mean", value: v }
             }
 
@@ -1147,6 +1148,31 @@ pub fn execute(
             }
 
             // ══════════════════════════════════════════════════════════════
+            // Pipeline configuration
+            // ══════════════════════════════════════════════════════════════
+
+            ("using", None) => {
+                // Accumulate all named args into the using bag.
+                // Multiple .using() calls stack; the next computation step drains.
+                for arg in &step.args {
+                    if let crate::tbs_parser::TbsArg::Named { key, value } = arg {
+                        let uv = match value {
+                            crate::tbs_parser::TbsValue::Str(s) =>
+                                crate::using::UsingValue::Str(s.clone()),
+                            crate::tbs_parser::TbsValue::Float(f) =>
+                                crate::using::UsingValue::Float(*f),
+                            crate::tbs_parser::TbsValue::Int(i) =>
+                                crate::using::UsingValue::Int(*i),
+                            crate::tbs_parser::TbsValue::Bool(b) =>
+                                crate::using::UsingValue::Bool(*b),
+                        };
+                        using_bag.set(key.clone(), uv);
+                    }
+                }
+                TbsStepOutput::Transform
+            }
+
+            // ══════════════════════════════════════════════════════════════
             // Unknown
             // ══════════════════════════════════════════════════════════════
 
@@ -1154,6 +1180,12 @@ pub fn execute(
                 return Err(format!("unsupported .tbs operation: {}", step.name).into());
             }
         };
+
+        // Drain using bag after every non-using step.
+        // Using steps accumulate; everything else consumes.
+        if !matches!(step.name.as_str(), ("using", None)) {
+            using_bag.clear();
+        }
 
         outputs.push(output);
     }

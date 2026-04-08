@@ -162,12 +162,19 @@ where
             return OptResult { f_val: f(&x), x, iterations: iter, converged: true };
         }
 
+        // NaN gradient check — halt early if gradient is invalid
+        if g.iter().any(|v| v.is_nan()) {
+            return OptResult { f_val: f(&x), x, iterations: iter, converged: false };
+        }
+
         let t = (iter + 1) as f64;
+        let bc1 = 1.0 - beta1.powf(t);
+        let bc2 = 1.0 - beta2.powf(t);
         for i in 0..n {
             m[i] = beta1 * m[i] + (1.0 - beta1) * g[i];
             v[i] = beta2 * v[i] + (1.0 - beta2) * g[i] * g[i];
-            let m_hat = m[i] / (1.0 - beta1.powf(t));
-            let v_hat = v[i] / (1.0 - beta2.powf(t));
+            let m_hat = if bc1.abs() > 1e-30 { m[i] / bc1 } else { m[i] };
+            let v_hat = if bc2.abs() > 1e-30 { v[i] / bc2 } else { v[i] };
             x[i] -= lr * m_hat / (v_hat.sqrt() + eps);
         }
     }
@@ -313,7 +320,7 @@ where
         for i in 0..n { y[i] = g_new[i] - g[i]; }
 
         let sy = dot_vec(&s, &y);
-        if sy > 1e-14 {
+        if sy > 1e-14 && m > 0 {
             if s_history.len() >= m {
                 s_history.remove(0);
                 y_history.remove(0);
@@ -344,13 +351,14 @@ pub fn nelder_mead<F: Fn(&[f64]) -> f64>(
 ) -> OptResult {
     let n = x0.len();
     let np1 = n + 1;
+    let effective_step = if step.abs() < 1e-15 { 1.0 } else { step };
 
     // Initialize simplex
     let mut simplex: Vec<Vec<f64>> = Vec::with_capacity(np1);
     simplex.push(x0.to_vec());
     for i in 0..n {
         let mut vertex = x0.to_vec();
-        vertex[i] += step;
+        vertex[i] += effective_step;
         simplex.push(vertex);
     }
     let mut f_vals: Vec<f64> = simplex.iter().map(|v| f(v)).collect();

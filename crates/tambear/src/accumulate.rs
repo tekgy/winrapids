@@ -308,7 +308,7 @@ impl AccumulateEngine {
     /// ```no_run
     /// use tambear::AccumulateEngine;
     /// use tambear::accumulate::Grouping;
-    /// use tambear::scatter_jit::{PHI_SUM, PHI_COUNT};
+    /// use tambear::{PHI_SUM, PHI_COUNT};
     ///
     /// let mut engine  = AccumulateEngine::new().unwrap();
     /// let keys    = vec![0i32, 0, 1, 1];

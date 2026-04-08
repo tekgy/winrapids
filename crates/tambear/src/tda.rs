@@ -471,20 +471,28 @@ mod tests {
 
     #[test]
     fn h1_triangle() {
-        // Three points forming equilateral triangle (all edges = 1)
-        // → one H₁ cycle born when the third edge closes the triangle
+        // Three points forming equilateral triangle (all edges = 1).
+        // H₀: 3 components born at r=0, two merge at r=1 (2 finite-death pairs).
+        // H₁: the cycle born when all 3 edges connect at r=1 is immediately filled
+        //     by the 2-simplex at the same filtration value → 0 persistent H₁.
         let dist = vec![
             0.0, 1.0, 1.0,
             1.0, 0.0, 1.0,
             1.0, 1.0, 0.0,
         ];
         let diag = rips_h1(&dist, 3, 2.0);
-        let h1 = diag.dimension(1);
-        // The cycle born at r=1.0 is immediately killed by the triangle at r=1.0
-        // So either we see a pair (1.0, 1.0) with zero persistence, or no H₁ feature
-        // In practice it depends on edge ordering
-        // Just check we don't crash and get reasonable output
-        assert!(diag.pairs.len() >= 3, "Should have H₀ pairs at minimum");
+        // H₀: two finite-death merges at r=1
+        let h0_finite: Vec<_> = diag.dimension(0).into_iter()
+            .filter(|p| p.death.is_finite())
+            .collect();
+        assert_eq!(h0_finite.len(), 2, "Equilateral triangle: 2 H₀ merges");
+        let deaths_at_1 = h0_finite.iter().filter(|p| (p.death - 1.0).abs() < 1e-10).count();
+        assert_eq!(deaths_at_1, 2, "Both H₀ merges should occur at r=1");
+        // H₁: no persistent loop (cycle born and filled at same filtration value)
+        let h1_persistent: Vec<_> = diag.dimension(1).into_iter()
+            .filter(|p| p.persistence() > 1e-10)
+            .collect();
+        assert_eq!(h1_persistent.len(), 0, "Equilateral triangle: no persistent H₁ loop");
     }
 
     #[test]

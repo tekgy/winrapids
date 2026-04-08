@@ -40,7 +40,7 @@ pub fn lomb_scargle(times: &[f64], values: &[f64], n_freqs: usize) -> LombScargl
     assert!(n >= 2);
 
     // Remove mean
-    let mean = values.iter().sum::<f64>() / n as f64;
+    let mean = crate::descriptive::moments_ungrouped(values).mean();
     let y: Vec<f64> = values.iter().map(|v| v - mean).collect();
 
     // Frequency grid: 0 to Nyquist (estimated from median sampling interval)

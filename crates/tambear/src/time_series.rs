@@ -29,7 +29,8 @@ pub fn ar_fit(data: &[f64], p: usize) -> ArResult {
     let n = data.len();
     assert!(n > p + 1);
 
-    let mean = data.iter().sum::<f64>() / n as f64;
+    let moments = crate::descriptive::moments_ungrouped(data);
+    let mean = moments.mean();
     let centered: Vec<f64> = data.iter().map(|x| x - mean).collect();
 
     // Autocorrelation r(0), r(1), ..., r(p)
@@ -78,7 +79,7 @@ pub fn ar_fit(data: &[f64], p: usize) -> ArResult {
 
 /// Predict next values using AR model.
 pub fn ar_predict(data: &[f64], ar: &ArResult, horizon: usize) -> Vec<f64> {
-    let mean = data.iter().sum::<f64>() / data.len() as f64;
+    let mean = crate::descriptive::moments_ungrouped(data).mean();
     let p = ar.coefficients.len();
     let mut buf: Vec<f64> = data.iter().map(|x| x - mean).collect();
     let mut preds = Vec::with_capacity(horizon);
@@ -177,7 +178,15 @@ pub struct AdfResult {
 /// Tests H₀: unit root (non-stationary) vs H₁: stationary.
 pub fn adf_test(data: &[f64], n_lags: usize) -> AdfResult {
     let n = data.len();
-    assert!(n > n_lags + 2);
+    if n <= n_lags + 2 {
+        return AdfResult {
+            statistic: f64::NAN,
+            n_lags,
+            critical_1pct: -3.43,
+            critical_5pct: -2.86,
+            critical_10pct: -2.57,
+        };
+    }
 
     let dy: Vec<f64> = data.windows(2).map(|w| w[1] - w[0]).collect();
     let m = dy.len();
@@ -270,8 +279,9 @@ pub fn adf_test(data: &[f64], n_lags: usize) -> AdfResult {
 pub fn acf(data: &[f64], max_lag: usize) -> Vec<f64> {
     let n = data.len();
     let max_lag = max_lag.min(n.saturating_sub(1));
-    let mean = data.iter().sum::<f64>() / n as f64;
-    let var: f64 = data.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
+    let moments = crate::descriptive::moments_ungrouped(data);
+    let mean = moments.mean();
+    let var = moments.variance(0);
     if var < 1e-15 { return vec![1.0; max_lag + 1]; }
 
     (0..=max_lag).map(|lag| {
@@ -286,11 +296,12 @@ pub fn acf(data: &[f64], max_lag: usize) -> Vec<f64> {
 /// Partial autocorrelation function via Levinson-Durbin.
 pub fn pacf(data: &[f64], max_lag: usize) -> Vec<f64> {
     let n = data.len();
-    let mean = data.iter().sum::<f64>() / n as f64;
+    let moments = crate::descriptive::moments_ungrouped(data);
+    let mean = moments.mean();
     let centered: Vec<f64> = data.iter().map(|x| x - mean).collect();
 
     let mut r = vec![0.0; max_lag + 1];
-    let var: f64 = centered.iter().map(|x| x * x).sum::<f64>() / n as f64;
+    let var = moments.variance(0);
     for lag in 0..=max_lag {
         r[lag] = centered[..n - lag].iter()
             .zip(centered[lag..].iter())

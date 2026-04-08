@@ -555,6 +555,7 @@ pub fn modularity(g: &Graph, labels: &[usize]) -> f64 {
 ///
 /// Returns the maximum flow value.
 pub fn max_flow(g: &Graph, source: usize, sink: usize) -> f64 {
+    if source == sink { return 0.0; }
     let n = g.n_nodes;
     // Build capacity matrix
     let mut cap = vec![vec![0.0; n]; n];

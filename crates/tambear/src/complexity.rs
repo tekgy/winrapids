@@ -283,7 +283,7 @@ pub fn dfa(data: &[f64], min_box: usize, max_box: usize) -> f64 {
     if n < 2 * min_box { return f64::NAN; }
 
     // Step 1: cumulative sum (profile)
-    let mean: f64 = data.iter().sum::<f64>() / n as f64;
+    let mean = crate::descriptive::moments_ungrouped(data).mean();
     let mut profile = vec![0.0; n];
     profile[0] = data[0] - mean;
     for i in 1..n {

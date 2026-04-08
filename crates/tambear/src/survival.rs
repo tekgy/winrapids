@@ -30,22 +30,23 @@ pub fn kaplan_meier(times: &[f64], events: &[bool]) -> Vec<KmStep> {
     let n = times.len();
     assert_eq!(events.len(), n);
 
-    // Sort by time
+    // Sort by time, filter NaN (total_cmp sorts NaN last — skip them)
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| times[a].total_cmp(&times[b]));
+    let n_valid = order.iter().position(|&i| times[i].is_nan()).unwrap_or(order.len());
 
     let mut steps = Vec::new();
-    let mut at_risk = n;
+    let mut at_risk = n_valid;
     let mut surv = 1.0;
     let mut var_sum = 0.0; // Greenwood's formula sum
 
     let mut i = 0;
-    while i < n {
+    while i < n_valid {
         let t = times[order[i]];
         let mut d = 0; // events at this time
         let mut c = 0; // censored at this time
 
-        while i < n && times[order[i]] == t {
+        while i < n_valid && times[order[i]] == t {
             if events[order[i]] { d += 1; } else { c += 1; }
             i += 1;
         }
@@ -94,23 +95,25 @@ pub fn log_rank_test(times: &[f64], events: &[bool], groups: &[usize]) -> LogRan
 
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| times[a].total_cmp(&times[b]));
+    // Skip NaN entries (total_cmp sorts them last)
+    let n_valid = order.iter().position(|&i| times[i].is_nan()).unwrap_or(order.len());
 
-    let mut n1 = groups.iter().filter(|&&g| g == 0).count();
-    let mut n2 = groups.iter().filter(|&&g| g == 1).count();
+    let mut n1 = order[..n_valid].iter().filter(|&&i| groups[i] == 0).count();
+    let mut n2 = order[..n_valid].iter().filter(|&&i| groups[i] == 1).count();
 
     let mut o1 = 0.0; // observed events in group 1
     let mut e1 = 0.0; // expected events in group 1
     let mut v1 = 0.0; // variance
 
     let mut i = 0;
-    while i < n {
+    while i < n_valid {
         let t = times[order[i]];
         let mut d1 = 0usize;
         let mut d2 = 0usize;
         let mut c1 = 0usize;
         let mut c2 = 0usize;
 
-        while i < n && times[order[i]] == t {
+        while i < n_valid && times[order[i]] == t {
             let idx = order[i];
             if events[idx] {
                 if groups[idx] == 0 { d1 += 1; } else { d2 += 1; }

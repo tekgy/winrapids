@@ -302,9 +302,9 @@ pub fn lint_l106_constant_columns(data: &[f64], n: usize, d: usize) -> Vec<TbsLi
     let mut lints = Vec::new();
     for j in 0..d {
         let col: Vec<f64> = (0..n).map(|i| data[i * d + j]).collect();
-        let mean = col.iter().sum::<f64>() / n as f64;
-        let var = col.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
-        let std = var.sqrt();
+        let m = crate::descriptive::moments_ungrouped(&col);
+        let mean = m.mean();
+        let std = m.std(0);
 
         let is_constant = if mean.abs() < 1e-10 {
             std < 1e-15
@@ -345,10 +345,11 @@ pub fn lint_l101_naive_variance(data: &[f64], n: usize, d: usize, chain: &TbsCha
     let mut lints = Vec::new();
     for j in 0..d {
         let col: Vec<f64> = (0..n).map(|i| data[i * d + j]).collect();
-        let min = col.iter().copied().fold(f64::INFINITY, f64::min);
-        let max = col.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let mean = col.iter().sum::<f64>() / n as f64;
-        let var = col.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
+        let m = crate::descriptive::moments_ungrouped(&col);
+        let min = m.min;
+        let max = m.max;
+        let mean = m.mean();
+        let var = m.variance(0);
 
         let range_ratio = if min.abs() > 1e-300 { max / min } else { 0.0 };
         let condition = if var > 1e-300 { mean * mean / var } else { 0.0 };

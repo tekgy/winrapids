@@ -9,6 +9,9 @@ wgpu = "24"
 pollster = "0.4"       # block on async wgpu calls
 bytemuck = { version = "1", features = ["derive"] }
 
+[dependencies.tam-gpu]
+path = "../tam-gpu"
+
 [[bin]]
 name = "wgpu-scatter-bench"
 path = "src/main.rs"

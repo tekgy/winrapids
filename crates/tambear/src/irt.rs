@@ -24,6 +24,7 @@ pub fn prob_2pl(theta: f64, discrimination: f64, difficulty: f64) -> f64 {
 
 /// 3PL probability with guessing: P = c + (1-c) / (1 + exp(-a(θ-b)))
 pub fn prob_3pl(theta: f64, discrimination: f64, difficulty: f64, guessing: f64) -> f64 {
+    let guessing = guessing.clamp(0.0, 1.0);
     guessing + (1.0 - guessing) * logistic(discrimination * (theta - difficulty))
 }
 

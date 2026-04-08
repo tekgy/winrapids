@@ -31,6 +31,11 @@
 //! JIT kernels generated for the declared type. Zero runtime dispatch.
 //! "Tam doesn't check types. Tam knows the schema."
 //!
+//! **NaN-free**: Data is cleaned at the boundary (ingestion). Inside tambear,
+//! NaN does not exist. Every function trusts every other function.
+//! Policy is configurable via `.lock(nan="trim"|"kill"|"fill:0.0")`.
+//! "Tam doesn't check for NaN. Tam knows the data is clean."
+//!
 //! ## Quick Start
 //!
 //! ```no_run
@@ -59,6 +64,8 @@ pub mod dictionary;
 pub mod filter_jit;
 pub mod format;
 pub mod graph;
+pub mod nan_guard;
+pub mod using;
 pub mod gather_op;
 pub mod frame;
 pub mod group_index;
@@ -238,6 +245,82 @@ pub mod tam;
 pub mod equipartition;
 pub mod multi_adic;
 pub mod collatz_parallel;
+pub mod stochastic;
+pub use stochastic::{
+    // Brownian motion
+    brownian_motion, brownian_bridge, quadratic_variation,
+    // GBM / Black-Scholes
+    geometric_brownian_motion, black_scholes, gbm_expected, gbm_variance,
+    // Ornstein-Uhlenbeck
+    ornstein_uhlenbeck, ou_stationary_variance, ou_autocorrelation,
+    // Poisson processes
+    poisson_process, poisson_count, poisson_expected_count, nonhomogeneous_poisson,
+    // Discrete-time Markov chains
+    markov_n_step, stationary_distribution, mean_first_passage_time,
+    is_ergodic, mixing_time,
+    // CTMC
+    ctmc_transition_matrix, ctmc_stationary, ctmc_holding_time,
+    // Birth-death / queues
+    birth_death_stationary, mm1_queue, erlang_c,
+    // Random walks
+    simple_random_walk, first_passage_time_cdf, return_probability_1d, rw_expected_maximum,
+    // Itô calculus
+    ito_integral, stratonovich_integral, ito_lemma_verification,
+};
+pub mod number_theory;
+pub use number_theory::{
+    sieve, segmented_sieve, is_prime, next_prime, prime_count,
+    mul_mod, mod_pow, gcd, lcm, extended_gcd, mod_inverse,
+    crt, legendre, jacobi, sqrt_mod,
+    euler_totient, mobius, factorize, num_divisors, sum_divisors, divisors,
+    sieve_totients, sieve_spf,
+    primitive_root, discrete_log,
+    continued_fraction, convergents, best_rational, cf_period,
+    pollard_rho, factorize_complete,
+    isqrt, perfect_square, sum_of_two_squares, pell_fundamental,
+    partition_count, euler_product_approx, basel_sum_exact,
+    rsa_keygen, rsa_encrypt, rsa_decrypt, dh_public_key, dh_shared_secret,
+};
+pub mod physics;
+pub use physics::{
+    // Constants
+    K_BOLTZMANN, H_BAR, SPEED_OF_LIGHT, G_GRAV, ELEM_CHARGE, MASS_ELECTRON,
+    BOHR_RADIUS, AVOGADRO, GAS_CONSTANT, EPSILON_0, HYDROGEN_GROUND_EV,
+    // Classical mechanics
+    Particle, NBodyResult, nbody_gravity,
+    sho_exact, sho_energy, dho_underdamped,
+    KeplerOrbit, kepler_orbit, vis_viva,
+    DoublePendulumState, double_pendulum_rk4, double_pendulum_energy,
+    euler_rotation, rotational_kinetic_energy,
+    // Thermodynamics
+    ideal_gas_pressure, ideal_gas_temperature, ideal_gas_internal_energy, ideal_gas_entropy_change,
+    vdw_pressure, vdw_critical,
+    carnot_efficiency, otto_efficiency, entropy_change_isothermal,
+    heat_flux_fourier, newton_cooling, stefan_boltzmann,
+    // Statistical mechanics
+    partition_function, mean_energy, heat_capacity_canonical,
+    helmholtz_free_energy, boltzmann_probabilities, gibbs_entropy,
+    qho_energy, bose_einstein_occupation, planck_spectral_energy, wien_displacement,
+    ising1d_exact, ising2d_metropolis,
+    arrhenius, equilibrium_constant,
+    // Quantum mechanics
+    hydrogen_energy_ev, hydrogen_wavelength,
+    particle_in_box_energy, particle_in_box_wf,
+    tunneling_transmission,
+    Amplitude, normalize_state, time_evolve_state,
+    expectation_value, uncertainty, heisenberg_uncertainty_product,
+    density_matrix_trace, density_matrix_purity, von_neumann_entropy_diagonal,
+    schrodinger1d, sym_tridiag_eigvals,
+    // Fluid dynamics
+    reynolds_number, mach_number, prandtl_number, nusselt_dittus_boelter,
+    bernoulli_velocity, poiseuille_flow_rate, poiseuille_velocity_profile,
+    FlowState, euler1d_lax_friedrichs, cfl_timestep,
+    poisson_sor, vorticity_step,
+    // Special relativity
+    lorentz_factor, relativistic_kinetic_energy, relativistic_momentum,
+    mass_energy, time_dilation, length_contraction,
+    relativistic_velocity_addition, relativistic_doppler,
+};
 pub use equipartition::{
     free_energy, euler_factor, fugacity, fold_target,
     solve_fold, solve_pairwise, diagnose_fold,

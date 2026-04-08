@@ -134,8 +134,19 @@ pub fn bayesian_linear_regression(
         for i in 0..n { rhs[j] += x[i * d + j] * y[i]; }
     }
 
+    // If underdetermined (n < d), regularize posterior precision with ridge
     let lam_mat = crate::linear_algebra::Mat::from_vec(d, d, lambda_n.clone());
-    let l = crate::linear_algebra::cholesky(&lam_mat).expect("posterior precision not positive definite");
+    let l = match crate::linear_algebra::cholesky(&lam_mat) {
+        Some(l) => l,
+        None => {
+            // Add ridge regularization and retry
+            let mut lambda_reg = lambda_n.clone();
+            for j in 0..d { lambda_reg[j * d + j] += 1e-6; }
+            let lam_reg_mat = crate::linear_algebra::Mat::from_vec(d, d, lambda_reg);
+            crate::linear_algebra::cholesky(&lam_reg_mat)
+                .expect("posterior precision not positive definite even with regularization")
+        }
+    };
     let beta_mean = crate::linear_algebra::cholesky_solve(&l, &rhs);
 
     // Posterior for σ²: InvGamma(α_n, β_n)
@@ -180,8 +191,9 @@ pub fn effective_sample_size(samples: &[f64]) -> f64 {
     let n = samples.len();
     if n < 10 { return n as f64; }
 
-    let mean: f64 = samples.iter().sum::<f64>() / n as f64;
-    let var: f64 = samples.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n as f64;
+    let moments = crate::descriptive::moments_ungrouped(samples);
+    let mean = moments.mean();
+    let var = moments.variance(0);
     if var < 1e-15 { return n as f64; }
 
     // Compute all autocorrelations up to n/2
@@ -227,6 +239,7 @@ pub fn effective_sample_size(samples: &[f64]) -> f64 {
 /// R-hat (potential scale reduction factor) for multiple chains.
 /// Each chain is a slice of samples for a single parameter.
 pub fn r_hat(chains: &[&[f64]]) -> f64 {
+    if chains.len() < 2 { return 1.0; } // R-hat undefined for single chain; return converged
     let m = chains.len() as f64;
     let n = chains[0].len() as f64;
 

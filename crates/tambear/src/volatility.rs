@@ -40,8 +40,9 @@ pub fn garch11_fit(returns: &[f64], max_iter: usize) -> GarchResult {
     assert!(n >= 10);
 
     // Unconditional variance as starting estimate
-    let mean_r = returns.iter().sum::<f64>() / n as f64;
-    let uncond_var: f64 = returns.iter().map(|r| (r - mean_r).powi(2)).sum::<f64>() / n as f64;
+    let moments = crate::descriptive::moments_ungrouped(returns);
+    let mean_r = moments.mean();
+    let uncond_var = moments.variance(0);
 
     // Initialize: ω = 0.1*var, α = 0.1, β = 0.8
     let mut omega = 0.1 * uncond_var;
@@ -254,22 +255,30 @@ mod tests {
 
     #[test]
     fn garch_fits() {
-        // Generate GARCH-like returns
+        // Generate GARCH(1,1) with known parameters: ω=0.001, α=0.1, β=0.85
+        // The fitted parameters should recover the true values within tolerance.
+        let true_omega = 0.001;
+        let true_alpha = 0.1;
+        let true_beta = 0.85;
         let n = 500;
         let mut returns = vec![0.0; n];
-        let mut sigma2: f64 = 0.01;
+        let mut sigma2: f64 = true_omega / (1.0 - true_alpha - true_beta); // unconditional var
         let mut rng = 42u64;
         for t in 0..n {
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
             let z = (rng as f64 / u64::MAX as f64 - 0.5) * 3.46; // ~uniform scaled
             returns[t] = sigma2.sqrt() * z;
-            sigma2 = 0.001 + 0.1 * returns[t].powi(2) + 0.85 * sigma2;
+            sigma2 = true_omega + true_alpha * returns[t].powi(2) + true_beta * sigma2;
         }
 
         let res = garch11_fit(&returns, 200);
-        assert!(res.alpha > 0.0 && res.alpha < 0.5, "α={}", res.alpha);
-        assert!(res.beta > 0.0 && res.beta < 1.0, "β={}", res.beta);
-        assert!(res.alpha + res.beta < 1.0, "α+β={}", res.alpha + res.beta);
+        // Parameter recovery: fitted values should be near the true DGP parameters
+        assert!((res.alpha - true_alpha).abs() < 0.15,
+            "α={:.4} should be near true α={true_alpha}", res.alpha);
+        assert!((res.beta - true_beta).abs() < 0.15,
+            "β={:.4} should be near true β={true_beta}", res.beta);
+        // Stationarity is guaranteed by the true DGP (α+β=0.95 < 1)
+        assert!(res.alpha + res.beta < 1.0, "Stationarity: α+β={}", res.alpha + res.beta);
         assert!(res.omega > 0.0, "ω={}", res.omega);
         assert_eq!(res.variances.len(), n);
     }
@@ -289,11 +298,13 @@ mod tests {
 
     #[test]
     fn ewma_constant_returns() {
+        // With constant returns r=c, EWMA converges to σ² = c².
+        // EWMA_t = λ·EWMA_{t-1} + (1-λ)·r² — at equilibrium σ² = r².
         let returns = vec![0.01; 20];
         let sigma2 = ewma_variance(&returns, 0.94);
         assert_eq!(sigma2.len(), 20);
-        // Should converge to 0.01² = 0.0001
-        assert!(sigma2[19] > 0.0);
+        // After 20 steps of EWMA with constant r=0.01, converges to r² = 0.0001
+        close(sigma2[19], 0.0001, 1e-5, "EWMA convergence to r² for constant returns");
     }
 
     #[test]
@@ -313,28 +324,39 @@ mod tests {
     }
 
     #[test]
-    fn roll_spread_bid_ask() {
-        // Simulated bid-ask bounce: price oscillates by spread
-        let spread = 0.05;
-        let mut prices = vec![100.0];
-        let mut rng = 42u64;
-        for _ in 0..99 {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+    fn roll_spread_recovers_known_spread() {
+        // Roll (1984): spread S → Cov(ΔP_t, ΔP_{t-1}) = -S²/4
+        // Roll estimator: S = 2√(-Cov) recovers the true spread.
+        // Pure bid-ask bounce with no fundamental drift: prices alternate ±S/2.
+        let true_spread = 0.02;
+        let half = true_spread / 2.0;
+        // Alternating bounce: 100, 100.01, 99.99, 100.01, ... (deterministic)
+        let mut prices = vec![100.0_f64];
+        for i in 0..199 {
             let last = *prices.last().unwrap();
-            let bounce = if rng % 2 == 0 { spread } else { -spread };
-            prices.push(last + bounce);
+            prices.push(last + if i % 2 == 0 { half } else { -half });
         }
         let rs = roll_spread(&prices);
-        assert!(rs > 0.0, "Roll spread={rs} should detect bid-ask bounce");
+        // For pure bounce, empirical autocovariance → -S²/4 exactly as n→∞
+        close(rs, true_spread, 5e-4, "Roll spread should recover true S=0.02");
     }
 
     #[test]
-    fn kyle_lambda_positive_impact() {
-        // Positive order flow → positive price change
-        let signed_volumes = vec![100.0, -50.0, 200.0, -100.0, 150.0];
-        let price_changes = vec![0.5, -0.3, 1.0, -0.5, 0.8];
+    fn kyle_lambda_recovers_known_slope() {
+        // Kyle (1985): ΔP_t = λ·Q_t + ε, where λ is price impact.
+        // With known DGP λ=0.005, OLS should recover it.
+        let true_lambda = 0.005;
+        let n = 100;
+        let signed_volumes: Vec<f64> = (0..n).map(|i| {
+            // Deterministic signed volumes: alternating +/-100, 200, 50, ...
+            let v = ((i % 4 + 1) * 50) as f64;
+            if i % 2 == 0 { v } else { -v }
+        }).collect();
+        let price_changes: Vec<f64> = signed_volumes.iter()
+            .map(|&q| true_lambda * q)  // exact linear: no noise
+            .collect();
         let lambda = kyle_lambda(&price_changes, &signed_volumes);
-        assert!(lambda > 0.0, "λ={lambda} should be positive for positive impact");
+        close(lambda, true_lambda, 1e-8, "Kyle λ should recover true slope");
     }
 
     #[test]

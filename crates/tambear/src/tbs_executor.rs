@@ -2736,6 +2736,110 @@ pub fn execute(
             }
 
             // ══════════════════════════════════════════════════════════════
+            // State-space models: Kalman filter, RTS smoother, particle filter
+            // ══════════════════════════════════════════════════════════════
+
+            // Scalar Kalman filter.
+            // Frame: 1-column observations (NaN = missing).
+            // Args: f, h, q, r, x0, p0 (transition, obs coeff, noise variances, prior).
+            // Output: Vector of filtered state means.
+            ("kalman_scalar", None) | ("kalman_filter_scalar", None) => {
+                let obs: Vec<f64> = (0..pn).map(|i| pipeline.frame().data[i * pd]).collect();
+                let f   = f64_arg(step, "f",  0, 1.0);
+                let h   = f64_arg(step, "h",  1, 1.0);
+                let q   = f64_arg(step, "q",  2, 1.0);
+                let r   = f64_arg(step, "r",  3, 1.0);
+                let x0  = f64_arg(step, "x0", 4, 0.0);
+                let p0  = f64_arg(step, "p0", 5, 1.0);
+                match crate::kalman::kalman_filter_scalar(&obs, f, h, q, r, x0, p0) {
+                    Some(kf) => TbsStepOutput::Vector { name: "kalman_states", values: kf.states },
+                    None => return Err("kalman_scalar: empty observation sequence".into()),
+                }
+            }
+
+            // RTS smoother (scalar).
+            // Frame: 1-column observations; must be preceded by kalman_scalar in pipeline
+            // but here we run filter+smoother in one step for convenience.
+            // Args: f, h, q, r, x0, p0.
+            // Output: Vector of smoothed state means.
+            ("rts_scalar", None) | ("rts_smoother_scalar", None) => {
+                let obs: Vec<f64> = (0..pn).map(|i| pipeline.frame().data[i * pd]).collect();
+                let f   = f64_arg(step, "f",  0, 1.0);
+                let h   = f64_arg(step, "h",  1, 1.0);
+                let q   = f64_arg(step, "q",  2, 1.0);
+                let r   = f64_arg(step, "r",  3, 1.0);
+                let x0  = f64_arg(step, "x0", 4, 0.0);
+                let p0  = f64_arg(step, "p0", 5, 1.0);
+                match crate::kalman::kalman_filter_scalar(&obs, f, h, q, r, x0, p0) {
+                    Some(kf) => {
+                        let (smoothed, _) = crate::kalman::rts_smoother_scalar(&kf, f, q);
+                        TbsStepOutput::Vector { name: "rts_states", values: smoothed }
+                    }
+                    None => return Err("rts_scalar: empty observation sequence".into()),
+                }
+            }
+
+            // Particle filter for scalar random-walk model.
+            // Frame: 1-column observations (NaN = missing).
+            // Args: process_var, obs_var, n_particles, seed.
+            // Output: Vector of filtered state means.
+            ("particle_filter", None) | ("smc", None) => {
+                let obs: Vec<Vec<f64>> = (0..pn)
+                    .map(|i| vec![pipeline.frame().data[i * pd]])
+                    .collect();
+                let process_var = f64_arg(step, "process_var", 0, 1.0);
+                let obs_var     = f64_arg(step, "obs_var",     1, 1.0);
+                let n_particles = usize_arg(step, "n_particles", 2, 500);
+                let seed        = usize_arg(step, "seed",        3, 42) as u64;
+                let ssm = crate::state_space::LinearGaussianSsm::random_walk(process_var, obs_var);
+                let r = crate::state_space::particle_filter_lgssm(&ssm, &obs, n_particles, seed);
+                let means: Vec<f64> = r.means.iter().map(|m| m[0]).collect();
+                TbsStepOutput::Vector { name: "particle_means", values: means }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // Hidden Markov Models
+            // ══════════════════════════════════════════════════════════════
+
+            // HMM forward-backward: posterior state probabilities.
+            // Frame: 1-column integer observation indices.
+            // Args: n_states, n_obs (number of symbols).
+            // The HMM is initialised uniformly; use hmm_viterbi for decoding.
+            // Output: Scalar log-likelihood of the observation sequence.
+            ("hmm_forward_backward", None) | ("hmm_fb", None) => {
+                let obs: Vec<usize> = (0..pn)
+                    .map(|i| pipeline.frame().data[i * pd] as usize)
+                    .collect();
+                let n_states = usize_req(step, "n_states", 0)?;
+                let n_symbols = usize_req(step, "n_obs", 1)?;
+                let params = crate::kalman::HmmParams::uniform(n_states, n_symbols);
+                match crate::kalman::hmm_forward_backward(&params, &obs) {
+                    Some(fb) => TbsStepOutput::Scalar { name: "hmm_log_likelihood", value: fb.log_likelihood },
+                    None => return Err("hmm_forward_backward: empty sequence or degenerate model".into()),
+                }
+            }
+
+            // HMM Viterbi decoding: most probable state sequence.
+            // Frame: 1-column integer observation indices.
+            // Args: n_states, n_obs.
+            // Output: Vector of state indices (as f64).
+            ("hmm_viterbi", None) | ("viterbi", None) => {
+                let obs: Vec<usize> = (0..pn)
+                    .map(|i| pipeline.frame().data[i * pd] as usize)
+                    .collect();
+                let n_states = usize_req(step, "n_states", 0)?;
+                let n_symbols = usize_req(step, "n_obs", 1)?;
+                let params = crate::kalman::HmmParams::uniform(n_states, n_symbols);
+                match crate::kalman::hmm_viterbi(&params, &obs) {
+                    Some((path, _log_prob)) => {
+                        let states: Vec<f64> = path.iter().map(|&s| s as f64).collect();
+                        TbsStepOutput::Vector { name: "viterbi_path", values: states }
+                    }
+                    None => return Err("hmm_viterbi: empty sequence".into()),
+                }
+            }
+
+            // ══════════════════════════════════════════════════════════════
             // Pipeline configuration
             // ══════════════════════════════════════════════════════════════
 
@@ -3828,6 +3932,85 @@ mod tests {
         match &result.outputs[0] {
             TbsStepOutput::Scalar { value, .. } => {
                 assert!((value - 6.0).abs() < 1e-9, "got {value}");
+            }
+            _ => panic!("expected Scalar output"),
+        }
+    }
+
+    // ── Kalman / HMM / particle filter ───────────────────────────────────────
+
+    #[test]
+    fn tbs_kalman_scalar_basic() {
+        // Scalar random walk: observations 0..9. Filtered means should trend upward.
+        let data: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let chain = TbsChain::parse("kalman_scalar(f=1.0, h=1.0, q=1.0, r=1.0)").unwrap();
+        let result = execute(chain, data, 10, 1, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Vector { values, .. } => {
+                assert_eq!(values.len(), 10);
+                assert!(values.iter().all(|v| v.is_finite()));
+                // Filtered mean at t=9 should be between 5 and 9
+                assert!(values[9] > 5.0, "last filtered mean={}", values[9]);
+            }
+            _ => panic!("expected Vector output"),
+        }
+    }
+
+    #[test]
+    fn tbs_rts_scalar_basic() {
+        let data: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let chain = TbsChain::parse("rts_scalar(f=1.0, h=1.0, q=1.0, r=1.0)").unwrap();
+        let result = execute(chain, data, 10, 1, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Vector { values, .. } => {
+                assert_eq!(values.len(), 10);
+                assert!(values.iter().all(|v| v.is_finite()));
+            }
+            _ => panic!("expected Vector output"),
+        }
+    }
+
+    #[test]
+    fn tbs_particle_filter_basic() {
+        let data: Vec<f64> = (0..15).map(|i| i as f64).collect();
+        let chain = TbsChain::parse("particle_filter(process_var=1.0, obs_var=1.0, n_particles=200, seed=42)").unwrap();
+        let result = execute(chain, data, 15, 1, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Vector { values, .. } => {
+                assert_eq!(values.len(), 15);
+                assert!(values.iter().all(|v| v.is_finite()));
+            }
+            _ => panic!("expected Vector output"),
+        }
+    }
+
+    #[test]
+    fn tbs_hmm_viterbi_basic() {
+        // 5 observations from a 2-state, 3-symbol HMM
+        let data = vec![0.0, 1.0, 2.0, 1.0, 0.0];
+        let chain = TbsChain::parse("hmm_viterbi(n_states=2, n_obs=3)").unwrap();
+        let result = execute(chain, data, 5, 1, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Vector { values, .. } => {
+                assert_eq!(values.len(), 5);
+                // States must be in {0, 1}
+                for &s in values {
+                    assert!(s == 0.0 || s == 1.0, "invalid state {s}");
+                }
+            }
+            _ => panic!("expected Vector output"),
+        }
+    }
+
+    #[test]
+    fn tbs_hmm_forward_backward_basic() {
+        let data = vec![0.0, 1.0, 0.0, 2.0, 1.0];
+        let chain = TbsChain::parse("hmm_forward_backward(n_states=2, n_obs=3)").unwrap();
+        let result = execute(chain, data, 5, 1, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { value, .. } => {
+                assert!(value.is_finite(), "log_likelihood={value}");
+                assert!(*value < 0.0, "log_likelihood should be negative, got {value}");
             }
             _ => panic!("expected Scalar output"),
         }

@@ -1105,6 +1105,71 @@ pub fn median_filter(data: &[f64], window: usize) -> Vec<f64> {
     result
 }
 
+// ─── Signal regularization ───────────────────────────────────────────
+//
+// These functions map variable-length data to a fixed grid of M points.
+// Used by CWT, FFT-spectral, and Haar wavelet leaves in fintek's trunk-rs
+// to normalize variable-length bins before transform computation.
+// All three strategies match fintek's `cwt_wavelet.rs` and `haar_wavelet.rs`.
+
+/// Linear interpolation to M equispaced grid points.
+///
+/// The i-th output point is at `t = (i / M) * (n-1)`.
+/// NaN inputs are not handled (caller should screen).
+pub fn regularize_interp(data: &[f64], m: usize) -> Vec<f64> {
+    let n = data.len();
+    if n == 0 { return vec![f64::NAN; m]; }
+    if n == 1 { return vec![data[0]; m]; }
+    let mut result = vec![0.0; m];
+    for i in 0..m {
+        let t = (i as f64 / m as f64) * (n - 1) as f64;
+        let lo = t as usize;
+        let hi = (lo + 1).min(n - 1);
+        let frac = t - lo as f64;
+        result[i] = data[lo] * (1.0 - frac) + data[hi] * frac;
+    }
+    result
+}
+
+/// Bin-mean regularization to M equispaced grid points.
+///
+/// Divides the n input samples into M equal bins and takes the mean of each.
+/// Empty bins (when n < M) are left as NaN.
+pub fn regularize_bin_mean(data: &[f64], m: usize) -> Vec<f64> {
+    let n = data.len();
+    if n == 0 { return vec![f64::NAN; m]; }
+    if n == 1 { return vec![data[0]; m]; }
+    let mut result = vec![f64::NAN; m];
+    let mut sums = vec![0.0_f64; m];
+    let mut counts = vec![0u32; m];
+    for i in 0..n {
+        let b = ((i * m) / n).min(m - 1);
+        sums[b] += data[i];
+        counts[b] += 1;
+    }
+    for b in 0..m {
+        if counts[b] > 0 {
+            result[b] = sums[b] / counts[b] as f64;
+        }
+    }
+    result
+}
+
+/// Nearest-tick subsample to M equispaced grid points.
+///
+/// The i-th output point is the sample at index `round((i/M) * n)`.
+pub fn regularize_subsample(data: &[f64], m: usize) -> Vec<f64> {
+    let n = data.len();
+    if n == 0 { return vec![f64::NAN; m]; }
+    if n == 1 { return vec![data[0]; m]; }
+    let mut result = vec![0.0; m];
+    for i in 0..m {
+        let idx = ((i as f64 / m as f64) * n as f64).round() as usize;
+        result[i] = data[idx.min(n - 1)];
+    }
+    result
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]

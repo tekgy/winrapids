@@ -23,13 +23,14 @@
 //! - [`family4_time_series`] — ar_model, autocorrelation, arma, arima
 //! - [`family5_stationarity`] — adf, kpss, ljung_box wrapped
 //! - [`family6_spectral`] — fft_spectral, welch, cepstrum
+//! - [`family7_wavelets`] — CWT tower (K02P03C01), 12 variants: M×{16,32,64,128} × 3 strategies
 //! - [`family9_volatility`] — garch, realized_vol, jump_detection
 //! - [`family10_nonlinear`] — sample_entropy, dfa, hurst, lyapunov
 //! - [`family13_dim_reduction`] — pca, ssa
 //! - [`family14_topological`] — persistent_homology
 //!
-//! GAP leaves (families with missing primitives like Burg AR, Kalman, ICA,
-//! CWT, Hawkes, DTW, etc.) are not yet implemented — see tasks #137-#146.
+//! GAP leaves (families with missing primitives like Kalman, ICA,
+//! Hawkes, DTW, etc.) are not yet implemented — see tasks #137-#146.
 
 pub mod family1_distribution;
 pub mod family2_transforms;
@@ -37,6 +38,7 @@ pub mod family3_bin_aggregates;
 pub mod family4_time_series;
 pub mod family5_stationarity;
 pub mod family6_spectral;
+pub mod family7_wavelets;
 pub mod family8_correlation;
 pub mod family9_volatility;
 pub mod family10_nonlinear;

@@ -135,6 +135,404 @@ pub fn garch11_forecast(res: &GarchResult, last_return: f64, horizon: usize) -> 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// GARCH Variants: EGARCH, GJR-GARCH, TGARCH
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// EGARCH(1,1) model result (Nelson 1991).
+///
+/// Variance recursion in log-space: no positivity constraints on parameters.
+/// ln σ²_t = ω + β·ln σ²_{t-1} + α·g(z_{t-1})
+/// where g(z) = z - E[|z|] + γ·z  (asymmetric term)
+/// and E[|z|] = √(2/π) ≈ 0.7979 for N(0,1).
+#[derive(Debug, Clone)]
+pub struct EgarchResult {
+    /// ω (log-variance constant).
+    pub omega: f64,
+    /// α (innovation magnitude coefficient).
+    pub alpha: f64,
+    /// γ (leverage/asymmetry coefficient).
+    /// Negative γ → bad news amplifies volatility more than good news.
+    pub gamma: f64,
+    /// β (log-variance persistence).
+    pub beta: f64,
+    /// Log conditional variances ln σ²_t (length n).
+    pub log_variances: Vec<f64>,
+    /// Conditional variances σ²_t = exp(ln σ²_t) (length n).
+    pub variances: Vec<f64>,
+    /// Log-likelihood.
+    pub log_likelihood: f64,
+    /// Optimization iterations.
+    pub iterations: usize,
+}
+
+impl EgarchResult {
+    pub fn nan(n: usize) -> Self {
+        Self {
+            omega: f64::NAN, alpha: f64::NAN, gamma: f64::NAN, beta: f64::NAN,
+            log_variances: vec![f64::NAN; n], variances: vec![f64::NAN; n],
+            log_likelihood: f64::NAN, iterations: 0,
+        }
+    }
+}
+
+/// Fit EGARCH(1,1) on a return series.
+///
+/// EGARCH captures leverage: stock returns exhibit negative correlation between
+/// past returns and current volatility. γ < 0 models this asymmetry.
+///
+/// Returns are assumed mean-zero (mean-adjusted before calling).
+pub fn egarch11_fit(returns: &[f64], max_iter: usize) -> EgarchResult {
+    let n = returns.len();
+    if n < 10 { return EgarchResult::nan(n); }
+
+    let moments = crate::descriptive::moments_ungrouped(returns);
+    let uncond_var = moments.variance(0).max(1e-15);
+
+    // E[|z|] for standard normal
+    const E_ABS_Z: f64 = 0.7978845608028654; // sqrt(2/π)
+
+    let egarch_ll = |omega: f64, alpha: f64, gamma: f64, beta: f64| -> (f64, Vec<f64>, Vec<f64>) {
+        let mut lsig2 = vec![0.0_f64; n];
+        lsig2[0] = uncond_var.ln(); // backcast
+        for t in 1..n {
+            let z = returns[t - 1] / lsig2[t - 1].exp().sqrt().max(1e-15);
+            let g = z.abs() - E_ABS_Z + gamma * z;
+            lsig2[t] = omega + beta * lsig2[t - 1] + alpha * g;
+        }
+        let sigma2: Vec<f64> = lsig2.iter().map(|&ls| ls.exp().max(1e-300)).collect();
+        let ll: f64 = (0..n).map(|t| {
+            -0.5 * (std::f64::consts::TAU.ln() + lsig2[t] + returns[t].powi(2) / sigma2[t])
+        }).sum();
+        (ll, lsig2, sigma2)
+    };
+
+    // Reparameterization for unconstrained optimization:
+    // ω is free (no positivity needed — it's in log space already)
+    // α is free
+    // γ is free
+    // β = 0.999·tanh(θ_β)  (constrained to (-0.999, 0.999) for stationarity)
+    let sigmoid = |x: f64| -> f64 { 1.0 / (1.0 + (-x).exp()) };
+
+    let to_constrained = |theta: &[f64]| -> (f64, f64, f64, f64) {
+        let o = theta[0];
+        let a = theta[1];
+        let g = theta[2];
+        let b = 0.999 * theta[3].tanh();
+        (o, a, g, b)
+    };
+
+    let neg_ll = |theta: &[f64]| -> f64 {
+        let (o, a, g, b) = to_constrained(theta);
+        -egarch_ll(o, a, g, b).0
+    };
+
+    let neg_ll_grad = |theta: &[f64]| -> Vec<f64> {
+        let delta = 1e-7;
+        let f0 = neg_ll(theta);
+        (0..4).map(|i| {
+            let mut t = theta.to_vec();
+            t[i] += delta;
+            (neg_ll(&t) - f0) / delta
+        }).collect()
+    };
+
+    // Initial values: ω ≈ ln(σ²)·(1-β), α=0.1, γ=-0.05, β=0.9
+    let beta0 = 0.9_f64;
+    let theta0 = vec![
+        uncond_var.ln() * (1.0 - beta0),
+        0.1,
+        -0.05,
+        beta0.atanh() / 0.999,
+    ];
+
+    let result = crate::optimization::lbfgs(&neg_ll, &neg_ll_grad, &theta0, 5, max_iter, 1e-8);
+    let (omega, alpha, gamma, beta) = to_constrained(&result.x);
+    let (log_likelihood, log_variances, variances) = egarch_ll(omega, alpha, gamma, beta);
+
+    // Suppress unused warning on sigmoid (only used in logistic variants)
+    let _ = sigmoid;
+
+    EgarchResult {
+        omega, alpha, gamma, beta,
+        log_variances, variances, log_likelihood,
+        iterations: result.iterations,
+    }
+}
+
+/// GJR-GARCH(1,1) model result (Glosten, Jagannathan, Runkle 1993).
+///
+/// Also called threshold GARCH. Extends GARCH(1,1) with an asymmetric
+/// shock term for negative returns:
+///
+/// σ²_t = ω + α·r²_{t-1} + γ·r²_{t-1}·𝟙[r_{t-1} < 0] + β·σ²_{t-1}
+///
+/// With γ > 0, negative shocks amplify volatility more than positive shocks.
+/// Stationarity: α + γ/2 + β < 1.
+#[derive(Debug, Clone)]
+pub struct GjrGarchResult {
+    /// ω (constant).
+    pub omega: f64,
+    /// α (ARCH coefficient).
+    pub alpha: f64,
+    /// γ (leverage/asymmetry coefficient for negative shocks).
+    pub gamma: f64,
+    /// β (GARCH coefficient).
+    pub beta: f64,
+    /// Conditional variances σ²_t (length n).
+    pub variances: Vec<f64>,
+    /// Log-likelihood.
+    pub log_likelihood: f64,
+    /// Optimization iterations.
+    pub iterations: usize,
+    /// True if α + γ/2 + β > 0.99 (near non-stationarity).
+    pub near_unit_root: bool,
+}
+
+impl GjrGarchResult {
+    pub fn nan(n: usize) -> Self {
+        Self {
+            omega: f64::NAN, alpha: f64::NAN, gamma: f64::NAN, beta: f64::NAN,
+            variances: vec![f64::NAN; n], log_likelihood: f64::NAN,
+            iterations: 0, near_unit_root: false,
+        }
+    }
+}
+
+/// Fit GJR-GARCH(1,1) on a return series.
+///
+/// GJR-GARCH is widely preferred over symmetric GARCH for equity returns
+/// because it explicitly models the leverage effect.
+pub fn gjr_garch11_fit(returns: &[f64], max_iter: usize) -> GjrGarchResult {
+    let n = returns.len();
+    if n < 10 { return GjrGarchResult::nan(n); }
+
+    let moments = crate::descriptive::moments_ungrouped(returns);
+    let uncond_var = moments.variance(0).max(1e-15);
+
+    let gjr_ll = |omega: f64, alpha: f64, gamma: f64, beta: f64| -> (f64, Vec<f64>) {
+        let mut sigma2 = vec![0.0_f64; n];
+        sigma2[0] = uncond_var.max(1e-15);
+        for t in 1..n {
+            let r_prev = returns[t - 1];
+            let indicator = if r_prev < 0.0 { 1.0 } else { 0.0 };
+            sigma2[t] = omega + alpha * r_prev.powi(2) + gamma * r_prev.powi(2) * indicator
+                + beta * sigma2[t - 1];
+            sigma2[t] = sigma2[t].max(1e-15);
+        }
+        let ll: f64 = (0..n).map(|t| {
+            -0.5 * (std::f64::consts::TAU.ln() + sigma2[t].ln() + returns[t].powi(2) / sigma2[t])
+        }).sum();
+        (ll, sigma2)
+    };
+
+    // Reparameterization:
+    // θ_0 = ln(ω),    ω = exp(θ_0) > 0
+    // θ_1 = ln(α),    α = exp(θ_1) > 0   (typically small positive)
+    // θ_2 = ln(γ),    γ = exp(θ_2) > 0   (leverage effect positive)
+    // θ_3 = logit(β/0.999),  β = 0.999·sigmoid(θ_3) ∈ (0, 0.999)
+    let sigmoid = |x: f64| -> f64 { 1.0 / (1.0 + (-x).exp()) };
+
+    let to_constrained = |theta: &[f64]| -> (f64, f64, f64, f64) {
+        let o = theta[0].exp();
+        // α and γ: ensure α > 0 and γ > 0 (leverage amplifies, not dampens)
+        let a = theta[1].exp().min(0.49); // cap α at 0.49 to keep room for γ
+        let g = theta[2].exp().min(0.49);
+        let b = 0.999 * sigmoid(theta[3]);
+        (o, a, g, b)
+    };
+
+    let neg_ll = |theta: &[f64]| -> f64 {
+        let (o, a, g, b) = to_constrained(theta);
+        // Stationarity: α + γ/2 + β < 1  (E[effective ARCH coeff] = α + γ/2)
+        if a + g / 2.0 + b >= 0.999 { return 1e20; }
+        -gjr_ll(o, a, g, b).0
+    };
+
+    let neg_ll_grad = |theta: &[f64]| -> Vec<f64> {
+        let delta = 1e-7;
+        let f0 = neg_ll(theta);
+        (0..4).map(|i| {
+            let mut t = theta.to_vec();
+            t[i] += delta;
+            (neg_ll(&t) - f0) / delta
+        }).collect()
+    };
+
+    let logit = |p: f64| -> f64 { (p / (1.0 - p)).ln() };
+    let theta0 = vec![
+        (0.1 * uncond_var).max(1e-20).ln(),  // ω₀ = 10% of sample variance
+        (-3.0_f64),                            // α₀ ≈ exp(-3) ≈ 0.05
+        (-4.0_f64),                            // γ₀ ≈ exp(-4) ≈ 0.018
+        logit(0.8 / 0.999),                   // β₀ = 0.8
+    ];
+
+    let result = crate::optimization::lbfgs(&neg_ll, &neg_ll_grad, &theta0, 5, max_iter, 1e-8);
+    let (omega, alpha, gamma, beta) = to_constrained(&result.x);
+
+    // Post-hoc stationarity clamp
+    let persist = alpha + gamma / 2.0 + beta;
+    let (alpha, gamma, beta) = if persist >= 0.999 {
+        let scale = 0.998 / persist;
+        (alpha * scale, gamma * scale, beta * scale)
+    } else {
+        (alpha, gamma, beta)
+    };
+    let near_unit_root = alpha + gamma / 2.0 + beta > 0.99;
+    let (log_likelihood, variances) = gjr_ll(omega, alpha, gamma, beta);
+
+    // Suppress unused warning
+    let _ = sigmoid;
+
+    GjrGarchResult {
+        omega, alpha, gamma, beta,
+        variances, log_likelihood,
+        iterations: result.iterations,
+        near_unit_root,
+    }
+}
+
+/// TGARCH(1,1) model result (Zakoian 1994 / Rabemananjara-Zakoian).
+///
+/// Models conditional standard deviation (not variance) with asymmetry:
+///
+/// σ_t = ω + α⁺·r⁺_{t-1} + α⁻·r⁻_{t-1} + β·σ_{t-1}
+///
+/// where r⁺ = max(r, 0), r⁻ = max(-r, 0).
+///
+/// Advantages over GJR-GARCH: directly models σ (not σ²), which avoids
+/// the Jensen inequality distortion in volatility forecasting.
+#[derive(Debug, Clone)]
+pub struct TgarchResult {
+    /// ω (constant in σ recursion).
+    pub omega: f64,
+    /// α⁺ (positive shock coefficient).
+    pub alpha_pos: f64,
+    /// α⁻ (negative shock coefficient; > α⁺ for leverage effect).
+    pub alpha_neg: f64,
+    /// β (conditional volatility persistence).
+    pub beta: f64,
+    /// Conditional standard deviations σ_t (length n).
+    pub sigma: Vec<f64>,
+    /// Conditional variances σ²_t (length n).
+    pub variances: Vec<f64>,
+    /// Log-likelihood.
+    pub log_likelihood: f64,
+    /// Optimization iterations.
+    pub iterations: usize,
+    /// True if α⁺ E[r⁺] + α⁻ E[r⁻] + β ≥ 0.99 (approximate persistence).
+    pub near_unit_root: bool,
+}
+
+impl TgarchResult {
+    pub fn nan(n: usize) -> Self {
+        Self {
+            omega: f64::NAN, alpha_pos: f64::NAN, alpha_neg: f64::NAN, beta: f64::NAN,
+            sigma: vec![f64::NAN; n], variances: vec![f64::NAN; n],
+            log_likelihood: f64::NAN, iterations: 0, near_unit_root: false,
+        }
+    }
+}
+
+/// Fit TGARCH(1,1) on a return series.
+///
+/// Stationarity condition (Nelson 1990): E[ln(α⁺·ε⁺ + α⁻·ε⁻ + β)²] < 0,
+/// which is approximately α⁺²/2 + α⁻²/2 + β² < 1. We use β + (α⁺+α⁻)·E[|ε|] < 1
+/// with E[|ε|] = √(2/π) as a practical constraint.
+pub fn tgarch11_fit(returns: &[f64], max_iter: usize) -> TgarchResult {
+    let n = returns.len();
+    if n < 10 { return TgarchResult::nan(n); }
+
+    let moments = crate::descriptive::moments_ungrouped(returns);
+    let uncond_var = moments.variance(0).max(1e-15);
+    let uncond_sigma = uncond_var.sqrt();
+
+    // E[|z|] for N(0,1) — used in stationarity bound
+    const E_ABS_Z: f64 = 0.7978845608028654; // sqrt(2/π)
+
+    let tgarch_ll = |omega: f64, alpha_pos: f64, alpha_neg: f64, beta: f64| -> (f64, Vec<f64>) {
+        let mut sigma = vec![0.0_f64; n];
+        sigma[0] = uncond_sigma.max(1e-15);
+        for t in 1..n {
+            let r = returns[t - 1];
+            let rpos = r.max(0.0);
+            let rneg = (-r).max(0.0);
+            sigma[t] = omega + alpha_pos * rpos + alpha_neg * rneg + beta * sigma[t - 1];
+            sigma[t] = sigma[t].max(1e-15);
+        }
+        let ll: f64 = (0..n).map(|t| {
+            let s2 = sigma[t].powi(2);
+            -0.5 * (std::f64::consts::TAU.ln() + s2.ln() + returns[t].powi(2) / s2)
+        }).sum();
+        (ll, sigma)
+    };
+
+    let sigmoid = |x: f64| -> f64 { 1.0 / (1.0 + (-x).exp()) };
+
+    // Reparameterization:
+    // θ_0 = ln(ω),   ω = exp(θ_0) > 0
+    // θ_1 = ln(α⁺),  α⁺ = exp(θ_1) > 0
+    // θ_2 = ln(α⁻),  α⁻ = exp(θ_2) > 0
+    // θ_3 = logit(β/0.999),  β = 0.999·sigmoid(θ_3) ∈ (0, 0.999)
+    let to_constrained = |theta: &[f64]| -> (f64, f64, f64, f64) {
+        let o = theta[0].exp();
+        let ap = theta[1].exp().min(0.4);
+        let an = theta[2].exp().min(0.4);
+        let b = 0.999 * sigmoid(theta[3]);
+        (o, ap, an, b)
+    };
+
+    let neg_ll = |theta: &[f64]| -> f64 {
+        let (o, ap, an, b) = to_constrained(theta);
+        // Stationarity: (α⁺ + α⁻)·E[|ε|] + β < 1
+        if (ap + an) * E_ABS_Z + b >= 0.999 { return 1e20; }
+        -tgarch_ll(o, ap, an, b).0
+    };
+
+    let neg_ll_grad = |theta: &[f64]| -> Vec<f64> {
+        let delta = 1e-7;
+        let f0 = neg_ll(theta);
+        (0..4).map(|i| {
+            let mut t = theta.to_vec();
+            t[i] += delta;
+            (neg_ll(&t) - f0) / delta
+        }).collect()
+    };
+
+    let logit = |p: f64| -> f64 { (p / (1.0 - p)).ln() };
+    let theta0 = vec![
+        (0.1 * uncond_sigma).max(1e-20).ln(), // ω₀ = 10% of sample σ
+        (-3.0_f64),                             // α⁺₀ ≈ exp(-3) ≈ 0.05
+        (-2.5_f64),                             // α⁻₀ ≈ exp(-2.5) ≈ 0.08 (slightly higher for leverage)
+        logit(0.8 / 0.999),                    // β₀ = 0.8
+    ];
+
+    let result = crate::optimization::lbfgs(&neg_ll, &neg_ll_grad, &theta0, 5, max_iter, 1e-8);
+    let (omega, alpha_pos, alpha_neg, beta) = to_constrained(&result.x);
+
+    // Post-hoc stationarity clamp
+    let persist = (alpha_pos + alpha_neg) * E_ABS_Z + beta;
+    let (alpha_pos, alpha_neg, beta) = if persist >= 0.999 {
+        let scale = 0.998 / persist;
+        (alpha_pos * scale, alpha_neg * scale, beta * scale)
+    } else {
+        (alpha_pos, alpha_neg, beta)
+    };
+    let near_unit_root = (alpha_pos + alpha_neg) * E_ABS_Z + beta > 0.99;
+    let (log_likelihood, sigma) = tgarch_ll(omega, alpha_pos, alpha_neg, beta);
+    let variances: Vec<f64> = sigma.iter().map(|&s| s * s).collect();
+
+    // Suppress unused warning
+    let _ = sigmoid;
+
+    TgarchResult {
+        omega, alpha_pos, alpha_neg, beta,
+        sigma, variances, log_likelihood,
+        iterations: result.iterations,
+        near_unit_root,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // EWMA Volatility (RiskMetrics)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -897,5 +1295,132 @@ mod tests {
         let result = arch_lm_test(&residuals, 3).unwrap();
         assert!(result.statistic.is_finite(), "statistic should be finite");
         assert!(result.p_value.is_finite(), "p_value should be finite");
+    }
+
+    // ── EGARCH tests ──────────────────────────────────────────────────────
+
+    fn make_garch_returns(n: usize, omega: f64, alpha: f64, beta: f64, seed: u64) -> Vec<f64> {
+        let mut returns = vec![0.0; n];
+        let mut sigma2 = omega / (1.0 - alpha - beta).max(1e-10);
+        let mut rng = crate::rng::Xoshiro256::new(seed);
+        for t in 0..n {
+            let z = crate::rng::sample_normal(&mut rng, 0.0, 1.0);
+            returns[t] = sigma2.sqrt() * z;
+            sigma2 = omega + alpha * returns[t].powi(2) + beta * sigma2;
+        }
+        returns
+    }
+
+    #[test]
+    fn egarch_fits_and_stationary() {
+        let returns = make_garch_returns(500, 0.001, 0.1, 0.85, 42);
+        let r = egarch11_fit(&returns, 200);
+        assert!(r.omega.is_finite(), "ω should be finite, got {}", r.omega);
+        assert!(r.alpha.is_finite(), "α should be finite, got {}", r.alpha);
+        assert!(r.beta.is_finite(), "β should be finite, got {}", r.beta);
+        // EGARCH stationarity: |β| < 1
+        assert!(r.beta.abs() < 1.0, "EGARCH |β|={:.4} must be < 1", r.beta);
+        assert_eq!(r.log_variances.len(), 500);
+        assert_eq!(r.variances.len(), 500);
+        // All variances must be positive
+        for &v in &r.variances {
+            assert!(v > 0.0 && v.is_finite(), "variance should be positive finite, got {v}");
+        }
+    }
+
+    #[test]
+    fn egarch_log_likelihood_finite() {
+        let returns = make_garch_returns(200, 0.001, 0.1, 0.85, 7);
+        let r = egarch11_fit(&returns, 100);
+        // LL can be positive for scaled Gaussians (density > 1 is valid)
+        assert!(r.log_likelihood.is_finite(), "LL should be finite, got {}", r.log_likelihood);
+    }
+
+    #[test]
+    fn egarch_too_short_returns_nan() {
+        let r = egarch11_fit(&[0.01, -0.02, 0.03], 100);
+        assert!(r.omega.is_nan());
+    }
+
+    // ── GJR-GARCH tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn gjr_garch_fits_and_stationary() {
+        let returns = make_garch_returns(500, 0.001, 0.08, 0.85, 99);
+        let r = gjr_garch11_fit(&returns, 200);
+        assert!(r.omega.is_finite(), "ω={}", r.omega);
+        assert!(r.alpha >= 0.0 && r.alpha.is_finite(), "α={}", r.alpha);
+        assert!(r.gamma >= 0.0 && r.gamma.is_finite(), "γ={}", r.gamma);
+        assert!(r.beta >= 0.0 && r.beta.is_finite(), "β={}", r.beta);
+        // Stationarity: α + γ/2 + β < 1
+        let persist = r.alpha + r.gamma / 2.0 + r.beta;
+        assert!(persist < 1.0, "GJR stationarity persist={:.4} must be < 1", persist);
+        assert_eq!(r.variances.len(), 500);
+        for &v in &r.variances { assert!(v > 0.0, "variance should be positive, got {v}"); }
+    }
+
+    #[test]
+    fn gjr_garch_leverage_positive() {
+        // On symmetric GARCH data, γ should still be non-negative
+        // (the optimizer won't push it negative — the constraint floor is 0)
+        let returns = make_garch_returns(300, 0.001, 0.1, 0.8, 55);
+        let r = gjr_garch11_fit(&returns, 200);
+        assert!(r.gamma >= 0.0, "leverage γ={:.4} should be non-negative", r.gamma);
+    }
+
+    #[test]
+    fn gjr_garch_log_likelihood_finite() {
+        let returns = make_garch_returns(200, 0.001, 0.1, 0.8, 11);
+        let r = gjr_garch11_fit(&returns, 100);
+        // LL can be positive for scaled Gaussians (density > 1 is valid)
+        assert!(r.log_likelihood.is_finite(), "LL={}", r.log_likelihood);
+    }
+
+    #[test]
+    fn gjr_garch_too_short_returns_nan() {
+        let r = gjr_garch11_fit(&[0.01, -0.02], 100);
+        assert!(r.omega.is_nan());
+    }
+
+    // ── TGARCH tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn tgarch_fits_and_stationary() {
+        let returns = make_garch_returns(500, 0.001, 0.08, 0.85, 31);
+        let r = tgarch11_fit(&returns, 200);
+        assert!(r.omega.is_finite() && r.omega > 0.0, "ω={}", r.omega);
+        assert!(r.alpha_pos >= 0.0 && r.alpha_pos.is_finite(), "α⁺={}", r.alpha_pos);
+        assert!(r.alpha_neg >= 0.0 && r.alpha_neg.is_finite(), "α⁻={}", r.alpha_neg);
+        assert!(r.beta >= 0.0 && r.beta.is_finite(), "β={}", r.beta);
+        assert_eq!(r.sigma.len(), 500);
+        assert_eq!(r.variances.len(), 500);
+        for &s in &r.sigma { assert!(s > 0.0, "sigma should be positive, got {s}"); }
+        // Stationarity: (α⁺ + α⁻)·E[|z|] + β < 1
+        const E_ABS_Z: f64 = 0.7978845608028654;
+        let persist = (r.alpha_pos + r.alpha_neg) * E_ABS_Z + r.beta;
+        assert!(persist < 1.0, "TGARCH persist={:.4} must be < 1", persist);
+    }
+
+    #[test]
+    fn tgarch_sigma_squared_equals_variances() {
+        let returns = make_garch_returns(200, 0.001, 0.1, 0.8, 17);
+        let r = tgarch11_fit(&returns, 100);
+        for (i, (&s, &v)) in r.sigma.iter().zip(r.variances.iter()).enumerate() {
+            assert!((s * s - v).abs() < 1e-10, "t={i}: σ²={} but variances={}. diff={}", s*s, v, (s*s-v).abs());
+        }
+    }
+
+    #[test]
+    fn tgarch_log_likelihood_finite() {
+        let returns = make_garch_returns(200, 0.001, 0.1, 0.8, 23);
+        let r = tgarch11_fit(&returns, 100);
+        // LL can be positive for scaled Gaussians (density > 1 is valid)
+        assert!(r.log_likelihood.is_finite(), "LL={}", r.log_likelihood);
+    }
+
+    #[test]
+    fn tgarch_too_short_returns_nan() {
+        let r = tgarch11_fit(&[0.01], 100);
+        assert!(r.omega.is_nan());
     }
 }

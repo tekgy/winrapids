@@ -193,6 +193,8 @@ pub use linear_algebra::{
     SvdResult, svd, pinv,
     sym_eigen, power_iteration,
     cond, solve, solve_spd,
+    solve_tridiagonal, solve_tridiagonal_scan,
+    tridiagonal_scan_element, tridiagonal_scan_compose,
 };
 pub use graph::{
     Edge, Graph, MstResult,
@@ -405,6 +407,7 @@ pub use signal_processing::{
     goertzel, goertzel_mag,
     zero_crossing_rate, median_filter,
     path_signature_2d, log_signature_2d,
+    regularize_interp, regularize_bin_mean, regularize_subsample,
 };
 pub use pipeline::{TamFrame, TamPipeline, ClusterSpec, ClusterView, ColumnDescribe, DescribeResult, DiscoveryResult};
 pub use manifold::{Manifold, ManifoldMixture, ManifoldDistanceOp};

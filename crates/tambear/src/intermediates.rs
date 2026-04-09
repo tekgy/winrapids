@@ -446,6 +446,49 @@ pub enum IntermediateTag {
     /// Produced when a groupby + moment computation runs together.
     /// Consumed by: grouped hypothesis tests, multi-group ANOVA, group normalization.
     GroupedMomentStats { data_id: DataId, groups_id: DataId },
+
+    /// Full data-quality summary for a single slice of observations.
+    ///
+    /// Stores a `DataQualitySummary` (tick_count, price_cv, effective_sample_size,
+    /// lag1_autocorr, jump_ratio_proxy, trend_r2, split_variance_ratio,
+    /// acf_decay_exponent, has_vol_clustering, has_trend, is_stationary_adf_05).
+    ///
+    /// Produced by: `data_quality::DataQualitySummary::from_slice` (or the
+    /// session-aware variant that registers on first computation).
+    /// Consumed by: every validity predicate (`fft_is_valid`, `garch_is_valid`,
+    /// ...), every auto-detection family chain, every bridge leaf that checks
+    /// sample adequacy before running its expensive math. Computing this once
+    /// per bin and reading it from 18+ downstream consumers is the textbook
+    /// TamSession sharing win: O(n) pass becomes O(1) lookup.
+    DataQuality { data_id: DataId },
+
+    /// Streaming sketch over a slice: HyperLogLog, Bloom filter, Count-Min
+    /// Sketch, or SpaceSaving top-k counter. `kind` distinguishes the
+    /// sketch family and `precision` captures the single most important
+    /// sizing parameter (HLL register bits, Bloom bit count, CMS width,
+    /// Top-K k).
+    ///
+    /// Produced by: `sketches::build_*_session` helpers (one per family).
+    /// Consumed by: any downstream consumer that wants the cached sketch
+    /// instead of rebuilding — distinct-count queries, set-membership
+    /// probes, heavy-hitter lookups, union-of-streams merges.
+    Sketch { kind: SketchKind, precision: u32, data_id: DataId },
+}
+
+/// Which streaming sketch family a `Sketch` intermediate represents.
+///
+/// Used as a discriminant inside `IntermediateTag::Sketch` so different
+/// sketch types over the same data do not collide in the cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SketchKind {
+    /// HyperLogLog distinct-count sketch with `2^precision` registers.
+    HyperLogLog,
+    /// Bloom filter; `precision` holds the bit capacity.
+    BloomFilter,
+    /// Count-Min Sketch; `precision` holds the width (depth tracked elsewhere).
+    CountMinSketch,
+    /// SpaceSaving top-k counter; `precision` holds `k`.
+    TopK,
 }
 
 // ---------------------------------------------------------------------------

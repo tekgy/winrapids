@@ -46,7 +46,49 @@ pub mod family11_tick_microstructure;
 pub mod family12_causality_info;
 pub mod family13_dim_reduction;
 pub mod family14_topological;
+pub mod family15_manifold_topology;
 pub mod family16_extremes;
+
+/// Data quality primitives re-exported from tambear::data_quality.
+///
+/// Fintek leaf executors can call these before running expensive math:
+/// ```rust,ignore
+/// use tambear_fintek::data_quality;
+/// if !data_quality::fft_is_valid(bin_prices, Some(bin_timestamps)) {
+///     return LeafOutput::nan();
+/// }
+/// ```
+/// Every function here is O(n) cadence-agnostic: takes a slice, returns a scalar.
+pub mod data_quality {
+    pub use tambear::data_quality::{
+        // Size
+        tick_count, nyquist_bins, effective_sample_size,
+        // Diversity
+        unique_prices, symbolic_diversity, unique_ordinal_3,
+        // Variability
+        price_cv, split_variance_ratio,
+        // Sampling regularity
+        sampling_regularity_cv, longest_gap_ratio, coverage_ratio,
+        // Structure / trend
+        trend_r2, has_trend, acf_decay_exponent,
+        // ACF values
+        lag1_autocorrelation, lag_k_autocorrelation, acf_lag10, acf_abs_lag1,
+        // Stationarity proxy
+        is_stationary_adf_05,
+        // Jump / vol clustering
+        jump_ratio_proxy, has_vol_clustering,
+        // Summary struct
+        DataQualitySummary,
+        // Per-family validity composites (all 18 families from BINNED_METHODS_LIST)
+        fft_is_valid, garch_is_valid,
+        rank_based_is_valid, permutation_entropy_3_is_valid, sample_entropy_is_valid,
+        wavelet_is_valid, time_series_is_valid, fractal_is_valid,
+        entropy_complexity_is_valid, chaos_is_valid, manifold_is_valid,
+        distance_is_valid, causality_is_valid, regime_detection_is_valid,
+        continuous_time_is_valid, decomposition_is_valid,
+        statistical_tests_is_valid, correlation_is_valid,
+    };
+}
 
 /// Shared output type for multi-column leaves.
 ///

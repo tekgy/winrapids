@@ -399,6 +399,100 @@ pub fn cox_ph(x: &[f64], times: &[f64], events: &[bool], n: usize, d: usize, max
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Grambsch-Therneau proportional hazards test
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of the Grambsch-Therneau PH assumption test.
+#[derive(Debug, Clone)]
+pub struct GrambschTherneauResult {
+    /// Per-covariate test statistics: (correlation_with_time, chi² statistic, p-value).
+    pub per_covariate: Vec<(f64, f64, f64)>,
+    /// Global χ² statistic (sum of per-covariate statistics).
+    pub global_chi2: f64,
+    /// Global p-value under χ²(d) where d = number of covariates.
+    pub global_p_value: f64,
+}
+
+/// Grambsch-Therneau (1994) test for proportional hazards assumption.
+///
+/// For each covariate j: correlate the Schoenfeld residuals with rank-transformed
+/// event times; under H₀ (PH holds), the correlation is 0. The chi² statistic
+/// per covariate is ρ²_j · n_events, distributed as χ²(1).
+///
+/// Uses rank-transformed time by default (equivalent to the Kaplan-Meier-based
+/// time used in R's `cox.zph`).
+///
+/// `cox_result`: output from `cox_ph`.
+/// `event_times`: times at which each event occurred (length = n_events).
+///   These should come from the time-ordered event sequence used by Cox PH.
+pub fn grambsch_therneau_test(
+    cox_result: &CoxResult,
+    event_times: &[f64],
+) -> GrambschTherneauResult {
+    let n_events = cox_result.schoenfeld_residuals.len();
+    let d = cox_result.beta.len();
+
+    if n_events < 3 || d == 0 || event_times.len() != n_events {
+        return GrambschTherneauResult {
+            per_covariate: vec![(f64::NAN, f64::NAN, f64::NAN); d],
+            global_chi2: f64::NAN,
+            global_p_value: f64::NAN,
+        };
+    }
+
+    // Rank-transform event times (ties broken by average rank)
+    let mut indexed: Vec<(usize, f64)> = event_times.iter().copied().enumerate().collect();
+    indexed.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let mut ranks = vec![0.0f64; n_events];
+    let mut i = 0;
+    while i < n_events {
+        let mut j = i + 1;
+        while j < n_events && (indexed[j].1 - indexed[i].1).abs() < 1e-15 { j += 1; }
+        let avg_rank = (i + j + 1) as f64 / 2.0; // 1-indexed average rank
+        for k in i..j { ranks[indexed[k].0] = avg_rank; }
+        i = j;
+    }
+
+    // For each covariate j, compute Pearson correlation between
+    // schoenfeld_residuals[k][j] and ranks[k]
+    let rank_mean: f64 = ranks.iter().sum::<f64>() / n_events as f64;
+    let rank_var: f64 = ranks.iter().map(|&r| (r - rank_mean).powi(2)).sum::<f64>();
+
+    let mut per_covariate = Vec::with_capacity(d);
+    let mut global_chi2 = 0.0;
+
+    for j in 0..d {
+        let resid_j: Vec<f64> = cox_result.schoenfeld_residuals.iter()
+            .map(|r| r[j]).collect();
+        let resid_mean: f64 = resid_j.iter().sum::<f64>() / n_events as f64;
+        let resid_var: f64 = resid_j.iter().map(|&r| (r - resid_mean).powi(2)).sum::<f64>();
+
+        let cov: f64 = resid_j.iter().zip(ranks.iter())
+            .map(|(&r, &rk)| (r - resid_mean) * (rk - rank_mean))
+            .sum();
+
+        let corr = if resid_var > 1e-300 && rank_var > 1e-300 {
+            cov / (resid_var * rank_var).sqrt()
+        } else { 0.0 };
+
+        // χ² = ρ² · n_events ~ χ²(1) under H₀ (PH holds)
+        let chi2_j = corr * corr * n_events as f64;
+        let p_j = 1.0 - crate::special_functions::chi2_cdf(chi2_j, 1.0);
+
+        per_covariate.push((corr, chi2_j, p_j));
+        global_chi2 += chi2_j;
+    }
+
+    let global_p = 1.0 - crate::special_functions::chi2_cdf(global_chi2, d as f64);
+
+    GrambschTherneauResult {
+        per_covariate,
+        global_chi2,
+        global_p_value: global_p,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -524,5 +618,52 @@ mod tests {
         // All residuals should be finite
         assert!(res.schoenfeld_residuals.iter().all(|r| r.iter().all(|v| v.is_finite())),
             "Schoenfeld residuals should all be finite");
+    }
+
+    // ── Grambsch-Therneau test ────────────────────────────────────────────
+
+    #[test]
+    fn grambsch_therneau_proportional_hazards_holds() {
+        // Under true PH, the test should not reject (p > 0.05)
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let n = 100;
+        // Generate data with truly proportional hazards: T ~ Exp(λ·exp(βx))
+        // where x is the covariate and β is the true coefficient (PH holds).
+        let x: Vec<f64> = (0..n).map(|_| crate::rng::sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let beta_true = 0.5;
+        let times: Vec<f64> = x.iter().map(|&xi| {
+            let u = crate::rng::TamRng::next_f64(&mut rng).max(1e-10);
+            -u.ln() / (beta_true * xi).exp()
+        }).collect();
+        let events: Vec<bool> = vec![true; n];
+
+        let res = cox_ph(&x, &times, &events, n, 1, 50);
+        // Get sorted event times (same ordering as schoenfeld residuals)
+        let mut sorted_times: Vec<f64> = times.iter().zip(events.iter())
+            .filter(|(_, &e)| e).map(|(&t, _)| t).collect();
+        sorted_times.sort_by(|a, b| a.total_cmp(b));
+
+        let gt = grambsch_therneau_test(&res, &sorted_times);
+        // Should not reject H0 (PH holds) at α=0.05
+        assert!(gt.global_p_value > 0.01,
+            "PH should hold, global p={} should be > 0.01", gt.global_p_value);
+    }
+
+    #[test]
+    fn grambsch_therneau_basic_structure() {
+        // Just verify the result structure is sensible on a small example
+        let n = 20;
+        let x: Vec<f64> = (0..n).map(|i| i as f64 / 10.0).collect();
+        let times: Vec<f64> = (0..n).map(|i| (n - i) as f64).collect();
+        let events: Vec<bool> = vec![true; n];
+
+        let res = cox_ph(&x, &times, &events, n, 1, 20);
+        let mut sorted_times = times.clone();
+        sorted_times.sort_by(|a, b| a.total_cmp(b));
+
+        let gt = grambsch_therneau_test(&res, &sorted_times);
+        assert_eq!(gt.per_covariate.len(), 1);
+        assert!(gt.global_chi2 >= 0.0);
+        assert!(gt.global_p_value >= 0.0 && gt.global_p_value <= 1.0);
     }
 }

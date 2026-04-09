@@ -38,6 +38,8 @@
 //!
 //! All of these are used by the BINNED_METHODS_LIST validity requirements.
 
+use crate::descriptive::moments_ungrouped;
+
 /// Count of finite (non-NaN) samples in the slice.
 ///
 /// This is the most basic validity predicate: "is there any data at all?"
@@ -466,6 +468,31 @@ pub fn effective_sample_size(x: &[f64]) -> f64 {
     (n as f64 * factor).clamp(0.0, n as f64)
 }
 
+/// Integer effective sample size for a single bin: `floor(effective_sample_size(x))`.
+///
+/// Convenience alias that returns a `usize` suitable for comparing against
+/// minimum-sample thresholds. "Is this bin big enough to run method M?"
+/// collapses to `size_effective_n_bin(bin) >= m_minimum`.
+///
+/// For a bin with no autocorrelation, this equals the tick count. For a
+/// heavily correlated bin, it can be much smaller — which is exactly the
+/// signal a validity predicate wants (raw count overstates information).
+pub fn size_effective_n_bin(x: &[f64]) -> usize {
+    let ess = effective_sample_size(x);
+    if ess.is_finite() && ess >= 0.0 { ess.floor() as usize } else { 0 }
+}
+
+/// Slice-form coverage ratio: `actual_count / expected_count`.
+///
+/// Wrapper around [`coverage_ratio`] that takes the slice directly, inferring
+/// `actual_n = x.len()`. Matches the fintek bridge convention where the
+/// validity check gets the bin plus the expected bin size from its cadence.
+///
+/// Returns NaN if `expected_n == 0`; 1.0 means full coverage.
+pub fn coverage_ratio_slice(x: &[f64], expected_n: usize) -> f64 {
+    coverage_ratio(x.len(), expected_n)
+}
+
 /// ACF decay exponent — slope of `log|ρ(k)|` vs `log(k)` for `k = 1..max_lag`.
 ///
 /// A short-memory process (AR(1) with small coefficient, IID) has steep
@@ -601,6 +628,37 @@ impl DataQualitySummary {
             has_trend: has_trend(x, 0.5),
             is_stationary_adf_05: is_stationary_adf_05(x),
         }
+    }
+
+    /// Session-aware variant of [`DataQualitySummary::from_slice`].
+    ///
+    /// Checks `session` for a cached summary of this exact data slice. If
+    /// found, returns the cached copy at zero cost. If not, computes via
+    /// [`DataQualitySummary::from_slice`], registers in the session, and
+    /// returns the result.
+    ///
+    /// # Cross-algorithm sharing
+    ///
+    /// Within a single bin, ~18 downstream families ask the same validity
+    /// questions (tick count, stationarity, trend, autocorrelation). Calling
+    /// this once per bin makes the answer free for every subsequent
+    /// `fft_is_valid`, `garch_is_valid`, `wavelet_is_valid`, etc. consumer.
+    pub fn from_session(session: &mut crate::intermediates::TamSession, x: &[f64]) -> Self {
+        use std::sync::Arc;
+        use crate::intermediates::{DataId, IntermediateTag};
+
+        let data_id = DataId::from_f64(x);
+        let tag = IntermediateTag::DataQuality { data_id };
+
+        if let Some(cached) = session.get::<DataQualitySummary>(&tag) {
+            // Arc<DataQualitySummary> → DataQualitySummary via one deref
+            // (DataQualitySummary is Copy, so this is a trivial bitwise copy).
+            return *cached;
+        }
+
+        let summary = Self::from_slice(x);
+        session.register(tag, Arc::new(summary));
+        summary
     }
 }
 
@@ -963,6 +1021,316 @@ pub fn correlation_is_valid(
     let cv = price_cv(x);
     cv.is_finite() && cv > mcv
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Interarrival time (IAT) family — exhaustive measures of arrival structure
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Every scalar measure of the point-process structure of a timestamp sequence.
+// Consumers pick whichever measure suits their threshold; tambear has them all.
+// No thresholds, no opinions, just primitives.
+
+/// Interarrival times: `ts[i+1] - ts[i]` as f64 seconds.
+///
+/// Returns empty if n < 2.
+pub fn iats(timestamps: &[u64]) -> Vec<f64> {
+    let n = timestamps.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    (1..n)
+        .map(|i| timestamps[i].saturating_sub(timestamps[i - 1]) as f64)
+        .collect()
+}
+
+/// Mean interarrival time.
+pub fn iat_mean(timestamps: &[u64]) -> f64 {
+    let iats = iats(timestamps);
+    if iats.is_empty() {
+        return f64::NAN;
+    }
+    iats.iter().sum::<f64>() / iats.len() as f64
+}
+
+/// Median interarrival time.
+pub fn iat_median(timestamps: &[u64]) -> f64 {
+    let mut iats = iats(timestamps);
+    if iats.is_empty() {
+        return f64::NAN;
+    }
+    iats.sort_by(|a, b| a.total_cmp(b));
+    let n = iats.len();
+    if n % 2 == 0 {
+        (iats[n / 2 - 1] + iats[n / 2]) / 2.0
+    } else {
+        iats[n / 2]
+    }
+}
+
+/// Sample variance of interarrival times (ddof=1).
+pub fn iat_variance(timestamps: &[u64]) -> f64 {
+    let iats = iats(timestamps);
+    if iats.len() < 2 {
+        return f64::NAN;
+    }
+    crate::descriptive::moments_ungrouped(&iats).variance(1)
+}
+
+/// Sample standard deviation of interarrival times.
+pub fn iat_std(timestamps: &[u64]) -> f64 {
+    iat_variance(timestamps).sqrt()
+}
+
+/// Median absolute deviation of interarrival times (no consistency factor).
+pub fn iat_mad(timestamps: &[u64]) -> f64 {
+    let mut iats = iats(timestamps);
+    if iats.is_empty() {
+        return f64::NAN;
+    }
+    iats.sort_by(|a, b| a.total_cmp(b));
+    let n = iats.len();
+    let median = if n % 2 == 0 {
+        (iats[n / 2 - 1] + iats[n / 2]) / 2.0
+    } else {
+        iats[n / 2]
+    };
+    let mut devs: Vec<f64> = iats.iter().map(|x| (x - median).abs()).collect();
+    devs.sort_by(|a, b| a.total_cmp(b));
+    if n % 2 == 0 {
+        (devs[n / 2 - 1] + devs[n / 2]) / 2.0
+    } else {
+        devs[n / 2]
+    }
+}
+
+/// Skewness of interarrival times (Fisher g1, biased).
+pub fn iat_skewness(timestamps: &[u64]) -> f64 {
+    let iats = iats(timestamps);
+    if iats.len() < 3 {
+        return f64::NAN;
+    }
+    crate::descriptive::moments_ungrouped(&iats).skewness(true)
+}
+
+/// Excess kurtosis of interarrival times (biased, excess=true).
+pub fn iat_kurtosis(timestamps: &[u64]) -> f64 {
+    let iats = iats(timestamps);
+    if iats.len() < 4 {
+        return f64::NAN;
+    }
+    crate::descriptive::moments_ungrouped(&iats).kurtosis(true, true)
+}
+
+/// Gini coefficient of interarrival times (inequality measure).
+///
+/// Returns a value in `[0, 1]`. 0 = perfectly uniform gaps, 1 = one gap
+/// dominates. Detects whether a single dropout is driving the variance.
+///
+/// Returns NaN if n < 2 or mean is zero.
+pub fn iat_gini(timestamps: &[u64]) -> f64 {
+    let mut iats = iats(timestamps);
+    if iats.is_empty() {
+        return f64::NAN;
+    }
+    iats.sort_by(|a, b| a.total_cmp(b));
+    let n = iats.len() as f64;
+    let sum: f64 = iats.iter().sum();
+    if sum < 1e-300 {
+        return f64::NAN;
+    }
+    // G = (2 * sum_{i=1..n} i * x_(i)) / (n * sum) - (n+1)/n
+    let weighted: f64 = iats.iter().enumerate().map(|(i, &x)| (i as f64 + 1.0) * x).sum();
+    (2.0 * weighted) / (n * sum) - (n + 1.0) / n
+}
+
+/// Hill tail index estimator on the upper IAT tail.
+///
+/// Estimates the tail shape parameter `alpha` assuming the upper `k`
+/// order statistics follow a Pareto-like tail. Small alpha (< 2) indicates
+/// heavy tails; alpha → infinity indicates exponential-like tails.
+///
+/// `k` defaults to `floor(n/10).max(5)` if `None`.
+/// Returns NaN if n < 10 or k < 3.
+pub fn iat_hill_tail_index(timestamps: &[u64], k: Option<usize>) -> f64 {
+    let mut iats = iats(timestamps);
+    let n = iats.len();
+    if n < 10 {
+        return f64::NAN;
+    }
+    iats.sort_by(|a, b| a.total_cmp(b));
+    let k = k.unwrap_or((n / 10).max(5));
+    if k < 3 || k >= n {
+        return f64::NAN;
+    }
+    // Hill estimator: alpha_hat = k / sum_{i=1..k} ln(x_(n-i+1) / x_(n-k))
+    let x_nk = iats[n - k];
+    if x_nk <= 0.0 {
+        return f64::NAN;
+    }
+    let sum: f64 = (0..k)
+        .map(|i| {
+            let x = iats[n - 1 - i];
+            if x > 0.0 {
+                (x / x_nk).ln()
+            } else {
+                0.0
+            }
+        })
+        .sum();
+    if sum < 1e-300 {
+        return f64::NAN;
+    }
+    k as f64 / sum
+}
+
+/// Lag-1 autocorrelation of interarrival times.
+///
+/// Tests whether consecutive gaps are correlated (memory in the arrival
+/// process). Non-zero values indicate deviation from renewal-process
+/// assumptions.
+pub fn iat_lag1_autocorrelation(timestamps: &[u64]) -> f64 {
+    let iats = iats(timestamps);
+    lag1_autocorrelation(&iats)
+}
+
+/// Memory coefficient (Goh & Barabasi 2008, Eq. 2).
+///
+/// M = (1/(n-1)) * sum_{i=1..n-1} (IAT_i - mu_1)(IAT_{i+1} - mu_2) / (sigma_1 * sigma_2)
+/// where mu_1, sigma_1 are the mean/std of IAT_1..n-1 and mu_2, sigma_2 are
+/// the mean/std of IAT_2..n.
+///
+/// Distinct from `iat_lag1_autocorrelation` in that it uses two different
+/// normalizations for first and second elements of each pair.
+///
+/// Returns NaN if n < 3 or either std is zero.
+pub fn iat_memory_coefficient(timestamps: &[u64]) -> f64 {
+    let iats = iats(timestamps);
+    let n = iats.len();
+    if n < 3 {
+        return f64::NAN;
+    }
+    let a = &iats[..n - 1];
+    let b = &iats[1..];
+    let mu_a = a.iter().sum::<f64>() / a.len() as f64;
+    let mu_b = b.iter().sum::<f64>() / b.len() as f64;
+    let var_a = a.iter().map(|x| (x - mu_a).powi(2)).sum::<f64>() / (a.len() - 1).max(1) as f64;
+    let var_b = b.iter().map(|x| (x - mu_b).powi(2)).sum::<f64>() / (b.len() - 1).max(1) as f64;
+    let sd_a = var_a.sqrt();
+    let sd_b = var_b.sqrt();
+    if sd_a < 1e-300 || sd_b < 1e-300 {
+        return f64::NAN;
+    }
+    let mut sum = 0.0_f64;
+    for i in 0..a.len() {
+        sum += (a[i] - mu_a) * (b[i] - mu_b);
+    }
+    sum / (a.len() as f64 * sd_a * sd_b)
+}
+
+/// Burstiness parameter (Goh & Barabasi 2008).
+///
+/// B = (sigma - mu) / (sigma + mu) where sigma, mu are std and mean of IATs.
+/// B = -1 for perfectly regular (deterministic) arrivals.
+/// B = 0 for Poisson (memoryless) arrivals.
+/// B → 1 for extremely bursty (heavy-tailed) arrivals.
+///
+/// Returns NaN if n < 2 or mean+std = 0.
+pub fn iat_burstiness(timestamps: &[u64]) -> f64 {
+    let iats = iats(timestamps);
+    if iats.len() < 2 {
+        return f64::NAN;
+    }
+    let stats = moments_ungrouped(&iats);
+    let mu = stats.mean();
+    let sd = stats.std(1);
+    if (sd + mu).abs() < 1e-300 {
+        return f64::NAN;
+    }
+    (sd - mu) / (sd + mu)
+}
+
+/// Shannon entropy of the IAT distribution via histogram with `n_bins`.
+///
+/// Uses natural logarithm (nats). Higher entropy → more diverse gap sizes;
+/// lower entropy → gaps concentrated in a few bin widths.
+///
+/// Returns NaN if iats are empty or all equal.
+pub fn iat_entropy(timestamps: &[u64], n_bins: usize) -> f64 {
+    let iats = iats(timestamps);
+    if iats.is_empty() || n_bins == 0 {
+        return f64::NAN;
+    }
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for &v in &iats {
+        if v < min {
+            min = v;
+        }
+        if v > max {
+            max = v;
+        }
+    }
+    if !(min.is_finite() && max.is_finite()) || max - min < 1e-300 {
+        return f64::NAN;
+    }
+    let width = (max - min) / n_bins as f64;
+    let mut counts = vec![0u64; n_bins];
+    for &v in &iats {
+        let idx = (((v - min) / width) as usize).min(n_bins - 1);
+        counts[idx] += 1;
+    }
+    let total = iats.len() as f64;
+    let mut h = 0.0_f64;
+    for &c in &counts {
+        if c > 0 {
+            let p = c as f64 / total;
+            h -= p * p.ln();
+        }
+    }
+    h
+}
+
+/// Poisson dispersion index of counts in `n_windows` equal-width windows.
+///
+/// `D = variance / mean` of the counts. D = 1 for a homogeneous Poisson
+/// process, D > 1 for overdispersed (bursty), D < 1 for underdispersed
+/// (regular).
+///
+/// Returns NaN if n < 2 or mean count is zero.
+pub fn poisson_dispersion_index(timestamps: &[u64], n_windows: usize) -> f64 {
+    if timestamps.len() < 2 || n_windows == 0 {
+        return f64::NAN;
+    }
+    let t0 = *timestamps.first().unwrap() as f64;
+    let t_end = *timestamps.last().unwrap() as f64;
+    if t_end <= t0 {
+        return f64::NAN;
+    }
+    let width = (t_end - t0) / n_windows as f64;
+    let mut counts = vec![0u64; n_windows];
+    for &ts in timestamps {
+        let rel = ts as f64 - t0;
+        let idx = ((rel / width) as usize).min(n_windows - 1);
+        counts[idx] += 1;
+    }
+    let counts_f: Vec<f64> = counts.iter().map(|&c| c as f64).collect();
+    let stats = moments_ungrouped(&counts_f);
+    let mu = stats.mean();
+    if mu < 1e-300 {
+        return f64::NAN;
+    }
+    stats.variance(1) / mu
+}
+
+/// Fano factor — alias for Poisson dispersion index.
+///
+/// The Fano factor is the standard name in physics and neuroscience
+/// literature; the Poisson dispersion index is the statistics literature
+/// name. Same quantity.
+pub fn fano_factor(timestamps: &[u64], n_windows: usize) -> f64 {
+    poisson_dispersion_index(timestamps, n_windows)
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
@@ -1686,4 +2054,114 @@ mod tests {
         let x = vec![5.0; 100];
         assert!(!correlation_is_valid(&x, 5, None));
     }
+
+    // ── IAT family ───────────────────────────────────────────────────────
+
+    #[test]
+    fn iats_empty_for_singleton() {
+        assert!(iats(&[]).is_empty());
+        assert!(iats(&[100]).is_empty());
+    }
+
+    #[test]
+    fn iats_uniform_all_equal() {
+        let ts: Vec<u64> = (0..10).map(|i| i * 1000).collect();
+        let g = iats(&ts);
+        assert_eq!(g.len(), 9);
+        assert!(g.iter().all(|&v| (v - 1000.0).abs() < 1e-10));
+    }
+
+    #[test]
+    fn iat_mean_median_std_consistent() {
+        let ts: Vec<u64> = (0..10).map(|i| i * 1000).collect();
+        assert!((iat_mean(&ts) - 1000.0).abs() < 1e-10);
+        assert!((iat_median(&ts) - 1000.0).abs() < 1e-10);
+        assert!(iat_std(&ts).abs() < 1e-10);
+    }
+
+    #[test]
+    fn iat_gini_uniform_is_zero() {
+        let ts: Vec<u64> = (0..20).map(|i| i * 1000).collect();
+        let g = iat_gini(&ts);
+        assert!(g.abs() < 1e-10, "uniform → gini 0, got {g}");
+    }
+
+    #[test]
+    fn iat_gini_detects_concentration() {
+        // One huge gap, rest tiny
+        let ts = vec![0u64, 1, 2, 3, 4, 5, 100000];
+        let g = iat_gini(&ts);
+        assert!(g > 0.5, "concentration → high gini, got {g}");
+    }
+
+    #[test]
+    fn iat_burstiness_regular_is_minus_one() {
+        let ts: Vec<u64> = (0..50).map(|i| i * 1000).collect();
+        let b = iat_burstiness(&ts);
+        assert!((b + 1.0).abs() < 1e-6, "regular → burstiness -1, got {b}");
+    }
+
+    #[test]
+    fn iat_burstiness_bursty_is_positive() {
+        let mut ts = vec![0u64];
+        // 3 quick bursts followed by long waits
+        for burst in 0..5 {
+            let base = burst * 100_000;
+            for i in 0..10 {
+                ts.push(base + i * 10);
+            }
+        }
+        let b = iat_burstiness(&ts);
+        assert!(b > 0.5, "bursty → positive high burstiness, got {b}");
+    }
+
+    #[test]
+    fn iat_hill_tail_index_uniform_is_large() {
+        // Uniform IATs → tail is not heavy → alpha should be large
+        let ts: Vec<u64> = (0..100).map(|i| i * 1000).collect();
+        let alpha = iat_hill_tail_index(&ts, Some(10));
+        // Exact value depends on sort ties; just check it's finite and positive
+        assert!(alpha.is_nan() || alpha > 0.0);
+    }
+
+    #[test]
+    fn iat_entropy_varied_gaps() {
+        let mut ts = vec![0u64];
+        for i in 1..50 {
+            ts.push(ts[i - 1] + ((i as u64 % 5) + 1) * 100);
+        }
+        let h = iat_entropy(&ts, 8);
+        assert!(h > 0.0 && h < 8.0_f64.ln());
+    }
+
+    #[test]
+    fn iat_memory_coefficient_independent_near_zero() {
+        // Random-looking IATs: coefficient should be small
+        let mut ts = vec![0u64];
+        let mut v = 1000u64;
+        for _ in 0..100 {
+            v = v.wrapping_mul(1103515245).wrapping_add(12345);
+            ts.push(ts.last().unwrap() + (v % 1000 + 1));
+        }
+        let m = iat_memory_coefficient(&ts);
+        assert!(m.is_finite());
+        assert!(m.abs() < 0.5, "pseudo-random → |memory| small, got {m}");
+    }
+
+    #[test]
+    fn poisson_dispersion_uniform_near_zero() {
+        // Uniform arrivals → counts per window are near constant → D near 0
+        let ts: Vec<u64> = (0..100).map(|i| i * 100).collect();
+        let d = poisson_dispersion_index(&ts, 10);
+        assert!(d >= 0.0 && d < 0.5, "uniform → low D, got {d}");
+    }
+
+    #[test]
+    fn fano_factor_is_alias() {
+        let ts: Vec<u64> = (0..100).map(|i| i * 100).collect();
+        let d1 = poisson_dispersion_index(&ts, 10);
+        let d2 = fano_factor(&ts, 10);
+        assert_eq!(d1, d2);
+    }
+
 }

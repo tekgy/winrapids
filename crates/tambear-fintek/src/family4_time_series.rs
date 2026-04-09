@@ -1,9 +1,8 @@
 //! Family 4 — Time Series / ARMA.
 //!
-//! Covers fintek leaves: `autocorrelation`, `ar_model`, `arma`, `arima`, `arx`.
-//! NOT covered: `ar_burg` (GAP — see task #137).
+//! Covers fintek leaves: `autocorrelation`, `ar_model`, `arma`, `arima`, `arx`, `ar_burg`.
 
-use tambear::time_series::{acf, pacf, ar_fit, ArResult, difference};
+use tambear::time_series::{acf, pacf, ar_fit, ar_burg_fit, ar_psd, ArResult, difference};
 
 /// Autocorrelation features for a single bin.
 ///
@@ -193,6 +192,105 @@ pub fn arima(data: &[f64], p: usize, d: usize, q: usize) -> ArmaResult {
     arma(&working, p, q)
 }
 
+// ── Burg AR ───────────────────────────────────────────────────────────────────
+
+/// Spectral features from Burg AR PSD.
+///
+/// Fintek's `ar_burg.rs` (K02P02C05R01) outputs 4 features from a Burg AR PSD
+/// evaluated at 128 frequencies:
+///   - spectral_centroid: power-weighted mean frequency
+///   - spectral_bandwidth: power-weighted frequency spread
+///   - spectral_rolloff: frequency below which 85% of power falls
+///   - ar_order: effective AR order used (BIC-selected up to 12)
+#[derive(Debug, Clone)]
+pub struct ArBurgResult {
+    pub spectral_centroid: f64,
+    pub spectral_bandwidth: f64,
+    pub spectral_rolloff: f64,
+    pub ar_order: usize,
+}
+
+impl ArBurgResult {
+    pub fn nan() -> Self {
+        Self { spectral_centroid: f64::NAN, spectral_bandwidth: f64::NAN,
+               spectral_rolloff: f64::NAN, ar_order: 0 }
+    }
+}
+
+/// Burg AR spectral features.
+///
+/// Fits Burg AR models of order 1..=12 on log-returns, selects via AIC,
+/// evaluates PSD at 128 frequencies, and extracts 4 spectral summary features.
+/// Input: bin-level price series (at least 10 ticks).
+pub fn ar_burg(prices: &[f64]) -> ArBurgResult {
+    const MIN_RETURNS: usize = 10;
+    const MAX_ORDER: usize = 12;
+    const N_FREQ: usize = 128;
+    const ROLLOFF_FRAC: f64 = 0.85;
+
+    if prices.len() < MIN_RETURNS + 2 {
+        return ArBurgResult::nan();
+    }
+
+    // Log returns from prices
+    let returns: Vec<f64> = prices.windows(2).filter_map(|w| {
+        if w[0] > 0.0 && w[1] > 0.0 { Some((w[1] / w[0]).ln()) } else { None }
+    }).collect();
+
+    if returns.len() < MIN_RETURNS {
+        return ArBurgResult::nan();
+    }
+
+    // BIC-select order 1..=MAX_ORDER
+    let n = returns.len() as f64;
+    let mut best_order = 1usize;
+    let mut best_aic = f64::INFINITY;
+    for p in 1..=MAX_ORDER.min(returns.len() / 4).max(1) {
+        let fit = ar_burg_fit(&returns, p);
+        if fit.aic < best_aic {
+            best_aic = fit.aic;
+            best_order = p;
+        }
+    }
+
+    let ar = ar_burg_fit(&returns, best_order);
+
+    // Evaluate PSD at N_FREQ uniform frequencies in [0, 0.5)
+    let (freqs, psd) = ar_psd(&ar, N_FREQ);
+
+    let total_power: f64 = psd.iter().sum();
+    if total_power < 1e-300 {
+        return ArBurgResult::nan();
+    }
+
+    // Spectral centroid: Σ(f * psd) / Σpsd
+    let centroid: f64 = freqs.iter().zip(psd.iter()).map(|(&f, &p)| f * p).sum::<f64>() / total_power;
+
+    // Spectral bandwidth: sqrt(Σ((f - centroid)² * psd) / Σpsd)
+    let bandwidth: f64 = (freqs.iter().zip(psd.iter())
+        .map(|(&f, &p)| (f - centroid) * (f - centroid) * p)
+        .sum::<f64>() / total_power).sqrt();
+
+    // Spectral rolloff: smallest freq where cumulative power ≥ 85%
+    let rolloff_target = ROLLOFF_FRAC * total_power;
+    let mut cumulative = 0.0;
+    let mut rolloff = *freqs.last().unwrap_or(&0.5);
+    for (&f, &p) in freqs.iter().zip(psd.iter()) {
+        cumulative += p;
+        if cumulative >= rolloff_target {
+            rolloff = f;
+            break;
+        }
+    }
+
+    ArBurgResult {
+        spectral_centroid: centroid,
+        spectral_bandwidth: bandwidth,
+        spectral_rolloff: rolloff,
+        ar_order: best_order,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +353,42 @@ mod tests {
         let r = arima(&data, 1, 1, 0);
         // After 1st differencing: constant 1s → AR(1) on constant gives phi=NaN or 0
         assert!(r.p == 1 && r.q == 0);
+    }
+
+    #[test]
+    fn ar_burg_spectral_features_ar1() {
+        // Build prices such that log-returns form an AR(1) with φ=0.9.
+        // `ar_burg()` internally converts prices to log-returns, so we need
+        // the AR process in return space, not in price space. Also exponentiate
+        // the cumulative return to keep prices strictly positive (the log-return
+        // computation filters non-positive values).
+        let n = 600;
+        let mut returns = vec![0.0; n];
+        let mut rng = tambear::rng::Xoshiro256::new(99);
+        for t in 1..n {
+            returns[t] = 0.9 * returns[t - 1]
+                + tambear::rng::sample_normal(&mut rng, 0.0, 0.01);
+        }
+        let mut prices = vec![100.0; n + 1];
+        for t in 0..n {
+            prices[t + 1] = prices[t] * returns[t].exp();
+        }
+        let r = ar_burg(&prices);
+        assert!(r.spectral_centroid.is_finite());
+        assert!(r.spectral_bandwidth.is_finite());
+        assert!(r.spectral_rolloff.is_finite());
+        assert!(r.ar_order > 0 && r.ar_order <= 12);
+        // AR(1) φ=0.9 has most power near DC — centroid well below Nyquist/2
+        assert!(
+            r.spectral_centroid < 0.2,
+            "centroid {} should be < 0.2 for low-freq AR(1) φ=0.9",
+            r.spectral_centroid
+        );
+    }
+
+    #[test]
+    fn ar_burg_too_short() {
+        let r = ar_burg(&[1.0, 2.0, 3.0]);
+        assert!(r.spectral_centroid.is_nan());
     }
 }

@@ -50,7 +50,35 @@ pub mod clustering;
 pub mod codegen;
 pub mod compute_engine;
 pub mod data_quality;
+pub use data_quality::{
+    // Size / coverage
+    tick_count, nyquist_bins, coverage_ratio, coverage_ratio_slice,
+    effective_sample_size, size_effective_n_bin,
+    // Diversity
+    unique_prices, symbolic_diversity, unique_ordinal_3,
+    // Sampling regularity (timestamp-based)
+    sampling_regularity_cv, longest_gap_ratio,
+    // Variability / dispersion
+    price_cv, split_variance_ratio,
+    // Structure
+    trend_r2, has_trend, acf_decay_exponent,
+    lag1_autocorrelation, lag_k_autocorrelation, acf_lag10, acf_abs_lag1,
+    // Stationarity / jump / volatility
+    is_stationary_adf_05, jump_ratio_proxy, has_vol_clustering,
+    // Summary struct
+    DataQualitySummary,
+    // Composed family-level validity predicates
+    fft_is_valid, garch_is_valid, rank_based_is_valid,
+    permutation_entropy_3_is_valid, sample_entropy_is_valid,
+    wavelet_is_valid, time_series_is_valid, fractal_is_valid,
+    entropy_complexity_is_valid, chaos_is_valid, manifold_is_valid,
+    distance_is_valid, causality_is_valid, regime_detection_is_valid,
+    continuous_time_is_valid, decomposition_is_valid,
+    statistical_tests_is_valid, correlation_is_valid,
+};
+pub mod data_quality_catalog;
 pub mod descriptive;
+pub mod sketches;
 pub mod spectral_clustering;
 pub mod complexity;
 pub mod hypothesis;

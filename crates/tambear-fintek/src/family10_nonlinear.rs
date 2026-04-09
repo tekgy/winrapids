@@ -1,8 +1,8 @@
 //! Family 10 — Nonlinear Dynamics / Chaos.
 //!
 //! Covers fintek leaves: `sample_entropy`, `permutation_entropy`, `hurst_rs`,
-//! `dfa`, `correlation_dim`, `lyapunov`, `poincare`.
-//! NOT covered: `lz_complexity`, `rqa`, `embedding`, `mfdfa` (partial GAPs).
+//! `dfa`, `correlation_dim`, `lyapunov`, `poincare`, `lz_complexity`, `rqa`.
+//! NOT covered: `embedding`, `mfdfa` (partial GAPs).
 
 use tambear::complexity as cx;
 
@@ -78,6 +78,45 @@ pub fn poincare(data: &[f64]) -> PoincareResult {
     let ratio = if sd2 > 1e-15 { sd1 / sd2 } else { f64::NAN };
 
     PoincareResult { sd1, sd2, ratio }
+}
+
+/// Lempel-Ziv 76 complexity (binarized at median, normalized).
+pub fn lz_complexity(data: &[f64]) -> f64 {
+    if data.len() < 2 { return f64::NAN; }
+    cx::lempel_ziv_complexity(data)
+}
+
+/// Recurrence Quantification Analysis result mirror for fintek leaves.
+#[derive(Debug, Clone)]
+pub struct RqaResult {
+    pub rr: f64,
+    pub det: f64,
+    pub lam: f64,
+    pub entr: f64,
+    pub lmax: usize,
+    pub l_avg: f64,
+    pub tt: f64,
+}
+
+impl RqaResult {
+    pub fn nan() -> Self {
+        Self {
+            rr: f64::NAN, det: f64::NAN, lam: f64::NAN, entr: f64::NAN,
+            lmax: 0, l_avg: f64::NAN, tt: f64::NAN,
+        }
+    }
+}
+
+/// Recurrence Quantification Analysis at (m, tau, epsilon, lmin).
+///
+/// Wraps `tambear::complexity::rqa`. Returns `RqaResult::nan()` for degenerate
+/// inputs. Fintek's `rqa.rs` leaf consumes this; each field maps to a DO column.
+pub fn rqa(data: &[f64], m: usize, tau: usize, epsilon: f64, lmin: usize) -> RqaResult {
+    let r = cx::rqa(data, m, tau, epsilon, lmin);
+    RqaResult {
+        rr: r.rr, det: r.det, lam: r.lam, entr: r.entr,
+        lmax: r.lmax, l_avg: r.l_avg, tt: r.tt,
+    }
 }
 
 #[cfg(test)]

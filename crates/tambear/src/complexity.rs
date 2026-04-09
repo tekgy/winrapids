@@ -806,6 +806,182 @@ fn rk4_step(f: &impl Fn(f64, &[f64]) -> Vec<f64>, t: f64, y: &[f64], h: f64) -> 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Recurrence Quantification Analysis (RQA)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Recurrence Quantification Analysis result.
+///
+/// Computed from a recurrence matrix R[i,j] = 1 iff ||x_i - x_j|| <= epsilon
+/// on delay-embedded vectors of (m, tau).
+#[derive(Debug, Clone)]
+pub struct RqaResult {
+    /// Recurrence rate: fraction of recurrent points (excluding main diagonal).
+    pub rr: f64,
+    /// Determinism: fraction of recurrent points forming diagonal lines of length >= lmin.
+    pub det: f64,
+    /// Laminarity: fraction of recurrent points forming vertical lines of length >= lmin.
+    pub lam: f64,
+    /// Shannon entropy of the diagonal line length distribution (nats).
+    pub entr: f64,
+    /// Length of longest diagonal line (excluding the main diagonal).
+    pub lmax: usize,
+    /// Average diagonal line length (of lines >= lmin).
+    pub l_avg: f64,
+    /// Trapping time: average vertical line length (of lines >= lmin).
+    pub tt: f64,
+}
+
+impl RqaResult {
+    pub fn nan() -> Self {
+        Self {
+            rr: f64::NAN, det: f64::NAN, lam: f64::NAN, entr: f64::NAN,
+            lmax: 0, l_avg: f64::NAN, tt: f64::NAN,
+        }
+    }
+}
+
+/// Recurrence Quantification Analysis (Webber & Zbilut, 1994; Marwan et al., 2007).
+///
+/// Delay-embeds the series at (m, tau), builds the recurrence matrix with
+/// threshold `epsilon` (Euclidean distance), and computes standard RQA metrics.
+///
+/// Parameters:
+/// - `data`: 1-D time series
+/// - `m`: embedding dimension (e.g. 3-10)
+/// - `tau`: delay (e.g. 1)
+/// - `epsilon`: recurrence threshold in data units
+/// - `lmin`: minimum line length to count (typically 2)
+///
+/// Returns `RqaResult` with rr/det/lam/entr/lmax/l_avg/tt.
+pub fn rqa(data: &[f64], m: usize, tau: usize, epsilon: f64, lmin: usize) -> RqaResult {
+    let n = data.len();
+    if m == 0 || tau == 0 || n < (m - 1) * tau + 2 || !epsilon.is_finite() || epsilon <= 0.0 {
+        return RqaResult::nan();
+    }
+    let lmin = lmin.max(2);
+
+    // Delay-embedded vectors: x_i = (data[i], data[i+tau], ..., data[i+(m-1)*tau])
+    let n_vec = n - (m - 1) * tau;
+    if n_vec < 2 { return RqaResult::nan(); }
+
+    // Recurrence matrix (symmetric, bitpacked as Vec<bool> for clarity; n_vec is small in practice).
+    let mut rec = vec![false; n_vec * n_vec];
+    let eps2 = epsilon * epsilon;
+    for i in 0..n_vec {
+        rec[i * n_vec + i] = true;
+        for j in (i + 1)..n_vec {
+            let mut d2 = 0.0_f64;
+            for k in 0..m {
+                let dk = data[i + k * tau] - data[j + k * tau];
+                d2 += dk * dk;
+                if d2 > eps2 { break; }
+            }
+            let r = d2 <= eps2;
+            rec[i * n_vec + j] = r;
+            rec[j * n_vec + i] = r;
+        }
+    }
+
+    // Recurrence rate (exclude main diagonal for the standard definition).
+    let mut n_rec_off = 0_usize;
+    for i in 0..n_vec {
+        for j in 0..n_vec {
+            if i != j && rec[i * n_vec + j] { n_rec_off += 1; }
+        }
+    }
+    let denom_off = (n_vec * (n_vec - 1)) as f64;
+    let rr = n_rec_off as f64 / denom_off;
+
+    // Diagonal line lengths: iterate over diagonals k = j - i, k != 0.
+    let mut diag_lengths: Vec<usize> = Vec::new();
+    for k in 1..n_vec {
+        // Upper diagonal k: pairs (i, i+k) for i in 0..n_vec-k
+        let mut run = 0_usize;
+        for i in 0..(n_vec - k) {
+            if rec[i * n_vec + (i + k)] {
+                run += 1;
+            } else {
+                if run > 0 { diag_lengths.push(run); }
+                run = 0;
+            }
+        }
+        if run > 0 { diag_lengths.push(run); }
+        // Lower diagonal is symmetric — double all counts below.
+    }
+
+    // Vertical line lengths (exclude main diagonal entry j == i).
+    let mut vert_lengths: Vec<usize> = Vec::new();
+    for j in 0..n_vec {
+        let mut run = 0_usize;
+        for i in 0..n_vec {
+            if i == j {
+                if run > 0 { vert_lengths.push(run); }
+                run = 0;
+                continue;
+            }
+            if rec[i * n_vec + j] {
+                run += 1;
+            } else {
+                if run > 0 { vert_lengths.push(run); }
+                run = 0;
+            }
+        }
+        if run > 0 { vert_lengths.push(run); }
+    }
+
+    // DET: sum of l*count(l) for l >= lmin, normalized by total recurrent points off-diagonal.
+    // Diagonals are symmetric, so contributions count twice.
+    let mut det_num = 0_usize;
+    let mut n_lines = 0_usize;
+    let mut sum_l = 0_usize;
+    let mut lmax = 0_usize;
+    let mut hist: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for &l in &diag_lengths {
+        if l > lmax { lmax = l; }
+        if l >= lmin {
+            det_num += l;
+            n_lines += 1;
+            sum_l += l;
+            *hist.entry(l).or_insert(0) += 1;
+        }
+    }
+    // Account for symmetry (each upper-diagonal run has a mirror below).
+    let det = if n_rec_off > 0 {
+        (2 * det_num) as f64 / n_rec_off as f64
+    } else { 0.0 };
+    let l_avg = if n_lines > 0 { sum_l as f64 / n_lines as f64 } else { f64::NAN };
+
+    // Shannon entropy of diagonal length distribution (lines >= lmin).
+    let total_hist: usize = hist.values().sum();
+    let entr = if total_hist > 0 {
+        let mut h = 0.0_f64;
+        for &c in hist.values() {
+            let p = c as f64 / total_hist as f64;
+            if p > 0.0 { h -= p * p.ln(); }
+        }
+        h
+    } else { 0.0 };
+
+    // LAM + TT from vertical lines.
+    let mut lam_num = 0_usize;
+    let mut vert_lines = 0_usize;
+    let mut vert_sum = 0_usize;
+    for &l in &vert_lengths {
+        if l >= lmin {
+            lam_num += l;
+            vert_lines += 1;
+            vert_sum += l;
+        }
+    }
+    let lam = if n_rec_off > 0 {
+        lam_num as f64 / n_rec_off as f64
+    } else { 0.0 };
+    let tt = if vert_lines > 0 { vert_sum as f64 / vert_lines as f64 } else { f64::NAN };
+
+    RqaResult { rr, det, lam, entr, lmax, l_avg, tt }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

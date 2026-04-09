@@ -2381,6 +2381,310 @@ Existing tags that support phyla:
 
 ---
 
+## HARVEST FROM COLLATZ WORK
+
+_Added 2026-04-08 by math-researcher. Swept: collatz_structural.rs (378 lines), collatz_search.rs (220), collatz_parallel.rs (506), extremal_orbit.rs (792), beal_search.rs (206), proof.rs (3002), bigint.rs (1149), multi_adic.rs (876), fold_irreversibility.rs (3119), spectral_gap.rs (1028), layer_bijection.rs (800). Total: 12,076 lines of research code._
+
+The Collatz/Beal/proof research produced a collection of generic mathematical primitives that were written for theorem verification but are directly usable for the broader tambear library. Many are already `pub` and just need documentation + re-export from a more general module. Others are private helpers that should be promoted.
+
+**Bottom line**: 21 harvestable primitives identified across 11 files. Roughly **5 are already-public-but-undocumented** (extract and publicize), **10 are private helpers that should be promoted**, and **6 are larger patterns (data structures / algorithms) that inform broader tambear architecture**. Most can be promoted in 10-40 lines of refactoring each — the math is already written, correctness-tested, and working.
+
+### H1 — Affine Transform Monoid (Collatz prefix scan element)
+
+**Source**: `collatz_structural.rs:25-32` (`CollatzAffine`), `extremal_orbit.rs:152-162` (`AffineTransform`)
+**What it computes**: A 3-tuple `(a, b, shift)` representing the linear recurrence `n → (a·n + b) / 2^shift`. Two of these compose associatively — this is a prefix scan element.
+**Current status**: Private struct in both files (duplicated). Used for Collatz k-step compression and extremal dominance verification.
+**Harvest target**: Promote to `tambear/src/numerical.rs` or new `tambear/src/recurrence.rs` as a public `LinearRecurrenceStep { a: u128, b: u128, shift: u32 }` with `compose()` method. This IS the scalar analog of the Särkkä matrix prefix scan (Task #101). For Kalman filter, we need the matrix version; for Collatz-style linear recurrences, the scalar version is sufficient.
+**Broader use**: ANY algorithm involving a linear integer recurrence `x_{n+1} = (a·x_n + b) / 2^k` can use this. Includes: LCG parameters, modular exponentiation state, Montgomery multiplication state, Horner's method on powers of 2.
+**Effort**: 15 lines to unify the two copies + 20 lines to document and add compose(). ~35 lines total.
+**Fintek rescue dependency**: No (pure promotion).
+
+### H2 — Newton's Method for Modular Inverse (Hensel Lifting)
+
+**Source**: `layer_bijection.rs:155-173` (`inverse_of_3_mod_2j`)
+**What it computes**: `3^(-1) mod 2^j` via quadratic Newton iteration: `x_{k+1} = x_k · (2 - 3·x_k)`. Doubles precision each iteration. Works for ANY odd `a` (not just 3) — the function is currently hardcoded to 3 but the algorithm generalizes.
+**Current status**: Already `pub`, but only the a=3 case.
+**Harvest target**: Generalize to `pub fn modular_inverse_pow2(a: u64, j: u32) -> u64` in `tambear/src/number_theory.rs`. Algorithm:
+```
+Compute a^(-1) mod 2^j for odd a.
+x ← a mod 4 (correct for j=2)
+while precision < j: x ← x · (2 - a·x); precision *= 2
+return x & ((1<<j) - 1)
+```
+**Broader use**: Montgomery multiplication, modular arithmetic in cryptography (RSA, ECC), discrete Fourier transforms over finite fields, number-theoretic transform (NTT).
+**Effort**: ~20 lines.
+**Fintek rescue dependency**: No (pure number theory primitive, but useful for crypto expansion).
+
+### H3 — Sparse Deterministic Map + Cycle Structure
+
+**Source**: `spectral_gap.rs:32-174` (`SparseDeterministicMap`, `cycle_structure`)
+**What it computes**: A permutation-like map on `[0, n-1]` represented as `target: Vec<usize>`. Supports matrix-vector and transpose-vector multiplication via indexed gather/scatter. Counts cycles and transient states.
+**Current status**: Already `pub` in spectral_gap.rs. Has `arithmetic()` constructor (Collatz-like) and `arithmetic_modular()` constructor.
+**Harvest target**: Promote the GENERIC parts (constructor from arbitrary target vec, mul_vec, mul_vec_transpose, cycle_structure) to `tambear/src/graph.rs` or `tambear/src/sparse.rs` as `FunctionalGraph { n, target: Vec<usize> }`. Keep the arithmetic-specific constructors in spectral_gap.rs.
+**Broader use**: ANY functional graph (each node has out-degree exactly 1): Markov chain transition with deterministic moves, disjoint-set forests, rho-algorithm cycle detection, union-find tree, pseudo-random number generator state transitions, hash function orbits.
+**Effort**: ~30 lines to split (extract the FunctionalGraph trait/struct, keep arithmetic constructors as builders).
+**Fintek rescue dependency**: Would be useful for phase-space trajectory analysis (rqa leaf, tick_attractor), but not blocking.
+
+### H4 — Generic Arnoldi Eigenvalue Iteration (closure-based)
+
+**Source**: `spectral_gap.rs:198-458` (`arnoldi_eigenvalues`)
+**What it computes**: Top-k eigenvalues of ANY sparse linear operator via Krylov subspace iteration. Generic over the mat-vec closure `F: Fn(&[f64]) -> Vec<f64>`. Supports non-symmetric operators. Returns complex eigenvalues as `(real, imag)` tuples sorted by magnitude.
+**Current status**: Already `pub` in spectral_gap.rs. Not exported at crate root.
+**Harvest target**: Promote to `tambear/src/spectral.rs` (which already has symmetric eigendecomposition). This is the canonical non-symmetric sparse eigensolver. Rename to `arnoldi_sparse_eigenvalues` or similar to distinguish from dense symmetric `sym_eigen`.
+**Broader use**: PageRank (Google matrix), spectral clustering Laplacian, MANOVA with large p, Markov chain mixing analysis, any sparse eigenvalue problem where n > 1000 makes dense O(n³) prohibitive. Also: the fintek `rmt` leaf (Marchenko-Pastur comparison), `spectral_embedding` leaf (graph Laplacian), `harmonic` leaf (Hankel matrix SVD).
+**Effort**: ~10 lines (just re-export + documentation). The code is already generic and production-ready.
+**Fintek rescue dependency**: **YES** — needed by rmt, spectral_embedding, harmonic leaves in my catalog's Family 13 (dim reduction).
+
+### H5 — Lazy Random Walk (stochastic matrix wrapper)
+
+**Source**: `spectral_gap.rs:513-533` (`LazyRandomWalk`)
+**What it computes**: Wraps a functional graph to produce a stochastic transition operator: with probability α, follow the deterministic map; with probability 1−α, stay. Result: a column-stochastic matrix with the dominant eigenvalue = 1 and λ₂ bounded away from 1 when the underlying graph is connected.
+**Current status**: Already `pub`.
+**Harvest target**: Promote alongside H3 FunctionalGraph. This is the standard trick for converting a deterministic map to a reversible Markov chain for spectral analysis.
+**Broader use**: Markov chain Monte Carlo mixing analysis, PageRank damping, random-walk graph embedding (DeepWalk, node2vec at a theoretical level), symmetrization of non-reversible chains.
+**Effort**: ~10 lines.
+**Fintek rescue dependency**: No.
+
+### H6 — Generalized Collatz Map `T_m(n) = (mn+1)/2^{v₂(mn+1)}`
+
+**Source**: `extremal_orbit.rs:62-67` (`collatz_general`), `extremal_orbit.rs:73-82` (`orbit`)
+**What it computes**: A parameterized odd-integer iterated map, returning `None` on overflow. The `orbit()` helper traces the trajectory until 1, overflow, or max_steps.
+**Current status**: Already `pub`.
+**Harvest target**: Promote to `tambear/src/dynamical_systems.rs` (new module) as a canonical example of an integer iterated map with overflow guards. Add a generic `iterate_integer_map<F>(n, f, max_steps)` helper that takes any `F: Fn(u128) -> Option<u128>`.
+**Broader use**: Dynamical systems research broadly. The `DynamicalMap` enum from `multi_adic.rs:201-221` does essentially the same thing for `u64`. These should merge into one `IteratedMap` trait with `Collatz`, `Generalized`, `User(F)` variants.
+**Effort**: ~30 lines to unify the u128 (extremal_orbit) and u64 (multi_adic) variants, plus the generic iterate helper.
+**Fintek rescue dependency**: No direct, but the dynamical-systems framing supports fintek's phase-space analyses.
+
+### H7 — Integer Root and Perfect Power Detection (already harvested)
+
+**Source**: `beal_search.rs:27-56` (`exact_integer_root`, `checked_pow`), `bigint.rs:259-312` (`isqrt`, `inth_root`, `perfect_power`)
+**What it computes**: 
+- `isqrt`: integer square root via Newton's method
+- `inth_root`: integer n-th root
+- `perfect_power`: detect if a U256 is `b^k` for some small k
+- `exact_integer_root`: checked version for beal's search (float-initialized Newton + bracket check for off-by-one)
+**Current status**: `BigInt::isqrt`, `BigInt::inth_root`, `BigInt::perfect_power` are already `pub` in `bigint.rs`. The `exact_integer_root` in `beal_search.rs` is a private helper.
+**Harvest target**: 
+1. The BigInt versions are already public — just need to be exported at the crate root and documented in the general number theory context.
+2. The `beal_search::exact_integer_root` helper should either be (a) replaced with `U256::inth_root` + exact check, or (b) promoted as a `u128` specialization to `number_theory.rs` alongside the BigInt version.
+**Broader use**: Any algorithm that needs integer roots: primality witnesses (Fermat), Beal's conjecture search, power-law fitting on integer data, lattice enumeration, cryptography (RSA small prime checks).
+**Effort**: ~20 lines (mostly documentation and re-export).
+**Fintek rescue dependency**: No direct, but useful for number-theoretic feature engineering.
+
+### H8 — Shadow Coefficients (Symbolic k-step Collatz)
+
+**Source**: `collatz_parallel.rs:42-70` (`shadow_coefficients`)
+**What it computes**: Given a k-bit pattern, computes the affine transform `(a_coeff, b_coeff)` that represents k Collatz steps applied symbolically. After k steps, `T^k(n) = a_coeff · (n >> k) + b_coeff`. This is the SAME pattern as the `CollatzAffine` struct (H1) but with a specific computation.
+**Current status**: Already `pub`.
+**Harvest target**: Merge with H1 (LinearRecurrenceStep). This is a special-case constructor: "build the k-step affine transform for a specific starting bit pattern." Promote as `LinearRecurrenceStep::from_collatz_pattern(pattern, k)`.
+**Broader use**: Trace-compression in any iterated map with mod-2 branching. Applications beyond Collatz: random number generator state advancement, LFSR (linear feedback shift register) fast-forward, cellular automaton state computation (Rule 30, Rule 110).
+**Effort**: Already done as part of H1 unification (~0 additional lines).
+**Fintek rescue dependency**: No.
+
+### H9 — p-adic Valuation and Distance Functions
+
+**Source**: `multi_adic.rs:30-100` (`valuation`, `valuation_signed`, `valuation_diff`, `p_adic_distance`, `p_adic_norm`, `p_adic_digits`, `from_p_adic_digits`)
+**What it computes**: 
+- `valuation(n, p)`: largest k such that p^k divides n
+- `p_adic_distance(a, b, p)`: p^(-v_p(a-b)) — the ultrametric distance
+- `p_adic_norm(n, p)`: p^(-v_p(n))
+- `p_adic_digits / from_p_adic_digits`: representation of n in base p
+**Current status**: All `pub` in `multi_adic.rs`.
+**Harvest target**: Already there. Just needs a tambear-level re-export and documentation as general number-theoretic primitives, not "multi_adic-only" primitives. Specifically: `p_adic_distance` is a METRIC (ultrametric, stronger than triangle inequality) that generates a valid distance matrix — it can feed directly into clustering/kriging/KNN on integer data.
+**Broader use**: 
+- Clustering integer sequences by divisibility structure
+- Hierarchical clustering of timestamps modulo calendar periods (daily, weekly, monthly natural hierarchy)
+- p-adic machine learning (p-adic neural networks — Khrennikov 2004)
+- Cryptographic nonce analysis
+**Effort**: ~5 lines (re-export).
+**Fintek rescue dependency**: No direct, but p-adic distance for tick timestamps is a tambear idea worth exploring for microstructure analysis.
+
+### H10 — MultiAdicProfile / Dynamical System Trajectory
+
+**Source**: `multi_adic.rs:138-260` (`MultiAdicProfile`, `multi_adic_trajectory`, `DynamicalMap`)
+**What it computes**: A data structure that tracks, for each step of a dynamical system, the p-adic valuation at several primes simultaneously. Enables computation of trajectory statistics (mean valuation, variance, divisibility rate) per prime.
+**Current status**: Already `pub`.
+**Harvest target**: Promote to `tambear/src/dynamical_systems.rs` (new module, see H6). The `DynamicalMap` enum should subsume/merge with `extremal_orbit::collatz_general`.
+**Broader use**: Any iterated map analysis. The profile pattern (value + multi-dimensional summary at each step) generalizes to any "state + invariants" trajectory tracking.
+**Effort**: ~15 lines to unify with H6.
+**Fintek rescue dependency**: No direct.
+
+### H11 — Functional Graph Cycle Detection (Rho-Algorithm Pattern)
+
+**Source**: `spectral_gap.rs:114-163` (within `cycle_structure` method)
+**What it computes**: Floyd-like / Brent-like cycle detection: for each node, trace the trajectory until a previously-visited node is hit, detecting cycles and transient prefixes. The implementation uses explicit path tracking + hashmap (O(n) memory) rather than Floyd's O(1) tortoise-and-hare.
+**Current status**: Private helper inside `SparseDeterministicMap::cycle_structure`.
+**Harvest target**: Extract as `pub fn detect_functional_cycles<F>(n: usize, f: F) -> CycleStructure where F: Fn(usize) -> usize` in `tambear/src/graph.rs`. This is a general functional-graph analyzer.
+**Broader use**: Pollard's rho factoring algorithm, hash function collision detection, pseudo-random sequence period measurement, state-space analysis in reverse engineering, memory leak detection via address graphs.
+**Effort**: ~25 lines to extract and generalize.
+**Fintek rescue dependency**: No.
+
+### H12 — Checked Integer Power Function
+
+**Source**: `beal_search.rs:50-56` (`checked_pow`), plus similar in `bigint.rs`
+**What it computes**: `base^exp` with overflow check returning `Option<u128>`.
+**Current status**: Private in beal_search. Partially available via `u128::checked_pow` in std lib.
+**Harvest target**: Already exists in std lib as `u128::checked_pow` — the beal version is a reimplementation. Just delete the private copy and use std. (Though the beal version is specialized for small exponents which might be slightly faster.)
+**Broader use**: Already in std.
+**Effort**: Delete 10 lines.
+**Fintek rescue dependency**: No.
+
+### H13 — Trailing Ones / Temperature / Fold Step
+
+**Source**: `fold_irreversibility.rs:31-67` (`trailing_ones`, `trailing_zeros`, `temperature`, `collatz_odd_step`, `collatz_odd_step_checked`)
+**What it computes**:
+- `trailing_ones(n)`: count of consecutive low-order 1-bits in binary representation
+- `temperature(n)`: alias for trailing_ones on odd n
+- `collatz_odd_step`: the canonical (3n+1)/2^v transformation
+**Current status**: All `pub` in `fold_irreversibility.rs`.
+**Harvest target**: Promote `trailing_ones` to a general bit-manipulation module. It's the mirror of std's `u128::trailing_zeros` and is genuinely useful. Could go into `tambear/src/numerical.rs` or a new `tambear/src/bit_ops.rs`. The Collatz-specific `collatz_odd_step` can stay in its current module but should be re-exported from `dynamical_systems.rs` (H6).
+**Broader use**: `trailing_ones` is useful in: bit packing, range tracking (intervals of 1-bits), CAS retry counting, bloom filter analysis, low-bit-pattern matching in NLP tokenization.
+**Effort**: ~5 lines (just move + re-export).
+**Fintek rescue dependency**: No.
+
+### H14 — Structured Parallel Verification Framework
+
+**Source**: `collatz_parallel.rs:87-255` (`ParallelVerifyResult`, `parallel_verify`)
+**What it computes**: A multi-threaded work-stealing verification framework: divide a range into chunks, each thread verifies its chunks, aggregate statistics at the end. Uses atomic counters for progress tracking.
+**Current status**: Already `pub`, but Collatz-specific.
+**Harvest target**: Extract the generic parallel-range-reduction pattern into `tambear/src/parallel.rs` as a higher-order function: `parallel_range_reduce<I, R, F, C>(start: I, end: I, chunk_size: I, verify: F, combine: C) -> R`. Then Collatz uses it as one specific instantiation.
+**Broader use**: ANY exhaustive search over integer ranges: primality testing, cryptanalysis, brute-force cryptographic key search, Beal conjecture search, combinatorial enumeration.
+**Effort**: ~50 lines to extract the generic shell. This is the biggest refactor but also the highest-leverage: it gives tambear a production parallel work framework.
+**Fintek rescue dependency**: No direct, but WOULD be useful for fintek's per-bin parallelism.
+
+### H15 — Proof Context / Algebraic Structure Framework
+
+**Source**: `proof.rs` (entire file, 3002 lines)
+**What it computes**: A Lean4-inspired proof framework with:
+- `Sort` enum: Nat, Real, Bool, Vec, Mat, Named, Arrow, Product
+- `BinOp`, `UnOp` enums: Add, Mul, Max, Min, etc.
+- `Structure`: declares algebraic structures (semigroup, monoid, commutative_monoid, group, lattice_op) with associated laws
+- `Theorem::check()`: verify a proposition against a proof witness
+- `ProofContext`: registry of structures and theorems
+- `compile_term()`: compile a symbolic term into a sequence of `AccumulateStep`s
+**Current status**: Already `pub` in its own module.
+**Harvest target**: The abstract framework is tambear-specific (it's the type system for the tambear proof layer). But **the `Structure::commutative_monoid` / `Structure::group` / `Structure::lattice_op` constructors should be used by OTHER modules** to declare that their operators are algebraically valid. This is more of an ARCHITECTURAL USAGE than a code harvest: every new reduce/scan primitive in tambear should register its algebraic structure so the proof layer can verify prefix-scan applicability.
+**Broader use**: ANY tambear reduction primitive benefits from declaring its algebraic laws. When a new `ReduceOp` variant is added, its associativity/commutativity should be registered in the proof context. This enables automatic verification that the scan/scatter is valid.
+**Effort**: Not a harvest — a process change. Document it as the "algebraic structure declaration pattern."
+**Fintek rescue dependency**: No direct, but the proof layer could eventually verify that all fintek leaf computations are expressible as valid tambear primitives.
+
+### H16 — Persistent Homology Input Builder (1D distance matrix)
+
+**Source**: (Not in collatz work, but the pattern is everywhere.) Similar to `tambear-fintek/src/family14_topological.rs` building dist matrix from 1D data.
+**What it computes**: The trivial mapping from a 1D time series to its pairwise distance matrix for persistent homology input.
+**Harvest target**: Not from Collatz — already identified in the main catalog. Skip.
+**Fintek rescue dependency**: N/A.
+
+### H17 — Exhaustive Range Verification with Residue Class Sharing
+
+**Source**: `collatz_structural.rs:177-248` (`verify_range_with_sharing`), `collatz_parallel.rs:257-373` (`verify_by_residue_class`)
+**What it computes**: Exhaustive verification over integer ranges with work-sharing via residue classes: numbers with the same low-k-bit pattern share the first k steps of the iterated map, so verifying one representative covers 2^k other values.
+**Current status**: Both `pub`, Collatz-specific.
+**Harvest target**: Generalize to `pub fn verify_with_residue_sharing<F, G>(start, count, f, is_verified, k)` where `f` is the iterated map, `is_verified` is the termination predicate, and `k` is the shared-prefix bit count. This is a specific speedup pattern for integer iterated maps that have bitwise-determined initial behavior.
+**Broader use**: Any exhaustive verification of integer iterated maps. Applications beyond Collatz: Smalltown's 3x+1-like conjectures, Syracuse function variants, Aronson's sequence variants, Tak function evaluation, Ackermann function value lookup.
+**Effort**: ~40 lines to extract and generalize.
+**Fintek rescue dependency**: No.
+
+### H18 — Chi-Squared Orbit Distribution Test (layer_bijection)
+
+**Source**: `layer_bijection.rs:495-577` (`orbit_chi_squared`, `ChiSquaredResult`)
+**What it computes**: Given an orbit of an iterated map and a bit-count j, bin the orbit values by their low-j bits and compute the chi-squared statistic against the uniform distribution across 2^j bins. Tests whether the orbit distributes uniformly over residue classes.
+**Current status**: Already `pub`.
+**Harvest target**: Promote to `tambear/src/hypothesis.rs` as `pub fn chi2_uniform_residue(orbit: &[u128], j: u32) -> ChiSquaredResult`. This is a specialized chi-squared goodness-of-fit test that's already in hypothesis.rs (via `chi2_goodness_of_fit`), but the orbit-specific variant handles the "expected uniform mod 2^j" case directly.
+**Broader use**: Any uniformity test on integer sequences: PRNG quality testing (specifically for low-order bits), hash function output distribution, load balancer fairness measurement, cryptographic nonce distribution.
+**Effort**: ~20 lines to extract and link to existing chi² infrastructure.
+**Fintek rescue dependency**: No direct, but complements the RNG testing infrastructure.
+
+### H19 — Orbit Max Analysis / Trajectory Peak Tracking
+
+**Source**: `fold_irreversibility.rs:315-333` (`trajectory_max_tau`), `extremal_orbit.rs:69-82` (`orbit`)
+**What it computes**: Trace an orbit and return `(max_value, step_at_max)`. The trajectory-level statistic that fintek's complexity family (lyapunov, correlation_dim) would use.
+**Current status**: `trajectory_max_tau` is `pub` in fold_irreversibility (Collatz-specific, tracks τ not value). `orbit` is `pub` in extremal_orbit.
+**Harvest target**: Generalize as `pub fn iterate_with_tracking<F, S>(start, f, max_steps, track) -> TrajectoryTracking<S>` where the caller provides an arbitrary state tracker function `S = track(current_value, step_idx, prev_state)`. This is a universal orbit-analysis primitive.
+**Broader use**: Dynamical systems research broadly; also useful for iterative optimization (track best iterate so far), Newton's method convergence analysis, simulated annealing best-value tracking.
+**Effort**: ~30 lines.
+**Fintek rescue dependency**: No direct, but complements the complexity family's phase-space analyses.
+
+### H20 — Cycle Detection via Hashset
+
+**Source**: `multi_adic.rs:233-253` (inside `multi_adic_trajectory`, uses HashSet for cycle detection)
+**What it computes**: Trace an iterated map until either (a) a value is revisited (cycle detected) or (b) max_steps is reached.
+**Current status**: Private inside `multi_adic_trajectory`.
+**Harvest target**: Extract as `pub fn iterate_until_cycle<F, T>(start, f, max_steps) -> IterationResult<T> where T: Hash+Eq, F: Fn(T) -> T`. Return enum: `Converged(Vec<T>)`, `Cycle { prefix: Vec<T>, cycle: Vec<T> }`, `Diverged(Vec<T>)`.
+**Broader use**: Any iterated map where you want to detect if it settles into a cycle, including: Markov chain exploration, functional equation iteration, Newton's method cycle detection (failure mode), cellular automaton cycle detection.
+**Effort**: ~25 lines.
+**Fintek rescue dependency**: No.
+
+### H21 — Mihailescu / Catalan Exact Integer Power Verification
+
+**Source**: `extremal_orbit.rs:560-579` (`verify_mihailescu_for_extremals`)
+**What it computes**: Checks whether numbers of the form `2·(2^k - 1) + 1 = 2^(k+1) - 1` are powers of 3. Used to verify the Catalan-Mihailescu theorem's application to Collatz extremal orbits (the only solution is k=2, giving 3 = 3^1).
+**Current status**: Already `pub`.
+**Harvest target**: This is a specialized number theory check. Extract the general helper `is_power_of(n: u128, base: u128) -> bool` to `tambear/src/number_theory.rs`. The Mihailescu application can stay in extremal_orbit.rs as a specific use case.
+**Broader use**: Perfect power detection is useful in: Catalan conjecture verification, Fermat's last theorem explorations, tetrachoric correlation (which involves testing if cell counts match power-law expectations).
+**Effort**: ~15 lines.
+**Fintek rescue dependency**: No.
+
+### HARVEST SUMMARY
+
+| # | Primitive | Source | Lines | Module target | Priority |
+|---|-----------|--------|-------|---------------|----------|
+| H1 | LinearRecurrenceStep (affine monoid) | collatz_structural, extremal_orbit | 35 | numerical.rs or recurrence.rs | MEDIUM (supports Kalman generalization) |
+| H2 | Modular inverse via Newton/Hensel | layer_bijection | 20 | number_theory.rs | LOW |
+| H3 | FunctionalGraph + cycle detection | spectral_gap | 30 | graph.rs | MEDIUM |
+| H4 | **Generic Arnoldi eigenvalues** | spectral_gap | 10 | spectral.rs | **HIGH** (fintek rmt/harmonic/spectral_embedding dependency) |
+| H5 | LazyRandomWalk wrapper | spectral_gap | 10 | graph.rs | LOW |
+| H6 | Generalized integer iterated map | extremal_orbit, multi_adic | 30 | new dynamical_systems.rs | LOW |
+| H7 | Integer roots / perfect power | beal_search, bigint | 20 | number_theory.rs | LOW |
+| H8 | Shadow coefficients | collatz_parallel | (0, merged with H1) | — | LOW |
+| H9 | p-adic valuation / distance | multi_adic | 5 | number_theory.rs or metrics.rs | LOW |
+| H10 | MultiAdicProfile / trajectory | multi_adic | 15 | dynamical_systems.rs | LOW |
+| H11 | Functional-graph cycle detection | spectral_gap | 25 | graph.rs | LOW |
+| H12 | checked_pow | beal_search | delete 10 | use std::u128::checked_pow | LOW (cleanup) |
+| H13 | trailing_ones | fold_irreversibility | 5 | numerical.rs or bit_ops.rs | LOW |
+| H14 | **Parallel range reduction framework** | collatz_parallel | 50 | new parallel.rs | MEDIUM (general infrastructure) |
+| H15 | Proof framework usage pattern | proof.rs | 0 (process change) | — | LOW (architectural) |
+| H16 | — | (already in catalog) | — | — | — |
+| H17 | Residue-class exhaustive search | collatz_structural, collatz_parallel | 40 | search.rs or number_theory.rs | LOW |
+| H18 | Chi-squared orbit uniformity test | layer_bijection | 20 | hypothesis.rs | LOW |
+| H19 | Generic orbit tracking | fold_irreversibility, extremal_orbit | 30 | dynamical_systems.rs | LOW |
+| H20 | iterate_until_cycle | multi_adic | 25 | dynamical_systems.rs | LOW |
+| H21 | is_power_of / perfect power check | extremal_orbit | 15 | number_theory.rs | LOW |
+
+**Total harvest effort**: ~390 lines of refactoring (mostly extract + document + re-export). The math is already written, tested, and working.
+
+### New Modules Suggested by the Harvest
+
+1. **`tambear/src/dynamical_systems.rs`** (NEW) — general iterated-map framework covering Collatz, Syracuse, etc. Absorbs H6, H10, H19, H20.
+2. **`tambear/src/parallel.rs`** (NEW) — generic parallel-range-reduction framework. Absorbs H14.
+3. **`tambear/src/recurrence.rs`** (NEW, or part of numerical.rs) — linear recurrence primitives, includes H1. Gets expanded when Kalman/Särkkä prefix scan lands (Task #101).
+
+### What the Harvest Means for Task #101 (Kalman filter via Särkkä)
+
+The Collatz affine monoid (H1) is the **scalar 1D analog** of the 5-tuple Särkkä matrix prefix scan element. Specifically:
+
+```
+CollatzAffine combine:
+  (a₁, b₁, s₁) ⊕ (a₂, b₂, s₂) = (a₁·a₂, a₂·b₁ + b₂·2^s₁, s₁+s₂)
+
+Kalman 5-tuple combine (Särkkä 2021, Eq. 21):
+  (A₁, b₁, C₁, η₁, J₁) ⊕ (A₂, b₂, C₂, η₂, J₂) = ... (matrix version)
+```
+
+Both are instances of "associative composition of linear maps on affine space with side information (variance / shift)". The CollatzAffine is already **verified working** (collatz_structural tests pass). Task #101 can use CollatzAffine as the scalar baseline and generalize to matrices.
+
+**Concrete recommendation**: Before implementing the full Kalman filter, extract `CollatzAffine` → `LinearRecurrenceStep` as a verified scalar prefix scan element. This gives Task #101 a correct 1D baseline to generalize from, reducing implementation risk.
+
+### Immediate Follow-up Tasks to Create
+
+1. **Harvest H4**: Re-export `arnoldi_eigenvalues` as a general public API in `spectral.rs` or a new location. **HIGH PRIORITY** — fintek rescue blocker for rmt, spectral_embedding, harmonic leaves.
+2. **Harvest H1**: Unify `CollatzAffine` and `AffineTransform` into a public `LinearRecurrenceStep` in numerical.rs. MEDIUM PRIORITY — prerequisite for Task #101 Kalman.
+3. **Harvest H14**: Extract generic parallel-range-reduction framework. MEDIUM PRIORITY — general infrastructure.
+4. **Harvest H3/H11**: Extract FunctionalGraph + cycle detection as generic primitives. MEDIUM PRIORITY.
+5. **Harvest H2, H6, H7, H9, H10, H13, H18, H19, H20, H21**: Batch small harvests. LOW PRIORITY — quality-of-life promotions.
+
+---
+
 _Document is the formal mapping specification for the tambear-fintek bridge (Task #135)._
 _Every fintek rescue is simultaneously a tambear math entry being checked off._
 _Updated as new tambear primitives land and fintek leaves are migrated._

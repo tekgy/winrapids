@@ -128,7 +128,7 @@ pub use tb_io::{TbFile, TbColumnWrite, write_tb};
 pub use special_functions::{
     erf, erfc, log_gamma, gamma, log_beta, digamma, trigamma,
     regularized_incomplete_beta, regularized_gamma_p, regularized_gamma_q,
-    normal_cdf, normal_sf, t_cdf, f_cdf, chi2_cdf, chi2_sf,
+    normal_cdf, normal_sf, normal_quantile, t_cdf, f_cdf, chi2_cdf, chi2_sf,
     normal_two_tail_p, t_two_tail_p, f_right_tail_p, chi2_right_tail_p,
 };
 pub use hypothesis::{
@@ -140,12 +140,16 @@ pub use hypothesis::{
     cohens_d, glass_delta, hedges_g, point_biserial_r,
     odds_ratio, log_odds_ratio, log_odds_ratio_se,
     bonferroni, holm, benjamini_hochberg,
+    BreuschPaganResult, breusch_pagan,
+    InfluenceResult, cooks_distance,
 };
 pub use nonparametric::{
     rank, spearman, kendall_tau,
     NonparametricResult,
     mann_whitney_u, wilcoxon_signed_rank, kruskal_wallis,
-    ks_test_normal, ks_test_two_sample,
+    ks_test_normal, ks_test_normal_standardized, ks_test_two_sample,
+    shapiro_wilk, dagostino_pearson,
+    DunnComparison, dunn_test,
     bootstrap_percentile, BootstrapResult,
     permutation_test_mean_diff,
     kde, kde_fft, silverman_bandwidth, KernelType,

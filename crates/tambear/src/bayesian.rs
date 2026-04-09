@@ -21,18 +21,21 @@ pub struct McmcChain {
     pub acceptance_rate: f64,
 }
 
-/// Metropolis-Hastings sampler.
+/// Metropolis-Hastings sampler with Xoshiro256** PRNG.
+///
 /// `log_target`: log of unnormalized target density.
 /// `initial`: starting point (length d).
 /// `proposal_sd`: proposal standard deviation per dimension.
 /// `n_samples`: number of samples to draw.
 /// `burnin`: number of initial samples to discard.
+/// `seed`: RNG seed for reproducibility.
 pub fn metropolis_hastings(
     log_target: &dyn Fn(&[f64]) -> f64,
     initial: &[f64],
     proposal_sd: f64,
     n_samples: usize,
     burnin: usize,
+    seed: u64,
 ) -> McmcChain {
     let d = initial.len();
     let total = n_samples + burnin;
@@ -40,26 +43,20 @@ pub fn metropolis_hastings(
     let mut current_lp = log_target(&current);
     let mut samples = Vec::with_capacity(n_samples);
     let mut accepted = 0usize;
-    let mut rng = 12345u64;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
 
     for iter in 0..total {
         // Propose: current + N(0, proposal_sd²)
         let mut proposal = current.clone();
         for j in 0..d {
-            rng = lcg_next(rng);
-            let u1 = rng as f64 / u64::MAX as f64;
-            rng = lcg_next(rng);
-            let u2 = rng as f64 / u64::MAX as f64;
-            // Box-Muller
-            let z = (-2.0 * u1.max(1e-300).ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
-            proposal[j] += proposal_sd * z;
+            let z = crate::rng::sample_normal(&mut rng, 0.0, proposal_sd);
+            proposal[j] += z;
         }
 
         let proposal_lp = log_target(&proposal);
         let log_alpha = proposal_lp - current_lp;
 
-        rng = lcg_next(rng);
-        let u = (rng as f64 / u64::MAX as f64).max(1e-300);
+        let u = crate::rng::TamRng::next_f64(&mut rng).max(1e-300);
         if u.ln() < log_alpha {
             current = proposal;
             current_lp = proposal_lp;
@@ -75,10 +72,6 @@ pub fn metropolis_hastings(
         samples,
         acceptance_rate: accepted as f64 / total as f64,
     }
-}
-
-fn lcg_next(state: u64) -> u64 {
-    state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -279,7 +272,7 @@ mod tests {
     fn mh_normal_target() {
         // Target: N(3.0, 1.0). Posterior mean should be ~3.0.
         let log_target = |x: &[f64]| -0.5 * (x[0] - 3.0).powi(2);
-        let chain = metropolis_hastings(&log_target, &[0.0], 1.0, 5000, 1000);
+        let chain = metropolis_hastings(&log_target, &[0.0], 1.0, 5000, 1000, 42);
         let mean: f64 = chain.samples.iter().map(|s| s[0]).sum::<f64>() / chain.samples.len() as f64;
         assert!((mean - 3.0).abs() < 0.3, "MH mean={mean} should be ~3.0");
         assert!(chain.acceptance_rate > 0.15 && chain.acceptance_rate < 0.85,
@@ -290,7 +283,7 @@ mod tests {
     fn mh_2d_target() {
         // Target: bivariate N([1, 2], I)
         let log_target = |x: &[f64]| -0.5 * ((x[0] - 1.0).powi(2) + (x[1] - 2.0).powi(2));
-        let chain = metropolis_hastings(&log_target, &[0.0, 0.0], 1.0, 5000, 1000);
+        let chain = metropolis_hastings(&log_target, &[0.0, 0.0], 1.0, 5000, 1000, 42);
         let m0: f64 = chain.samples.iter().map(|s| s[0]).sum::<f64>() / chain.samples.len() as f64;
         let m1: f64 = chain.samples.iter().map(|s| s[1]).sum::<f64>() / chain.samples.len() as f64;
         assert!((m0 - 1.0).abs() < 0.5, "Dim 0 mean={m0} should be ~1.0");
@@ -344,5 +337,33 @@ mod tests {
         let c2: Vec<f64> = (0..100).map(|i| (i as f64 * 0.1 + 0.5).sin()).collect();
         let rh = r_hat(&[&c1, &c2]);
         assert!(rh < 1.5, "R-hat={rh} should be ~1.0 for converged chains");
+    }
+
+    // ── Regression: Xoshiro256 RNG quality in MH ───────────────────────
+    // With LCG, variance estimation was biased due to lattice structure.
+    // Xoshiro256 passes BigCrush → correct moments on standard targets.
+    #[test]
+    fn mh_variance_recovery_regression() {
+        // Target: N(0, 1). Chain variance should be ~1.0.
+        let log_target = |x: &[f64]| -0.5 * x[0] * x[0];
+        let chain = metropolis_hastings(&log_target, &[0.0], 1.0, 10000, 2000, 12345);
+        let samples: Vec<f64> = chain.samples.iter().map(|s| s[0]).collect();
+        let n = samples.len() as f64;
+        let mean = samples.iter().sum::<f64>() / n;
+        let var = samples.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / (n - 1.0);
+
+        assert!((mean).abs() < 0.15, "Mean should be ~0, got {mean}");
+        assert!((var - 1.0).abs() < 0.3, "Variance should be ~1.0, got {var}");
+    }
+
+    #[test]
+    fn mh_different_seeds_give_different_chains() {
+        let log_target = |x: &[f64]| -0.5 * (x[0] - 5.0).powi(2);
+        let c1 = metropolis_hastings(&log_target, &[0.0], 1.0, 100, 10, 42);
+        let c2 = metropolis_hastings(&log_target, &[0.0], 1.0, 100, 10, 99);
+        // Different seeds should produce different samples
+        let different = c1.samples.iter().zip(c2.samples.iter())
+            .any(|(a, b)| (a[0] - b[0]).abs() > 1e-10);
+        assert!(different, "Different seeds should produce different chains");
     }
 }

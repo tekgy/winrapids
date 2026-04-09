@@ -627,13 +627,7 @@ pub fn ising2d_metropolis(
 ) -> (f64, f64) {
     let beta = 1.0 / temperature;
     let mut spins = vec![1i8; n * n]; // start ferromagnetic
-
-    // LCG random number generator
-    let mut rng_state = seed;
-    let lcg_next = |s: &mut u64| -> f64 {
-        *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        *s as f64 / u64::MAX as f64
-    };
+    let mut rng = crate::rng::Xoshiro256::new(seed);
 
     let spin = |i: usize, j: usize, spins: &[i8]| -> i8 {
         spins[(i % n) * n + j % n]
@@ -653,7 +647,7 @@ pub fn ising2d_metropolis(
                 ) + h_field;
                 let delta_e = 2.0 * s as f64 * h_local;
                 // Metropolis criterion
-                if delta_e <= 0.0 || lcg_next(&mut rng_state) < (-beta * delta_e).exp() {
+                if delta_e <= 0.0 || crate::rng::TamRng::next_f64(&mut rng) < (-beta * delta_e).exp() {
                     spins[i * n + j] = -s;
                 }
             }

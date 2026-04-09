@@ -162,6 +162,18 @@ pub struct CoxResult {
     pub log_likelihood: f64,
     /// Number of iterations.
     pub iterations: usize,
+    /// Schoenfeld residuals for each event (in time order).
+    ///
+    /// `schoenfeld_residuals[k][j]` = x_{ij} - E[x_j | R(t_i)] for the k-th event.
+    /// Where E[x_j | R(t_i)] = S1_j(t_i) / S0(t_i) is the risk-set weighted mean of x_j.
+    ///
+    /// Use for Cox PH proportional hazards assumption testing:
+    /// - Plot residuals vs time (or log-time) per covariate
+    /// - Fit a smoothed line: non-zero slope → time-varying effect → PH violated
+    /// - Formal test: cor.test(schoenfeld_j, time) with Grambsch-Therneau correction
+    ///
+    /// Residuals sum to approximately zero at convergence (score equation).
+    pub schoenfeld_residuals: Vec<Vec<f64>>,
 }
 
 /// Fit Cox proportional hazards model via Newton-Raphson on partial likelihood.
@@ -305,20 +317,22 @@ pub fn cox_ph(x: &[f64], times: &[f64], events: &[bool], n: usize, d: usize, max
     let mut s0 = 0.0;
     for i in 0..n { s0 += exp_xb[i]; }
     for &i in &order {
-        if events[i] {
+        if events[i] && s0 > 1e-300 {
             // log-likelihood: xb_i - log(Σ exp(xb_j)) = xb_i - xb_max - log(s0)
             ll += (xb_vals_final[i] - xb_max_final) - s0.ln();
         }
         s0 -= exp_xb[i];
+        if s0 < 0.0 { s0 = 0.0; } // guard against floating-point underflow
     }
 
     let hazard_ratios: Vec<f64> = beta.iter().map(|&b| b.exp()).collect();
 
-    // SE from diagonal of (-H)⁻¹, recomputed at final beta
+    // SE from diagonal of (-H)⁻¹ and Schoenfeld residuals, recomputed at final beta
     let mut hess_final = vec![0.0; d * d];
     let mut s1_f = vec![0.0; d];
     let mut s2_f = vec![0.0; d * d];
     let mut s0_f = 0.0;
+    let mut schoenfeld_residuals: Vec<Vec<f64>> = Vec::new();
     for i in 0..n {
         s0_f += exp_xb[i];
         for j in 0..d {
@@ -335,6 +349,12 @@ pub fn cox_ph(x: &[f64], times: &[f64], events: &[bool], n: usize, d: usize, max
         for tidx in idx_f..end_f {
             let i = order[tidx];
             if events[i] && s0_f > 0.0 {
+                // Schoenfeld residual: x_i - E[x | risk set] = x_i - S1/S0
+                let resid: Vec<f64> = (0..d).map(|j| {
+                    x[i * d + j] - s1_f[j] / s0_f
+                }).collect();
+                schoenfeld_residuals.push(resid);
+
                 for j in 0..d {
                     for k in 0..d {
                         hess_final[j * d + k] -= s2_f[j * d + k] / s0_f
@@ -375,7 +395,7 @@ pub fn cox_ph(x: &[f64], times: &[f64], events: &[bool], n: usize, d: usize, max
         }
     };
 
-    CoxResult { beta, se, hazard_ratios, log_likelihood: ll, iterations }
+    CoxResult { beta, se, hazard_ratios, log_likelihood: ll, iterations, schoenfeld_residuals }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -460,5 +480,49 @@ mod tests {
         let res = cox_ph(&x, &times, &events, n, 1, 50);
         assert!(res.beta[0] > 0.0, "β={} should be positive (higher x → higher hazard)", res.beta[0]);
         assert!(res.hazard_ratios[0] > 1.0, "HR={} should be > 1", res.hazard_ratios[0]);
+    }
+
+    #[test]
+    fn cox_schoenfeld_residuals_count_and_sum() {
+        // Schoenfeld residuals: one per event. At β=0 (null model), residual for
+        // observation i is x_i - mean(x in risk set), and residuals sum = score(β=0).
+        // Use mild effect so optimizer converges; then verify count and that each
+        // residual has the correct sign (event with highest covariate → positive residual).
+        let times = vec![5.0, 4.0, 3.0, 2.0, 1.0]; // earlier time = shorter survival
+        let x = vec![0.2, 0.4, 0.6, 0.8, 1.0];     // higher x → shorter time (positive effect)
+        let events = vec![true; 5];
+        let n = 5;
+        let res = cox_ph(&x, &times, &events, n, 1, 100);
+
+        // One residual per event
+        assert_eq!(res.schoenfeld_residuals.len(), n,
+            "should have one Schoenfeld residual per event");
+        // Each residual is length d=1
+        assert!(res.schoenfeld_residuals.iter().all(|r| r.len() == 1));
+        // All finite
+        assert!(res.schoenfeld_residuals.iter().all(|r| r[0].is_finite()),
+            "Schoenfeld residuals should all be finite");
+        // Last event (x=0.2, earliest time) faces a risk set of just {0.2}: residual ≈ 0
+        let last_resid = res.schoenfeld_residuals.last().unwrap()[0];
+        assert!(last_resid.abs() < 1e-3,
+            "Last event faces only itself in risk set → residual ≈ 0, got {}", last_resid);
+    }
+
+    #[test]
+    fn cox_schoenfeld_residuals_multivariate() {
+        // Two covariates: residuals still one per event, length 2.
+        let n = 8;
+        let x: Vec<f64> = (0..n).flat_map(|i| {
+            vec![i as f64, (n - i) as f64]
+        }).collect();
+        let times: Vec<f64> = (0..n).map(|i| (i + 1) as f64).collect();
+        let events = vec![true; n];
+        let res = cox_ph(&x, &times, &events, n, 2, 50);
+
+        assert_eq!(res.schoenfeld_residuals.len(), n);
+        assert!(res.schoenfeld_residuals.iter().all(|r| r.len() == 2));
+        // All residuals should be finite
+        assert!(res.schoenfeld_residuals.iter().all(|r| r.iter().all(|v| v.is_finite())),
+            "Schoenfeld residuals should all be finite");
     }
 }

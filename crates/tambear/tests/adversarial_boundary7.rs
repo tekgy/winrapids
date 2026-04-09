@@ -674,7 +674,7 @@ fn hampel_weight_bad_params() {
 fn mcmc_zero_samples() {
     let log_target = |_x: &[f64]| -> f64 { -0.5 * _x[0] * _x[0] };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        metropolis_hastings(&log_target, &[0.0], 1.0, 0, 0)
+        metropolis_hastings(&log_target, &[0.0], 1.0, 0, 0, 42)
     }));
     match result {
         Ok(chain) => {
@@ -690,7 +690,7 @@ fn mcmc_zero_samples() {
 fn mcmc_burnin_exceeds_samples() {
     let log_target = |x: &[f64]| -> f64 { -0.5 * x[0] * x[0] };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        metropolis_hastings(&log_target, &[0.0], 1.0, 100, 200)
+        metropolis_hastings(&log_target, &[0.0], 1.0, 100, 200, 42)
     }));
     match result {
         Ok(chain) => {
@@ -708,7 +708,7 @@ fn mcmc_burnin_exceeds_samples() {
 fn mcmc_always_reject() {
     let log_target = |_x: &[f64]| -> f64 { f64::NEG_INFINITY };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        metropolis_hastings(&log_target, &[0.0], 1.0, 50, 0)
+        metropolis_hastings(&log_target, &[0.0], 1.0, 50, 0, 42)
     }));
     match result {
         Ok(chain) => {
@@ -727,7 +727,7 @@ fn mcmc_always_reject() {
 fn mcmc_nan_target() {
     let log_target = |_x: &[f64]| -> f64 { f64::NAN };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        metropolis_hastings(&log_target, &[0.0], 1.0, 20, 0)
+        metropolis_hastings(&log_target, &[0.0], 1.0, 20, 0, 42)
     }));
     match result {
         Ok(chain) => {
@@ -745,7 +745,7 @@ fn mcmc_nan_target() {
 fn mcmc_zero_proposal() {
     let log_target = |x: &[f64]| -> f64 { -0.5 * x[0] * x[0] };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        metropolis_hastings(&log_target, &[5.0], 0.0, 50, 0)
+        metropolis_hastings(&log_target, &[5.0], 0.0, 50, 0, 42)
     }));
     match result {
         Ok(chain) => {

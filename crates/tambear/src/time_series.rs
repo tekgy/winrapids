@@ -179,12 +179,13 @@ pub struct AdfResult {
 pub fn adf_test(data: &[f64], n_lags: usize) -> AdfResult {
     let n = data.len();
     if n <= n_lags + 2 {
+        let (c1, c5, c10) = mackinnon_adf_critical_values(n);
         return AdfResult {
             statistic: f64::NAN,
             n_lags,
-            critical_1pct: -3.43,
-            critical_5pct: -2.86,
-            critical_10pct: -2.57,
+            critical_1pct: c1,
+            critical_5pct: c5,
+            critical_10pct: c10,
         };
     }
 
@@ -221,12 +222,13 @@ pub fn adf_test(data: &[f64], n_lags: usize) -> AdfResult {
     }
 
     if nobs <= p {
+        let (c1, c5, c10) = mackinnon_adf_critical_values(nobs);
         return AdfResult {
             statistic: f64::NAN,
             n_lags,
-            critical_1pct: -3.43,
-            critical_5pct: -2.86,
-            critical_10pct: -2.57,
+            critical_1pct: c1,
+            critical_5pct: c5,
+            critical_10pct: c10,
         };
     }
 
@@ -234,12 +236,13 @@ pub fn adf_test(data: &[f64], n_lags: usize) -> AdfResult {
     let l = match crate::linear_algebra::cholesky(&a) {
         Some(l) => l,
         None => {
+            let (c1, c5, c10) = mackinnon_adf_critical_values(nobs);
             return AdfResult {
                 statistic: f64::NAN,
                 n_lags,
-                critical_1pct: -3.43,
-                critical_5pct: -2.86,
-                critical_10pct: -2.57,
+                critical_1pct: c1,
+                critical_5pct: c5,
+                critical_10pct: c10,
             };
         }
     };
@@ -261,14 +264,37 @@ pub fn adf_test(data: &[f64], n_lags: usize) -> AdfResult {
 
     let statistic = beta[1] / se_gamma;
 
-    // MacKinnon critical values (constant + trend, asymptotic)
+    // MacKinnon (2010) finite-sample critical values for "constant" model.
+    // Response surface: cv(n) = β_∞ + β_1/n + β_2/n²
+    // Coefficients from MacKinnon (2010) Table 1, case "c" (constant, no trend).
+    let (c1, c5, c10) = mackinnon_adf_critical_values(nobs);
     AdfResult {
         statistic,
         n_lags,
-        critical_1pct: -3.43,
-        critical_5pct: -2.86,
-        critical_10pct: -2.57,
+        critical_1pct: c1,
+        critical_5pct: c5,
+        critical_10pct: c10,
     }
+}
+
+/// MacKinnon (2010) finite-sample critical values for ADF "constant" model.
+///
+/// Response surface: cv(n) = β_∞ + β_1/n + β_2/n²
+/// Coefficients from MacKinnon (2010, Journal of Applied Econometrics) Table 1.
+fn mackinnon_adf_critical_values(n: usize) -> (f64, f64, f64) {
+    let nf = n as f64;
+    let inv_n = 1.0 / nf;
+    let inv_n2 = inv_n * inv_n;
+
+    // Coefficients for case "c" (constant, no trend), 1 regressor:
+    //   1%:  -3.4336  + (-5.999) /T + (-29.25)/T²
+    //   5%:  -2.8621  + (-2.738) /T + (-8.36) /T²
+    //  10%:  -2.5671  + (-1.438) /T + (-4.48) /T²
+    let c1  = -3.4336 + (-5.999) * inv_n + (-29.25) * inv_n2;
+    let c5  = -2.8621 + (-2.738) * inv_n + (-8.36) * inv_n2;
+    let c10 = -2.5671 + (-1.438) * inv_n + (-4.48) * inv_n2;
+
+    (c1, c5, c10)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -329,6 +355,155 @@ pub fn pacf(data: &[f64], max_lag: usize) -> Vec<f64> {
     }
 
     pacf_vals
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Ljung-Box portmanteau test (Ljung & Box 1978)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Ljung-Box test result.
+#[derive(Debug, Clone)]
+pub struct LjungBoxResult {
+    pub statistic: f64,
+    pub p_value: f64,
+    pub df: usize,
+    pub n_lags: usize,
+}
+
+/// Ljung-Box portmanteau test for autocorrelation.
+///
+/// Q(h) = n(n+2) Σ_{k=1}^h ρ̂²_k / (n-k) ~ χ²(h - fitted_params) under H₀.
+///
+/// `fitted_params`: number of ARMA parameters (p+q). Use 0 for raw series.
+pub fn ljung_box(data: &[f64], n_lags: usize, fitted_params: usize) -> LjungBoxResult {
+    let n = data.len();
+    let nf = n as f64;
+    let rho = acf(data, n_lags);
+
+    let q: f64 = (1..=n_lags.min(rho.len() - 1)).map(|k| {
+        rho[k] * rho[k] / (nf - k as f64)
+    }).sum::<f64>() * nf * (nf + 2.0);
+
+    let df = n_lags.saturating_sub(fitted_params).max(1);
+    let p_value = crate::special_functions::chi2_right_tail_p(q, df as f64);
+
+    LjungBoxResult { statistic: q, p_value, df, n_lags }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Durbin-Watson test (Durbin & Watson 1950)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Durbin-Watson test result.
+#[derive(Debug, Clone)]
+pub struct DurbinWatsonResult {
+    /// d statistic. Range [0, 4]. d ≈ 2 → no autocorrelation.
+    pub statistic: f64,
+    /// Estimated AR(1) coefficient: ρ̂ ≈ 1 - d/2.
+    pub rho_hat: f64,
+}
+
+/// Durbin-Watson statistic for serial autocorrelation in residuals.
+///
+/// d = Σ(ê_t - ê_{t-1})² / Σ ê_t². Interpretation:
+/// - d ≈ 2: no autocorrelation
+/// - d < 1.5: positive autocorrelation (rule of thumb)
+/// - d > 2.5: negative autocorrelation (rule of thumb)
+pub fn durbin_watson(residuals: &[f64]) -> DurbinWatsonResult {
+    let n = residuals.len();
+    if n < 2 {
+        return DurbinWatsonResult { statistic: 2.0, rho_hat: 0.0 };
+    }
+    let num: f64 = (1..n).map(|t| (residuals[t] - residuals[t - 1]).powi(2)).sum();
+    let den: f64 = residuals.iter().map(|e| e * e).sum();
+    if den < 1e-300 {
+        return DurbinWatsonResult { statistic: 2.0, rho_hat: 0.0 };
+    }
+    let d = num / den;
+    let rho_hat = 1.0 - d / 2.0;
+    DurbinWatsonResult { statistic: d, rho_hat }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// KPSS test for stationarity (Kwiatkowski et al. 1992)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// KPSS test result.
+#[derive(Debug, Clone)]
+pub struct KpssResult {
+    pub statistic: f64,
+    pub critical_1pct: f64,
+    pub critical_5pct: f64,
+    pub critical_10pct: f64,
+    pub n_lags: usize,
+}
+
+/// KPSS test for stationarity.
+///
+/// H₀: series is stationary. H₁: unit root (non-stationary).
+/// Note: opposite of ADF! Use both together for robust assessment.
+///
+/// `trend`: false = level stationarity (constant only), true = trend stationarity.
+/// `n_lags`: truncation lag for Newey-West. None = automatic (4·(T/100)^0.25).
+pub fn kpss_test(data: &[f64], trend: bool, n_lags: Option<usize>) -> KpssResult {
+    let n = data.len();
+    let nf = n as f64;
+
+    if n < 4 {
+        return KpssResult {
+            statistic: f64::NAN, critical_1pct: f64::NAN,
+            critical_5pct: f64::NAN, critical_10pct: f64::NAN, n_lags: 0,
+        };
+    }
+
+    // OLS residuals: demean (level) or detrend (trend)
+    let residuals: Vec<f64> = if trend {
+        // Regress y on (1, t): y = a + b·t + e
+        let t_mean = (nf - 1.0) / 2.0;
+        let y_mean = data.iter().sum::<f64>() / nf;
+        let mut stt = 0.0;
+        let mut sty = 0.0;
+        for i in 0..n {
+            let ti = i as f64 - t_mean;
+            stt += ti * ti;
+            sty += ti * (data[i] - y_mean);
+        }
+        let b = sty / stt;
+        let a = y_mean - b * t_mean;
+        (0..n).map(|i| data[i] - a - b * i as f64).collect()
+    } else {
+        let mean = data.iter().sum::<f64>() / nf;
+        data.iter().map(|x| x - mean).collect()
+    };
+
+    // Partial sums
+    let mut s = vec![0.0; n];
+    s[0] = residuals[0];
+    for t in 1..n { s[t] = s[t - 1] + residuals[t]; }
+
+    // Long-run variance (Newey-West with Bartlett kernel)
+    let lag = n_lags.unwrap_or((4.0 * (nf / 100.0).powf(0.25)).floor() as usize);
+    let mut sigma2 = residuals.iter().map(|e| e * e).sum::<f64>() / nf;
+    for j in 1..=lag.min(n - 1) {
+        let w = 1.0 - j as f64 / (lag as f64 + 1.0);
+        let cross: f64 = (j..n).map(|t| residuals[t] * residuals[t - j]).sum();
+        sigma2 += 2.0 * w * cross / nf;
+    }
+    if sigma2 < 1e-300 {
+        sigma2 = 1e-300;
+    }
+
+    // Test statistic
+    let eta = s.iter().map(|si| si * si).sum::<f64>() / (nf * nf * sigma2);
+
+    // Critical values (KPSS 1992 Table 1)
+    let (cv10, cv5, cv1) = if trend {
+        (0.119, 0.146, 0.216)
+    } else {
+        (0.347, 0.463, 0.739)
+    };
+
+    KpssResult { statistic: eta, critical_1pct: cv1, critical_5pct: cv5, critical_10pct: cv10, n_lags: lag }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -433,5 +608,114 @@ mod tests {
         let res = adf_test(&data, 1);
         assert!(res.statistic < res.critical_5pct,
             "ADF stat={} should be < {} for stationary series", res.statistic, res.critical_5pct);
+    }
+
+    // ── Regression: finite-sample ADF critical values ──────────────────
+    // Old code used fixed asymptotic values {-3.43, -2.86, -2.57}.
+    // MacKinnon response surface gives more negative values for small n.
+    #[test]
+    fn adf_finite_sample_critical_values_regression() {
+        // For small n, critical values should be more negative than asymptotic
+        let small_data: Vec<f64> = (0..30).map(|i| i as f64 * 0.1).collect();
+        let res_small = adf_test(&small_data, 1);
+
+        // Asymptotic values: -3.43, -2.86, -2.57
+        // For n=30, finite-sample correction makes them more negative
+        assert!(res_small.critical_1pct < -3.43,
+            "1% CV for n=30 should be more negative than -3.43, got {}", res_small.critical_1pct);
+        assert!(res_small.critical_5pct < -2.86,
+            "5% CV for n=30 should be more negative than -2.86, got {}", res_small.critical_5pct);
+        assert!(res_small.critical_10pct < -2.57,
+            "10% CV for n=30 should be more negative than -2.57, got {}", res_small.critical_10pct);
+
+        // For large n, should converge toward asymptotic values
+        let large_data: Vec<f64> = (0..5000).map(|i| (i as f64 * 0.01).sin()).collect();
+        let res_large = adf_test(&large_data, 1);
+        assert!((res_large.critical_1pct - (-3.4336)).abs() < 0.01,
+            "1% CV for large n should be near -3.4336, got {}", res_large.critical_1pct);
+        assert!((res_large.critical_5pct - (-2.8621)).abs() < 0.01,
+            "5% CV for large n should be near -2.8621, got {}", res_large.critical_5pct);
+    }
+
+    // ── Ljung-Box test ────────────────────────────────────────────────────
+
+    #[test]
+    fn ljung_box_white_noise() {
+        // Genuine iid noise from Xoshiro256 — no autocorrelation
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let wn: Vec<f64> = (0..200).map(|_| crate::rng::TamRng::next_f64(&mut rng) - 0.5).collect();
+        let r = ljung_box(&wn, 10, 0);
+        // With 200 observations and 10 lags of genuine white noise, Q ~ chi2(10).
+        // Expected Q ≈ 10; p should be comfortably > 0.01 for seed=42.
+        assert!(r.p_value > 0.01, "white noise: ljung-box p should be > 0.01, got {}", r.p_value);
+        assert!(r.statistic >= 0.0);
+    }
+
+    #[test]
+    fn ljung_box_autocorrelated() {
+        // AR(1) with high rho — should reject H₀
+        let mut data = vec![0.0f64; 100];
+        for i in 1..100 { data[i] = 0.9 * data[i-1] + (i as f64 * 0.01).sin() * 0.1; }
+        let r = ljung_box(&data, 10, 0);
+        assert!(r.p_value < 0.001, "highly autocorrelated: ljung-box p={}", r.p_value);
+    }
+
+    // ── Durbin-Watson test ────────────────────────────────────────────────
+
+    #[test]
+    fn durbin_watson_no_autocorrelation() {
+        // Residuals with no serial correlation — DW should be near 2.0.
+        // Use iid noise from Xoshiro256 for genuine independence.
+        let mut rng = crate::rng::Xoshiro256::new(99);
+        let resid: Vec<f64> = (0..50).map(|_| crate::rng::TamRng::next_f64(&mut rng) - 0.5).collect();
+        let r = durbin_watson(&resid);
+        assert!((r.statistic - 2.0).abs() < 1.0, "iid noise: DW should be near 2.0, got {}", r.statistic);
+    }
+
+    #[test]
+    fn durbin_watson_positive_autocorrelation() {
+        // Monotone residuals (perfect positive autocorrelation) → DW near 0
+        let resid: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let r = durbin_watson(&resid);
+        assert!(r.statistic < 0.5, "monotone residuals: DW should be near 0, got {}", r.statistic);
+    }
+
+    #[test]
+    fn durbin_watson_negative_autocorrelation() {
+        // Alternating residuals → DW near 4.0
+        let resid: Vec<f64> = (0..20).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let r = durbin_watson(&resid);
+        assert!(r.statistic > 3.5, "alternating residuals: DW should be near 4.0, got {}", r.statistic);
+    }
+
+    // ── KPSS test ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn kpss_stationary_series() {
+        // Stationary: sin wave with no trend — should fail to reject (p > 0.05)
+        let data: Vec<f64> = (0..100).map(|i| (i as f64 * 0.1).sin()).collect();
+        let r = kpss_test(&data, false, None);
+        // KPSS H₀ = stationary; high p → fail to reject
+        // Statistic below 10% critical value (0.347) means stationary
+        assert!(r.statistic < r.critical_10pct,
+            "stationary series: KPSS stat={:.3} should be < 10% cv={:.3}",
+            r.statistic, r.critical_10pct);
+    }
+
+    #[test]
+    fn kpss_nonstationary_random_walk() {
+        // Random walk with large iid steps — clearly non-stationary
+        let mut rng = crate::rng::Xoshiro256::new(7);
+        let mut data = vec![0.0f64; 200];
+        for i in 1..200 {
+            // Steps from N(0,1) approximated as sum of 12 uniform - 6
+            let step: f64 = (0..12).map(|_| crate::rng::TamRng::next_f64(&mut rng)).sum::<f64>() - 6.0;
+            data[i] = data[i-1] + step;
+        }
+        let r = kpss_test(&data, false, None);
+        // A random walk with 200 steps should almost always exceed 1% critical value
+        assert!(r.statistic > r.critical_5pct,
+            "random walk: KPSS stat={:.3} should exceed 5% cv={:.3}",
+            r.statistic, r.critical_5pct);
     }
 }

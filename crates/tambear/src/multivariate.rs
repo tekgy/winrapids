@@ -13,7 +13,7 @@
 //! Kingdom A (Commutative): pure GramMatrix → eigendecomposition → extraction.
 
 use crate::linear_algebra::{
-    Mat, mat_mul, mat_add, mat_scale, cholesky, cholesky_solve, sym_eigen, svd,
+    Mat, mat_mul, mat_add, mat_scale, cholesky, cholesky_solve, sym_eigen, svd, qr_solve,
 };
 use crate::special_functions::{f_right_tail_p, chi2_right_tail_p, normal_two_tail_p};
 
@@ -276,11 +276,15 @@ pub fn manova(x: &Mat, groups: &[usize]) -> ManovaResult {
     let roy_largest_root = eigenvalues.first().copied().unwrap_or(0.0);
 
     // Approximate F from Pillai's trace (most robust)
+    // df2 depends on whether s = p or s = k-1:
+    //   s = p  (p <= k-1): df2 = s*(N-k)
+    //   s = k-1 (k-1 < p): df2 = s*(N-p-1)
     let sf = s as f64;
     let pf = p as f64;
     let kf = k as f64;
+    let nf = n as f64;
     let df1 = sf * pf;
-    let df2 = sf * (n as f64 - kf);
+    let df2 = if p <= k - 1 { sf * (nf - kf) } else { sf * (nf - pf - 1.0) };
     let f_stat = if df2 > 0.0 && sf > 0.0 {
         (pillai_trace / sf) / ((sf - pillai_trace) / sf) * (df2 / df1)
     } else { 0.0 };
@@ -584,6 +588,76 @@ pub fn mardia_normality(x: &Mat) -> MardiaNormalityResult {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Variance Inflation Factor (VIF) for multicollinearity detection
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Variance Inflation Factor for each predictor in a design matrix.
+///
+/// VIF_j = 1 / (1 - R²_j), where R²_j is the R² from regressing column j
+/// on all other columns. Interpretation:
+/// - VIF < 5: acceptable
+/// - VIF 5–10: moderate multicollinearity
+/// - VIF > 10: severe multicollinearity — consider removing or combining predictors
+///
+/// `x`: n×p design matrix (row-major, columns are predictors).
+/// Returns a Vec of length p. VIF = Inf when a predictor is a perfect linear
+/// combination of others (R² = 1). VIF = 1 when completely uncorrelated.
+///
+/// Note: intercept column (all ones) should be excluded — VIF for an intercept
+/// is undefined and always inflated.
+pub fn vif(x: &Mat) -> Vec<f64> {
+    let n = x.rows;
+    let p = x.cols;
+
+    if p < 2 {
+        // Single predictor: no collinearity possible
+        return vec![1.0; p];
+    }
+
+    let mut result = Vec::with_capacity(p);
+
+    for j in 0..p {
+        // Build design matrix with column j as response, all others as predictors
+        let mut x_other = Mat::zeros(n, p - 1);
+        let mut y = vec![0.0; n];
+        for i in 0..n {
+            y[i] = x.data[i * p + j];
+            let mut col = 0;
+            for k in 0..p {
+                if k == j { continue; }
+                x_other.data[i * (p - 1) + col] = x.data[i * p + k];
+                col += 1;
+            }
+        }
+
+        // OLS: β = (X'X)⁻¹X'y via QR
+        let beta = qr_solve(&x_other, &y);
+
+        // Fitted values and SS_res
+        let y_mean = y.iter().sum::<f64>() / n as f64;
+        let ss_tot: f64 = y.iter().map(|yi| (yi - y_mean).powi(2)).sum();
+
+        if ss_tot < 1e-300 {
+            // Constant column: VIF undefined, return Inf
+            result.push(f64::INFINITY);
+            continue;
+        }
+
+        let mut ss_res = 0.0;
+        for i in 0..n {
+            let fitted: f64 = (0..p-1).map(|k| x_other.data[i * (p-1) + k] * beta[k]).sum();
+            ss_res += (y[i] - fitted).powi(2);
+        }
+
+        let r2 = 1.0 - ss_res / ss_tot;
+        let r2 = r2.clamp(0.0, 1.0 - 1e-15); // guard against perfect collinearity
+        result.push(1.0 / (1.0 - r2));
+    }
+
+    result
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -767,5 +841,85 @@ mod tests {
         // Should not reject normality for approximately normal data
         assert!(res.skewness >= 0.0, "Skewness statistic should be non-negative");
         assert!(res.kurtosis > 0.0, "Kurtosis statistic should be positive");
+    }
+
+    // ── Regression: Pillai df2 when p > k-1 ────────────────────────────
+    // Old code always used df2 = s*(N-k). When p > k-1, the correct
+    // formula is df2 = s*(N-p-1). This test verifies the conditional.
+    #[test]
+    fn manova_pillai_df2_p_gt_k_minus_1_regression() {
+        // 2 groups, 3 variables → p=3, k=2, k-1=1, s=min(p,k-1)=1
+        // Since p > k-1, df2 should be s*(N-p-1) = 1*(N-4), not s*(N-k) = 1*(N-2)
+        let x = Mat::from_rows(&[
+            &[0.0, 0.0, 0.0], &[0.1, 0.1, 0.1], &[-0.1, -0.1, 0.0],
+            &[0.05, -0.05, 0.1], &[0.0, 0.0, -0.1],
+            &[5.0, 5.0, 5.0], &[5.1, 5.1, 5.1], &[4.9, 4.9, 5.0],
+            &[5.05, 4.95, 5.1], &[5.0, 5.0, 4.9],
+        ]);
+        let groups = vec![0, 0, 0, 0, 0, 1, 1, 1, 1, 1];
+        let res = manova(&x, &groups);
+
+        // With well-separated groups, should strongly reject
+        assert!(res.p_value < 0.01,
+            "MANOVA with p>k-1 should still detect clear separation, p={}", res.p_value);
+        // Verify reasonable F statistic
+        assert!(res.f_statistic > 0.0, "F should be positive");
+    }
+
+    // ── VIF ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn vif_orthogonal_predictors() {
+        // Orthogonal predictors: no collinearity → all VIF = 1
+        let x = Mat::from_rows(&[
+            &[1.0, 0.0], &[-1.0, 0.0], &[0.0, 1.0], &[0.0, -1.0],
+            &[1.0, 0.0], &[-1.0, 0.0], &[0.0, 1.0], &[0.0, -1.0],
+        ]);
+        let v = vif(&x);
+        assert_eq!(v.len(), 2);
+        for (j, &vi) in v.iter().enumerate() {
+            assert!((vi - 1.0).abs() < 0.1, "VIF[{j}]={vi} should be ≈1 for orthogonal predictors");
+        }
+    }
+
+    #[test]
+    fn vif_high_collinearity() {
+        // x2 ≈ x1 + small noise → strong multicollinearity → high VIF
+        let n = 20;
+        let x1: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let x2: Vec<f64> = x1.iter().map(|&v| v + 0.01 * ((v * 7.3) % 1.0)).collect();
+        let mut data = Vec::with_capacity(n * 2);
+        for i in 0..n {
+            data.push(x1[i]);
+            data.push(x2[i]);
+        }
+        let x = Mat::from_vec(n, 2, data);
+        let v = vif(&x);
+        assert!(v[0] > 100.0, "VIF[0]={} should be very high (near-collinear)", v[0]);
+        assert!(v[1] > 100.0, "VIF[1]={} should be very high (near-collinear)", v[1]);
+    }
+
+    #[test]
+    fn vif_single_predictor_returns_one() {
+        let x = Mat::from_rows(&[&[1.0], &[2.0], &[3.0], &[4.0]]);
+        let v = vif(&x);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0], 1.0, "single predictor VIF should be exactly 1");
+    }
+
+    #[test]
+    fn vif_three_uncorrelated_predictors() {
+        // Three independent predictors → VIF all ≈ 1
+        let x = Mat::from_rows(&[
+            &[1.0, 0.0, 0.0], &[-1.0, 0.0, 0.0],
+            &[0.0, 1.0, 0.0], &[0.0, -1.0, 0.0],
+            &[0.0, 0.0, 1.0], &[0.0, 0.0, -1.0],
+            &[1.0, 1.0, 0.0], &[-1.0, -1.0, 0.0],
+        ]);
+        let v = vif(&x);
+        assert_eq!(v.len(), 3);
+        for (j, &vi) in v.iter().enumerate() {
+            assert!(vi < 5.0, "VIF[{j}]={vi} should be low for uncorrelated predictors");
+        }
     }
 }

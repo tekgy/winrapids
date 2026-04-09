@@ -72,6 +72,89 @@ impl TbsStepOutput {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Advice types — "tambear recommends X because Y, user forced Z"
+// ---------------------------------------------------------------------------
+
+/// A diagnostic data point computed during auto-detection.
+#[derive(Debug, Clone)]
+pub struct TbsDiagnostic {
+    /// Name of the diagnostic check (e.g. "normality", "equal_variance").
+    pub test_name: &'static str,
+    /// Numeric result (e.g. p-value, statistic, count).
+    pub result: f64,
+    /// Human-readable conclusion (e.g. "p=0.23, normality not rejected").
+    pub conclusion: String,
+}
+
+/// What tambear recommends and why.
+#[derive(Debug, Clone)]
+pub struct TbsRecommendation {
+    /// Recommended method name (e.g. "welch_t", "mann_whitney").
+    pub method: &'static str,
+    /// Reason for the recommendation.
+    pub reason: String,
+}
+
+/// What the user forced instead of the recommendation.
+#[derive(Debug, Clone)]
+pub struct TbsOverride {
+    /// The method the user explicitly requested.
+    pub method: String,
+    /// The parameter/key that triggered this override (e.g. "using(method=…)").
+    pub key: String,
+    /// Warning about the override (e.g. "normality assumption may be violated").
+    pub warning: Option<String>,
+}
+
+/// Per-step advice: recommendation + optional user override + diagnostics.
+/// Populated by steps that have auto-detection logic.
+#[derive(Debug, Clone)]
+pub struct TbsStepAdvice {
+    /// What tambear would have recommended.
+    pub recommended: TbsRecommendation,
+    /// What the user forced (None if they accepted the recommendation).
+    pub user_override: Option<TbsOverride>,
+    /// Supporting diagnostic checks.
+    pub diagnostics: Vec<TbsDiagnostic>,
+}
+
+impl TbsStepAdvice {
+    /// Build advice for a recommendation the user accepted (no override).
+    pub fn accepted(method: &'static str, reason: impl Into<String>) -> Self {
+        TbsStepAdvice {
+            recommended: TbsRecommendation { method, reason: reason.into() },
+            user_override: None,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// Build advice for a recommendation the user overrode.
+    pub fn overridden(
+        recommended: &'static str,
+        reason: impl Into<String>,
+        forced: impl Into<String>,
+        key: impl Into<String>,
+        warning: Option<impl Into<String>>,
+    ) -> Self {
+        TbsStepAdvice {
+            recommended: TbsRecommendation { method: recommended, reason: reason.into() },
+            user_override: Some(TbsOverride {
+                method: forced.into(),
+                key: key.into(),
+                warning: warning.map(|w| w.into()),
+            }),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// Attach a diagnostic to this advice.
+    pub fn with_diagnostic(mut self, test_name: &'static str, result: f64, conclusion: impl Into<String>) -> Self {
+        self.diagnostics.push(TbsDiagnostic { test_name, result, conclusion: conclusion.into() });
+        self
+    }
+}
+
 /// The output of executing a `.tbs` chain.
 pub struct TbsResult {
     /// The pipeline after all steps have been applied.
@@ -94,6 +177,11 @@ pub struct TbsResult {
     /// When present, `outputs[i]` is the collapsed result and
     /// `superpositions[i]` contains the full sweep.
     pub superpositions: Vec<Option<crate::superposition::Superposition>>,
+
+    /// Per-step advice (parallel to `outputs`).
+    /// `None` for steps without auto-detection logic (transforms, basic stats).
+    /// When present, shows what tambear recommended and whether the user overrode it.
+    pub advice: Vec<Option<TbsStepAdvice>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +254,7 @@ pub fn execute(
     let mut linear_model: Option<LinearModel> = None;
     let mut logistic_model: Option<LogisticModel> = None;
     let mut outputs: Vec<TbsStepOutput> = Vec::with_capacity(chain.steps.len());
+    let mut advice: Vec<Option<TbsStepAdvice>> = Vec::with_capacity(chain.steps.len());
     let mut using_bag = crate::using::UsingBag::new();
 
     // Track state for science linting
@@ -177,6 +266,7 @@ pub fn execute(
         let fr = pipeline.frame();
         let (pn, pd) = (fr.n, fr.d);
 
+        let mut step_advice: Option<TbsStepAdvice> = None;
         let output = match step.name.as_str() {
             // ══════════════════════════════════════════════════════════════
             // Preprocessing
@@ -318,9 +408,131 @@ pub fn execute(
                 TbsStepOutput::Scalar { name: "winsorized_mean", value: crate::descriptive::winsorized_mean(&sorted, frac) }
             }
 
-            ("correlation", None) | ("correlation_matrix", None) => {
+            ("correlation_matrix", None) => {
                 let mat = crate::factor_analysis::correlation_matrix(&pipeline.frame().data, pn, pd);
-                TbsStepOutput::Matrix { name: "correlation", data: mat.data.clone(), rows: pd, cols: pd }
+                TbsStepOutput::Matrix { name: "correlation_matrix", data: mat.data.clone(), rows: pd, cols: pd }
+            }
+
+            ("correlation", None) => {
+                // Auto-detect the appropriate pairwise correlation method.
+                // Decision tree (all branches produce &'static str name):
+                //   using(method=X) → honour override and record recommendation
+                //   Both binary (≤2 unique values): Phi coefficient
+                //   One binary + one continuous: Point-biserial (= Pearson on binary+continuous)
+                //   Both normal (SW or D'A-P, p > 0.05): Pearson r
+                //   Otherwise: Spearman ρ
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+
+                // ≤2 distinct non-NaN values → treat as binary
+                let count_unique = |col: &[f64]| -> usize {
+                    let mut seen = std::collections::HashSet::new();
+                    for &v in col {
+                        if !v.is_nan() { seen.insert(v.to_bits()); }
+                        if seen.len() > 2 { return seen.len(); }
+                    }
+                    seen.len()
+                };
+                let x_binary = count_unique(&x) <= 2;
+                let y_binary = count_unique(&yv) <= 2;
+
+                // Normality test: SW for n < 5000, D'Agostino-Pearson for n ≥ 5000
+                let normality = |col: &[f64]| -> (f64, &'static str) {
+                    if col.len() < 5000 {
+                        let r = crate::nonparametric::shapiro_wilk(col);
+                        (r.p_value, "Shapiro-Wilk")
+                    } else {
+                        let r = crate::nonparametric::dagostino_pearson(col);
+                        (r.p_value, "D'Agostino-Pearson")
+                    }
+                };
+
+                // Check for user override first
+                let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
+
+                // Compute the auto-recommended method + value + advice
+                let (auto_name, auto_val, auto_adv): (&'static str, f64, TbsStepAdvice) =
+                    if x_binary && y_binary {
+                        let phi = crate::nonparametric::phi_coefficient(&x, &yv);
+                        (
+                            "phi_coefficient", phi,
+                            TbsStepAdvice::accepted("phi_coefficient",
+                                "both variables binary (≤2 unique values), phi coefficient is exact Pearson on binary data"),
+                        )
+                    } else if x_binary || y_binary {
+                        let (bin, cont) = if x_binary { (&x, &yv) } else { (&yv, &x) };
+                        let rpb = crate::nonparametric::point_biserial(bin, cont);
+                        (
+                            "point_biserial", rpb,
+                            TbsStepAdvice::accepted("point_biserial",
+                                "one variable binary and one continuous, using point-biserial (= Pearson on 0/1 indicator)"),
+                        )
+                    } else {
+                        let (px, tn_x) = normality(&x);
+                        let (py, tn_y) = normality(&yv);
+                        let x_norm = px > 0.05;
+                        let y_norm = py > 0.05;
+                        if x_norm && y_norm {
+                            let r = crate::nonparametric::pearson_r(&x, &yv);
+                            let adv = TbsStepAdvice::accepted("pearson",
+                                format!("both normal ({} p={:.3}/{:.3}), using Pearson r", tn_x, px, py))
+                                .with_diagnostic(tn_x, px, "normal")
+                                .with_diagnostic(tn_y, py, "normal");
+                            ("pearson", r, adv)
+                        } else {
+                            let r = crate::nonparametric::spearman(&x, &yv);
+                            let reason = if !x_norm && !y_norm {
+                                format!("both non-normal ({} p={:.3}/{:.3}), using Spearman ρ", tn_x, px, py)
+                            } else if !x_norm {
+                                format!("x non-normal ({} p={:.3}), using Spearman ρ", tn_x, px)
+                            } else {
+                                format!("y non-normal ({} p={:.3}), using Spearman ρ", tn_y, py)
+                            };
+                            let adv = TbsStepAdvice::accepted("spearman", reason)
+                                .with_diagnostic(tn_x, px, if x_norm { "normal" } else { "non-normal" })
+                                .with_diagnostic(tn_y, py, if y_norm { "normal" } else { "non-normal" });
+                            ("spearman", r, adv)
+                        }
+                    };
+
+                // If user forced a method, run that instead but record the override
+                let (final_name, final_val, final_adv): (&'static str, f64, TbsStepAdvice) =
+                    if let Some(ref forced) = user_method {
+                        let forced_val = match forced.as_str() {
+                            "spearman" => crate::nonparametric::spearman(&x, &yv),
+                            "kendall" | "kendall_tau" => crate::nonparametric::kendall_tau(&x, &yv),
+                            "phi" | "phi_coefficient" => crate::nonparametric::phi_coefficient(&x, &yv),
+                            "point_biserial" => crate::nonparametric::point_biserial(&x, &yv),
+                            _ => crate::nonparametric::pearson_r(&x, &yv),
+                        };
+                        let forced_name: &'static str = match forced.as_str() {
+                            "spearman" => "spearman",
+                            "kendall" | "kendall_tau" => "kendall_tau",
+                            "phi" | "phi_coefficient" => "phi_coefficient",
+                            "point_biserial" => "point_biserial",
+                            _ => "pearson",
+                        };
+                        let warn = if forced_name != auto_name {
+                            Some(format!(
+                                "user forced {forced_name} but tambear recommends {auto_name}: {}",
+                                auto_adv.recommended.reason
+                            ))
+                        } else { None };
+                        let adv = TbsStepAdvice::overridden(
+                            auto_name,
+                            auto_adv.recommended.reason.clone(),
+                            forced.clone(),
+                            "method",
+                            warn,
+                        );
+                        (forced_name, forced_val, adv)
+                    } else {
+                        (auto_name, auto_val, auto_adv)
+                    };
+
+                step_advice = Some(final_adv);
+                TbsStepOutput::Scalar { name: final_name, value: final_val }
             }
 
             // ══════════════════════════════════════════════════════════════
@@ -353,13 +565,97 @@ pub fn execute(
             }
 
             ("test", Some("t2")) | ("t_test_2", None) => {
+                // Auto-detect the appropriate two-sample test.
+                // Decision tree:
+                //   using(method=X) → honour override
+                //   Both normal (SW/D'A-P p > 0.05):
+                //     Equal variance (Levene p > 0.05) → pooled two-sample t
+                //     Unequal variance → Welch t
+                //   Non-normal → Mann-Whitney U
                 let cx = usize_arg(step, "col_x", 0, 0);
                 let cy = usize_arg(step, "col_y", 1, 1);
                 let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
                 let sx = crate::descriptive::moments_ungrouped(&x);
                 let sy = crate::descriptive::moments_ungrouped(&yv);
+
+                // Normality
+                let normality = |col: &[f64]| -> (f64, &'static str) {
+                    if col.len() < 5000 {
+                        let r = crate::nonparametric::shapiro_wilk(col);
+                        (r.p_value, "Shapiro-Wilk")
+                    } else {
+                        let r = crate::nonparametric::dagostino_pearson(col);
+                        (r.p_value, "D'Agostino-Pearson")
+                    }
+                };
+                let (px, tn_x) = normality(&x);
+                let (py, tn_y) = normality(&yv);
+                let x_norm = px > 0.05;
+                let y_norm = py > 0.05;
+
+                // Variance equality via Brown-Forsythe (Levene with median)
+                let levene_p = if x_norm && y_norm {
+                    let lev = crate::hypothesis::levene_test(
+                        &[x.as_slice(), yv.as_slice()],
+                        crate::hypothesis::LeveneCenter::Median,
+                    );
+                    lev.p_value
+                } else { f64::NAN };
+                let equal_var = levene_p > 0.05;
+
+                let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
+
+                // Build auto recommendation
+                let (auto_method, auto_reason): (&'static str, String) =
+                    if x_norm && y_norm {
+                        if equal_var {
+                            ("two_sample_t", format!("both normal ({} p={:.3}/{:.3}), equal variance (Levene p={:.3}): pooled t-test", tn_x, px, py, levene_p))
+                        } else {
+                            ("welch_t", format!("both normal ({} p={:.3}/{:.3}), unequal variance (Levene p={:.3}): Welch t-test", tn_x, px, py, levene_p))
+                        }
+                    } else {
+                        ("mann_whitney_u", format!("non-normal data ({} p={:.3}/{:.3}): Mann-Whitney U", tn_x, px, py))
+                    };
+
+                let run_test = |method: &str| -> crate::hypothesis::TestResult {
+                    match method {
+                        "welch_t" | "welch" => crate::hypothesis::welch_t(&sx, &sy),
+                        "mann_whitney" | "mann_whitney_u" => {
+                            let mw = crate::nonparametric::mann_whitney_u(&x, &yv);
+                            crate::hypothesis::TestResult {
+                                test_name: "Mann-Whitney U",
+                                statistic: mw.statistic,
+                                p_value: mw.p_value,
+                                df: f64::NAN,
+                                effect_size: f64::NAN,
+                                effect_size_name: "",
+                            }
+                        }
+                        _ => crate::hypothesis::two_sample_t(&sx, &sy),
+                    }
+                };
+
+                let (final_method, test_result, adv) =
+                    if let Some(ref forced) = user_method {
+                        let forced_method = forced.as_str();
+                        let warn = if forced_method != auto_method {
+                            Some(format!("user forced {forced_method} but tambear recommends {auto_method}: {auto_reason}"))
+                        } else { None };
+                        let adv = TbsStepAdvice::overridden(
+                            auto_method, auto_reason.clone(), forced.clone(), "method", warn)
+                            .with_diagnostic(tn_x, px, if x_norm { "normal" } else { "non-normal" })
+                            .with_diagnostic(tn_y, py, if y_norm { "normal" } else { "non-normal" });
+                        (forced_method.to_owned(), run_test(forced_method), adv)
+                    } else {
+                        let adv = TbsStepAdvice::accepted(auto_method, auto_reason.clone())
+                            .with_diagnostic(tn_x, px, if x_norm { "normal" } else { "non-normal" })
+                            .with_diagnostic(tn_y, py, if y_norm { "normal" } else { "non-normal" });
+                        (auto_method.to_owned(), run_test(auto_method), adv)
+                    };
+                let _ = final_method; // method name encoded in TestResult.test_name
+                step_advice = Some(adv);
                 n_hypothesis_tests += 1;
-                TbsStepOutput::Test(crate::hypothesis::two_sample_t(&sx, &sy))
+                TbsStepOutput::Test(test_result)
             }
 
             ("test", Some("welch")) | ("welch_t", None) => {
@@ -1188,6 +1484,7 @@ pub fn execute(
         }
 
         outputs.push(output);
+        advice.push(step_advice);
     }
 
     // ── Post-chain science lints ──────────────────────────────────────────
@@ -1203,7 +1500,7 @@ pub fn execute(
     }
 
     let superpositions = vec![None; outputs.len()];
-    Ok(TbsResult { pipeline, linear_model, logistic_model, outputs, lints, superpositions })
+    Ok(TbsResult { pipeline, linear_model, logistic_model, outputs, lints, superpositions, advice })
 }
 
 // ---------------------------------------------------------------------------
@@ -1461,9 +1758,29 @@ mod tests {
     }
 
     #[test]
-    fn execute_correlation() {
-        let (data, n, d) = two_cluster_data();
+    fn execute_correlation_auto_detect() {
+        // Linearly structured data — auto-detect should pick Pearson and return r close to 1.
+        // Use 10 points exactly on y = 2x + 1 (perfect linear).
+        let data: Vec<f64> = (0..10)
+            .flat_map(|i| vec![i as f64, i as f64 * 2.0 + 1.0])
+            .collect();
+        let n = 10;
+        let d = 2;
         let chain = TbsChain::parse("correlation()").unwrap();
+        let result = execute(chain, data, n, d, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { value, .. } => {
+                assert!(*value > 0.99, "perfect linear data: correlation should be > 0.99, got {value}");
+            }
+            _ => panic!("expected Scalar from auto-detect correlation"),
+        }
+        assert!(result.advice[0].is_some(), "auto-detect should populate advice");
+    }
+
+    #[test]
+    fn execute_correlation_matrix() {
+        let (data, n, d) = two_cluster_data();
+        let chain = TbsChain::parse("correlation_matrix()").unwrap();
         let result = execute(chain, data, n, d, None).unwrap();
         match &result.outputs[0] {
             TbsStepOutput::Matrix { rows, cols, data, .. } => {
@@ -1472,8 +1789,27 @@ mod tests {
                 assert!((data[0] - 1.0).abs() < 1e-10);
                 assert!((data[3] - 1.0).abs() < 1e-10);
             }
-            _ => panic!("expected Matrix"),
+            _ => panic!("expected Matrix from correlation_matrix"),
         }
+    }
+
+    #[test]
+    fn execute_correlation_override() {
+        // Linearly spaced data — auto would pick Pearson. User forces spearman.
+        let data: Vec<f64> = (0..20).flat_map(|i| vec![i as f64, i as f64 * 2.0 + 1.0]).collect();
+        let chain = TbsChain::parse("using(method=\"spearman\").correlation()").unwrap();
+        let result = execute(chain, data, 20, 2, None).unwrap();
+        // outputs[0] = using() Transform, outputs[1] = correlation() Scalar
+        match &result.outputs[1] {
+            TbsStepOutput::Scalar { name, value } => {
+                assert_eq!(*name, "spearman");
+                assert!((*value - 1.0).abs() < 1e-6, "spearman of linear data = {value}");
+            }
+            _ => panic!("expected Scalar at outputs[1]"),
+        }
+        // advice[1] = correlation step advice
+        let adv = result.advice[1].as_ref().unwrap();
+        assert!(adv.user_override.is_some(), "override should be recorded in advice");
     }
 
     // ── Hypothesis testing ────────────────────────────────────────────────
@@ -1489,6 +1825,46 @@ mod tests {
             }
             _ => panic!("expected Test"),
         }
+    }
+
+    #[test]
+    fn execute_t_test_2_auto_detect_normal() {
+        // Two groups from clearly different normals — auto-detect should run
+        // t-test (pooled or Welch) and return a significant result.
+        let mut data = Vec::new();
+        for i in 0..20 { data.push(i as f64 * 0.1); }         // col 0: 0.0..2.0
+        for i in 0..20 { data.push(5.0 + i as f64 * 0.1); }  // col 1: 5.0..7.0
+        // Interleave into row-major 20×2
+        let interleaved: Vec<f64> = (0..20).flat_map(|i| vec![data[i], data[20 + i]]).collect();
+        let chain = TbsChain::parse("t_test_2()").unwrap();
+        let result = execute(chain, interleaved, 20, 2, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Test(t) => {
+                assert!(t.p_value < 0.001, "groups far apart: p={}", t.p_value);
+            }
+            _ => panic!("expected Test"),
+        }
+        assert!(result.advice[0].is_some(), "auto-detect should produce advice");
+    }
+
+    #[test]
+    fn execute_t_test_2_auto_detect_nonnormal() {
+        // Exponentially distributed data — SW will flag as non-normal → Mann-Whitney
+        let col_a: Vec<f64> = (0..15).map(|i| (i as f64 * 0.5).exp().min(100.0)).collect();
+        let col_b: Vec<f64> = (0..15).map(|i| (i as f64 * 0.5 + 3.0).exp().min(1000.0)).collect();
+        let interleaved: Vec<f64> = (0..15).flat_map(|i| vec![col_a[i], col_b[i]]).collect();
+        let chain = TbsChain::parse("t_test_2()").unwrap();
+        let result = execute(chain, interleaved, 15, 2, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Test(t) => {
+                // Mann-Whitney or t-test — just verify a result comes back
+                assert!(t.p_value >= 0.0 && t.p_value <= 1.0, "p_value={}", t.p_value);
+            }
+            _ => panic!("expected Test"),
+        }
+        let adv = result.advice[0].as_ref().unwrap();
+        // Check that at least one diagnostic was recorded
+        assert!(!adv.diagnostics.is_empty(), "should have normality diagnostics");
     }
 
     #[test]

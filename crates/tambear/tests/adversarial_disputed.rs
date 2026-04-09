@@ -3800,7 +3800,7 @@ fn mh_impossible_target() {
         if (x[0] - 0.0).abs() < 1e-15 { 0.0 } else { f64::NEG_INFINITY }
     };
 
-    let chain = metropolis_hastings(&log_target, &[0.0], 1.0, 100, 10);
+    let chain = metropolis_hastings(&log_target, &[0.0], 1.0, 100, 10, 42);
     eprintln!("MH impossible target:");
     eprintln!("  acceptance rate: {:.4}", chain.acceptance_rate);
     eprintln!("  n samples: {}", chain.samples.len());

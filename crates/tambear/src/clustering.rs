@@ -419,6 +419,241 @@ fn uf_find(parent: &mut Vec<usize>, mut x: usize) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Cluster validation metrics (CPU, pure Rust)
+// ---------------------------------------------------------------------------
+
+/// Cluster validation metrics computed from raw data and cluster labels.
+#[derive(Debug, Clone)]
+pub struct ClusterValidation {
+    /// Silhouette coefficient (mean over all non-noise points). Range [-1, 1].
+    /// Higher is better; > 0.5 indicates well-separated clusters.
+    pub silhouette: f64,
+    /// Calinski-Harabasz index (ratio of between/within cluster variance).
+    /// Higher is better.
+    pub calinski_harabasz: f64,
+    /// Davies-Bouldin index. Lower is better; 0 = perfect clustering.
+    pub davies_bouldin: f64,
+}
+
+/// Compute cluster validation metrics from raw data and cluster assignments.
+///
+/// `data`: n×d row-major matrix (n points, d dimensions).
+/// `labels`: length-n cluster labels (noise/outliers should use label = -1 or
+///   any value < 0; these points are excluded from silhouette computation
+///   but included in CH/DB).
+/// `n_dims`: d (number of dimensions per point).
+///
+/// Returns `None` if < 2 clusters or insufficient data.
+pub fn cluster_validation(data: &[f64], labels: &[i32], n_dims: usize) -> Option<ClusterValidation> {
+    let n = labels.len();
+    assert_eq!(data.len(), n * n_dims);
+
+    // Identify unique non-noise cluster IDs
+    let mut cluster_ids: Vec<i32> = labels.iter().copied().filter(|&l| l >= 0).collect();
+    cluster_ids.sort_unstable();
+    cluster_ids.dedup();
+    let k = cluster_ids.len();
+    if k < 2 { return None; }
+
+    // Map cluster label → compact index
+    let id_to_idx: std::collections::HashMap<i32, usize> =
+        cluster_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+
+    // Cluster sizes and centroids
+    let mut sizes = vec![0usize; k];
+    let mut centroids = vec![0.0_f64; k * n_dims];
+    for i in 0..n {
+        if let Some(&ci) = id_to_idx.get(&labels[i]) {
+            sizes[ci] += 1;
+            for d in 0..n_dims {
+                centroids[ci * n_dims + d] += data[i * n_dims + d];
+            }
+        }
+    }
+    for ci in 0..k {
+        if sizes[ci] > 0 {
+            for d in 0..n_dims { centroids[ci * n_dims + d] /= sizes[ci] as f64; }
+        }
+    }
+
+    // Global centroid (for CH index)
+    let n_clustered = sizes.iter().sum::<usize>() as f64;
+    let mut global_centroid = vec![0.0_f64; n_dims];
+    for ci in 0..k {
+        for d in 0..n_dims {
+            global_centroid[d] += sizes[ci] as f64 * centroids[ci * n_dims + d];
+        }
+    }
+    for d in 0..n_dims { global_centroid[d] /= n_clustered; }
+
+    // Euclidean distance helper (squared)
+    let sq_dist = |a: &[f64], b: &[f64]| -> f64 {
+        a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum()
+    };
+
+    // ── Calinski-Harabasz ─────────────────────────────────────────────────
+    // CH = [SS_B / (k-1)] / [SS_W / (n-k)]
+    // SS_B = Σ_c n_c · ‖centroid_c - global_centroid‖²
+    // SS_W = Σ_c Σ_{i in c} ‖x_i - centroid_c‖²
+    let ss_b: f64 = (0..k)
+        .map(|ci| sizes[ci] as f64 * sq_dist(&centroids[ci*n_dims..(ci+1)*n_dims], &global_centroid))
+        .sum();
+    let mut ss_w = 0.0_f64;
+    for i in 0..n {
+        if let Some(&ci) = id_to_idx.get(&labels[i]) {
+            ss_w += sq_dist(&data[i*n_dims..(i+1)*n_dims], &centroids[ci*n_dims..(ci+1)*n_dims]);
+        }
+    }
+    let n_k = n_clustered - k as f64;
+    let calinski_harabasz = if ss_w < 1e-300 || n_k <= 0.0 {
+        f64::INFINITY
+    } else {
+        (ss_b / (k as f64 - 1.0)) / (ss_w / n_k)
+    };
+
+    // ── Davies-Bouldin ────────────────────────────────────────────────────
+    // DB = (1/k) Σ_i max_{j≠i} (s_i + s_j) / d(c_i, c_j)
+    // s_i = mean intra-cluster distance to centroid
+    let mut s = vec![0.0_f64; k]; // mean intra-cluster distance
+    for i in 0..n {
+        if let Some(&ci) = id_to_idx.get(&labels[i]) {
+            s[ci] += sq_dist(&data[i*n_dims..(i+1)*n_dims], &centroids[ci*n_dims..(ci+1)*n_dims]).sqrt();
+        }
+    }
+    for ci in 0..k { if sizes[ci] > 0 { s[ci] /= sizes[ci] as f64; } }
+
+    let db_sum: f64 = (0..k).map(|i| {
+        (0..k).filter(|&j| j != i).map(|j| {
+            let d_ij = sq_dist(&centroids[i*n_dims..(i+1)*n_dims], &centroids[j*n_dims..(j+1)*n_dims]).sqrt();
+            if d_ij < 1e-300 { 0.0 } else { (s[i] + s[j]) / d_ij }
+        }).fold(0.0_f64, f64::max)
+    }).sum();
+    let davies_bouldin = db_sum / k as f64;
+
+    // ── Silhouette ────────────────────────────────────────────────────────
+    // a(i) = mean distance to points in same cluster
+    // b(i) = min over other clusters: mean distance to points in cluster j
+    // s(i) = (b(i) - a(i)) / max(a(i), b(i))
+    // Only computed for non-noise points with cluster size >= 2 for a(i).
+    let mut sil_sum = 0.0_f64;
+    let mut sil_count = 0usize;
+
+    for i in 0..n {
+        let ci = match id_to_idx.get(&labels[i]) {
+            Some(&ci) => ci,
+            None => continue,
+        };
+        if sizes[ci] < 2 { continue; }
+
+        // a(i): mean distance to other points in same cluster
+        let a = {
+            let mut sum = 0.0;
+            let mut cnt = 0usize;
+            for j in 0..n {
+                if j == i { continue; }
+                if let Some(&cj) = id_to_idx.get(&labels[j]) {
+                    if cj == ci {
+                        sum += sq_dist(&data[i*n_dims..(i+1)*n_dims], &data[j*n_dims..(j+1)*n_dims]).sqrt();
+                        cnt += 1;
+                    }
+                }
+            }
+            if cnt == 0 { 0.0 } else { sum / cnt as f64 }
+        };
+
+        // b(i): min mean distance to any other cluster
+        let b = {
+            let mut min_b = f64::INFINITY;
+            for cj in 0..k {
+                if cj == ci { continue; }
+                let mut sum = 0.0;
+                let mut cnt = 0usize;
+                for j in 0..n {
+                    if let Some(&cjj) = id_to_idx.get(&labels[j]) {
+                        if cjj == cj {
+                            sum += sq_dist(&data[i*n_dims..(i+1)*n_dims], &data[j*n_dims..(j+1)*n_dims]).sqrt();
+                            cnt += 1;
+                        }
+                    }
+                }
+                if cnt > 0 { min_b = min_b.min(sum / cnt as f64); }
+            }
+            min_b
+        };
+
+        let max_ab = a.max(b);
+        let sil_i = if max_ab < 1e-300 { 0.0 } else { (b - a) / max_ab };
+        sil_sum += sil_i;
+        sil_count += 1;
+    }
+
+    let silhouette = if sil_count == 0 { 0.0 } else { sil_sum / sil_count as f64 };
+
+    Some(ClusterValidation { silhouette, calinski_harabasz, davies_bouldin })
+}
+
+// ---------------------------------------------------------------------------
+// Hopkins statistic (Hopkins & Skellam 1954)
+// ---------------------------------------------------------------------------
+
+/// Hopkins statistic for clustering tendency.
+///
+/// Tests whether a dataset has meaningful cluster structure vs. uniform random.
+/// H ≈ 0.5: uniform (no clustering). H → 1: highly clustered.
+/// Under H₀ (uniform), H ~ Beta(m, m).
+///
+/// `data`: n×d row-major matrix. `m`: sample size (typically min(n/10, 100)).
+pub fn hopkins_statistic(data: &[f64], n: usize, d: usize, m: usize, seed: u64) -> f64 {
+    if n < 2 || m == 0 || d == 0 { return 0.5; }
+    let m = m.min(n);
+
+    let mut rng = crate::rng::Xoshiro256::new(seed);
+
+    // Bounding box per dimension
+    let mut mins = vec![f64::INFINITY; d];
+    let mut maxs = vec![f64::NEG_INFINITY; d];
+    for i in 0..n {
+        for j in 0..d {
+            let v = data[i * d + j];
+            if v < mins[j] { mins[j] = v; }
+            if v > maxs[j] { maxs[j] = v; }
+        }
+    }
+
+    // w_sum: sum of squared distances from m uniform random points to nearest data neighbor
+    let mut w_sum = 0.0;
+    for _ in 0..m {
+        let pt: Vec<f64> = (0..d).map(|j| {
+            crate::rng::TamRng::next_f64_range(&mut rng, mins[j], maxs[j].max(mins[j] + 1e-15))
+        }).collect();
+        let mut min_dist = f64::INFINITY;
+        for i in 0..n {
+            let dist: f64 = (0..d).map(|j| (pt[j] - data[i * d + j]).powi(2)).sum();
+            if dist < min_dist { min_dist = dist; }
+        }
+        w_sum += min_dist;
+    }
+
+    // u_sum: sum of squared distances from m random data points to nearest OTHER data neighbor
+    let mut u_sum = 0.0;
+    let indices = crate::rng::sample_without_replacement(&mut rng, n, m);
+    for &idx in &indices {
+        let mut min_dist = f64::INFINITY;
+        for i in 0..n {
+            if i == idx { continue; }
+            let dist: f64 = (0..d).map(|j| {
+                (data[idx * d + j] - data[i * d + j]).powi(2)
+            }).sum();
+            if dist < min_dist { min_dist = dist; }
+        }
+        u_sum += min_dist;
+    }
+
+    if w_sum + u_sum < 1e-300 { return 0.5; }
+    w_sum / (w_sum + u_sum)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -708,5 +943,111 @@ mod tests {
         assert_eq!(r.labels[2], r.labels[3], "p2 and p3 (near (0,1)) same cluster");
         // The two clusters are different
         assert_ne!(r.labels[0], r.labels[2], "two distinct clusters");
+    }
+
+    // ── Cluster validation metrics ────────────────────────────────────────
+
+    #[test]
+    fn validation_perfect_clusters() {
+        // Two tight, well-separated clusters in 2D
+        // Cluster 0: points around (0, 0)
+        // Cluster 1: points around (100, 100)
+        let data = vec![
+            0.0, 0.0,   0.1, 0.0,   0.0, 0.1,   0.1, 0.1,   // cluster 0
+            100.0, 100.0, 100.1, 100.0, 100.0, 100.1, 100.1, 100.1, // cluster 1
+        ];
+        let labels = vec![0i32, 0, 0, 0, 1, 1, 1, 1];
+        let r = cluster_validation(&data, &labels, 2).unwrap();
+
+        // Silhouette should be close to 1 (very well separated)
+        assert!(r.silhouette > 0.9,
+            "well-separated clusters: silhouette={:.4} should be > 0.9", r.silhouette);
+
+        // Davies-Bouldin should be very small (tight clusters, large inter-cluster distance)
+        assert!(r.davies_bouldin < 0.01,
+            "well-separated: DB={:.6} should be near 0", r.davies_bouldin);
+
+        // Calinski-Harabasz should be very large
+        assert!(r.calinski_harabasz > 100.0,
+            "well-separated: CH={:.2} should be large", r.calinski_harabasz);
+    }
+
+    #[test]
+    fn validation_overlapping_clusters_lower_silhouette() {
+        // Two overlapping clusters — silhouette should be lower
+        let data = vec![
+            0.0, 0.0,  1.0, 0.0,  2.0, 0.0,  3.0, 0.0, // cluster 0
+            2.5, 0.0,  3.5, 0.0,  4.5, 0.0,  5.5, 0.0, // cluster 1
+        ];
+        let labels = vec![0i32, 0, 0, 0, 1, 1, 1, 1];
+        let tight = cluster_validation(&data, &labels, 2).unwrap();
+
+        // Compare against the well-separated case — silhouette should be lower
+        let separated_data = vec![
+            0.0, 0.0, 0.1, 0.0, 0.0, 0.1, 0.1, 0.1,
+            100.0, 100.0, 100.1, 100.0, 100.0, 100.1, 100.1, 100.1,
+        ];
+        let separated_labels = vec![0i32, 0, 0, 0, 1, 1, 1, 1];
+        let separated = cluster_validation(&separated_data, &separated_labels, 2).unwrap();
+
+        assert!(tight.silhouette < separated.silhouette,
+            "overlapping ({:.3}) should have lower silhouette than separated ({:.3})",
+            tight.silhouette, separated.silhouette);
+    }
+
+    #[test]
+    fn validation_noise_points_excluded_from_silhouette() {
+        // One noise point (-1 label) — should be excluded from silhouette
+        let data = vec![
+            0.0, 0.0,  0.1, 0.0,  0.0, 0.1,  // cluster 0
+            10.0, 10.0, 10.1, 10.0, 10.0, 10.1, // cluster 1
+            5.0, 5.0,   // "noise"
+        ];
+        let labels = vec![0i32, 0, 0, 1, 1, 1, -1];
+        // Should not panic, noise point excluded
+        let r = cluster_validation(&data, &labels, 2).unwrap();
+        assert!(r.silhouette.is_finite(), "silhouette should be finite");
+    }
+
+    #[test]
+    fn validation_fewer_than_two_clusters_returns_none() {
+        let data = vec![0.0, 0.0, 1.0, 0.0, 2.0, 0.0];
+        let labels = vec![0i32, 0, 0]; // only one cluster
+        assert!(cluster_validation(&data, &labels, 2).is_none());
+
+        // All noise
+        let noise_labels = vec![-1i32, -1, -1];
+        assert!(cluster_validation(&data, &noise_labels, 2).is_none());
+    }
+
+    // ── Hopkins statistic ─────────────────────────────────────────────
+
+    #[test]
+    fn hopkins_clustered_data_high() {
+        // Two tight clusters in 2D — should give H > 0.5
+        let mut data = Vec::new();
+        for _ in 0..50 { data.extend_from_slice(&[0.0, 0.0]); } // cluster at origin
+        for _ in 0..50 { data.extend_from_slice(&[10.0, 10.0]); } // cluster at (10,10)
+        // Add small noise
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        for v in data.iter_mut() {
+            *v += crate::rng::sample_normal(&mut rng, 0.0, 0.1);
+        }
+        let h = hopkins_statistic(&data, 100, 2, 10, 42);
+        assert!(h > 0.5, "H={} should be > 0.5 for clustered data", h);
+    }
+
+    #[test]
+    fn hopkins_regular_grid_low() {
+        // Regular grid — MORE uniform than random → H < 0.5
+        let mut data = Vec::new();
+        for i in 0..10 {
+            for j in 0..10 {
+                data.push(i as f64);
+                data.push(j as f64);
+            }
+        }
+        let h = hopkins_statistic(&data, 100, 2, 10, 42);
+        assert!(h < 0.5, "H={} should be < 0.5 for regular grid (anti-clustered)", h);
     }
 }

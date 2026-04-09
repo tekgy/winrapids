@@ -403,6 +403,7 @@ pub fn execute_plan(
         outputs,
         lints,
         superpositions: Vec::new(),
+        advice: Vec::new(),
     })
 }
 

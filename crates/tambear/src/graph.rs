@@ -206,8 +206,20 @@ impl Ord for DijkstraState {
 
 /// Dijkstra's shortest path algorithm.
 ///
-/// Returns (distances, parents). All edge weights must be non-negative.
+/// Returns `(distances, parents)`. All edge weights **must be non-negative**;
+/// panics if any negative weight is detected. Use `bellman_ford` for graphs
+/// with negative weights (it also detects negative cycles).
 pub fn dijkstra(g: &Graph, source: usize) -> (Vec<f64>, Vec<Option<usize>>) {
+    // Validate: Dijkstra is incorrect on negative weights — detect early.
+    for u in 0..g.n_nodes {
+        for e in &g.adj[u] {
+            assert!(
+                e.weight >= 0.0,
+                "dijkstra: negative edge weight {:.6} from {} to {}; use bellman_ford instead",
+                e.weight, u, e.to,
+            );
+        }
+    }
     let n = g.n_nodes;
     let mut dist = vec![f64::INFINITY; n];
     let mut parent = vec![None; n];

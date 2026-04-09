@@ -88,7 +88,13 @@ pub fn fit_2pl(responses: &[u8], n_persons: usize, n_items: usize, max_iter: usi
             abilities[i] = theta;
         }
 
-        // M-step: update item parameters given abilities
+        // M-step: update item parameters given abilities.
+        // Uses the diagonal Hessian approximation (Birnbaum 1968, Lord & Novick Ch.17):
+        // ignores the off-diagonal H_ab = Σ_i (θ_i - b)·a·p·(1-p) which couples
+        // discrimination and difficulty. This is the standard JMLE approximation —
+        // a and b are updated independently via separate Newton steps.
+        // The full 2×2 Newton step converges faster but adds complexity and
+        // instability near flat likelihoods.
         for j in 0..n_items {
             let mut a = items[j].discrimination;
             let mut b = items[j].difficulty;
@@ -105,6 +111,7 @@ pub fn fit_2pl(responses: &[u8], n_persons: usize, n_items: usize, max_iter: usi
                     grad_b += -a * (r - p);
                     hess_aa -= diff * diff * p * (1.0 - p);
                     hess_bb -= a * a * p * (1.0 - p);
+                    // H_ab = Σ diff * a * p*(1-p) omitted (diagonal approx.)
                 }
                 if hess_aa.abs() > 1e-10 { a -= grad_a / hess_aa; }
                 if hess_bb.abs() > 1e-10 { b -= grad_b / hess_bb; }
@@ -127,6 +134,15 @@ fn logit(p: f64) -> f64 {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// MLE estimation of person ability given item parameters and responses.
+/// MLE ability estimate via Newton-Raphson on the item response log-likelihood.
+///
+/// Iterates up to 50 Newton steps starting from θ=0.0; clamps θ to [-6, 6].
+///
+/// **Perfect scores (all 0 or all 1)**: The log-likelihood is monotone with no
+/// interior maximum, so MLE does not exist. This function returns the boundary
+/// value (near -6.0 for all-zero, near +6.0 for all-one). Use `ability_eap`
+/// instead when perfect scores are possible — EAP with a N(0,1) prior always
+/// has a finite posterior mean.
 pub fn ability_mle(items: &[ItemParams], responses: &[u8]) -> f64 {
     let n = items.len();
     assert_eq!(responses.len(), n);
@@ -152,7 +168,11 @@ pub fn ability_mle(items: &[ItemParams], responses: &[u8]) -> f64 {
 }
 
 /// EAP (Expected A Posteriori) ability estimate with N(0,1) prior.
-/// Uses Gauss-Hermite quadrature at given points.
+///
+/// Uses uniform quadrature over [-4, 4] (n_quad equally-spaced nodes), **not**
+/// Gauss-Hermite quadrature. Uniform quadrature is adequate for smooth
+/// posteriors within the typical ability range; Gauss-Hermite would be more
+/// efficient but requires fixed node tables.
 ///
 /// Computes in log-likelihood space using the log-sum-exp trick to avoid
 /// underflow when the number of items is large (>50).

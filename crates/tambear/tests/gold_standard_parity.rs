@@ -9146,7 +9146,7 @@ mod f34_bayesian {
     fn mcmc_normal_target_moments() {
         // Target: N(3, 1). Chain mean should be ~3, variance ~1.
         let log_target = |x: &[f64]| -0.5 * (x[0] - 3.0).powi(2);
-        let chain = metropolis_hastings(&log_target, &[0.0], 1.0, 10000, 2000);
+        let chain = metropolis_hastings(&log_target, &[0.0], 1.0, 10000, 2000, 42);
 
         let samples: Vec<f64> = chain.samples.iter().map(|s| s[0]).collect();
         let mean = samples.iter().sum::<f64>() / samples.len() as f64;
@@ -9166,7 +9166,7 @@ mod f34_bayesian {
     fn mcmc_2d_bivariate_normal() {
         // Target: N([1, 2], I)
         let log_target = |x: &[f64]| -0.5 * ((x[0] - 1.0).powi(2) + (x[1] - 2.0).powi(2));
-        let chain = metropolis_hastings(&log_target, &[0.0, 0.0], 1.0, 10000, 2000);
+        let chain = metropolis_hastings(&log_target, &[0.0, 0.0], 1.0, 10000, 2000, 42);
 
         let m0: f64 = chain.samples.iter().map(|s| s[0]).sum::<f64>() / chain.samples.len() as f64;
         let m1: f64 = chain.samples.iter().map(|s| s[1]).sum::<f64>() / chain.samples.len() as f64;
@@ -9272,7 +9272,7 @@ mod f34_bayesian {
             if x[0] <= 0.0 { return -1e10; }
             -x[0]
         };
-        let chain = metropolis_hastings(&log_target, &[1.0], 0.5, 10000, 2000);
+        let chain = metropolis_hastings(&log_target, &[1.0], 0.5, 10000, 2000, 42);
         let mean: f64 = chain.samples.iter().map(|s| s[0]).sum::<f64>() / chain.samples.len() as f64;
 
         assert!((mean - 1.0).abs() < 0.3,

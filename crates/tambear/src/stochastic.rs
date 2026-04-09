@@ -22,14 +22,14 @@
 pub fn brownian_motion(t_end: f64, n_steps: usize, seed: u64) -> (Vec<f64>, Vec<f64>) {
     let dt = t_end / n_steps as f64;
     let sqrt_dt = dt.sqrt();
-    let mut rng = seed;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
     let mut times = Vec::with_capacity(n_steps + 1);
     let mut values = Vec::with_capacity(n_steps + 1);
     times.push(0.0);
     values.push(0.0);
     let mut w = 0.0;
     for i in 1..=n_steps {
-        let z = standard_normal(&mut rng);
+        let z = crate::rng::sample_normal(&mut rng, 0.0, 1.0);
         w += sqrt_dt * z;
         times.push(i as f64 * dt);
         values.push(w);
@@ -72,14 +72,14 @@ pub fn geometric_brownian_motion(
     let dt = t_end / n_steps as f64;
     let sqrt_dt = dt.sqrt();
     let drift = (mu - 0.5 * sigma * sigma) * dt;
-    let mut rng = seed;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
     let mut times = Vec::with_capacity(n_steps + 1);
     let mut prices = Vec::with_capacity(n_steps + 1);
     times.push(0.0);
     prices.push(s0);
     let mut s = s0;
     for i in 1..=n_steps {
-        let z = standard_normal(&mut rng);
+        let z = crate::rng::sample_normal(&mut rng, 0.0, 1.0);
         s *= (drift + sigma * sqrt_dt * z).exp();
         times.push(i as f64 * dt);
         prices.push(s);
@@ -112,18 +112,9 @@ pub fn black_scholes(s: f64, k: f64, t: f64, r: f64, sigma: f64, call: bool) -> 
     }
 }
 
-/// Standard normal CDF via rational approximation (Abramowitz & Stegun 26.2.17).
+/// Standard normal CDF — delegates to the high-precision erfc in special_functions.
 fn normal_cdf(x: f64) -> f64 {
-    if x < -6.0 { return 0.0; }
-    if x > 6.0 { return 1.0; }
-    let t = 1.0 / (1.0 + 0.2316419 * x.abs());
-    let poly = t * (0.319381530
-        + t * (-0.356563782
-        + t * (1.781477937
-        + t * (-1.821255978
-        + t * 1.330274429))));
-    let approx = 1.0 - (-0.5 * x * x).exp() / (2.0 * std::f64::consts::PI).sqrt() * poly;
-    if x >= 0.0 { approx } else { 1.0 - approx }
+    crate::special_functions::normal_cdf(x)
 }
 
 /// GBM expected value: E[S(T)] = S₀ exp(μT).
@@ -155,12 +146,12 @@ pub fn ornstein_uhlenbeck(
     let e_minus = (-theta * dt).exp();
     let e_minus_2 = (-2.0 * theta * dt).exp();
     let std_step = sigma * ((1.0 - e_minus_2) / (2.0 * theta)).sqrt();
-    let mut rng = seed;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
     let mut path = Vec::with_capacity(n_steps + 1);
     path.push(x0);
     let mut x = x0;
     for _ in 0..n_steps {
-        let z = standard_normal(&mut rng);
+        let z = crate::rng::sample_normal(&mut rng, 0.0, 1.0);
         x = x * e_minus + mu * (1.0 - e_minus) + std_step * z;
         path.push(x);
     }
@@ -184,11 +175,11 @@ pub fn ou_autocorrelation(theta: f64, lag: f64) -> f64 {
 /// Simulate homogeneous Poisson process with rate λ on [0, T].
 /// Returns event arrival times.
 pub fn poisson_process(lambda: f64, t_end: f64, seed: u64) -> Vec<f64> {
-    let mut rng = seed;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
     let mut times = Vec::new();
     let mut t = 0.0;
     loop {
-        let u = lcg_f64(&mut rng);
+        let u = crate::rng::TamRng::next_f64(&mut rng);
         let inter_arrival = -u.ln() / lambda;
         t += inter_arrival;
         if t > t_end { break; }
@@ -215,14 +206,14 @@ pub fn nonhomogeneous_poisson(
     t_end: f64,
     seed: u64,
 ) -> Vec<f64> {
-    let mut rng = seed;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
     let mut times = Vec::new();
     let mut t = 0.0;
     loop {
-        let u = lcg_f64(&mut rng);
+        let u = crate::rng::TamRng::next_f64(&mut rng);
         t += -u.ln() / lambda_bound;
         if t > t_end { break; }
-        let accept = lcg_f64(&mut rng);
+        let accept = crate::rng::TamRng::next_f64(&mut rng);
         if accept < lambda_fn(t) / lambda_bound {
             times.push(t);
         }
@@ -302,7 +293,7 @@ pub fn mean_first_passage_time(
 ) -> f64 {
     // Simulate: average steps to reach `to` from `from`
     let n_runs = 10000;
-    let mut rng = 12345u64;
+    let mut rng = crate::rng::Xoshiro256::new(12345);
     let mut total_steps = 0u64;
 
     for _ in 0..n_runs {
@@ -310,7 +301,7 @@ pub fn mean_first_passage_time(
         let mut steps = 0u64;
         loop {
             // Gather: transition from current state
-            let u = lcg_f64(&mut rng);
+            let u = crate::rng::TamRng::next_f64(&mut rng);
             let row = &transition[state * n_states..(state + 1) * n_states];
             let mut cumsum = 0.0;
             let mut next = 0;
@@ -503,13 +494,12 @@ pub fn erlang_c(lambda: f64, mu: f64, c: usize) -> f64 {
 /// Simple symmetric random walk on ℤ: steps ±1 with equal probability.
 /// Returns positions at each step.
 pub fn simple_random_walk(n_steps: usize, seed: u64) -> Vec<i64> {
-    let mut rng = seed;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
     let mut positions = Vec::with_capacity(n_steps + 1);
     positions.push(0i64);
     let mut pos = 0i64;
     for _ in 0..n_steps {
-        let bit = (rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)) >> 63;
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let bit = crate::rng::TamRng::next_u64(&mut rng) >> 63;
         pos += if bit == 0 { 1 } else { -1 };
         positions.push(pos);
     }
@@ -520,15 +510,14 @@ pub fn simple_random_walk(n_steps: usize, seed: u64) -> Vec<i64> {
 /// P(T_a = n) for walk starting at 0 to reach level a.
 /// Returns P(T_a ≤ t) by simulation.
 pub fn first_passage_time_cdf(a: i64, max_steps: usize, n_runs: usize, seed: u64) -> Vec<f64> {
-    let mut rng = seed;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
     let mut counts = vec![0u64; max_steps + 1];
 
     for _ in 0..n_runs {
         let mut pos = 0i64;
         let mut found = false;
         for t in 1..=max_steps {
-            let bit = rng >> 63;
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let bit = crate::rng::TamRng::next_u64(&mut rng) >> 63;
             pos += if bit == 0 { 1 } else { -1 };
             if pos.abs() >= a.abs() { counts[t] += 1; found = true; break; }
         }
@@ -547,13 +536,12 @@ pub fn first_passage_time_cdf(a: i64, max_steps: usize, n_runs: usize, seed: u64
 /// Return probability for 1D simple random walk: P(return to 0) = 1.
 /// Verified by simulation.
 pub fn return_probability_1d(n_steps: usize, n_runs: usize, seed: u64) -> f64 {
-    let mut rng = seed;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
     let mut returns = 0u64;
     for _ in 0..n_runs {
         let mut pos = 0i64;
         for _ in 0..n_steps {
-            let bit = rng >> 63;
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let bit = crate::rng::TamRng::next_u64(&mut rng) >> 63;
             pos += if bit == 0 { 1 } else { -1 };
             if pos == 0 { returns += 1; break; }
         }
@@ -608,22 +596,6 @@ pub fn ito_lemma_verification(path: &[f64], _dt: f64) -> f64 {
     let actual_qv: f64 = dw.iter().map(|d| d * d).sum();
     let ito = 2.0 * ito_sum + actual_qv;
     (direct - ito).abs()
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Utility: Normal random numbers via Box-Muller
-// ═══════════════════════════════════════════════════════════════════════════
-
-fn standard_normal(rng: &mut u64) -> f64 {
-    let u1 = lcg_f64(rng);
-    let u2 = lcg_f64(rng);
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
-
-fn lcg_f64(state: &mut u64) -> f64 {
-    *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-    // Map to (0, 1) — avoid exact 0 for ln
-    (*state >> 11) as f64 / (1u64 << 53) as f64 + 1e-300
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

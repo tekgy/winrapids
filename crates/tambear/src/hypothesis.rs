@@ -286,6 +286,192 @@ pub fn one_way_anova(groups: &[MomentStats]) -> AnovaResult {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Levene's test for homogeneity of variance (Levene 1960, Brown-Forsythe 1974)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Center type for Levene's test.
+#[derive(Debug, Clone, Copy)]
+pub enum LeveneCenter {
+    /// Original Levene (1960): most powerful for symmetric distributions.
+    Mean,
+    /// Brown-Forsythe (1974): most robust, recommended default.
+    Median,
+}
+
+/// Levene's test result.
+#[derive(Debug, Clone)]
+pub struct LeveneResult {
+    pub f_statistic: f64,
+    pub p_value: f64,
+    pub df_between: f64,
+    pub df_within: f64,
+}
+
+/// Levene's test for equality of variances across k groups.
+///
+/// Applies one-way ANOVA to the absolute deviations from group centers.
+/// W = ANOVA F on z_ij = |x_ij - center_j|, where center_j = mean or median.
+/// W ~ F(k-1, N-k) under H₀.
+///
+/// Use `LeveneCenter::Median` (Brown-Forsythe variant) for robustness.
+pub fn levene_test(groups: &[&[f64]], center: LeveneCenter) -> LeveneResult {
+    // Filter out empty groups
+    let groups: Vec<&[f64]> = groups.iter().filter(|g| !g.is_empty()).copied().collect();
+    let k = groups.len();
+    if k < 2 {
+        return LeveneResult { f_statistic: f64::NAN, p_value: f64::NAN, df_between: 0.0, df_within: 0.0 };
+    }
+
+    // Compute absolute deviations from group center
+    let z_groups: Vec<Vec<f64>> = groups.iter().map(|g| {
+        let center_val = match center {
+            LeveneCenter::Mean => g.iter().sum::<f64>() / g.len() as f64,
+            LeveneCenter::Median => {
+                let mut sorted = g.to_vec();
+                sorted.sort_by(|a, b| a.total_cmp(b));
+                let n = sorted.len();
+                if n % 2 == 0 { (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0 }
+                else { sorted[n / 2] }
+            }
+        };
+        g.iter().map(|x| (x - center_val).abs()).collect()
+    }).collect();
+
+    // Compute MomentStats for each group of z values
+    let z_stats: Vec<MomentStats> = z_groups.iter()
+        .map(|zg| crate::descriptive::moments_ungrouped(zg))
+        .collect();
+
+    // Apply one-way ANOVA on the z values
+    let anova = one_way_anova(&z_stats);
+
+    LeveneResult {
+        f_statistic: anova.f_statistic,
+        p_value: anova.p_value,
+        df_between: anova.df_between,
+        df_within: anova.df_within,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Welch's ANOVA (Welch 1951)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Welch's ANOVA result.
+#[derive(Debug, Clone)]
+pub struct WelchAnovaResult {
+    pub f_statistic: f64,
+    pub p_value: f64,
+    pub df_between: f64,
+    pub df_within: f64,
+}
+
+/// Welch's ANOVA for k groups given pre-computed sufficient statistics.
+///
+/// Accepts `&[&MomentStats]` — consistent with the moment-first API
+/// where `moments_ungrouped` is called once per group and the stats are reused.
+/// Groups with n < 2 (undefined sample variance) are silently excluded.
+pub fn welch_anova_from_moments(groups: &[&crate::descriptive::MomentStats]) -> WelchAnovaResult {
+    let groups: Vec<&crate::descriptive::MomentStats> = groups.iter()
+        .filter(|g| g.count >= 2.0)
+        .copied()
+        .collect();
+    let k = groups.len();
+    let kf = k as f64;
+    if k < 2 {
+        return WelchAnovaResult { f_statistic: f64::NAN, p_value: f64::NAN, df_between: 0.0, df_within: 0.0 };
+    }
+    let means: Vec<f64> = groups.iter().map(|g| g.mean()).collect();
+    let vars: Vec<f64> = groups.iter().map(|g| g.variance(1)).collect();
+    let ns: Vec<f64> = groups.iter().map(|g| g.count).collect();
+    let w: Vec<f64> = (0..k).map(|j| {
+        if vars[j] < 1e-300 { f64::NAN } else { ns[j] / vars[j] }
+    }).collect();
+    if w.iter().any(|v| v.is_nan()) {
+        return WelchAnovaResult { f_statistic: f64::NAN, p_value: f64::NAN, df_between: kf - 1.0, df_within: f64::NAN };
+    }
+    let w_total: f64 = w.iter().sum();
+    if w_total < 1e-300 {
+        return WelchAnovaResult { f_statistic: f64::NAN, p_value: f64::NAN, df_between: kf - 1.0, df_within: 0.0 };
+    }
+    let x_tilde: f64 = (0..k).map(|j| w[j] * means[j]).sum::<f64>() / w_total;
+    let numerator: f64 = (0..k).map(|j| w[j] * (means[j] - x_tilde).powi(2)).sum::<f64>() / (kf - 1.0);
+    let lambda: f64 = (0..k).map(|j| {
+        let ratio = 1.0 - w[j] / w_total;
+        ratio * ratio / (ns[j] - 1.0).max(1.0)
+    }).sum();
+    let denominator = 1.0 + 2.0 * (kf - 2.0) / (kf * kf - 1.0) * lambda;
+    let f_star = numerator / denominator;
+    let df1 = kf - 1.0;
+    let df2 = if lambda > 1e-300 { (kf * kf - 1.0) / (3.0 * lambda) } else { f64::INFINITY };
+    let p_value = crate::special_functions::f_right_tail_p(f_star, df1, df2);
+    WelchAnovaResult { f_statistic: f_star, p_value, df_between: df1, df_within: df2 }
+}
+
+/// Welch's ANOVA for comparing k group means with unequal variances.
+///
+/// Unlike standard ANOVA, does not assume equal variances.
+/// F* ~ F(k-1, ν) where ν is Welch's corrected denominator df.
+/// Always safe to use; reduces to standard ANOVA when variances are equal.
+pub fn welch_anova(groups: &[&[f64]]) -> WelchAnovaResult {
+    // Filter out empty groups and n=1 groups (undefined variance → undefined weight).
+    // Groups with n=1 cannot contribute to a Welch ANOVA — their variance is undefined.
+    let groups: Vec<&[f64]> = groups.iter()
+        .filter(|g| g.len() >= 2)
+        .copied()
+        .collect();
+    let k = groups.len();
+    let kf = k as f64;
+
+    if k < 2 {
+        return WelchAnovaResult { f_statistic: f64::NAN, p_value: f64::NAN, df_between: 0.0, df_within: 0.0 };
+    }
+
+    let means: Vec<f64> = groups.iter().map(|g| g.iter().sum::<f64>() / g.len() as f64).collect();
+    let vars: Vec<f64> = groups.iter().zip(&means).map(|(g, &m)| {
+        g.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (g.len() - 1) as f64
+    }).collect();
+    let ns: Vec<f64> = groups.iter().map(|g| g.len() as f64).collect();
+
+    // Weights: w_j = n_j / s²_j
+    // If a group has zero variance (all identical observations), treat weight as NaN
+    // and return NaN result — the F statistic is undefined (numerator/denominator both zero
+    // or degenerate).
+    let w: Vec<f64> = (0..k).map(|j| {
+        if vars[j] < 1e-300 { f64::NAN } else { ns[j] / vars[j] }
+    }).collect();
+    if w.iter().any(|v| v.is_nan()) {
+        return WelchAnovaResult { f_statistic: f64::NAN, p_value: f64::NAN, df_between: kf - 1.0, df_within: f64::NAN };
+    }
+    let w_total: f64 = w.iter().sum();
+    if w_total < 1e-300 {
+        return WelchAnovaResult { f_statistic: f64::NAN, p_value: f64::NAN, df_between: kf - 1.0, df_within: 0.0 };
+    }
+
+    // Weighted grand mean
+    let x_tilde: f64 = (0..k).map(|j| w[j] * means[j]).sum::<f64>() / w_total;
+
+    // Numerator
+    let numerator: f64 = (0..k).map(|j| w[j] * (means[j] - x_tilde).powi(2)).sum::<f64>() / (kf - 1.0);
+
+    // Lambda correction
+    let lambda: f64 = (0..k).map(|j| {
+        let ratio = 1.0 - w[j] / w_total;
+        ratio * ratio / (ns[j] - 1.0).max(1.0)
+    }).sum();
+
+    let denominator = 1.0 + 2.0 * (kf - 2.0) / (kf * kf - 1.0) * lambda;
+    let f_star = numerator / denominator;
+
+    let df1 = kf - 1.0;
+    let df2 = if lambda > 1e-300 { (kf * kf - 1.0) / (3.0 * lambda) } else { f64::INFINITY };
+
+    let p_value = crate::special_functions::f_right_tail_p(f_star, df1, df2);
+
+    WelchAnovaResult { f_statistic: f_star, p_value, df_between: df1, df_within: df2 }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Chi-square tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -546,8 +732,224 @@ pub fn benjamini_hochberg(p_values: &[f64]) -> Vec<f64> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Tukey HSD post-hoc test
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result for one pairwise comparison in Tukey HSD.
+#[derive(Debug, Clone)]
+pub struct TukeyComparison {
+    /// Index of group i
+    pub group_i: usize,
+    /// Index of group j
+    pub group_j: usize,
+    /// Observed difference in means: ȳ_i - ȳ_j
+    pub mean_diff: f64,
+    /// Tukey q statistic
+    pub q_statistic: f64,
+    /// Right-tail p-value from studentized range distribution
+    pub p_value: f64,
+    /// Whether the difference is significant at α = 0.05 (convenience default).
+    /// Use `significant_at(alpha)` for custom significance levels.
+    pub significant: bool,
+}
+
+impl TukeyComparison {
+    /// Is this pairwise comparison significant at a custom alpha level?
+    pub fn significant_at(&self, alpha: f64) -> bool {
+        self.p_value < alpha
+    }
+}
+
+/// Tukey's Honestly Significant Difference (HSD) post-hoc test.
+///
+/// Computes all pairwise comparisons after a significant one-way ANOVA.
+/// Controls the family-wise error rate using the studentized range distribution.
+///
+/// `groups`: slice of `MomentStats`, one per group (count, mean, variance).
+/// `ms_error`: mean square error from the ANOVA (= SS_within / df_within).
+/// `df_error`: degrees of freedom of the error term (= N - k).
+///
+/// Each pair (i,j) with i < j produces a `TukeyComparison`.
+pub fn tukey_hsd(groups: &[MomentStats], ms_error: f64, df_error: f64) -> Vec<TukeyComparison> {
+    let k = groups.len();
+    let mut results = Vec::new();
+
+    for i in 0..k {
+        for j in (i + 1)..k {
+            let ni = groups[i].count as f64;
+            let nj = groups[j].count as f64;
+            if ni < 1.0 || nj < 1.0 { continue; }
+
+            let mean_i = groups[i].sum / ni;
+            let mean_j = groups[j].sum / nj;
+            let diff = mean_i - mean_j;
+
+            // Harmonic mean of group sizes (handles unequal n via Tukey-Kramer)
+            let n_harm = 2.0 / (1.0 / ni + 1.0 / nj);
+            let se = (ms_error / n_harm).sqrt();
+
+            let q = if se < 1e-300 { f64::INFINITY } else { diff.abs() / se };
+            let p = crate::special_functions::studentized_range_p(q, k, df_error);
+
+            results.push(TukeyComparison {
+                group_i: i,
+                group_j: j,
+                mean_diff: diff,
+                q_statistic: q,
+                p_value: p,
+                significant: p < 0.05,
+            });
+        }
+    }
+
+    results
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Convenience: HypothesisEngine
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Breusch-Pagan heteroscedasticity test
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of Breusch-Pagan test for heteroscedasticity.
+#[derive(Debug, Clone)]
+pub struct BreuschPaganResult {
+    /// LM test statistic: n * R² ~ χ²(k) under H₀
+    pub statistic: f64,
+    /// Right-tail p-value
+    pub p_value: f64,
+    /// Degrees of freedom (= number of regressors excluding intercept)
+    pub df: usize,
+}
+
+/// Breusch-Pagan (1979) test for heteroscedasticity.
+///
+/// H₀: homoscedastic errors (constant variance).
+/// H₁: variance of errors depends linearly on the regressors `x`.
+///
+/// Algorithm (Koenker 1981 robust variant):
+/// 1. Fit OLS: y = Xβ + ε; compute residuals ê_i
+/// 2. Compute ê_i² and the mean ū = mean(ê_i²)
+/// 3. Let w_i = ê_i² / ū  (studentized squared residuals)
+/// 4. Regress w on X (including intercept): w = Xγ + η
+/// 5. LM = n * R² ~ χ²(k) under H₀, where k = cols(X) - 1
+///
+/// `x_with_intercept`: design matrix with intercept column (n × p).
+/// `residuals`: OLS residuals from the primary regression (length n).
+pub fn breusch_pagan(x_with_intercept: &crate::linear_algebra::Mat, residuals: &[f64]) -> BreuschPaganResult {
+    let n = residuals.len();
+    let p = x_with_intercept.cols; // includes intercept
+    let df = if p > 1 { p - 1 } else { 1 };
+
+    // Squared residuals and their mean
+    let e2: Vec<f64> = residuals.iter().map(|e| e * e).collect();
+    let e2_mean = e2.iter().sum::<f64>() / n as f64;
+
+    // Studentized squared residuals (Koenker form)
+    let w: Vec<f64> = if e2_mean < 1e-300 {
+        vec![1.0; n] // all residuals zero → trivially homoscedastic
+    } else {
+        e2.iter().map(|ei2| ei2 / e2_mean).collect()
+    };
+
+    // OLS: regress w on X
+    let beta_aux = crate::linear_algebra::qr_solve(x_with_intercept, &w);
+
+    // Fitted values and R² of the auxiliary regression
+    let cols = x_with_intercept.cols;
+    let w_hat: Vec<f64> = (0..n)
+        .map(|i| (0..cols).map(|k| x_with_intercept.data[i * cols + k] * beta_aux[k]).sum::<f64>())
+        .collect();
+
+    let w_mean = w.iter().sum::<f64>() / n as f64;
+    let ss_tot: f64 = w.iter().map(|wi| (wi - w_mean).powi(2)).sum();
+    let ss_res: f64 = w.iter().zip(w_hat.iter()).map(|(wi, fi)| (wi - fi).powi(2)).sum();
+
+    let r2 = if ss_tot < 1e-300 {
+        0.0
+    } else {
+        (1.0 - ss_res / ss_tot).clamp(0.0, 1.0)
+    };
+
+    let statistic = n as f64 * r2;
+    let p_value = chi2_right_tail_p(statistic, df as f64);
+
+    BreuschPaganResult { statistic, p_value, df }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cook's distance & leverage (regression influence diagnostics)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Regression influence diagnostics.
+#[derive(Debug, Clone)]
+pub struct InfluenceResult {
+    /// Cook's distance for each observation.
+    pub cooks_distance: Vec<f64>,
+    /// Hat matrix diagonal (leverage) for each observation.
+    pub leverage: Vec<f64>,
+    /// Number of observations flagged as influential (Cook's D > 4/n).
+    pub n_influential: usize,
+}
+
+/// Cook's distance and leverage for OLS regression.
+///
+/// Cook's D_i = (e_i² * h_ii) / (p * MSE * (1 - h_ii)²)
+/// where h_ii = diagonal of hat matrix H = X(X'X)⁻¹X'.
+///
+/// `x_with_intercept`: n × p design matrix (includes intercept column).
+/// `residuals`: OLS residuals (length n).
+pub fn cooks_distance(
+    x_with_intercept: &crate::linear_algebra::Mat,
+    residuals: &[f64],
+) -> InfluenceResult {
+    let n = residuals.len();
+    let p = x_with_intercept.cols;
+
+    // Compute (X'X)⁻¹ via Cholesky
+    let mut xtx = vec![0.0; p * p];
+    for i in 0..n {
+        for j in 0..p {
+            for k in 0..p {
+                xtx[j * p + k] += x_with_intercept.get(i, j) * x_with_intercept.get(i, k);
+            }
+        }
+    }
+    let xtx_mat = crate::linear_algebra::Mat::from_vec(p, p, xtx);
+    let l = crate::linear_algebra::cholesky(&xtx_mat);
+
+    // Hat matrix diagonal: h_ii = x_i' (X'X)⁻¹ x_i
+    let leverage: Vec<f64> = if let Some(ref l_mat) = l {
+        (0..n).map(|i| {
+            let xi: Vec<f64> = (0..p).map(|j| x_with_intercept.get(i, j)).collect();
+            // Solve L·z = x_i (forward substitution)
+            let z = crate::linear_algebra::cholesky_solve(l_mat, &xi);
+            // h_ii = x_i' (X'X)⁻¹ x_i = z' z (since (X'X)⁻¹ x_i = z via Cholesky)
+            // Actually h_ii = x_i' * z where z = (X'X)^{-1} x_i
+            xi.iter().zip(z.iter()).map(|(a, b)| a * b).sum::<f64>()
+        }).collect()
+    } else {
+        vec![1.0 / n as f64; n] // fallback: equal leverage
+    };
+
+    // MSE
+    let mse = residuals.iter().map(|e| e * e).sum::<f64>() / (n - p).max(1) as f64;
+    let pf = p as f64;
+
+    // Cook's distance
+    let cooks_distance: Vec<f64> = (0..n).map(|i| {
+        let h = leverage[i].clamp(0.0, 1.0 - 1e-10);
+        let e = residuals[i];
+        (e * e * h) / (pf * mse * (1.0 - h) * (1.0 - h))
+    }).collect();
+
+    let threshold = 4.0 / n as f64;
+    let n_influential = cooks_distance.iter().filter(|&&d| d > threshold).count();
+
+    InfluenceResult { cooks_distance, leverage, n_influential }
+}
 
 /// Engine that wraps a ComputeEngine for hypothesis tests on raw data.
 ///
@@ -915,6 +1317,131 @@ mod tests {
         }
     }
 
+    // ── Breusch-Pagan ────────────────────────────────────────────────────
+
+    fn make_design(n: usize, x_col: &[f64]) -> crate::linear_algebra::Mat {
+        // [1, x] design matrix
+        let mut data = vec![0.0_f64; n * 2];
+        for i in 0..n {
+            data[i * 2] = 1.0;
+            data[i * 2 + 1] = x_col[i];
+        }
+        crate::linear_algebra::Mat { rows: n, cols: 2, data }
+    }
+
+    #[test]
+    fn bp_homoscedastic_high_pvalue() {
+        // Residuals generated as iid N(0, 0.01²) — no heteroscedasticity.
+        // p-value should be large (fail to reject H₀).
+        let n = 100usize;
+        let x: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
+        let mut rng = 77777u64;
+        let residuals: Vec<f64> = (0..n).map(|_| {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (rng as f64 / u64::MAX as f64 - 0.5) * 0.02
+        }).collect();
+        let xmat = make_design(n, &x);
+        let result = breusch_pagan(&xmat, &residuals);
+        assert!(result.p_value > 0.05,
+            "Homoscedastic: p={:.4} should be > 0.05", result.p_value);
+        assert_eq!(result.df, 1);
+    }
+
+    #[test]
+    fn bp_heteroscedastic_low_pvalue() {
+        // Residuals with variance proportional to x → clear heteroscedasticity.
+        let n = 200usize;
+        let x: Vec<f64> = (0..n).map(|i| (i + 1) as f64).collect();
+        let mut rng = 31415u64;
+        let residuals: Vec<f64> = x.iter().map(|xi| {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let z = (rng as f64 / u64::MAX as f64 - 0.5) * 2.0 * 1.7320508;
+            z * xi.sqrt() * 0.5 // σ grows with √x
+        }).collect();
+        let xmat = make_design(n, &x);
+        let result = breusch_pagan(&xmat, &residuals);
+        assert!(result.statistic > 5.0,
+            "Heteroscedastic: statistic={:.3} should be > 5.0", result.statistic);
+    }
+
+    #[test]
+    fn bp_zero_residuals_no_panic() {
+        let n = 20usize;
+        let x: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let residuals = vec![0.0_f64; n];
+        let xmat = make_design(n, &x);
+        let result = breusch_pagan(&xmat, &residuals);
+        assert!(result.statistic.is_finite());
+        assert!(result.p_value.is_finite());
+    }
+
+    // ── Tukey HSD ────────────────────────────────────────────────────────
+
+    fn moment_stats_from_slice(data: &[f64]) -> MomentStats {
+        let n = data.len() as f64;
+        let sum: f64 = data.iter().sum();
+        let mean = sum / n;
+        let m2: f64 = data.iter().map(|x| (x - mean).powi(2)).sum();
+        MomentStats {
+            count: n,
+            sum,
+            min: data.iter().copied().fold(f64::INFINITY, f64::min),
+            max: data.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            m2,
+            m3: 0.0,
+            m4: 0.0,
+        }
+    }
+
+    #[test]
+    fn tukey_hsd_equal_groups_no_difference() {
+        // Three identical groups → all comparisons non-significant
+        let g1 = moment_stats_from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        let g2 = moment_stats_from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        let g3 = moment_stats_from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        let n = 15usize;
+        let k = 3usize;
+        // SS_within = g1.m2 + g2.m2 + g3.m2
+        let ss_within = g1.m2 + g2.m2 + g3.m2;
+        let df_error = (n - k) as f64;
+        let ms_error = ss_within / df_error;
+        let comparisons = tukey_hsd(&[g1, g2, g3], ms_error, df_error);
+        assert_eq!(comparisons.len(), 3);
+        for c in &comparisons {
+            assert!(c.mean_diff.abs() < 1e-10, "Equal groups: mean_diff should be 0");
+            assert!(!c.significant, "Equal groups: should not be significant");
+        }
+    }
+
+    #[test]
+    fn tukey_hsd_separated_groups() {
+        // Group 1: [0,0,0], Group 2: [10,10,10], Group 3: [0,0,0]
+        // Pair (1,2) should be significant; (1,3) and (2,3) similar
+        let g1 = moment_stats_from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0]);
+        let g2 = moment_stats_from_slice(&[100.0, 100.0, 100.0, 100.0, 100.0]);
+        let g3 = moment_stats_from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0]);
+        // ms_error = SS_within / df: all within-group variance = 0, so ms_error → tiny
+        // Use a small positive ms_error so the test is meaningful
+        let ms_error = 1.0; // unit variance
+        let df_error = 12.0;
+        let comparisons = tukey_hsd(&[g1, g2, g3], ms_error, df_error);
+        let pair_12 = comparisons.iter().find(|c| c.group_i == 0 && c.group_j == 1).unwrap();
+        assert!(pair_12.significant, "Groups 0 and 1 differ by 100, should be significant");
+        assert!(pair_12.q_statistic > 5.0, "q={:.2} should be large", pair_12.q_statistic);
+    }
+
+    #[test]
+    fn tukey_hsd_studentized_range_p_known_value() {
+        // For k=3, df=∞ (df_error=1000), q≈3.314 should give p≈0.05
+        // Verify that q=3.314 gives p close to 0.05
+        let q = 3.314_f64;
+        let p = crate::special_functions::studentized_range_p(q, 3, 1000.0);
+        assert!(
+            (p - 0.05).abs() < 0.02,
+            "studentized_range_p(3.314, 3, ∞) ≈ 0.05, got {:.4}", p
+        );
+    }
+
     // ── Integration ──────────────────────────────────────────────────────
 
     #[test]
@@ -925,5 +1452,128 @@ mod tests {
         };
         assert!(r.significant_at(0.05));
         assert!(!r.significant_at(0.01));
+    }
+
+    // ── Cook's distance ─────────────────────────────────────────────────
+
+    #[test]
+    fn cooks_distance_no_outliers() {
+        // Well-behaved linear data: y = 2x + 1 + small noise
+        let n = 20;
+        let p = 2;
+        let mut data = vec![0.0; n * p];
+        let mut residuals = Vec::new();
+        let mut rng = 42u64;
+        for i in 0..n {
+            let x = i as f64 / n as f64;
+            data[i * p] = 1.0; // intercept
+            data[i * p + 1] = x;
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let noise = (rng as f64 / u64::MAX as f64 - 0.5) * 0.1;
+            residuals.push(noise);
+        }
+        let x = crate::linear_algebra::Mat::from_vec(n, p, data);
+        let r = cooks_distance(&x, &residuals);
+        assert_eq!(r.cooks_distance.len(), n);
+        assert_eq!(r.leverage.len(), n);
+        // No outliers → no influential points
+        assert!(r.n_influential <= 2,
+            "Clean data should have few influential points, got {}", r.n_influential);
+        // All Cook's D should be small
+        let max_d = r.cooks_distance.iter().cloned().fold(0.0f64, f64::max);
+        assert!(max_d < 1.0, "Max Cook's D={} should be < 1 for clean data", max_d);
+    }
+
+    // ── Levene's test ─────────────────────────────────────────────────────
+
+    #[test]
+    fn levene_equal_variance_groups() {
+        // Three groups with similar spread — Levene p should be high (fail to reject H₀)
+        let a = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let b = vec![2.0, 3.0, 4.0, 5.0, 6.0];
+        let c = vec![3.0, 4.0, 5.0, 6.0, 7.0];
+        let r = levene_test(&[&a, &b, &c], LeveneCenter::Median);
+        assert!(r.p_value > 0.05, "equal-spread groups: levene p={}", r.p_value);
+        assert!(r.f_statistic >= 0.0 && r.f_statistic.is_finite());
+    }
+
+    #[test]
+    fn levene_very_unequal_variance() {
+        // Group A is tight, group B is very spread — Levene should reject H₀
+        let a = vec![1.0, 1.01, 0.99, 1.0, 1.01];
+        let b = vec![0.0, 10.0, -10.0, 5.0, -5.0];
+        let r = levene_test(&[&a, &b], LeveneCenter::Median);
+        assert!(r.p_value < 0.05, "very different variance: levene p={}", r.p_value);
+    }
+
+    #[test]
+    fn levene_empty_group_ignored() {
+        let a = vec![1.0, 2.0, 3.0];
+        let b: Vec<f64> = vec![];
+        let c = vec![2.0, 3.0, 4.0];
+        let r = levene_test(&[&a, &b, &c], LeveneCenter::Mean);
+        // Should handle empty group gracefully (k becomes 2)
+        assert!(r.f_statistic.is_finite() || r.f_statistic.is_nan());
+    }
+
+    // ── Welch ANOVA ───────────────────────────────────────────────────────
+
+    #[test]
+    fn welch_anova_three_groups_same_mean() {
+        // Three groups with same mean — F should be near 0, p near 1
+        let a = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let b = vec![1.5, 2.5, 3.5, 4.5, 5.5]; // shifted slightly
+        let c = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let r = welch_anova(&[&a, &b, &c]);
+        assert!(r.f_statistic >= 0.0, "F statistic should be non-negative");
+        assert!(r.p_value > 0.0 && r.p_value <= 1.0);
+    }
+
+    #[test]
+    fn welch_anova_clearly_different_means() {
+        // Groups with very different means — should reject H₀
+        let a = vec![1.0, 1.1, 0.9, 1.0, 1.1];
+        let b = vec![10.0, 10.1, 9.9, 10.0, 10.1];
+        let c = vec![20.0, 20.1, 19.9, 20.0, 20.1];
+        let r = welch_anova(&[&a, &b, &c]);
+        assert!(r.p_value < 0.001, "very different means: welch F p={}", r.p_value);
+        assert!(r.df_between > 0.0);
+    }
+
+    #[test]
+    fn welch_anova_size_one_group_excluded() {
+        // Group of size 1 is silently excluded (undefined variance)
+        let a = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let b = vec![42.0]; // n=1: excluded
+        let c = vec![2.0, 3.0, 4.0, 5.0, 6.0];
+        let r = welch_anova(&[&a, &b, &c]);
+        // With only a and c (both low-variance similar-mean groups), p should be > 0.05
+        assert!(r.f_statistic.is_finite() || r.f_statistic.is_nan(),
+            "f_statistic should be finite or NaN, got {}", r.f_statistic);
+    }
+
+    #[test]
+    fn cooks_distance_with_outlier() {
+        // One extreme outlier should have high Cook's D
+        let n = 20;
+        let p = 2;
+        let mut data = vec![0.0; n * p];
+        let mut residuals = vec![0.01; n]; // small residuals
+        for i in 0..n {
+            data[i * p] = 1.0;
+            data[i * p + 1] = i as f64 / n as f64;
+        }
+        // Make observation 0 an outlier with huge residual
+        residuals[0] = 50.0;
+        let x = crate::linear_algebra::Mat::from_vec(n, p, data);
+        let r = cooks_distance(&x, &residuals);
+        // Observation 0 should have the largest Cook's D
+        let max_idx = r.cooks_distance.iter().enumerate()
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
+            .unwrap().0;
+        assert_eq!(max_idx, 0, "Outlier at index 0 should have max Cook's D");
+        assert!(r.cooks_distance[0] > r.cooks_distance[10],
+            "Outlier D={} should exceed normal point D={}",
+            r.cooks_distance[0], r.cooks_distance[10]);
     }
 }

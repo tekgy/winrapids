@@ -8,7 +8,7 @@
 //! Rotation = orthogonal transformation (Kingdom A).
 //! CFA = iterative fitting (Kingdom C), but simplified here.
 
-use crate::linear_algebra::{Mat, mat_mul, mat_scale};
+use crate::linear_algebra::{Mat, mat_mul, mat_scale, cholesky, cholesky_solve};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Correlation matrix
@@ -304,6 +304,120 @@ pub fn kaiser_criterion(eigenvalues: &[f64]) -> usize {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// KMO and Bartlett's test of sphericity
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of KMO and Bartlett's test of sphericity.
+#[derive(Debug, Clone)]
+pub struct KmoBartlettResult {
+    /// Kaiser-Meyer-Olkin measure of sampling adequacy (overall).
+    /// KMO > 0.9: marvellous, 0.8: meritorious, 0.7: middling, 0.6: mediocre, < 0.5: unacceptable.
+    pub kmo_overall: f64,
+    /// Per-variable KMO (MSA) values.
+    pub kmo_per_variable: Vec<f64>,
+    /// Bartlett's chi-squared statistic: -(n-1-(2p+5)/6) · ln|R|
+    pub bartlett_statistic: f64,
+    /// Degrees of freedom for Bartlett: p(p-1)/2
+    pub bartlett_df: usize,
+    /// Right-tail p-value for Bartlett (H₀: correlation matrix = I)
+    pub bartlett_p_value: f64,
+}
+
+/// Kaiser-Meyer-Olkin (KMO) measure of sampling adequacy and Bartlett's
+/// test of sphericity.
+///
+/// Both tests assess whether the correlation matrix is suitable for factor
+/// analysis. Bartlett tests H₀: R = I (identity, no correlations).
+/// KMO measures the proportion of common variance.
+///
+/// `corr`: p×p correlation matrix (symmetric, ones on diagonal).
+/// `n_obs`: number of observations used to compute the correlation matrix.
+pub fn kmo_bartlett(corr: &Mat, n_obs: usize) -> KmoBartlettResult {
+    let p = corr.rows;
+    assert_eq!(corr.cols, p, "correlation matrix must be square");
+    let n = n_obs as f64;
+
+    // ── Bartlett test ──────────────────────────────────────────────────────
+    // Compute ln|R| via Cholesky: |R| = Π L_{ii}² so ln|R| = 2 Σ ln L_{ii}
+    let ln_det_r = match cholesky(corr) {
+        Some(l) => {
+            2.0 * (0..p).map(|i| l.data[i * p + i].ln()).sum::<f64>()
+        }
+        None => {
+            // Near-singular — return degenerate result
+            return KmoBartlettResult {
+                kmo_overall: 0.0,
+                kmo_per_variable: vec![0.0; p],
+                bartlett_statistic: f64::NAN,
+                bartlett_df: p * (p - 1) / 2,
+                bartlett_p_value: f64::NAN,
+            };
+        }
+    };
+    let bartlett_df = p * (p - 1) / 2;
+    let bartlett_stat = -(n - 1.0 - (2.0 * p as f64 + 5.0) / 6.0) * ln_det_r;
+    let bartlett_p = crate::special_functions::chi2_right_tail_p(bartlett_stat, bartlett_df as f64);
+
+    // ── KMO ───────────────────────────────────────────────────────────────
+    // Compute R^{-1} by solving R·X = I column by column.
+    let l = match cholesky(corr) {
+        Some(l) => l,
+        None => {
+            return KmoBartlettResult {
+                kmo_overall: f64::NAN,
+                kmo_per_variable: vec![f64::NAN; p],
+                bartlett_statistic: bartlett_stat,
+                bartlett_df,
+                bartlett_p_value: bartlett_p,
+            };
+        }
+    };
+
+    // R^{-1}: cols computed via cholesky_solve
+    let mut r_inv = vec![0.0_f64; p * p];
+    for j in 0..p {
+        let mut e = vec![0.0_f64; p];
+        e[j] = 1.0;
+        let col = cholesky_solve(&l, &e);
+        for i in 0..p { r_inv[i * p + j] = col[i]; }
+    }
+
+    // Partial correlations: p_{ij} = -r_inv[i,j] / √(r_inv[i,i] * r_inv[j,j])
+    // KMO numerator for variable i: Σ_{j≠i} r[i,j]²
+    // KMO denominator for variable i: Σ_{j≠i} r[i,j]² + Σ_{j≠i} p[i,j]²
+    let mut kmo_per = vec![0.0_f64; p];
+    let mut kmo_num_total = 0.0;
+    let mut kmo_den_total = 0.0;
+
+    for i in 0..p {
+        let mut num_i = 0.0; // Σ r[i,j]²
+        let mut den_i = 0.0; // Σ r[i,j]² + Σ p[i,j]²
+        for j in 0..p {
+            if i == j { continue; }
+            let r_ij = corr.data[i * p + j];
+            let r_inv_ii = r_inv[i * p + i].max(1e-300);
+            let r_inv_jj = r_inv[j * p + j].max(1e-300);
+            let p_ij = -r_inv[i * p + j] / (r_inv_ii * r_inv_jj).sqrt();
+            num_i += r_ij * r_ij;
+            den_i += r_ij * r_ij + p_ij * p_ij;
+        }
+        kmo_per[i] = if den_i < 1e-300 { 1.0 } else { num_i / den_i };
+        kmo_num_total += num_i;
+        kmo_den_total += den_i;
+    }
+
+    let kmo_overall = if kmo_den_total < 1e-300 { 1.0 } else { kmo_num_total / kmo_den_total };
+
+    KmoBartlettResult {
+        kmo_overall,
+        kmo_per_variable: kmo_per,
+        bartlett_statistic: bartlett_stat,
+        bartlett_df,
+        bartlett_p_value: bartlett_p,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -431,5 +545,61 @@ mod tests {
         let eigenvalues = vec![4.0, 1.5, 0.8, 0.7, 0.5, 0.3];
         // Biggest drop: 4.0 → 1.5 (drop of 2.5)
         assert_eq!(scree_elbow(&eigenvalues), 1);
+    }
+
+    // ── KMO and Bartlett ─────────────────────────────────────────────────
+
+    fn make_corr_3x3(r12: f64, r13: f64, r23: f64) -> Mat {
+        // 3×3 correlation matrix with given off-diagonal correlations
+        let data = vec![
+            1.0, r12, r13,
+            r12, 1.0, r23,
+            r13, r23, 1.0,
+        ];
+        Mat { rows: 3, cols: 3, data }
+    }
+
+    #[test]
+    fn bartlett_identity_matrix_non_significant() {
+        // Identity matrix — no correlations → Bartlett p should be large (fail to reject)
+        let identity = Mat { rows: 3, cols: 3, data: vec![
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ]};
+        let r = kmo_bartlett(&identity, 100);
+        // ln|I| = 0 → statistic = 0 → p = 1
+        assert!(r.bartlett_statistic.abs() < 1e-10,
+            "bartlett_statistic for identity should be 0, got {}", r.bartlett_statistic);
+        assert!((r.bartlett_p_value - 1.0).abs() < 1e-6,
+            "bartlett p for identity should be 1.0, got {}", r.bartlett_p_value);
+    }
+
+    #[test]
+    fn bartlett_high_correlation_significant() {
+        // High correlations → |R| small → statistic large → p small
+        let r = kmo_bartlett(&make_corr_3x3(0.9, 0.85, 0.88), 200);
+        assert!(r.bartlett_p_value < 0.001,
+            "High correlation: bartlett p={:.6} should be < 0.001", r.bartlett_p_value);
+    }
+
+    #[test]
+    fn kmo_high_for_common_factor_structure() {
+        // Data with strong common factor has high KMO (> 0.7)
+        // Use correlations typical of a factor structure
+        let r = kmo_bartlett(&make_corr_3x3(0.8, 0.75, 0.82), 100);
+        assert!(r.kmo_overall > 0.6,
+            "Factor-like correlations: KMO={:.3} should be > 0.6", r.kmo_overall);
+        assert_eq!(r.kmo_per_variable.len(), 3);
+        for (i, &k) in r.kmo_per_variable.iter().enumerate() {
+            assert!(k > 0.0 && k <= 1.0, "KMO[{i}]={k:.4} out of [0,1]");
+        }
+    }
+
+    #[test]
+    fn kmo_bartlett_df_is_correct() {
+        // p=3 → df = p(p-1)/2 = 3
+        let r = kmo_bartlett(&make_corr_3x3(0.5, 0.4, 0.45), 50);
+        assert_eq!(r.bartlett_df, 3);
     }
 }

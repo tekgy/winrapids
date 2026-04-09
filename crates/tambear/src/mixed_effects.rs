@@ -372,4 +372,49 @@ mod tests {
         // ICC=0.1, cluster=20 → DEFF = 1 + 19*0.1 = 2.9
         close(design_effect(0.1, 20.0), 2.9, 1e-10, "DEFF");
     }
+
+    // ── Regression: LME σ² M-step n_g multiplier ───────────────────────
+    // Verifies bug fix: trace correction must include n_g factor.
+    // Without n_g, σ² converges to wrong value.
+    #[test]
+    fn lme_sigma2_convergence_regression() {
+        // Known DGP: y_i = 2 + 3*x_i + u_g + ε_i
+        // σ²_u = 4.0 (group variance), σ² = 1.0 (residual variance)
+        // ICC_true = 4 / (4 + 1) = 0.8
+        let n_per_group = 50;
+        let k = 5;
+        let n = n_per_group * k;
+        let true_sigma2: f64 = 1.0;
+        let group_effects = [0.0, 2.0, -2.0, 3.0, -1.5];
+
+        let mut x = Vec::new();
+        let mut y = Vec::new();
+        let mut groups = Vec::new();
+        let mut rng = crate::rng::Xoshiro256::new(7777);
+
+        for g in 0..k {
+            for i in 0..n_per_group {
+                let xi = i as f64 / n_per_group as f64;
+                x.push(xi);
+                let noise = crate::rng::sample_normal(&mut rng, 0.0, true_sigma2.sqrt());
+                y.push(2.0 + 3.0 * xi + group_effects[g] + noise);
+                groups.push(g);
+            }
+        }
+
+        let res = lme_random_intercept(&x, &y, n, 1, &groups, 200, 1e-10);
+
+        // σ² should be close to 1.0 (true residual variance)
+        assert!(res.sigma2 < 3.0,
+            "σ²={:.4} should converge reasonably near {true_sigma2} (residual variance)", res.sigma2);
+        // σ²_u should be positive
+        assert!(res.sigma2_u > 0.5,
+            "σ²_u={:.4} should be substantially positive", res.sigma2_u);
+        // ICC should be reasonably high (group effects are large relative to noise)
+        assert!(res.icc > 0.3,
+            "ICC={:.4} should reflect strong group effect", res.icc);
+        // Slope should recover β₁ ≈ 3.0
+        assert!((res.beta[1] - 3.0).abs() < 0.5,
+            "Slope={:.4} should be near 3.0", res.beta[1]);
+    }
 }

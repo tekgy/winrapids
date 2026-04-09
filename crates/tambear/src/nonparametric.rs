@@ -334,13 +334,108 @@ pub fn kruskal_wallis(data: &[f64], group_sizes: &[usize]) -> NonparametricResul
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Dunn's post-hoc test
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result for one pairwise comparison in Dunn's test.
+#[derive(Debug, Clone)]
+pub struct DunnComparison {
+    /// Index of group i
+    pub group_i: usize,
+    /// Index of group j
+    pub group_j: usize,
+    /// z-statistic for the mean rank difference
+    pub z_statistic: f64,
+    /// Two-sided p-value (unadjusted)
+    pub p_value: f64,
+}
+
+/// Dunn's (1964) post-hoc test for non-parametric multiple comparisons.
+///
+/// Use after a significant Kruskal-Wallis test to identify which pairs differ.
+/// Tests H₀: groups i and j have the same distribution using rank-sum differences.
+///
+/// z_{ij} = (R̄_i - R̄_j) / SE_{ij}
+///
+/// where SE_{ij} = √[ N(N+1)/12 · (1/n_i + 1/n_j) ]
+/// corrected for ties: subtract Σ (t³-t)/(12(N-1)) per tied group of size t.
+///
+/// `data`: all observations concatenated.
+/// `group_sizes`: number of observations per group.
+///
+/// Returns unadjusted p-values. Apply Bonferroni/BH via `bonferroni()` or
+/// `benjamini_hochberg()` from `hypothesis.rs` for family-wise control.
+pub fn dunn_test(data: &[f64], group_sizes: &[usize]) -> Vec<DunnComparison> {
+    let n: usize = group_sizes.iter().sum();
+    assert_eq!(data.len(), n, "data length must match sum of group sizes");
+    let k = group_sizes.len();
+    let nf = n as f64;
+
+    // Global ranks (average ranks for ties)
+    let ranks = rank(data);
+
+    // Tie correction: C = Σ (t³ - t) / (12 * (N-1))
+    // where the sum is over tied groups of size t
+    let mut sorted_data: Vec<f64> = data.to_vec();
+    sorted_data.sort_by(|a, b| a.total_cmp(b));
+    let mut tie_correction = 0.0;
+    let mut i = 0;
+    while i < n {
+        let val = sorted_data[i];
+        let mut j = i + 1;
+        while j < n && sorted_data[j] == val { j += 1; }
+        let t = (j - i) as f64;
+        if t > 1.0 { tie_correction += t * t * t - t; }
+        i = j;
+    }
+    tie_correction /= 12.0 * (nf - 1.0);
+
+    // Mean rank per group
+    let mut mean_ranks = Vec::with_capacity(k);
+    let mut offset = 0;
+    for &gs in group_sizes {
+        if gs == 0 {
+            mean_ranks.push(f64::NAN);
+        } else {
+            let r_sum: f64 = ranks[offset..offset + gs].iter().sum();
+            mean_ranks.push(r_sum / gs as f64);
+        }
+        offset += gs;
+    }
+
+    // All pairwise comparisons
+    let mut results = Vec::new();
+    for gi in 0..k {
+        for gj in (gi + 1)..k {
+            let ni = group_sizes[gi] as f64;
+            let nj = group_sizes[gj] as f64;
+            if ni < 1.0 || nj < 1.0 || mean_ranks[gi].is_nan() || mean_ranks[gj].is_nan() {
+                continue;
+            }
+
+            let base_var = nf * (nf + 1.0) / 12.0 - tie_correction;
+            let se = (base_var * (1.0 / ni + 1.0 / nj)).sqrt();
+            let z = if se < 1e-300 { 0.0 } else { (mean_ranks[gi] - mean_ranks[gj]) / se };
+            let p = normal_two_tail_p(z);
+
+            results.push(DunnComparison { group_i: gi, group_j: gj, z_statistic: z, p_value: p });
+        }
+    }
+
+    results
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Kolmogorov-Smirnov test
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// One-sample Kolmogorov-Smirnov test against standard normal.
+/// One-sample Kolmogorov-Smirnov test against standard normal N(0,1).
 ///
 /// D = sup|Fₙ(x) - Φ(x)| where Φ is the standard normal CDF.
 /// p-value via Kolmogorov distribution approximation.
+///
+/// **Note**: This tests against N(0,1) specifically. For general normality
+/// testing (any mean and variance), use [`ks_test_normal_standardized`].
 pub fn ks_test_normal(data: &[f64]) -> NonparametricResult {
     let mut sorted: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
     sorted.sort_by(|a, b| a.total_cmp(b));
@@ -365,6 +460,211 @@ pub fn ks_test_normal(data: &[f64]) -> NonparametricResult {
 
     NonparametricResult {
         test_name: "KS test (normal)", statistic: d_max, p_value: p,
+    }
+}
+
+/// One-sample Kolmogorov-Smirnov test for normality (any mean and variance).
+///
+/// Standardizes data to z = (x - x̄) / s, then tests against N(0,1).
+/// The D statistic is valid; however, the asymptotic Kolmogorov p-value
+/// is conservative (actual significance level < nominal) because μ and σ
+/// are estimated from data. For exact small-sample inference, use
+/// Lilliefors critical values (not yet implemented).
+pub fn ks_test_normal_standardized(data: &[f64]) -> NonparametricResult {
+    let clean: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
+    let n = clean.len();
+
+    if n < 2 {
+        return NonparametricResult {
+            test_name: "KS test (normality)", statistic: f64::NAN, p_value: f64::NAN
+        };
+    }
+
+    let nf = n as f64;
+    let mean = clean.iter().sum::<f64>() / nf;
+    let var = clean.iter().map(|&x| (x - mean) * (x - mean)).sum::<f64>() / (nf - 1.0);
+    let std = var.sqrt();
+
+    if std < 1e-15 {
+        // All values identical — trivially "normal" but degenerate
+        return NonparametricResult {
+            test_name: "KS test (normality)", statistic: 0.0, p_value: 1.0
+        };
+    }
+
+    let mut z_scores: Vec<f64> = clean.iter().map(|&x| (x - mean) / std).collect();
+    z_scores.sort_by(|a, b| a.total_cmp(b));
+
+    let mut d_max = 0.0_f64;
+    for (i, &z) in z_scores.iter().enumerate() {
+        let cdf = normal_cdf(z);
+        let d1 = ((i + 1) as f64 / nf - cdf).abs();
+        let d2 = (cdf - i as f64 / nf).abs();
+        d_max = d_max.max(d1).max(d2);
+    }
+
+    let p = ks_p_value(d_max, n);
+
+    NonparametricResult {
+        test_name: "KS test (normality)", statistic: d_max, p_value: p,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Shapiro-Wilk normality test (Shapiro & Wilk 1965, Royston 1995)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Shapiro-Wilk test for normality.
+///
+/// W = (Σ aᵢ x_{(i)})² / Σ (xᵢ - x̄)².
+/// Valid for 3 ≤ n ≤ 5000.
+/// p-value via Royston 1995 approximation.
+pub fn shapiro_wilk(data: &[f64]) -> NonparametricResult {
+    let mut sorted: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let n = sorted.len();
+
+    if n < 3 {
+        return NonparametricResult {
+            test_name: "Shapiro-Wilk", statistic: f64::NAN, p_value: f64::NAN,
+        };
+    }
+
+    let nf = n as f64;
+    let mean = sorted.iter().sum::<f64>() / nf;
+    let ss: f64 = sorted.iter().map(|x| (x - mean) * (x - mean)).sum();
+
+    if ss < 1e-15 {
+        // All values identical — degenerate
+        return NonparametricResult {
+            test_name: "Shapiro-Wilk", statistic: 1.0, p_value: 1.0,
+        };
+    }
+
+    // Compute Shapiro-Wilk coefficients
+    let a = shapiro_wilk_coefficients(n);
+
+    // W = b² / SS, where b = Σ a_{n-1-i} (x_{(n-i)} - x_{(i+1)})
+    // a[n-1] is the extreme coefficient (largest magnitude, positive).
+    let half = n / 2;
+    let mut b = 0.0;
+    for i in 0..half {
+        b += a[n - 1 - i] * (sorted[n - 1 - i] - sorted[i]);
+    }
+    let w = (b * b / ss).min(1.0); // clamp floating-point overshoot
+
+    // P-value via Royston 1995 approximation
+    let p = shapiro_wilk_p_value(w, n);
+
+    NonparametricResult {
+        test_name: "Shapiro-Wilk", statistic: w, p_value: p,
+    }
+}
+
+/// D'Agostino-Pearson omnibus test for normality.
+///
+/// Combines skewness and kurtosis z-scores: K² = z_s² + z_k² ~ χ²(2).
+/// Better than Shapiro-Wilk for n > 5000.
+pub fn dagostino_pearson(data: &[f64]) -> NonparametricResult {
+    let clean: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
+    let n = clean.len();
+
+    if n < 8 {
+        return NonparametricResult {
+            test_name: "D'Agostino-Pearson", statistic: f64::NAN, p_value: f64::NAN,
+        };
+    }
+
+    let moments = crate::descriptive::moments_ungrouped(&clean);
+    let skew = moments.skewness(false); // bias-corrected skewness
+    let kurt = moments.kurtosis(true, false); // bias-corrected EXCESS kurtosis
+
+    let nf = n as f64;
+
+    // Skewness z-score: under normality, skewness ≈ 0
+    // Var(G1) ≈ 6(n-2) / ((n+1)(n+3))
+    let var_s = 6.0 * (nf - 2.0) / ((nf + 1.0) * (nf + 3.0));
+    let z_s = skew / var_s.sqrt();
+
+    // Kurtosis z-score: under normality, excess kurtosis ≈ 0
+    // Var(G2) ≈ 24n(n-2)(n-3) / ((n+1)²(n+3)(n+5))
+    let var_k = 24.0 * nf * (nf - 2.0) * (nf - 3.0)
+        / ((nf + 1.0) * (nf + 1.0) * (nf + 3.0) * (nf + 5.0));
+    let z_k = kurt / var_k.sqrt();
+
+    // Omnibus statistic
+    let k2 = z_s * z_s + z_k * z_k;
+    let p = 1.0 - crate::special_functions::chi2_cdf(k2, 2.0);
+
+    NonparametricResult {
+        test_name: "D'Agostino-Pearson", statistic: k2, p_value: p,
+    }
+}
+
+/// Shapiro-Wilk coefficients.
+///
+/// For n <= 5: tabled exact values (Shapiro & Wilk 1965).
+/// For n >= 6: normalized Blom expected order statistics (m_i / ||m||).
+/// This gives the correct W statistic — the Royston corrections
+/// only affect the p-value approximation, not the W computation.
+fn shapiro_wilk_coefficients(n: usize) -> Vec<f64> {
+    use crate::special_functions::normal_quantile;
+
+    match n {
+        3 => vec![-0.7071068, 0.0, 0.7071068],
+        4 => vec![-0.6872, -0.1677, 0.1677, 0.6872],
+        5 => vec![-0.6646, -0.2413, 0.0, 0.2413, 0.6646],
+        _ => {
+            // Blom approximation to expected normal order statistics
+            let nf = n as f64;
+            let m: Vec<f64> = (1..=n).map(|i| {
+                normal_quantile((i as f64 - 0.375) / (nf + 0.25))
+            }).collect();
+            let cn: f64 = m.iter().map(|x| x * x).sum();
+            let cn_sqrt = cn.sqrt();
+            m.iter().map(|mi| mi / cn_sqrt).collect()
+        }
+    }
+}
+
+/// Royston 1995 p-value approximation for the Shapiro-Wilk W statistic.
+///
+/// Uses normalized transform from Royston (1995, Applied Statistics 44:R94).
+fn shapiro_wilk_p_value(w: f64, n: usize) -> f64 {
+    use crate::special_functions::normal_cdf;
+
+    if w >= 1.0 { return 1.0; }
+    if w <= 0.0 { return 0.0; }
+
+    let nf = n as f64;
+    let ln_n = nf.ln();
+
+    if n <= 11 {
+        // Small sample: transform -ln(1-W) with power gamma
+        let gamma = -2.273 + 0.459 * nf;
+        if gamma <= 0.0 { return 0.5; }
+        let y = (-(1.0 - w).max(1e-15).ln()).powf(gamma);
+        let mu = -0.0006714 * nf.powi(3) + 0.025054 * nf.powi(2)
+            - 0.39978 * nf + 0.5440;
+        let log_sigma = -0.0020322 * nf.powi(3) + 0.062767 * nf.powi(2)
+            - 0.77857 * nf + 1.3822;
+        let sigma = log_sigma.exp();
+        let z = (y - mu) / sigma;
+        1.0 - normal_cdf(z)
+    } else {
+        // n >= 12: ln(1-W) transform, calibrated from Royston 1995
+        let y = (1.0 - w).max(1e-15).ln();
+
+        // Mu and sigma of ln(1-W) under normality, polynomial in ln(n)
+        // Calibrated to: mu(20)≈-3.1, mu(100)≈-4.7, mu(1000)≈-6.8
+        let mu = 0.0038915 * ln_n.powi(3) - 0.083751 * ln_n.powi(2)
+            - 0.31082 * ln_n - 1.5861;
+        let log_sigma = 0.0030302 * ln_n.powi(2) - 0.082676 * ln_n - 0.4803;
+        let sigma = log_sigma.exp();
+
+        // z > 0 → W too small → non-normal → small p
+        let z = (y - mu) / sigma;
+        1.0 - normal_cdf(z)
     }
 }
 
@@ -479,15 +779,14 @@ pub fn bootstrap_percentile(
             se: f64::NAN, n_resamples,
         };
     }
-    let mut rng_state = seed;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
     let mut boot_stats = Vec::with_capacity(n_resamples);
     let mut resample = vec![0.0; n];
 
     for _ in 0..n_resamples {
         // Resample with replacement
         for slot in resample.iter_mut() {
-            rng_state = lcg_next(rng_state);
-            let idx = (rng_state >> 16) as usize % n;
+            let idx = crate::rng::TamRng::next_range(&mut rng, n as u64) as usize;
             *slot = data[idx];
         }
         boot_stats.push(statistic(&resample));
@@ -524,14 +823,13 @@ pub fn permutation_test_mean_diff(
 
     let obs_diff = (mean_slice(x) - mean_slice(y)).abs();
 
-    let mut rng_state = seed;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
     let mut count_extreme = 0usize;
 
     for _ in 0..n_permutations {
         // Fisher-Yates shuffle
         for i in (1..n).rev() {
-            rng_state = lcg_next(rng_state);
-            let j = (rng_state >> 16) as usize % (i + 1);
+            let j = crate::rng::TamRng::next_range(&mut rng, (i + 1) as u64) as usize;
             combined.swap(i, j);
         }
         let perm_diff = (mean_slice(&combined[..n1]) - mean_slice(&combined[n1..])).abs();
@@ -545,12 +843,6 @@ pub fn permutation_test_mean_diff(
         statistic: obs_diff,
         p_value: p,
     }
-}
-
-/// Simple LCG pseudo-random: state' = state * 6364136223846793005 + 1442695040888963407
-#[inline]
-fn lcg_next(state: u64) -> u64 {
-    state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)
 }
 
 fn mean_slice(data: &[f64]) -> f64 {
@@ -830,6 +1122,64 @@ pub fn level_spacing_r_stat(sorted_values: &[f64]) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Correlation coefficients (pairwise, for auto-detection)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Pearson product-moment correlation between two equal-length slices.
+///
+/// r = Σ((x-x̄)(y-ȳ)) / √(Σ(x-x̄)² · Σ(y-ȳ)²)
+/// Returns NaN if either slice has zero variance.
+pub fn pearson_r(x: &[f64], y: &[f64]) -> f64 {
+    assert_eq!(x.len(), y.len());
+    let n = x.len() as f64;
+    let mx = x.iter().sum::<f64>() / n;
+    let my = y.iter().sum::<f64>() / n;
+    let mut num = 0.0;
+    let mut dx2 = 0.0;
+    let mut dy2 = 0.0;
+    for (xi, yi) in x.iter().zip(y.iter()) {
+        let dx = xi - mx;
+        let dy = yi - my;
+        num += dx * dy;
+        dx2 += dx * dx;
+        dy2 += dy * dy;
+    }
+    let denom = (dx2 * dy2).sqrt();
+    if denom < 1e-15 { f64::NAN } else { num / denom }
+}
+
+/// Phi coefficient: Pearson correlation for two binary (0/1) variables.
+///
+/// φ = (ad - bc) / √((a+b)(c+d)(a+c)(b+d))
+/// where a,b,c,d are the 2×2 contingency table entries.
+pub fn phi_coefficient(x: &[f64], y: &[f64]) -> f64 {
+    assert_eq!(x.len(), y.len());
+    let (mut a, mut b, mut c, mut d) = (0.0f64, 0.0, 0.0, 0.0);
+    for (xi, yi) in x.iter().zip(y.iter()) {
+        let xb = *xi > 0.5;
+        let yb = *yi > 0.5;
+        match (xb, yb) {
+            (true,  true)  => a += 1.0,
+            (true,  false) => b += 1.0,
+            (false, true)  => c += 1.0,
+            (false, false) => d += 1.0,
+        }
+    }
+    let denom = ((a + b) * (c + d) * (a + c) * (b + d)).sqrt();
+    if denom < 1e-15 { f64::NAN } else { (a * d - b * c) / denom }
+}
+
+/// Point-biserial correlation: Pearson r when one variable is binary (0/1).
+///
+/// r_pb = (M_1 - M_0) / s_total * √(n_1 * n_0 / n²)
+/// where M_1, M_0 are means of the continuous variable in each binary group.
+/// Equivalent to Pearson r between the binary indicator and the continuous variable.
+pub fn point_biserial(binary: &[f64], continuous: &[f64]) -> f64 {
+    // Pearson r is exactly point-biserial when one variable is binary.
+    pearson_r(binary, continuous)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -950,6 +1300,41 @@ mod tests {
         let sizes = [3, 3, 3];
         let r = kruskal_wallis(&data, &sizes);
         assert!(r.p_value < 0.05, "p={}", r.p_value);
+    }
+
+    // ── Dunn's test ──────────────────────────────────────────────────────
+
+    #[test]
+    fn dunn_equal_groups_non_significant() {
+        // Three identical groups — no pairwise differences
+        let data = [1.0, 2.0, 3.0,  1.0, 2.0, 3.0,  1.0, 2.0, 3.0];
+        let sizes = [3usize, 3, 3];
+        let comparisons = dunn_test(&data, &sizes);
+        assert_eq!(comparisons.len(), 3);
+        for c in &comparisons {
+            assert!(c.p_value > 0.1, "equal groups: p={:.4} should be large", c.p_value);
+        }
+    }
+
+    #[test]
+    fn dunn_separated_groups_detect_differences() {
+        // Groups 1 vs 3 clearly differ; groups 1 vs 2 borderline
+        let data = [1.0, 2.0, 3.0,  10.0, 11.0, 12.0,  100.0, 101.0, 102.0];
+        let sizes = [3usize, 3, 3];
+        let comparisons = dunn_test(&data, &sizes);
+        // pair (0, 2): groups 1 and 3 are very far apart — should be significant
+        let pair_02 = comparisons.iter().find(|c| c.group_i == 0 && c.group_j == 2).unwrap();
+        assert!(pair_02.p_value < 0.05,
+            "Groups 0 and 2 very separated: p={:.4} should be < 0.05", pair_02.p_value);
+    }
+
+    #[test]
+    fn dunn_correct_n_pairs() {
+        // k=4 → C(4,2) = 6 pairs
+        let data: Vec<f64> = (0..12).map(|i| i as f64).collect();
+        let sizes = [3usize, 3, 3, 3];
+        let comparisons = dunn_test(&data, &sizes);
+        assert_eq!(comparisons.len(), 6, "k=4 should give 6 pairs");
     }
 
     // ── KS tests ─────────────────────────────────────────────────────────
@@ -1190,5 +1575,179 @@ mod tests {
         // 3 values: 2 gaps, 1 r-value — should work
         let r = level_spacing_r_stat(&[0.0, 1.0, 3.0]);
         assert!(!r.is_nan());
+    }
+
+    // ── Regression: KS test standardized for shifted data ──────────────
+    // The old ks_test_normal always tested against N(0,1), so data with
+    // mean=100 would always reject. ks_test_normal_standardized fixes this.
+    #[test]
+    fn ks_standardized_shifted_normal_regression() {
+        // Generate N(100, 4) data — clearly normal but far from N(0,1)
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let data: Vec<f64> = (0..200).map(|_| {
+            crate::rng::sample_normal(&mut rng, 100.0, 2.0)
+        }).collect();
+
+        // Old function: tests against N(0,1) — MUST reject (data is nowhere near N(0,1))
+        let old_result = ks_test_normal(&data);
+        assert!(old_result.p_value < 0.001,
+            "ks_test_normal on N(100,4) data should reject (p={})", old_result.p_value);
+
+        // New function: standardizes first — should NOT reject (data is genuinely normal)
+        let new_result = ks_test_normal_standardized(&data);
+        assert!(new_result.p_value > 0.01,
+            "ks_test_normal_standardized on N(100,4) data should not reject (p={})", new_result.p_value);
+    }
+
+    #[test]
+    fn ks_standardized_non_normal_rejects() {
+        // Exponential data — clearly non-normal (right-skewed)
+        let mut rng = crate::rng::Xoshiro256::new(99);
+        let data: Vec<f64> = (0..500).map(|_| {
+            crate::rng::sample_exponential(&mut rng, 1.0)
+        }).collect();
+        let r = ks_test_normal_standardized(&data);
+        assert!(r.p_value < 0.05,
+            "Exponential data should reject normality (p={})", r.p_value);
+    }
+
+    #[test]
+    fn ks_standardized_degenerate() {
+        // All identical — degenerate case
+        let data = vec![5.0; 100];
+        let r = ks_test_normal_standardized(&data);
+        assert_eq!(r.statistic, 0.0);
+        assert_eq!(r.p_value, 1.0);
+    }
+
+    // ── Shapiro-Wilk ────────────────────────────────────────────────────
+
+    #[test]
+    fn shapiro_wilk_normal_data_passes() {
+        // Generate normal data — should not reject
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let data: Vec<f64> = (0..100).map(|_| {
+            crate::rng::sample_normal(&mut rng, 0.0, 1.0)
+        }).collect();
+        let r = shapiro_wilk(&data);
+        assert!(r.statistic > 0.9, "W={} should be near 1 for normal data", r.statistic);
+        assert!(r.p_value > 0.01, "p={} should not reject normal data", r.p_value);
+    }
+
+    #[test]
+    fn shapiro_wilk_uniform_rejects() {
+        // Uniform data — clearly not normal
+        let data: Vec<f64> = (0..100).map(|i| i as f64 / 100.0).collect();
+        let r = shapiro_wilk(&data);
+        assert!(r.statistic < 0.98, "W={} should be < 1 for non-normal", r.statistic);
+        assert!(r.p_value < 0.05, "p={} should reject uniform data", r.p_value);
+    }
+
+    #[test]
+    fn shapiro_wilk_exponential_rejects() {
+        // Exponential data — right-skewed, should reject normality
+        let mut rng = crate::rng::Xoshiro256::new(99);
+        let data: Vec<f64> = (0..200).map(|_| {
+            crate::rng::sample_exponential(&mut rng, 1.0)
+        }).collect();
+        let r = shapiro_wilk(&data);
+        assert!(r.p_value < 0.05, "p={} should reject exponential data", r.p_value);
+    }
+
+    #[test]
+    fn shapiro_wilk_small_n() {
+        // n=3: minimum valid size
+        let r = shapiro_wilk(&[1.0, 2.0, 3.0]);
+        assert!(r.statistic > 0.0 && r.statistic <= 1.0,
+            "W={} should be in (0, 1]", r.statistic);
+        assert!(!r.p_value.is_nan(), "p should not be NaN for n=3");
+
+        // n=2: too small
+        let r = shapiro_wilk(&[1.0, 2.0]);
+        assert!(r.statistic.is_nan());
+    }
+
+    #[test]
+    fn shapiro_wilk_degenerate() {
+        let r = shapiro_wilk(&[5.0; 50]);
+        assert_eq!(r.statistic, 1.0);
+        assert_eq!(r.p_value, 1.0);
+    }
+
+    // ── D'Agostino-Pearson ──────────────────────────────────────────────
+
+    #[test]
+    fn dagostino_normal_passes() {
+        // Use a large sample to reduce sampling variability in skew/kurtosis
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let data: Vec<f64> = (0..2000).map(|_| {
+            crate::rng::sample_normal(&mut rng, 0.0, 1.0)
+        }).collect();
+        let r = dagostino_pearson(&data);
+        assert!(r.p_value > 0.01, "p={} should not reject normal data (K2={})", r.p_value, r.statistic);
+    }
+
+    #[test]
+    fn dagostino_exponential_rejects() {
+        let mut rng = crate::rng::Xoshiro256::new(99);
+        let data: Vec<f64> = (0..500).map(|_| {
+            crate::rng::sample_exponential(&mut rng, 1.0)
+        }).collect();
+        let r = dagostino_pearson(&data);
+        assert!(r.p_value < 0.05, "p={} should reject exponential data", r.p_value);
+    }
+
+    #[test]
+    fn dagostino_small_n() {
+        let r = dagostino_pearson(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert!(r.statistic.is_nan(), "n < 8 should return NaN");
+    }
+
+    // ── Pairwise correlation coefficients ─────────────────────────────────
+
+    #[test]
+    fn pearson_r_perfect_positive() {
+        let x: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let y: Vec<f64> = x.iter().map(|v| v * 2.0 + 3.0).collect();
+        assert!((pearson_r(&x, &y) - 1.0).abs() < 1e-10, "perfect linear: r=1");
+    }
+
+    #[test]
+    fn pearson_r_perfect_negative() {
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = vec![5.0, 4.0, 3.0, 2.0, 1.0];
+        assert!((pearson_r(&x, &y) + 1.0).abs() < 1e-10, "anti-correlated: r=-1");
+    }
+
+    #[test]
+    fn pearson_r_zero_variance() {
+        let x = vec![2.0; 5];
+        let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        assert!(pearson_r(&x, &y).is_nan(), "constant x: r=NaN");
+    }
+
+    #[test]
+    fn phi_coefficient_perfect() {
+        // Perfect agreement: x=y
+        let x = vec![0.0, 0.0, 1.0, 1.0];
+        let y = vec![0.0, 0.0, 1.0, 1.0];
+        assert!((phi_coefficient(&x, &y) - 1.0).abs() < 1e-10, "identical binary: phi=1");
+    }
+
+    #[test]
+    fn phi_coefficient_zero() {
+        // Independent: 2x2 balanced
+        let x = vec![0.0, 0.0, 1.0, 1.0];
+        let y = vec![0.0, 1.0, 0.0, 1.0];
+        assert!(phi_coefficient(&x, &y).abs() < 1e-10, "independent binary: phi=0");
+    }
+
+    #[test]
+    fn point_biserial_monotone() {
+        // Higher binary group has higher continuous values → positive r_pb
+        let binary    = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let continuous = vec![1.0, 2.0, 3.0, 7.0, 8.0, 9.0];
+        let r = point_biserial(&binary, &continuous);
+        assert!(r > 0.9, "group 1 >> group 0: r_pb should be high, got {r}");
     }
 }

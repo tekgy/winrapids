@@ -322,14 +322,12 @@ pub fn lts_simple(x: &[f64], y: &[f64], n_trials: usize, seed: u64) -> LtsResult
     let mut best_ss = f64::INFINITY;
     let mut best_a = 0.0;
     let mut best_b = 0.0;
-    let mut rng_state = seed;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
 
     for _ in 0..n_trials {
         // Random pair
-        rng_state = lcg_next(rng_state);
-        let i1 = (rng_state >> 16) as usize % n;
-        rng_state = lcg_next(rng_state);
-        let mut i2 = (rng_state >> 16) as usize % n;
+        let i1 = crate::rng::TamRng::next_range(&mut rng, n as u64) as usize;
+        let mut i2 = crate::rng::TamRng::next_range(&mut rng, n as u64) as usize;
         if i2 == i1 { i2 = (i1 + 1) % n; }
 
         // Initial fit through two points
@@ -393,12 +391,6 @@ fn ols_subset(x: &[f64], y: &[f64], indices: &[usize]) -> (f64, f64) {
     (a, b)
 }
 
-/// Simple LCG for reproducibility.
-#[inline]
-fn lcg_next(state: u64) -> u64 {
-    state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Robust covariance (simplified MCD)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -427,14 +419,13 @@ pub fn mcd_2d(x: &[f64], y: &[f64], n_trials: usize, seed: u64) -> McdResult2D {
 
     let mut best_det = f64::INFINITY;
     let mut best_subset = Vec::new();
-    let mut rng_state = seed;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
 
     for _ in 0..n_trials {
         // Random 3-point initial subset (minimum for 2D)
         let mut indices: Vec<usize> = Vec::with_capacity(3);
         for _ in 0..30 {
-            rng_state = lcg_next(rng_state);
-            let idx = (rng_state >> 16) as usize % n;
+            let idx = crate::rng::TamRng::next_range(&mut rng, n as u64) as usize;
             if !indices.contains(&idx) { indices.push(idx); }
             if indices.len() == 3 { break; }
         }
@@ -528,7 +519,7 @@ fn subset_stats_2d(x: &[f64], y: &[f64], indices: &[usize]) -> (f64, f64, [f64; 
 pub fn medcouple(data: &[f64]) -> f64 {
     let sorted = sorted_nan_free(data);
     let n = sorted.len();
-    if n < 3 { return f64::NAN; }
+    if n < 2 { return f64::NAN; }
 
     let med = median(&sorted);
 

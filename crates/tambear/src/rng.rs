@@ -182,7 +182,8 @@ pub fn sample_normal(rng: &mut dyn TamRng, mu: f64, sigma: f64) -> f64 {
 
 /// Sample from Exponential(lambda). Mean = 1/lambda.
 pub fn sample_exponential(rng: &mut dyn TamRng, lambda: f64) -> f64 {
-    if lambda <= 0.0 { return f64::NAN; }
+    if lambda < 0.0 { return f64::NAN; }
+    if lambda == 0.0 { return f64::INFINITY; }
     loop {
         let u = rng.next_f64();
         if u > 1e-300 {

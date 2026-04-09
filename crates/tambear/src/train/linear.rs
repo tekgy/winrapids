@@ -182,13 +182,25 @@ fn column_grouping_id(n: usize, d: usize) -> DataId {
 /// Welford's `m2` representation for numerically stable variance.
 pub fn column_stats(x: &[f64], n: usize, d: usize) -> SufficientStatistics {
     assert_eq!(x.len(), n * d);
+    // Kahan compensated summation to reduce accumulation error for large n.
     let mut sums = vec![0.0f64; d];
     let mut sum_sqs = vec![0.0f64; d];
+    let mut comp_sum = vec![0.0f64; d];   // Kahan compensation for sums
+    let mut comp_sq = vec![0.0f64; d];    // Kahan compensation for sum_sqs
     for i in 0..n {
         for j in 0..d {
             let v = x[i * d + j];
-            sums[j] += v;
-            sum_sqs[j] += v * v;
+            // Kahan step for sum
+            let y = v - comp_sum[j];
+            let t = sums[j] + y;
+            comp_sum[j] = (t - sums[j]) - y;
+            sums[j] = t;
+            // Kahan step for sum of squares
+            let v2 = v * v;
+            let y2 = v2 - comp_sq[j];
+            let t2 = sum_sqs[j] + y2;
+            comp_sq[j] = (t2 - sum_sqs[j]) - y2;
+            sum_sqs[j] = t2;
         }
     }
     let counts = vec![n as f64; d];

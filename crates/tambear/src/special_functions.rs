@@ -869,6 +869,137 @@ pub fn cauchy_quantile(p: f64, x0: f64, gamma: f64) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Quantile functions (CDF inverses) via Brent's method
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Generic quantile via Brent's root finder on CDF(x) - p = 0.
+/// Internal helper used by t/chi2/f quantiles.
+fn quantile_via_brent<F: Fn(f64) -> f64>(cdf: F, p: f64, lo: f64, hi: f64) -> f64 {
+    if p <= 0.0 { return lo; }
+    if p >= 1.0 { return hi; }
+
+    // Brent's method: find x such that cdf(x) = p
+    let mut a = lo;
+    let mut b = hi;
+    let mut fa = cdf(a) - p;
+    let mut fb = cdf(b) - p;
+
+    // Expand bracket if needed
+    let mut expand = 0;
+    while fa * fb > 0.0 && expand < 50 {
+        if fa.abs() < fb.abs() {
+            a = a - 2.0 * (b - a);
+            fa = cdf(a) - p;
+        } else {
+            b = b + 2.0 * (b - a);
+            fb = cdf(b) - p;
+        }
+        expand += 1;
+    }
+    if fa * fb > 0.0 { return f64::NAN; }
+
+    // Brent's method iterations
+    let mut c = a;
+    let mut fc = fa;
+    let mut d = b - a;
+    let mut e = d;
+
+    for _ in 0..100 {
+        if fb * fc > 0.0 {
+            c = a;
+            fc = fa;
+            d = b - a;
+            e = d;
+        }
+        if fc.abs() < fb.abs() {
+            a = b; b = c; c = a;
+            fa = fb; fb = fc; fc = fa;
+        }
+
+        let tol = 2.0 * 1e-12 * b.abs() + 1e-12;
+        let m = 0.5 * (c - b);
+        if m.abs() <= tol || fb == 0.0 { return b; }
+
+        if e.abs() < tol || fa.abs() <= fb.abs() {
+            d = m;
+            e = d;
+        } else {
+            let s = fb / fa;
+            let (p_num, q_den) = if a == c {
+                (2.0 * m * s, 1.0 - s)
+            } else {
+                let q = fa / fc;
+                let r = fb / fc;
+                (s * (2.0 * m * q * (q - r) - (b - a) * (r - 1.0)),
+                 (q - 1.0) * (r - 1.0) * (s - 1.0))
+            };
+            let (p_adj, q_adj) = if p_num > 0.0 { (p_num, -q_den) } else { (-p_num, q_den) };
+            if 2.0 * p_adj < (3.0 * m * q_adj - (tol * q_adj).abs()).min((e * q_adj).abs()) {
+                e = d;
+                d = p_adj / q_adj;
+            } else {
+                d = m;
+                e = d;
+            }
+        }
+        a = b;
+        fa = fb;
+        if d.abs() > tol { b += d; } else { b += if m > 0.0 { tol } else { -tol }; }
+        fb = cdf(b) - p;
+    }
+    b
+}
+
+/// Student's t distribution quantile: find x such that P(T ≤ x) = p.
+///
+/// Uses Brent's method on the t CDF. For df → ∞, converges to normal quantile.
+pub fn t_quantile(p: f64, df: f64) -> f64 {
+    if p <= 0.0 { return f64::NEG_INFINITY; }
+    if p >= 1.0 { return f64::INFINITY; }
+    if df <= 0.0 { return f64::NAN; }
+    if (p - 0.5).abs() < 1e-15 { return 0.0; }
+
+    // For large df, use normal approximation as seed; otherwise use broad bracket
+    let seed = normal_quantile(p);
+    let half_width = 20.0_f64.max(seed.abs() + 10.0);
+    quantile_via_brent(|x| t_cdf(x, df), p, -half_width, half_width)
+}
+
+/// Chi-squared distribution quantile: find x such that P(X² ≤ x) = p.
+///
+/// Support is [0, ∞). Uses Wilson-Hilferty seed for bracket.
+pub fn chi2_quantile(p: f64, k: f64) -> f64 {
+    if p <= 0.0 { return 0.0; }
+    if p >= 1.0 { return f64::INFINITY; }
+    if k <= 0.0 { return f64::NAN; }
+
+    // Wilson-Hilferty approximation for initial bracket
+    // χ²_p ≈ k·(1 - 2/(9k) + z·sqrt(2/(9k)))³
+    let z = normal_quantile(p);
+    let h = 2.0 / (9.0 * k);
+    let seed = k * (1.0 - h + z * h.sqrt()).powi(3);
+    let seed = seed.max(1e-6);
+
+    let lo = 1e-10;
+    let hi = (seed * 10.0).max(k * 10.0 + 100.0);
+    quantile_via_brent(|x| chi2_cdf(x, k), p, lo, hi)
+}
+
+/// F distribution quantile: find x such that P(F ≤ x) = p.
+///
+/// Support is [0, ∞). Uses broad bracket; Brent converges fast.
+pub fn f_quantile(p: f64, d1: f64, d2: f64) -> f64 {
+    if p <= 0.0 { return 0.0; }
+    if p >= 1.0 { return f64::INFINITY; }
+    if d1 <= 0.0 || d2 <= 0.0 { return f64::NAN; }
+
+    let lo = 1e-10;
+    // F quantiles are usually < 100 for reasonable p; widen if needed
+    let hi = 1000.0;
+    quantile_via_brent(|x| f_cdf(x, d1, d2), p, lo, hi)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

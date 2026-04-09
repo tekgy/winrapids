@@ -1554,6 +1554,149 @@ pub fn cochran_q(data: &[f64], n_subjects: usize, n_treatments: usize) -> TestRe
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Power analysis (Cohen 1988)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// These functions use the normal approximation, which is adequate for
+// practical study design. For small n, the exact non-central t calculation
+// would give slightly different numbers, but the normal approximation is
+// standard in G*Power and scipy.stats.power.
+//
+// Effect sizes are Cohen's conventions:
+//   Small:  d=0.2, r=0.1, f=0.1
+//   Medium: d=0.5, r=0.3, f=0.25
+//   Large:  d=0.8, r=0.5, f=0.4
+
+/// Power of a one-sample t-test via normal approximation.
+///
+/// `effect_size`: Cohen's d = (μ - μ₀) / σ
+/// `n`: sample size
+/// `alpha`: significance level (e.g., 0.05)
+/// `two_sided`: if true, uses α/2 in each tail
+pub fn power_one_sample_t(effect_size: f64, n: f64, alpha: f64, two_sided: bool) -> f64 {
+    if n < 2.0 || alpha <= 0.0 || alpha >= 1.0 { return f64::NAN; }
+    let alpha_eff = if two_sided { alpha / 2.0 } else { alpha };
+    let z_crit = crate::special_functions::normal_quantile(1.0 - alpha_eff);
+    let ncp = effect_size * n.sqrt();
+    let power_upper = 1.0 - crate::special_functions::normal_cdf(z_crit - ncp);
+    let power = if two_sided {
+        power_upper + crate::special_functions::normal_cdf(-z_crit - ncp)
+    } else {
+        power_upper
+    };
+    power.clamp(0.0, 1.0)
+}
+
+/// Power of a two-sample t-test (equal n) via normal approximation.
+///
+/// `effect_size`: Cohen's d = (μ₁ - μ₂) / σ_pooled
+/// `n_per_group`: sample size per group
+pub fn power_two_sample_t(effect_size: f64, n_per_group: f64, alpha: f64, two_sided: bool) -> f64 {
+    if n_per_group < 2.0 { return f64::NAN; }
+    let alpha_eff = if two_sided { alpha / 2.0 } else { alpha };
+    let z_crit = crate::special_functions::normal_quantile(1.0 - alpha_eff);
+    // SE for mean difference with equal n: σ · sqrt(2/n) → ncp = d · sqrt(n/2)
+    let ncp = effect_size * (n_per_group / 2.0).sqrt();
+    let power_upper = 1.0 - crate::special_functions::normal_cdf(z_crit - ncp);
+    let power = if two_sided {
+        power_upper + crate::special_functions::normal_cdf(-z_crit - ncp)
+    } else {
+        power_upper
+    };
+    power.clamp(0.0, 1.0)
+}
+
+/// Required sample size for a one-sample t-test to achieve desired power.
+///
+/// Closed-form normal approximation: n = ((z_{α/2} + z_β) / d)²
+pub fn sample_size_one_sample_t(effect_size: f64, power: f64, alpha: f64, two_sided: bool) -> f64 {
+    if effect_size.abs() < 1e-15 || power <= 0.0 || power >= 1.0 { return f64::NAN; }
+    let alpha_eff = if two_sided { alpha / 2.0 } else { alpha };
+    let z_alpha = crate::special_functions::normal_quantile(1.0 - alpha_eff);
+    let z_beta = crate::special_functions::normal_quantile(power);
+    let n = ((z_alpha + z_beta) / effect_size.abs()).powi(2);
+    n.ceil()
+}
+
+/// Required sample size per group for a two-sample t-test.
+///
+/// n_per_group = 2·((z_{α/2} + z_β) / d)²
+pub fn sample_size_two_sample_t(effect_size: f64, power: f64, alpha: f64, two_sided: bool) -> f64 {
+    if effect_size.abs() < 1e-15 || power <= 0.0 || power >= 1.0 { return f64::NAN; }
+    let alpha_eff = if two_sided { alpha / 2.0 } else { alpha };
+    let z_alpha = crate::special_functions::normal_quantile(1.0 - alpha_eff);
+    let z_beta = crate::special_functions::normal_quantile(power);
+    let n = 2.0 * ((z_alpha + z_beta) / effect_size.abs()).powi(2);
+    n.ceil()
+}
+
+/// Power of a one-way ANOVA via non-central F (Patnaik approximation).
+///
+/// `f`: Cohen's f = sqrt(η² / (1 - η²))
+/// `k`: number of groups
+/// `n_per_group`: sample size per group (equal n)
+pub fn power_anova(f: f64, k: f64, n_per_group: f64, alpha: f64) -> f64 {
+    if k < 2.0 || n_per_group < 2.0 { return f64::NAN; }
+    let n_total = k * n_per_group;
+    let df1 = k - 1.0;
+    let df2 = n_total - k;
+    if df2 < 1.0 { return f64::NAN; }
+    let lambda = f * f * n_total;  // non-centrality
+    let f_crit = crate::special_functions::f_quantile(1.0 - alpha, df1, df2);
+    // Patnaik: non-central F ≈ ((df1 + λ)/df1) · central F(df1', df2)
+    // where df1' = (df1 + λ)² / (df1 + 2λ)
+    let scale = (df1 + lambda) / df1;
+    let threshold = f_crit / scale;
+    let df1_adj = (df1 + lambda).powi(2) / (df1 + 2.0 * lambda);
+    let power = 1.0 - crate::special_functions::f_cdf(threshold, df1_adj, df2);
+    power.clamp(0.0, 1.0)
+}
+
+/// Required sample size per group for one-way ANOVA via binary search.
+pub fn sample_size_anova(f: f64, k: f64, power: f64, alpha: f64) -> f64 {
+    if k < 2.0 || f.abs() < 1e-15 || power <= 0.0 || power >= 1.0 { return f64::NAN; }
+    let mut lo = 2.0_f64;
+    let mut hi = 10000.0_f64;
+    for _ in 0..50 {
+        let mid = (lo + hi) / 2.0;
+        let p = power_anova(f, k, mid, alpha);
+        if p < power { lo = mid; } else { hi = mid; }
+        if hi - lo < 1.0 { break; }
+    }
+    hi.ceil()
+}
+
+/// Power of a correlation test (H₀: ρ = 0) via Fisher's z-transform.
+///
+/// z = atanh(r) ~ N(atanh(ρ), 1/(n-3))
+pub fn power_correlation(r: f64, n: f64, alpha: f64, two_sided: bool) -> f64 {
+    if n < 4.0 || r.abs() >= 1.0 { return f64::NAN; }
+    let alpha_eff = if two_sided { alpha / 2.0 } else { alpha };
+    let z_crit = crate::special_functions::normal_quantile(1.0 - alpha_eff);
+    let z_r = 0.5 * ((1.0 + r) / (1.0 - r)).ln(); // atanh(r)
+    let se = 1.0 / (n - 3.0).sqrt();
+    let ncp = z_r / se;
+    let power_upper = 1.0 - crate::special_functions::normal_cdf(z_crit - ncp);
+    let power = if two_sided {
+        power_upper + crate::special_functions::normal_cdf(-z_crit - ncp)
+    } else {
+        power_upper
+    };
+    power.clamp(0.0, 1.0)
+}
+
+/// Required sample size for a correlation test.
+pub fn sample_size_correlation(r: f64, power: f64, alpha: f64, two_sided: bool) -> f64 {
+    if r.abs() < 1e-15 || r.abs() >= 1.0 || power <= 0.0 || power >= 1.0 { return f64::NAN; }
+    let alpha_eff = if two_sided { alpha / 2.0 } else { alpha };
+    let z_alpha = crate::special_functions::normal_quantile(1.0 - alpha_eff);
+    let z_beta = crate::special_functions::normal_quantile(power);
+    let z_r = 0.5 * ((1.0 + r) / (1.0 - r)).ln();
+    let n = ((z_alpha + z_beta) / z_r).powi(2) + 3.0;
+    n.ceil()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

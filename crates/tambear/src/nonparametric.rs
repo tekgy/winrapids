@@ -1000,6 +1000,223 @@ pub fn silverman_bandwidth(data: &[f64]) -> f64 {
     0.9 * spread * n.powf(-0.2)
 }
 
+/// Scott's rule of thumb bandwidth (Scott 1979): h = 1.06·σ·n^(-1/5).
+///
+/// Assumes approximately normal distribution. Less robust to outliers than Silverman,
+/// but simpler and a common default in R and scipy.
+pub fn scott_bandwidth(data: &[f64]) -> f64 {
+    let n = data.len() as f64;
+    if n < 2.0 { return 1.0; }
+    let std = crate::descriptive::moments_ungrouped(data).std(1);
+    if std <= 0.0 { return 1.0; }
+    1.06 * std * n.powf(-0.2)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Optimal bin count rules for histograms
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Sturges' rule (1926): k = ⌈log₂(n)⌉ + 1.
+///
+/// Assumes normal distribution. Over-smooths for large n or skewed data.
+/// Default in R's `hist()`. Returns 1 for n < 2.
+pub fn sturges_bins(n: usize) -> usize {
+    if n < 2 { return 1; }
+    ((n as f64).log2().ceil() as usize) + 1
+}
+
+/// Scott's rule for bin count: k = ⌈(max - min) / h⌉ where h = 3.5·σ/n^(1/3).
+///
+/// Assumes normal. Better than Sturges for larger n.
+pub fn scott_bins(data: &[f64]) -> usize {
+    let n = data.len();
+    if n < 2 { return 1; }
+    let std = crate::descriptive::moments_ungrouped(data).std(1);
+    if std <= 0.0 { return 1; }
+    let h = 3.5 * std * (n as f64).powf(-1.0 / 3.0);
+    let (min, max) = data.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &x| {
+        if x.is_nan() { (lo, hi) } else { (lo.min(x), hi.max(x)) }
+    });
+    let range = max - min;
+    if range <= 0.0 || h <= 0.0 { return 1; }
+    (range / h).ceil() as usize
+}
+
+/// Freedman-Diaconis rule: k = ⌈(max - min) / h⌉ where h = 2·IQR/n^(1/3).
+///
+/// Robust to outliers (uses IQR instead of σ). Default in numpy's `histogram_bin_edges`.
+pub fn freedman_diaconis_bins(data: &[f64]) -> usize {
+    let n = data.len();
+    if n < 2 { return 1; }
+    let mut sorted: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let ns = sorted.len();
+    if ns < 2 { return 1; }
+    let q1 = quantile_sorted(&sorted, 0.25);
+    let q3 = quantile_sorted(&sorted, 0.75);
+    let iqr = q3 - q1;
+    if iqr <= 0.0 { return sturges_bins(ns); } // fallback for constant-ish data
+    let h = 2.0 * iqr * (ns as f64).powf(-1.0 / 3.0);
+    let range = sorted[ns - 1] - sorted[0];
+    if range <= 0.0 || h <= 0.0 { return 1; }
+    (range / h).ceil() as usize
+}
+
+/// Doane's rule (1976): extends Sturges for skewed data.
+///
+/// k = 1 + log₂(n) + log₂(1 + |g₁|/σ_{g₁}) where g₁ = sample skewness,
+/// σ_{g₁} = √(6(n-2)/((n+1)(n+3))).
+pub fn doane_bins(data: &[f64]) -> usize {
+    let n = data.len();
+    if n < 3 { return 1; }
+    let nf = n as f64;
+    let moments = crate::descriptive::moments_ungrouped(data);
+    let skew = moments.skewness(false);
+    let sigma_g1 = (6.0 * (nf - 2.0) / ((nf + 1.0) * (nf + 3.0))).sqrt();
+    if sigma_g1 < 1e-15 { return sturges_bins(n); }
+    let k = 1.0 + nf.log2() + (1.0 + skew.abs() / sigma_g1).log2();
+    k.ceil() as usize
+}
+
+/// Binning rule for automatic histogram selection.
+#[derive(Debug, Clone, Copy)]
+pub enum BinRule {
+    /// Sturges' rule (default in R).
+    Sturges,
+    /// Scott's rule (assumes normal).
+    Scott,
+    /// Freedman-Diaconis (robust to outliers).
+    FreedmanDiaconis,
+    /// Doane's rule (handles skewness).
+    Doane,
+    /// Explicit bin count.
+    Fixed(usize),
+}
+
+/// Histogram result.
+#[derive(Debug, Clone)]
+pub struct Histogram {
+    /// Bin edges: length = counts.len() + 1. `edges[i]..edges[i+1]` is bin i.
+    pub edges: Vec<f64>,
+    /// Counts per bin.
+    pub counts: Vec<u64>,
+    /// Number of NaN values skipped.
+    pub nan_count: usize,
+}
+
+/// Compute a histogram with automatic bin count selection.
+///
+/// `data`: input values (NaN values are skipped and counted separately).
+/// `rule`: bin-count rule (Sturges/Scott/FreedmanDiaconis/Doane/Fixed).
+///
+/// Returns equal-width bins spanning [min, max] of the data.
+pub fn histogram_auto(data: &[f64], rule: BinRule) -> Histogram {
+    let clean: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
+    let nan_count = data.len() - clean.len();
+    let n = clean.len();
+
+    if n == 0 {
+        return Histogram { edges: vec![], counts: vec![], nan_count };
+    }
+
+    let k = match rule {
+        BinRule::Sturges => sturges_bins(n),
+        BinRule::Scott => scott_bins(&clean),
+        BinRule::FreedmanDiaconis => freedman_diaconis_bins(&clean),
+        BinRule::Doane => doane_bins(&clean),
+        BinRule::Fixed(k) => k.max(1),
+    };
+
+    let (min, max) = clean.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &x| {
+        (lo.min(x), hi.max(x))
+    });
+
+    // Handle degenerate case: all same value → single bin
+    if (max - min).abs() < 1e-15 {
+        return Histogram {
+            edges: vec![min - 0.5, max + 0.5],
+            counts: vec![n as u64],
+            nan_count,
+        };
+    }
+
+    let width = (max - min) / k as f64;
+    let mut edges = Vec::with_capacity(k + 1);
+    for i in 0..=k { edges.push(min + i as f64 * width); }
+    // Nudge the last edge up slightly to ensure max falls in the last bin
+    *edges.last_mut().unwrap() = max + width * 1e-9;
+
+    let mut counts = vec![0u64; k];
+    for &x in &clean {
+        let idx = (((x - min) / width) as usize).min(k - 1);
+        counts[idx] += 1;
+    }
+
+    Histogram { edges, counts, nan_count }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Empirical Cumulative Distribution Function (ECDF)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// ECDF result: sorted data points plus cumulative probabilities.
+#[derive(Debug, Clone)]
+pub struct Ecdf {
+    /// Sorted unique data values (NaN removed).
+    pub x: Vec<f64>,
+    /// Cumulative probability at each x: F̂(x[i]) = (i+1)/n.
+    pub p: Vec<f64>,
+}
+
+impl Ecdf {
+    /// Evaluate the ECDF at a query point via binary search.
+    /// F̂(q) = (number of x_i ≤ q) / n.
+    pub fn eval(&self, q: f64) -> f64 {
+        if self.x.is_empty() { return f64::NAN; }
+        if q < self.x[0] { return 0.0; }
+        if q >= *self.x.last().unwrap() { return 1.0; }
+        // Binary search for last x <= q
+        let mut lo = 0usize;
+        let mut hi = self.x.len();
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.x[mid] <= q { lo = mid + 1; } else { hi = mid; }
+        }
+        self.p[lo - 1]
+    }
+}
+
+/// Compute the empirical CDF of a sample.
+///
+/// F̂(x) = (1/n) Σ 1(X_i ≤ x). Returns sorted x and cumulative p = (i+1)/n.
+pub fn ecdf(data: &[f64]) -> Ecdf {
+    let mut sorted: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let n = sorted.len();
+    let p: Vec<f64> = (1..=n).map(|i| i as f64 / n as f64).collect();
+    Ecdf { x: sorted, p }
+}
+
+/// Dvoretzky-Kiefer-Wolfowitz (DKW) confidence band for the ECDF.
+///
+/// With probability ≥ 1-α, the true CDF F lies within F̂ ± ε_n where
+/// ε_n = √(ln(2/α) / (2n)).
+///
+/// This band is **uniform** over all x (simultaneously valid), unlike pointwise CIs.
+///
+/// Returns (lower, upper) bands: F_lower[i] = max(F̂(x_i) - ε, 0),
+///                               F_upper[i] = min(F̂(x_i) + ε, 1).
+pub fn ecdf_confidence_band(ecdf: &Ecdf, alpha: f64) -> (Vec<f64>, Vec<f64>) {
+    let n = ecdf.x.len();
+    if n == 0 || alpha <= 0.0 || alpha >= 1.0 {
+        return (vec![f64::NAN; n], vec![f64::NAN; n]);
+    }
+    let eps = ((2.0_f64 / alpha).ln() / (2.0 * n as f64)).sqrt();
+    let lower: Vec<f64> = ecdf.p.iter().map(|&p| (p - eps).max(0.0)).collect();
+    let upper: Vec<f64> = ecdf.p.iter().map(|&p| (p + eps).min(1.0)).collect();
+    (lower, upper)
+}
+
 fn quantile_sorted(sorted: &[f64], q: f64) -> f64 {
     let n = sorted.len();
     if n == 0 { return f64::NAN; }

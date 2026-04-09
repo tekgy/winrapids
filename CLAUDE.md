@@ -227,37 +227,6 @@ Every primitive is worked up as if preparing for a Nature paper. Not metaphorica
 
 **Rationale**: the value proposition is correctness and depth, not velocity. A library that gets the answer wrong once loses its users forever. A library that finds bugs in its competitors becomes the reference. The work of proving every implementation is the product — not overhead on top of the product.
 
-### 11. Auto-detection with override transparency
-
-Primitives don't just compute — they think. When a user asks for a generic thing ("correlation", "regression", "clustering", "anova"), the pipeline runs the diagnostics that a senior statistician would run before picking a method, picks the appropriate variant, runs it, and reports *both* the decision and its rationale in the output.
-
-Example — user asks for `correlation(x, y)`:
-1. Pipeline pre-checks normality (Shapiro-Wilk for n<5000, D'Agostino-Pearson for larger).
-2. Checks variable type (continuous / ordinal / binary / count).
-3. Checks outlier influence (Mahalanobis, leverage).
-4. Picks: Pearson (both normal continuous), Spearman (non-normal continuous), Kendall tau-b (ordinal with ties), polychoric (both ordinal categorical), tetrachoric (both binary), point-biserial (one binary one continuous), distance correlation (nonlinear dependence), etc.
-5. Runs the selected method.
-6. **Writes both into the output**: what was run, the diagnostic values that justified the choice, what tambear would have run absent any override, and — if the user forced a different method via `using()` — runs *both* and reports both so the user sees exactly what their override cost them.
-
-Output structure is the contract: `TbsStepAdvice` carries `recommended` (method + reason), `user_override` (method + which `using()` key + warning if the override is statistically questionable), and `diagnostics` (the tests that were run and what they concluded). The user can trust our default *or* override with full visibility into the trade-off. Neither silently wins.
-
-**Rationale**: domain expertise is rare and expensive. Every pipeline should act like a $10M/year quant/statistician sat next to the user and whispered "your data is non-normal, you should use Spearman here" before execution. When the user disagrees, they disagree with their eyes open. This is what makes tambear *smart*, not just fast.
-
-### 12. Expert pipelines as persisted defaults
-
-Common workflows ship as curated pipelines — not frameworks to build pipelines, but *specific persisted pipelines* tuned by the equivalent of a decade-experienced domain expert hired to build that one thing from scratch. Users load them, run them, and get the expert's workflow with every diagnostic, every sanity check, every auto-detection, every parameter default selected for scientific defensibility rather than convenience.
-
-Examples of persisted pipelines we own:
-- `two_group_comparison(a, b)` — normality check → variance homogeneity → pick t-test variant (Student / Welch / Mann-Whitney / permutation) → effect size (Cohen's d / Hedges' g / Cliff's delta) → power analysis → CI → robustness check
-- `regression_diagnostics(X, y)` — fit → residual analysis → homoscedasticity (Breusch-Pagan, White) → normality of residuals → autocorrelation (Durbin-Watson, Breusch-Godfrey) → multicollinearity (VIF) → influential observations (Cook's, leverage, DFFITS) → recommended transformations or robust variants
-- `time_series_analysis(y)` — stationarity (ADF + KPSS confirmatory) → structural break detection → seasonality (STL, Fourier) → ACF/PACF → model order (AIC/BIC/HQIC) → fit → residual diagnostics → forecast intervals
-- `clustering_workflow(X)` — scale check → clustering tendency (Hopkins) → optimal K (elbow, gap statistic, silhouette) → method comparison (K-means / hierarchical / DBSCAN / GMM) → stability (bootstrap cluster agreement) → validation metrics
-- `survival_analysis(time, event, covariates)` — KM curves → log-rank → Cox PH fit → PH assumption test (Schoenfeld) → time-varying coefficients if violated → competing risks → AFT alternative
-
-Each persisted pipeline is version-controlled, has its own test suite against published benchmark datasets, and ships as a first-class artifact. Users call one function and get a workup that a professional statistician would charge serious money for.
-
-**Rationale**: most users don't need a toolkit to assemble their own workflow — they need the workflow an expert would build. Shipping the expert's workflow as the default is how we deliver the value of the expertise at scale. The toolkit stays available for people who want to assemble their own; the pipeline is what most people load.
-
 ### The Filter Test
 
 Before shipping any primitive, confirm:
@@ -270,14 +239,47 @@ Before shipping any primitive, confirm:
 - [ ] Benchmarked against every competing implementation (bit-perfect or bug filed upstream)
 - [ ] Benchmarked at multiple scales up through billion/trillion-row synthetic data
 - [ ] Gold-standard oracle against mpmath/SymPy/closed-form at high precision
+- [ ] Adversarial test suite exercises edge cases (singular, collinear, heavy tail, ties, missing, ill-conditioned)
 - [ ] Hardware details hidden behind tambear-wgpu / tam-gpu
 - [ ] Runs on CPU, GPU, and future accelerators with no code changes
 - [ ] Honestly declares its Kingdom (A/B/C/D) so TAM knows how to schedule it
-- [ ] Adversarial test suite exercises edge cases (singular, collinear, heavy tail, ties, missing, ill-conditioned)
-- [ ] If part of an expert pipeline: auto-detection diagnostics wired, `using()` override transparent in output
 - [ ] Is one more piece of "every math, our way, everywhere, provably correct"
 
 If all pass, ship. If any fail, fix first.
+
+---
+
+## Layers Above the Math
+
+Tambear's primitives are pure math. They do one thing, do it correctly, and return a result. That's it — no opinions, no diagnostics, no method-switching, no workflow assembly. A primitive like `spearman_correlation(x, y)` just computes Spearman's ρ.
+
+The *smart* parts of tambear — the parts that make it feel like a $10M/year quant is sitting next to the user — live in **separate layers built on top of the math, not inside it**. These layers compose primitives, tune parameters, pick methods, and enforce rigor. They are first-class products in their own right, but they are categorically distinct from the math primitives below them. This separation is the reason the primitives stay clean, reusable, and composable across every possible higher-level consumer.
+
+### The layers
+
+**Layer 0 — Math primitives** (the Tambear Contract above).
+Pure functions. One method per entry point. Accumulate + gather decomposition. Shareable intermediates. Benchmarked, oracled, adversarial-tested. No knowledge of pipelines, no knowledge of diagnostics, no knowledge of other primitives. `spearman_correlation(x, y) -> f64`.
+
+**Layer 1 — Diagnostics and auto-selection**.
+A separate layer that knows *which primitive to call for which data*. When a user asks for the generic thing (`correlation(x, y)`), Layer 1 runs the diagnostics a senior statistician would run (normality check, variable-type check, outlier influence, ties), picks the appropriate primitive (Pearson / Spearman / Kendall τ-b / polychoric / tetrachoric / point-biserial / distance correlation), calls it, and reports the decision + rationale in a structured output (`TbsStepAdvice`: `recommended`, `user_override`, `diagnostics`). Layer 1 is built *out of* Layer 0 primitives — it calls `shapiro_wilk`, `pearson_r`, `spearman_r`, etc. — but the primitives themselves know nothing about Layer 1.
+
+**Layer 2 — `using()` override transparency**.
+Built on Layer 1. When a user forces a specific method via `using(method="pearson")`, Layer 2 still runs the Layer 1 recommendation *and* the user's choice, and writes both results into the output alongside a warning if the override is statistically questionable. The user sees what they chose, what tambear would have chosen, and the numerical difference — so they disagree with their eyes open. Neither silently wins. Layer 2 is a policy layer that wraps Layer 1; the underlying math primitives are called twice from the same diagnostic-backed infrastructure.
+
+**Layer 3 — Expert pipelines as persisted defaults**.
+Curated workflows shipped as first-class artifacts — `two_group_comparison`, `regression_diagnostics`, `time_series_analysis`, `clustering_workflow`, `survival_analysis`, etc. Each is a composition of Layer 0 primitives orchestrated through Layer 1 diagnostics and Layer 2 override handling, tuned as if a decade-experienced domain expert was hired to build that one workflow from scratch. Users load a pipeline and run it; inside, it walks the decision tree (normality → variance homogeneity → t-test variant → effect size → power → CI → robustness) calling primitives as needed. Each pipeline has its own version, its own test suite against published benchmark datasets, and its own oracle against whatever the gold-standard workflow in that domain looks like. The pipeline is the product most users load — the toolkit stays available for people who want to assemble their own.
+
+**Layer 4 — `.discover()` / superposition auto-discovery**.
+The layer that runs *every plausible method simultaneously*, keeps all results in superposition, and reports structural fingerprints of agreement/disagreement across methods. When the user wants exploration rather than a single answer, Layer 4 surfaces "which views agree, which disagree, and what does that tell us about the data?" Layer 4 is the opposite philosophical stance from Layer 1 (Layer 1 picks; Layer 4 refuses to pick) but uses the same Layer 0 primitives underneath. Both layers exist because both stances are valid depending on the user's question.
+
+### Why the separation matters
+
+- **Primitives stay reusable**. `spearman_correlation` can be called from Layer 1 (pipeline picked it), Layer 2 (user forced it), Layer 3 (regression pipeline needs a rank correlation on residuals), Layer 4 (superposition ensemble), or a user's own custom code. Zero coupling to any one consumer.
+- **Layers can be swapped or extended**. A new diagnostic layer that prefers Bayesian reasoning over frequentist can be built without touching a single math primitive. A new pipeline genre (e.g. experimental-design workflows) is just a new Layer 3 module that calls existing Layer 0 math.
+- **Testing is cleaner**. A primitive is tested against its math. A diagnostic layer is tested against whether it picks the right primitive. A pipeline is tested against whether it produces the expert's workflow. Each layer has its own oracle.
+- **The Contract stays scoped**. The Filter Test applies to Layer 0 only. Layer 1/2/3/4 have their own separate quality gates — they don't need to be bit-perfect vs scipy (because they're workflow orchestration, not math), but they do need to make defensible methodological choices, match expert judgment on benchmark scenarios, and preserve override transparency.
+
+**The rule**: if you find yourself wanting a math primitive to "know about" normality checks, method switching, expert defaults, or diagnostic wiring — stop. That knowledge belongs in a layer above. The primitive stays pure. The layer above composes it.
 
 ---
 

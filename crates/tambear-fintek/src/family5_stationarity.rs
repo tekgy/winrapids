@@ -5,16 +5,20 @@
 
 use tambear::time_series::{adf_test, kpss_test, ljung_box, AdfResult, KpssResult, LjungBoxResult};
 
-/// Classification result from combined ADF + KPSS.
+/// Classification result from combined ADF + KPSS confirmatory test pair.
+///
+/// Contract: ADF rejects unit root → series likely stationary.
+/// KPSS rejects stationarity → series likely has a unit root.
+/// Agreement → confident classification. Disagreement → inconclusive.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StationarityClass {
-    /// Both tests agree: stationary.
+    /// Both tests agree: stationary (ADF rejects unit root, KPSS does not reject).
     Stationary,
-    /// Both tests agree: non-stationary.
+    /// Both tests agree: non-stationary (KPSS rejects stationarity, ADF does not reject).
     NonStationary,
-    /// ADF rejects unit root but KPSS rejects stationarity: trend-stationary after detrending.
-    TrendStationary,
-    /// Inconclusive.
+    /// Either contradictory evidence (both reject) or low power (neither rejects).
+    /// True trend-stationarity requires ADF-with-trend + KPSS-trend, which is a
+    /// separate configuration not exposed by the basic `stationarity()` function.
     Inconclusive,
 }
 
@@ -61,11 +65,23 @@ pub fn stationarity(data: &[f64], n_lags: usize) -> StationarityResult {
     // KPSS rejects stationarity when stat > critical_5pct
     let kpss_rejects = kpss.statistic > kpss.critical_5pct;
 
+    // Confirmatory pair (ADF + KPSS) classification:
+    // - (ADF rejects, KPSS does not) → stationary (both agree)
+    // - (ADF doesn't reject, KPSS rejects) → non-stationary (both agree)
+    // - (ADF doesn't reject, KPSS doesn't reject) → inconclusive (low power)
+    // - (ADF rejects, KPSS rejects) → CONTRADICTORY evidence
+    //
+    // The contradictory case CANNOT be labeled "trend-stationary" here because we
+    // run ADF without a trend term (`adf_test(data, n_lags)` uses constant only).
+    // True trend-stationarity requires `adf_with_trend` and a separate KPSS-trend
+    // call. With our current configuration, both rejecting means contradictory
+    // evidence — most often a sign that the series has a deterministic trend that
+    // neither test was configured to model. Label it Inconclusive.
     let classification = match (adf_rejects, kpss_rejects) {
         (true, false)  => StationarityClass::Stationary,
         (false, true)  => StationarityClass::NonStationary,
-        (true, true)   => StationarityClass::TrendStationary,
-        (false, false) => StationarityClass::Inconclusive,
+        (true, true)   => StationarityClass::Inconclusive,  // contradictory
+        (false, false) => StationarityClass::Inconclusive,  // low power
     };
 
     StationarityResult {

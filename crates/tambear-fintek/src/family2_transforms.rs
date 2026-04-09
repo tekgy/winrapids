@@ -100,10 +100,23 @@ pub fn delta_direction(x: &[f64], lag: usize) -> Vec<f64> {
     out
 }
 
-/// Elapsed seconds within the current day.
+/// Elapsed minutes within the current day.
 ///
 /// `timestamps_ns`: nanoseconds since epoch (or any nanosecond basis).
-/// Returns seconds in [0, 86400).
+/// Returns minutes in [0, 1440). Matches fintek's `Elapsed` leaf
+/// (`leaves/elapsed.rs`, K01P02C02R04) which emits F32 minutes.
+pub fn elapsed_minutes_of_day(timestamps_ns: &[u64]) -> Vec<f32> {
+    const DAY_NS: u64 = 86_400_000_000_000;
+    const MINUTE_NS: f64 = 60.0 * 1e9;
+    timestamps_ns
+        .iter()
+        .map(|&t| (((t % DAY_NS) as f64) / MINUTE_NS) as f32)
+        .collect()
+}
+
+/// Deprecated alias kept for callers that haven't migrated. Returns seconds (f64).
+/// Prefer [`elapsed_minutes_of_day`] which matches fintek's contract exactly.
+#[deprecated(note = "use elapsed_minutes_of_day to match fintek's Elapsed leaf")]
 pub fn elapsed_seconds_of_day(timestamps_ns: &[u64]) -> Vec<f64> {
     const DAY_NS: u64 = 86_400_000_000_000;
     timestamps_ns.iter().map(|&t| ((t % DAY_NS) as f64) / 1e9).collect()
@@ -235,16 +248,21 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_seconds_basic() {
+    fn elapsed_minutes_basic() {
         // Midnight = 0
         let t0: u64 = 1_234_567_890 * 1_000_000_000; // some epoch seconds
         let rounded_to_midnight = (t0 / (86_400 * 1_000_000_000)) * (86_400 * 1_000_000_000);
-        let e = elapsed_seconds_of_day(&[rounded_to_midnight]);
-        assert!(e[0] < 1e-6);
-        // 12 hours later
+        let e = elapsed_minutes_of_day(&[rounded_to_midnight]);
+        assert!(e[0] < 1e-3);
+        // 12 hours later = 720 minutes
         let noon = rounded_to_midnight + 43_200 * 1_000_000_000;
-        let e = elapsed_seconds_of_day(&[noon]);
-        assert!((e[0] - 43_200.0).abs() < 1e-3);
+        let e = elapsed_minutes_of_day(&[noon]);
+        assert!((e[0] - 720.0).abs() < 1e-2,
+            "noon should be 720 minutes since midnight, got {}", e[0]);
+        // 23:59 = 1439 minutes
+        let almost_midnight = rounded_to_midnight + (23 * 3600 + 59 * 60) as u64 * 1_000_000_000;
+        let e = elapsed_minutes_of_day(&[almost_midnight]);
+        assert!((e[0] - 1439.0).abs() < 1e-2);
     }
 
     #[test]

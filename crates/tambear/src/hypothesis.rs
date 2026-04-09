@@ -939,11 +939,16 @@ pub fn cooks_distance(
     let pf = p as f64;
 
     // Cook's distance
-    let cooks_distance: Vec<f64> = (0..n).map(|i| {
-        let h = leverage[i].clamp(0.0, 1.0 - 1e-10);
-        let e = residuals[i];
-        (e * e * h) / (pf * mse * (1.0 - h) * (1.0 - h))
-    }).collect();
+    let cooks_distance: Vec<f64> = if mse < 1e-300 {
+        // All residuals effectively zero — no influence possible
+        vec![0.0; n]
+    } else {
+        (0..n).map(|i| {
+            let h = leverage[i].clamp(0.0, 1.0 - 1e-10);
+            let e = residuals[i];
+            (e * e * h) / (pf * mse * (1.0 - h) * (1.0 - h))
+        }).collect()
+    };
 
     let threshold = 4.0 / n as f64;
     let n_influential = cooks_distance.iter().filter(|&&d| d > threshold).count();

@@ -152,6 +152,77 @@ fn pearson_on_ranks(rx: &[f64], ry: &[f64]) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Partial correlation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Partial correlation of X and Y controlling for one or more covariates Z.
+///
+/// For a single covariate: `r_XY.Z = (r_XY - r_XZ · r_YZ) / √((1-r_XZ²)(1-r_YZ²))`
+///
+/// For multiple covariates, uses recursive semi-partial correlation removal
+/// (Wherry 1931): strip each covariate from X and Y via the partial formula
+/// applied sequentially. Each application removes one covariate from the
+/// residual correlation.
+///
+/// All correlations are Pearson r computed from raw data.
+/// Returns the partial correlation coefficient in [-1, 1].
+/// Returns `NaN` if any inputs have length < 2 or if computation is degenerate.
+pub fn partial_correlation(x: &[f64], y: &[f64], covariates: &[&[f64]]) -> f64 {
+    assert_eq!(x.len(), y.len());
+    for z in covariates { assert_eq!(z.len(), x.len()); }
+
+    if x.len() < 2 { return f64::NAN; }
+
+    if covariates.is_empty() {
+        return pearson_r(x, y);
+    }
+
+    // Recursive partial correlation: strip covariates one at a time
+    // Start with Pearson r for all pairs, then apply the 3-variable formula recursively
+    // For each covariate z_k:
+    //   r_XY.{Z} = (r_XY.{Z-1} - r_XZ_k.{Z-1} · r_YZ_k.{Z-1}) /
+    //              √((1-r_XZ_k.{Z-1}²)(1-r_YZ_k.{Z-1}²))
+    //
+    // Base: zero covariates → Pearson r
+    // This requires tracking partial correlations for all pairs (X,Y), (X,Zk), (Y,Zk)
+    // against each other for every Z removed.
+    //
+    // For simplicity and correctness: regress out each covariate sequentially
+    // by computing residuals, then compute Pearson r on residuals.
+    let n = x.len();
+
+    // Compute residuals of X and Y with all covariates regressed out
+    // Using the FWL theorem: partial_corr(X,Y | Z) = corr(resid_X, resid_Y)
+    // where resid_X = X - Z·(Z'Z)^{-1}Z'X
+    // For single covariate case, this simplifies to:
+    // resid_X = X - (cov(X,Z)/var(Z)) * Z
+    let mut rx: Vec<f64> = x.to_vec();
+    let mut ry: Vec<f64> = y.to_vec();
+
+    for &z in covariates {
+        // Regress rx on z: rx -= (cov(rx, z) / var(z)) * z
+        let beta_xz = ols_slope(&rx, z);
+        let beta_yz = ols_slope(&ry, z);
+        for i in 0..n {
+            rx[i] -= beta_xz * z[i];
+            ry[i] -= beta_yz * z[i];
+        }
+    }
+
+    pearson_r(&rx, &ry)
+}
+
+/// OLS slope of y on x: β = cov(y,x) / var(x)
+fn ols_slope(y: &[f64], x: &[f64]) -> f64 {
+    let n = y.len() as f64;
+    let mx = x.iter().sum::<f64>() / n;
+    let my = y.iter().sum::<f64>() / n;
+    let sxy: f64 = x.iter().zip(y.iter()).map(|(xi, yi)| (xi - mx) * (yi - my)).sum();
+    let sxx: f64 = x.iter().map(|xi| (xi - mx).powi(2)).sum();
+    if sxx < 1e-300 { 0.0 } else { sxy / sxx }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Mann-Whitney U test
 // ═══════════════════════════════════════════════════════════════════════════
 

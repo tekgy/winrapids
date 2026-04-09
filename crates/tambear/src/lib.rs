@@ -237,6 +237,13 @@ pub mod panel;
 pub mod survival;
 pub mod mixture;
 pub mod bayesian;
+pub mod kalman;
+pub use kalman::{
+    KalmanFilterResult, kalman_filter_scalar, rts_smoother_scalar,
+    KalmanFilterMatrixResult, kalman_filter_matrix,
+    HmmParams, HmmForwardBackwardResult,
+    hmm_forward_backward, hmm_viterbi, hmm_baum_welch,
+};
 pub mod time_series;
 pub use time_series::{StlResult, stl_decompose};
 pub mod volatility;
@@ -268,6 +275,16 @@ pub mod equipartition;
 pub mod multi_adic;
 pub mod collatz_parallel;
 pub mod stochastic;
+pub mod hmm;
+pub mod state_space;
+pub use state_space::{
+    LinearGaussianSsm, KalmanFilterResult as StateSpaceKalmanResult,
+    RtsSmootherResult, SsmEmResult,
+    kalman_filter as kalman_filter_lgssm_matrix, rts_smoother as rts_smoother_matrix,
+    ssm_em,
+    ParticleFilterResult, particle_filter, particle_filter_lgssm,
+    particle_filter_log_likelihood, systematic_resample,
+};
 pub use stochastic::{
     // Brownian motion
     brownian_motion, brownian_bridge, quadratic_variation,

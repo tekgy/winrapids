@@ -215,7 +215,7 @@ fn ability_eap_nquad_1_returns_default() {
 // should be used. For backtesting this creates look-ahead bias.
 
 #[test]
-fn ewma_initialization_is_forward_looking() {
+fn ewma_initialization_is_causal() {
     use tambear::volatility::ewma_variance;
 
     // Returns with a massive shock at the END
@@ -224,28 +224,21 @@ fn ewma_initialization_is_forward_looking() {
 
     let sigma2 = ewma_variance(&returns, 0.94);
 
-    // The initial variance σ²₀ should only see past data.
-    // With a proper initialization (e.g., first K returns), σ²₀ ≈ 0.01² = 0.0001.
-    // But the current code uses full-sample variance which includes the 0.50 shock:
-    // var0 = (99 * 0.01² + 0.50²) / 100 = (0.0099 + 0.25) / 100 = 0.002599
+    // The initial variance σ²₀ should only see past data (first return squared).
+    // σ²₀ = returns[0]² = 0.01² = 0.0001 (causal, no look-ahead).
+    // Old buggy code used full-sample variance which included the 0.50 shock:
+    // var0_old = (99 * 0.01² + 0.50²) / 100 = 0.002599 (forward-looking).
     let var0 = sigma2[0];
     let expected_if_causal = 0.01 * 0.01; // ≈ 0.0001
     let expected_with_lookahead = (99.0 * 0.0001 + 0.25) / 100.0; // ≈ 0.002599
 
-    eprintln!("EWMA σ²₀ = {var0:.6}");
-    eprintln!("Expected if causal: {expected_if_causal:.6}");
-    eprintln!("Expected with look-ahead: {expected_with_lookahead:.6}");
+    // σ²₀ should be causal (near 0.0001), NOT forward-looking (near 0.002599)
+    let closer_to_causal = (var0 - expected_if_causal).abs()
+        < (var0 - expected_with_lookahead).abs();
 
-    // This proves the forward-looking bias
-    let closer_to_lookahead = (var0 - expected_with_lookahead).abs()
-        < (var0 - expected_if_causal).abs();
-
-    assert!(closer_to_lookahead,
-        "σ²₀={var0:.6} should be closer to look-ahead value {expected_with_lookahead:.6} \
-         than causal value {expected_if_causal:.6}, proving forward-looking initialization");
-
-    eprintln!("CONFIRMED: EWMA initialization uses full-sample variance (forward-looking)");
-    eprintln!("Impact: creates look-ahead bias in backtesting scenarios");
+    assert!(closer_to_causal,
+        "σ²₀={var0:.6} should be causal (near {expected_if_causal:.6}), \
+         not forward-looking (near {expected_with_lookahead:.6})");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

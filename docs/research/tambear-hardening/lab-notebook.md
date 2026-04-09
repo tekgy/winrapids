@@ -401,3 +401,9 @@ Catalogued ~450 public functions across 26 math modules. Key gaps by family:
 **Bayesian**: HAVE MH + conjugate. MISSING: NUTS/HMC, Gibbs, variational inference, Bayes factors.
 
 This is the map, not the territory. ~450 functions implemented, ~200+ gaps identified across 13 families.
+
+### Entry 10: 2026-04-08 -- EWMA stale test fixed, checkpoint 4
+
+Fixed `adversarial_disputed.rs:218`: renamed `ewma_initialization_is_forward_looking` to `ewma_initialization_is_causal`, inverted assertion to verify the fix works. 113/113 adversarial_disputed pass.
+
+**Checkpoint 4**: 1,626 lib + 826 gold + 113 disputed + 422 boundary + 49 tbs + 22 svd = **3,058 passed, 0 failed, 25 ignored**. Delta from baseline: +154 tests, still zero failures.

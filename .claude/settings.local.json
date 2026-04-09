@@ -144,7 +144,13 @@
       "Bash(npm install:*)",
       "Bash(cargo tauri:*)",
       "Bash(npx vite:*)",
-      "Skill(remember)"
+      "Skill(remember)",
+      "Bash(~/.claude/skills/campsite/campsite check:*)",
+      "Bash(~/.claude/skills/campsite/campsite list:*)",
+      "Bash(cargo test:*)",
+      "Bash(~/.claude/skills/campsite/campsite-windows-amd64.exe note:*)",
+      "Bash(~/.claude/skills/campsite/campsite-windows-amd64.exe create:*)",
+      "Bash(cargo check:*)"
     ]
   }
 }

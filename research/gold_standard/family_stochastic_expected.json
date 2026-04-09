@@ -1,0 +1,100 @@
+{
+  "gbm_moments": {
+    "s0": 100.0,
+    "mu": 0.05,
+    "sigma": 0.2,
+    "T": 1.0,
+    "expected": 105.12710963760242,
+    "variance": 451.0288078157963
+  },
+  "black_scholes_atm": {
+    "S": 100.0,
+    "K": 100.0,
+    "T": 1.0,
+    "r": 0.05,
+    "sigma": 0.2,
+    "call_price": 10.450583572185565,
+    "call_delta": 0.6368306511756191,
+    "put_price": 5.573526022256971,
+    "put_delta": -0.3631693488243809,
+    "put_call_parity": 0.0
+  },
+  "black_scholes_itm": {
+    "S": 120.0,
+    "K": 100.0,
+    "T": 1.0,
+    "r": 0.05,
+    "sigma": 0.2,
+    "call_price": 26.169043946847296,
+    "call_delta": 0.8964550230770805
+  },
+  "black_scholes_deep_otm": {
+    "S": 50.0,
+    "K": 100.0,
+    "T": 1.0,
+    "r": 0.05,
+    "sigma": 0.2,
+    "put_price": 45.12534186762472,
+    "put_delta": -0.9990825673960548
+  },
+  "ou_analytics": {
+    "theta": 5.0,
+    "sigma": 0.3,
+    "mu": 1.0,
+    "stationary_variance": 0.009,
+    "autocorr_lag_0.1": 0.6065306597126334,
+    "autocorr_lag_0.5": 0.0820849986238988,
+    "autocorr_lag_1.0": 0.006737946999085467,
+    "autocorr_lag_2.0": 4.5399929762484854e-05
+  },
+  "poisson_analytics": {
+    "lambda": 10.0,
+    "T": 5.0,
+    "expected_count": 50.0,
+    "variance_count": 50.0
+  },
+  "brownian_analytics": {
+    "expected_wt": 0.0,
+    "variance_wt_at_1": 1.0,
+    "variance_wt_at_2": 2.0,
+    "quadratic_variation_T1": 1.0
+  },
+  "markov_2state": {
+    "transition": [
+      0.7,
+      0.3,
+      0.4,
+      0.6
+    ],
+    "n_states": 2,
+    "stationary": [
+      0.5714285714285714,
+      0.42857142857142855
+    ]
+  },
+  "markov_3state": {
+    "transition": [
+      0.5,
+      0.3,
+      0.2,
+      0.2,
+      0.5,
+      0.3,
+      0.1,
+      0.3,
+      0.6
+    ],
+    "n_states": 3,
+    "stationary": [
+      0.22916666666666666,
+      0.37499999999999994,
+      0.3958333333333333
+    ]
+  },
+  "brownian_bridge_analytics": {
+    "T": 1.0,
+    "endpoint_0": 0.0,
+    "endpoint_T": "b (conditioned)",
+    "variance_at_half": 0.25
+  }
+}

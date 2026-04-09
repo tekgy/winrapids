@@ -1,0 +1,271 @@
+{
+  "trailing_ones": {
+    "0": 0,
+    "1": 1,
+    "3": 2,
+    "5": 1,
+    "7": 3,
+    "6": 0,
+    "15": 4,
+    "31": 5,
+    "255": 8,
+    "127": 7,
+    "13": 1,
+    "11": 2,
+    "10": 0
+  },
+  "collatz_odd_step": {
+    "1": {
+      "next_odd": 1,
+      "v2": 2
+    },
+    "3": {
+      "next_odd": 5,
+      "v2": 1
+    },
+    "5": {
+      "next_odd": 1,
+      "v2": 4
+    },
+    "7": {
+      "next_odd": 11,
+      "v2": 1
+    },
+    "9": {
+      "next_odd": 7,
+      "v2": 2
+    },
+    "11": {
+      "next_odd": 17,
+      "v2": 1
+    },
+    "13": {
+      "next_odd": 5,
+      "v2": 3
+    },
+    "15": {
+      "next_odd": 23,
+      "v2": 1
+    },
+    "27": {
+      "next_odd": 41,
+      "v2": 1
+    },
+    "31": {
+      "next_odd": 47,
+      "v2": 1
+    },
+    "63": {
+      "next_odd": 95,
+      "v2": 1
+    },
+    "127": {
+      "next_odd": 191,
+      "v2": 1
+    },
+    "255": {
+      "next_odd": 383,
+      "v2": 1
+    }
+  },
+  "temperature": {
+    "1": 1,
+    "3": 2,
+    "5": 1,
+    "7": 3,
+    "9": 1,
+    "11": 2,
+    "13": 1,
+    "15": 4,
+    "27": 2,
+    "31": 5,
+    "63": 6,
+    "127": 7
+  },
+  "trajectory_7": {
+    "seed": 7,
+    "initial_tau": 3,
+    "steps": [
+      {
+        "value": 7,
+        "tau": 3,
+        "v2": 1
+      },
+      {
+        "value": 11,
+        "tau": 2,
+        "v2": 1
+      },
+      {
+        "value": 17,
+        "tau": 1,
+        "v2": 2
+      },
+      {
+        "value": 13,
+        "tau": 1,
+        "v2": 3
+      },
+      {
+        "value": 5,
+        "tau": 1,
+        "v2": 4
+      },
+      {
+        "value": 1,
+        "tau": 1,
+        "v2": 0
+      }
+    ],
+    "length": 6,
+    "converged": true
+  },
+  "trajectory_27": {
+    "seed": 27,
+    "initial_tau": 2,
+    "length": 42,
+    "converged": true,
+    "max_value": 3077,
+    "first_5_values": [
+      27,
+      41,
+      31,
+      47,
+      71
+    ]
+  },
+  "extremal_all_ones": {
+    "1": {
+      "n": 1,
+      "tau": 1,
+      "next_odd": 1,
+      "v2": 2
+    },
+    "2": {
+      "n": 3,
+      "tau": 2,
+      "next_odd": 5,
+      "v2": 1
+    },
+    "3": {
+      "n": 7,
+      "tau": 3,
+      "next_odd": 11,
+      "v2": 1
+    },
+    "4": {
+      "n": 15,
+      "tau": 4,
+      "next_odd": 23,
+      "v2": 1
+    },
+    "5": {
+      "n": 31,
+      "tau": 5,
+      "next_odd": 47,
+      "v2": 1
+    },
+    "6": {
+      "n": 63,
+      "tau": 6,
+      "next_odd": 95,
+      "v2": 1
+    },
+    "7": {
+      "n": 127,
+      "tau": 7,
+      "next_odd": 191,
+      "v2": 1
+    },
+    "8": {
+      "n": 255,
+      "tau": 8,
+      "next_odd": 383,
+      "v2": 1
+    },
+    "9": {
+      "n": 511,
+      "tau": 9,
+      "next_odd": 767,
+      "v2": 1
+    },
+    "10": {
+      "n": 1023,
+      "tau": 10,
+      "next_odd": 1535,
+      "v2": 1
+    }
+  },
+  "carry_analysis": {
+    "1": {
+      "tau_in": 1,
+      "three_n_plus_1": 4,
+      "v2": 2,
+      "next_odd": 1,
+      "tau_out": 1
+    },
+    "3": {
+      "tau_in": 2,
+      "three_n_plus_1": 10,
+      "v2": 1,
+      "next_odd": 5,
+      "tau_out": 1
+    },
+    "7": {
+      "tau_in": 3,
+      "three_n_plus_1": 22,
+      "v2": 1,
+      "next_odd": 11,
+      "tau_out": 2
+    },
+    "15": {
+      "tau_in": 4,
+      "three_n_plus_1": 46,
+      "v2": 1,
+      "next_odd": 23,
+      "tau_out": 3
+    },
+    "31": {
+      "tau_in": 5,
+      "three_n_plus_1": 94,
+      "v2": 1,
+      "next_odd": 47,
+      "tau_out": 4
+    },
+    "63": {
+      "tau_in": 6,
+      "three_n_plus_1": 190,
+      "v2": 1,
+      "next_odd": 95,
+      "tau_out": 5
+    },
+    "5": {
+      "tau_in": 1,
+      "three_n_plus_1": 16,
+      "v2": 4,
+      "next_odd": 1,
+      "tau_out": 1
+    },
+    "9": {
+      "tau_in": 1,
+      "three_n_plus_1": 28,
+      "v2": 2,
+      "next_odd": 7,
+      "tau_out": 3
+    },
+    "11": {
+      "tau_in": 2,
+      "three_n_plus_1": 34,
+      "v2": 1,
+      "next_odd": 17,
+      "tau_out": 1
+    },
+    "13": {
+      "tau_in": 1,
+      "three_n_plus_1": 40,
+      "v2": 3,
+      "next_odd": 5,
+      "tau_out": 1
+    }
+  }
+}

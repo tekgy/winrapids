@@ -863,15 +863,40 @@ impl TukeyComparison {
 /// Tukey's Honestly Significant Difference (HSD) post-hoc test.
 ///
 /// Computes all pairwise comparisons after a significant one-way ANOVA.
-/// Controls the family-wise error rate using the studentized range distribution.
+/// Controls the family-wise error rate using the studentized range distribution
+/// (Tukey-Kramer adjustment for unequal group sizes).
 ///
-/// `groups`: slice of `MomentStats`, one per group (count, mean, variance).
-/// `ms_error`: mean square error from the ANOVA (= SS_within / df_within).
-/// `df_error`: degrees of freedom of the error term (= N - k).
+/// # Parameters
 ///
-/// Each pair (i,j) with i < j produces a `TukeyComparison`.
-pub fn tukey_hsd(groups: &[MomentStats], ms_error: f64, df_error: f64) -> Vec<TukeyComparison> {
+/// - `groups`: slice of `MomentStats`, one per group (count, mean, variance).
+/// - `ms_error`: mean square error from the ANOVA (= SS_within / df_within).
+/// - `df_error`: degrees of freedom of the error term (= N - k).
+/// - `alpha`: significance level for the `significant` flag on each comparison.
+///   `None` ⇒ default 0.05. Common alternatives: 0.01 (strict), 0.10 (lenient).
+///
+/// The returned `TukeyComparison::significant` reflects the chosen `alpha`.
+/// For per-comparison thresholds at a different level, use
+/// `TukeyComparison::significant_at(alpha)` on each result.
+///
+/// # Example
+/// ```no_run
+/// use tambear::hypothesis::{tukey_hsd, MomentStats};
+/// # let groups: &[MomentStats] = &[];
+/// # let ms_error = 1.0;
+/// # let df_error = 10.0;
+/// // Strict alpha for a confirmatory analysis:
+/// let results_01 = tukey_hsd(groups, ms_error, df_error, Some(0.01));
+/// // Default 5%:
+/// let results_05 = tukey_hsd(groups, ms_error, df_error, None);
+/// ```
+pub fn tukey_hsd(
+    groups: &[MomentStats],
+    ms_error: f64,
+    df_error: f64,
+    alpha: Option<f64>,
+) -> Vec<TukeyComparison> {
     let k = groups.len();
+    let alpha = alpha.unwrap_or(0.05);
     let mut results = Vec::new();
 
     for i in 0..k {
@@ -897,7 +922,7 @@ pub fn tukey_hsd(groups: &[MomentStats], ms_error: f64, df_error: f64) -> Vec<Tu
                 mean_diff: diff,
                 q_statistic: q,
                 p_value: p,
-                significant: p < 0.05,
+                significant: p < alpha,
             });
         }
     }
@@ -1001,9 +1026,24 @@ pub struct InfluenceResult {
 ///
 /// `x_with_intercept`: n × p design matrix (includes intercept column).
 /// `residuals`: OLS residuals (length n).
+/// `influence_threshold`: Cook's D threshold for flagging influential points.
+///   Default (`None`) uses the classical `4/n` rule. Alternatives include
+///   `1.0` (conservative) or `4/(n-k-1)` (adjusted). Every knob tunable.
 pub fn cooks_distance(
     x_with_intercept: &crate::linear_algebra::Mat,
     residuals: &[f64],
+) -> InfluenceResult {
+    cooks_distance_with_threshold(x_with_intercept, residuals, None)
+}
+
+/// Cook's distance with an explicit influence threshold.
+///
+/// See [`cooks_distance`] for details. This variant exposes the threshold
+/// as a tunable parameter per Tambear Contract Principle 4.
+pub fn cooks_distance_with_threshold(
+    x_with_intercept: &crate::linear_algebra::Mat,
+    residuals: &[f64],
+    influence_threshold: Option<f64>,
 ) -> InfluenceResult {
     let n = residuals.len();
     let p = x_with_intercept.cols;
@@ -1050,7 +1090,7 @@ pub fn cooks_distance(
         }).collect()
     };
 
-    let threshold = 4.0 / n as f64;
+    let threshold = influence_threshold.unwrap_or(4.0 / n as f64);
     let n_influential = cooks_distance.iter().filter(|&&d| d > threshold).count();
 
     InfluenceResult { cooks_distance, leverage, n_influential }
@@ -2525,7 +2565,7 @@ mod tests {
         let ss_within = g1.m2 + g2.m2 + g3.m2;
         let df_error = (n - k) as f64;
         let ms_error = ss_within / df_error;
-        let comparisons = tukey_hsd(&[g1, g2, g3], ms_error, df_error);
+        let comparisons = tukey_hsd(&[g1, g2, g3], ms_error, df_error, None);
         assert_eq!(comparisons.len(), 3);
         for c in &comparisons {
             assert!(c.mean_diff.abs() < 1e-10, "Equal groups: mean_diff should be 0");
@@ -2544,7 +2584,7 @@ mod tests {
         // Use a small positive ms_error so the test is meaningful
         let ms_error = 1.0; // unit variance
         let df_error = 12.0;
-        let comparisons = tukey_hsd(&[g1, g2, g3], ms_error, df_error);
+        let comparisons = tukey_hsd(&[g1, g2, g3], ms_error, df_error, None);
         let pair_12 = comparisons.iter().find(|c| c.group_i == 0 && c.group_j == 1).unwrap();
         assert!(pair_12.significant, "Groups 0 and 1 differ by 100, should be significant");
         assert!(pair_12.q_statistic > 5.0, "q={:.2} should be large", pair_12.q_statistic);

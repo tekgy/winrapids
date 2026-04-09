@@ -48,6 +48,7 @@ pub mod family13_dim_reduction;
 pub mod family14_topological;
 pub mod family15_manifold_topology;
 pub mod family16_extremes;
+pub mod family17_market_microstructure;
 
 /// Data quality primitives re-exported from tambear::data_quality.
 ///

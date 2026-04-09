@@ -204,7 +204,7 @@ pub fn hll_session(
         data_id,
     };
     if let Some(cached) = session.get::<HyperLogLog>(&tag) {
-        return (**cached).clone();
+        return (*cached).clone();
     }
     let mut h = HyperLogLog::new(precision);
     for &v in values { h.add_f64(v); }

@@ -291,7 +291,11 @@ pub use kalman::{
     hmm_forward_backward, hmm_viterbi, hmm_baum_welch,
 };
 pub mod time_series;
-pub use time_series::{StlResult, stl_decompose};
+pub use time_series::{
+    StlResult, stl_decompose,
+    ArmaResult, arma_fit, ArimaResult, arima_fit, arima_forecast, auto_arima,
+    undifference,
+};
 pub mod volatility;
 pub mod factor_analysis;
 pub mod irt;

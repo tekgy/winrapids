@@ -236,6 +236,352 @@ pub fn difference(data: &[f64], d: usize) -> Vec<f64> {
     result
 }
 
+/// Undo d rounds of first-differencing by cumulative summation.
+///
+/// Given `initial` values (the first value lost at each differencing round)
+/// and a differenced series, reconstructs the original. `initial` must have
+/// length `d` — element 0 is the first value of the original series, element 1
+/// is the first value after the first cumsum, etc.
+///
+/// If `initial` is empty and `d == 0`, returns `data` unchanged.
+pub fn undifference(data: &[f64], initial: &[f64]) -> Vec<f64> {
+    let d = initial.len();
+    let mut result = data.to_vec();
+    for i in (0..d).rev() {
+        let mut out = Vec::with_capacity(result.len() + 1);
+        out.push(initial[i]);
+        let mut acc = initial[i];
+        for &v in &result {
+            acc += v;
+            out.push(acc);
+        }
+        result = out;
+    }
+    result
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ARMA(p,q) — conditional sum of squares estimation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of ARMA(p,q) or ARIMA(p,d,q) fit.
+#[derive(Debug, Clone)]
+pub struct ArmaResult {
+    /// AR coefficients φ₁, ..., φₚ.
+    pub ar: Vec<f64>,
+    /// MA coefficients θ₁, ..., θ_q.
+    pub ma: Vec<f64>,
+    /// Intercept (mean of the process × (1 - Σφ_i) for ARMA;
+    /// for ARIMA with d > 0 this is the intercept on the differenced scale).
+    pub intercept: f64,
+    /// Innovation variance σ².
+    pub sigma2: f64,
+    /// Conditional sum of squares (total residual sum of squares).
+    pub css: f64,
+    /// AIC = n·ln(σ²) + 2·(p + q + 1).
+    pub aic: f64,
+    /// BIC = n·ln(σ²) + (p + q + 1)·ln(n).
+    pub bic: f64,
+    /// Number of L-BFGS iterations.
+    pub iterations: usize,
+    /// Residuals (length = data.len() - max(p,q) for conditional method).
+    pub residuals: Vec<f64>,
+}
+
+/// Compute conditional residuals for ARMA(p,q).
+///
+/// Uses zero-initialization for pre-sample residuals and values.
+/// `centered`: data already de-meaned.
+/// Returns residuals starting from index `max(p,q)`.
+fn arma_css_residuals(centered: &[f64], ar: &[f64], ma: &[f64]) -> Vec<f64> {
+    let n = centered.len();
+    let p = ar.len();
+    let q = ma.len();
+    let start = p.max(q);
+    if n <= start {
+        return vec![];
+    }
+
+    // Full residual vector (pre-sample = 0).
+    let mut eps = vec![0.0_f64; n];
+
+    for t in start..n {
+        let mut pred = 0.0_f64;
+        // AR part: Σ φ_i · x_{t-i}
+        for i in 0..p {
+            pred += ar[i] * centered[t - 1 - i];
+        }
+        // MA part: Σ θ_j · ε_{t-j}
+        for j in 0..q {
+            pred += ma[j] * eps[t - 1 - j];
+        }
+        eps[t] = centered[t] - pred;
+    }
+
+    eps[start..].to_vec()
+}
+
+/// Fit ARMA(p,q) by conditional sum of squares (CSS) via L-BFGS.
+///
+/// The objective is `Σ ε_t²` where residuals are computed with
+/// zero-initialized pre-sample values. L-BFGS minimizes this with
+/// numerical gradients (central difference, step = 1e-5).
+///
+/// # Parameters
+/// - `data`: observed series.
+/// - `p`: AR order.
+/// - `q`: MA order.
+/// - `max_iter`: L-BFGS iteration limit (default 200 is reasonable).
+///
+/// # Returns
+/// `ArmaResult` with fitted coefficients, intercept, sigma2, AIC/BIC, residuals.
+///
+/// # Kingdom
+/// Kingdom B (sequential inner loop for residual computation).
+pub fn arma_fit(data: &[f64], p: usize, q: usize, max_iter: usize) -> ArmaResult {
+    let n = data.len();
+    let start = p.max(q);
+    let n_eff = n.saturating_sub(start);
+
+    // Degenerate case
+    if n_eff < 3 || (p == 0 && q == 0) {
+        let mean = data.iter().sum::<f64>() / n.max(1) as f64;
+        let ss: f64 = data.iter().map(|x| (x - mean).powi(2)).sum();
+        let sigma2 = ss / n.max(1) as f64;
+        let aic = n as f64 * sigma2.max(1e-300).ln() + 2.0;
+        let bic = n as f64 * sigma2.max(1e-300).ln() + (n as f64).ln();
+        return ArmaResult {
+            ar: vec![], ma: vec![], intercept: mean, sigma2, css: ss,
+            aic, bic, iterations: 0,
+            residuals: data.iter().map(|x| x - mean).collect(),
+        };
+    }
+
+    let mean = data.iter().sum::<f64>() / n as f64;
+    let centered: Vec<f64> = data.iter().map(|x| x - mean).collect();
+
+    let n_params = p + q;
+
+    // Initialize AR coefficients from Yule-Walker if p > 0.
+    let mut x0 = vec![0.0_f64; n_params];
+    if p > 0 {
+        let ar_init = ar_fit(data, p);
+        for i in 0..p {
+            x0[i] = ar_init.coefficients[i] * 0.5; // damped to help convergence
+        }
+    }
+    // MA coefficients start at 0.
+
+    let centered_ref = &centered;
+    let objective = |params: &[f64]| -> f64 {
+        let ar_slice = &params[..p];
+        let ma_slice = &params[p..p + q];
+        let resid = arma_css_residuals(centered_ref, ar_slice, ma_slice);
+        resid.iter().map(|e| e * e).sum::<f64>()
+    };
+
+    let gradient = |params: &[f64]| -> Vec<f64> {
+        let eps = 1e-5;
+        let f0 = objective(params);
+        let mut grad = vec![0.0; n_params];
+        let mut perturbed = params.to_vec();
+        for i in 0..n_params {
+            let orig = perturbed[i];
+            perturbed[i] = orig + eps;
+            let fp = objective(&perturbed);
+            perturbed[i] = orig - eps;
+            let fm = objective(&perturbed);
+            perturbed[i] = orig;
+            grad[i] = (fp - fm) / (2.0 * eps);
+        }
+        grad
+    };
+
+    let opt = crate::optimization::lbfgs(&objective, &gradient, &x0, 10, max_iter, 1e-8);
+
+    let ar_coefs: Vec<f64> = opt.x[..p].to_vec();
+    let ma_coefs: Vec<f64> = opt.x[p..p + q].to_vec();
+    let residuals = arma_css_residuals(&centered, &ar_coefs, &ma_coefs);
+    let css: f64 = residuals.iter().map(|e| e * e).sum();
+    let sigma2 = css / n_eff.max(1) as f64;
+    let ln_s2 = sigma2.max(1e-300).ln();
+    let k = (p + q + 1) as f64; // +1 for intercept
+    let nf = n_eff as f64;
+    let aic = nf * ln_s2 + 2.0 * k;
+    let bic = nf * ln_s2 + k * nf.ln();
+
+    ArmaResult {
+        ar: ar_coefs,
+        ma: ma_coefs,
+        intercept: mean,
+        sigma2,
+        css,
+        aic,
+        bic,
+        iterations: opt.iterations,
+        residuals,
+    }
+}
+
+/// Result of ARIMA(p,d,q) fit.
+#[derive(Debug, Clone)]
+pub struct ArimaResult {
+    /// The ARMA fit on the differenced series.
+    pub arma: ArmaResult,
+    /// Integration order.
+    pub d: usize,
+    /// First values lost to each round of differencing (length d).
+    /// Needed by `arima_forecast` to undo differencing.
+    pub diff_initials: Vec<f64>,
+    /// Original series length.
+    pub n_original: usize,
+}
+
+/// Fit ARIMA(p,d,q) = difference d times, then ARMA(p,q) on the result.
+///
+/// # Parameters
+/// - `data`: observed series.
+/// - `p`: AR order.
+/// - `d`: differencing order (typically 0, 1, or 2).
+/// - `q`: MA order.
+/// - `max_iter`: L-BFGS iteration limit.
+pub fn arima_fit(data: &[f64], p: usize, d: usize, q: usize, max_iter: usize) -> ArimaResult {
+    let n_original = data.len();
+
+    // Capture the first value at each differencing round for undifferencing.
+    let mut diff_initials = Vec::with_capacity(d);
+    let mut current = data.to_vec();
+    for _ in 0..d {
+        if current.is_empty() { break; }
+        diff_initials.push(current[0]);
+        current = current.windows(2).map(|w| w[1] - w[0]).collect();
+    }
+
+    let arma = arma_fit(&current, p, q, max_iter);
+
+    ArimaResult { arma, d, diff_initials, n_original }
+}
+
+/// Forecast h steps ahead from a fitted ARIMA model.
+///
+/// Generates point forecasts on the differenced scale using the ARMA
+/// coefficients, then undifferences to the original scale.
+///
+/// `last_values`: the last `max(p, q)` values of the **original** series
+/// (needed to seed the AR recursion after undifferencing). If the series
+/// is short, pass the entire original series.
+pub fn arima_forecast(
+    fit: &ArimaResult,
+    last_values: &[f64],
+    horizon: usize,
+) -> Vec<f64> {
+    let p = fit.arma.ar.len();
+    let q = fit.arma.ma.len();
+    let start = p.max(q);
+
+    // Build the recent history on the differenced scale.
+    let mut diff_vals = difference(last_values, fit.d);
+    let mean = fit.arma.intercept;
+    // Center
+    for v in diff_vals.iter_mut() { *v -= mean; }
+
+    // Recent residuals (approximate: use last `q` residuals from the fit).
+    let mut recent_eps: Vec<f64> = if q > 0 && !fit.arma.residuals.is_empty() {
+        let r = &fit.arma.residuals;
+        let take = q.min(r.len());
+        r[r.len() - take..].to_vec()
+    } else {
+        vec![]
+    };
+    while recent_eps.len() < q { recent_eps.insert(0, 0.0); }
+
+    // Generate forecasts on the centered-differenced scale.
+    let mut forecasts_diff = Vec::with_capacity(horizon);
+    for _ in 0..horizon {
+        let mut pred = 0.0_f64;
+        let n_hist = diff_vals.len();
+        for i in 0..p {
+            if n_hist > i {
+                pred += fit.arma.ar[i] * diff_vals[n_hist - 1 - i];
+            }
+        }
+        for j in 0..q {
+            if recent_eps.len() > j {
+                pred += fit.arma.ma[j] * recent_eps[recent_eps.len() - 1 - j];
+            }
+        }
+        // Future shocks are 0 (point forecast).
+        diff_vals.push(pred);
+        recent_eps.push(0.0);
+        forecasts_diff.push(pred + mean); // un-center
+    }
+
+    // Undifference: we need the initial values to reconstruct.
+    // The last `d` values of the original series provide the anchors.
+    if fit.d == 0 {
+        return forecasts_diff;
+    }
+
+    // Build the initials for undifferencing from the tail of the original series.
+    let mut tail = last_values.to_vec();
+    let mut undo_initials = Vec::with_capacity(fit.d);
+    for round in 0..fit.d {
+        if tail.is_empty() { break; }
+        undo_initials.push(*tail.last().unwrap());
+        tail = tail.windows(2).map(|w| w[1] - w[0]).collect();
+    }
+    // Reverse: undifference expects innermost-first.
+    undo_initials.reverse();
+
+    // The forecasted differenced values get undifferenced with these anchors.
+    // But undifference reconstructs the full series including the anchor.
+    // We only want the new h values.
+    let full = undifference(&forecasts_diff, &undo_initials);
+    // The first element of undifference output is the anchor; skip it.
+    // Actually, undifference prepends `initial[i]` at each level.
+    // For d=1: undifference([f1,f2,...], [last]) produces
+    //   [last, last+f1, last+f1+f2, ...] — length h+1.
+    // We want the last h elements.
+    let skip = full.len().saturating_sub(horizon);
+    full[skip..].to_vec()
+}
+
+/// Auto-select ARIMA order (p,d,q) by AIC grid search.
+///
+/// Tries all (p,d,q) with `p ∈ [0, max_p]`, `d ∈ [0, max_d]`, `q ∈ [0, max_q]`
+/// and returns the fit with the lowest AIC.
+///
+/// # Parameters
+/// - `max_p`, `max_d`, `max_q`: upper bounds for the grid search.
+/// - `max_iter`: L-BFGS iteration limit per fit.
+pub fn auto_arima(
+    data: &[f64],
+    max_p: usize, max_d: usize, max_q: usize,
+    max_iter: usize,
+) -> ArimaResult {
+    let mut best: Option<ArimaResult> = None;
+    let mut best_aic = f64::INFINITY;
+
+    for d in 0..=max_d {
+        let diffed = difference(data, d);
+        if diffed.len() < 10 { continue; } // not enough data after differencing
+        for p in 0..=max_p {
+            for q in 0..=max_q {
+                if p + q == 0 { continue; }
+                let start = p.max(q);
+                if diffed.len() <= start + 3 { continue; }
+                let fit = arima_fit(data, p, d, q, max_iter);
+                if fit.arma.aic.is_finite() && fit.arma.aic < best_aic {
+                    best_aic = fit.arma.aic;
+                    best = Some(fit);
+                }
+            }
+        }
+    }
+
+    best.unwrap_or_else(|| arima_fit(data, 1, 0, 0, max_iter))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CUSUM and binary segmentation changepoint detection
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1140,5 +1486,165 @@ mod stl_tests {
         let data: Vec<f64> = (0..n).map(|i| (i % period) as f64).collect();
         let r = stl_decompose(&data, period, true).expect("should decompose");
         assert!(r.seasonal_strength() > 0.5);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ARMA / ARIMA tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod arima_tests {
+    use super::*;
+    use crate::rng::{Xoshiro256, sample_normal};
+
+    #[test]
+    fn undifference_roundtrip() {
+        let data = vec![10.0, 12.0, 11.0, 15.0, 13.0];
+        let d = difference(&data, 1);
+        let reconstructed = undifference(&d, &[data[0]]);
+        for (a, b) in data.iter().zip(reconstructed.iter()) {
+            assert!((a - b).abs() < 1e-12, "mismatch: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn undifference_d2_roundtrip() {
+        let data = vec![1.0, 4.0, 9.0, 16.0, 25.0, 36.0];
+        let d1 = difference(&data, 1);
+        let d2 = difference(&data, 2);
+        let reconstructed = undifference(&d2, &[data[0], d1[0]]);
+        for (a, b) in data.iter().zip(reconstructed.iter()) {
+            assert!((a - b).abs() < 1e-12, "mismatch: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn arma_fit_pure_ar1() {
+        // Generate AR(1) data: x_t = 0.7 x_{t-1} + ε_t
+        let n = 500;
+        let mut rng = Xoshiro256::new(42);
+        let mut data = vec![0.0; n];
+        for t in 1..n {
+            data[t] = 0.7 * data[t - 1] + sample_normal(&mut rng, 0.0, 1.0);
+        }
+        let fit = arma_fit(&data, 1, 0, 200);
+        assert!((fit.ar[0] - 0.7).abs() < 0.15,
+            "AR(1) coeff should be near 0.7, got {}", fit.ar[0]);
+        assert!(fit.ma.is_empty());
+        assert!(fit.sigma2 > 0.5 && fit.sigma2 < 2.0);
+    }
+
+    #[test]
+    fn arma_fit_pure_ma1() {
+        // Generate MA(1) data: x_t = ε_t + 0.5 ε_{t-1}
+        let n = 500;
+        let mut rng = Xoshiro256::new(99);
+        let mut eps = vec![0.0; n];
+        let mut data = vec![0.0; n];
+        for t in 0..n {
+            eps[t] = sample_normal(&mut rng, 0.0, 1.0);
+            data[t] = eps[t] + if t > 0 { 0.5 * eps[t - 1] } else { 0.0 };
+        }
+        let fit = arma_fit(&data, 0, 1, 200);
+        assert!(fit.ar.is_empty());
+        assert!((fit.ma[0] - 0.5).abs() < 0.2,
+            "MA(1) coeff should be near 0.5, got {}", fit.ma[0]);
+    }
+
+    #[test]
+    fn arma_fit_arma11() {
+        // ARMA(1,1): x_t = 0.6 x_{t-1} + ε_t + 0.3 ε_{t-1}
+        let n = 800;
+        let mut rng = Xoshiro256::new(123);
+        let mut eps = vec![0.0; n];
+        let mut data = vec![0.0; n];
+        for t in 0..n {
+            eps[t] = sample_normal(&mut rng, 0.0, 1.0);
+            let ar = if t > 0 { 0.6 * data[t - 1] } else { 0.0 };
+            let ma = if t > 0 { 0.3 * eps[t - 1] } else { 0.0 };
+            data[t] = ar + eps[t] + ma;
+        }
+        let fit = arma_fit(&data, 1, 1, 300);
+        assert!(fit.ar.len() == 1);
+        assert!(fit.ma.len() == 1);
+        // Coefficient recovery within ±0.2 for N=800
+        assert!((fit.ar[0] - 0.6).abs() < 0.25,
+            "AR coeff {}, expected ~0.6", fit.ar[0]);
+    }
+
+    #[test]
+    fn arima_fit_random_walk_d1() {
+        // Random walk = ARIMA(0,1,0): differences are white noise
+        let n = 300;
+        let mut rng = Xoshiro256::new(77);
+        let mut data = vec![0.0; n];
+        for t in 1..n {
+            data[t] = data[t - 1] + sample_normal(&mut rng, 0.0, 1.0);
+        }
+        let fit = arima_fit(&data, 0, 1, 0, 200);
+        assert_eq!(fit.d, 1);
+        assert!(fit.arma.ar.is_empty());
+        assert!(fit.arma.ma.is_empty());
+        // σ² of innovations should be ~1.0
+        assert!(fit.arma.sigma2 > 0.5 && fit.arma.sigma2 < 2.0,
+            "sigma2 {}", fit.arma.sigma2);
+    }
+
+    #[test]
+    fn arima_forecast_random_walk() {
+        let n = 100;
+        let mut rng = Xoshiro256::new(55);
+        let mut data = vec![100.0; n];
+        for t in 1..n {
+            data[t] = data[t - 1] + sample_normal(&mut rng, 0.0, 0.5);
+        }
+        let fit = arima_fit(&data, 0, 1, 0, 100);
+        let fc = arima_forecast(&fit, &data, 5);
+        assert_eq!(fc.len(), 5);
+        // Random walk forecast is flat at last value
+        let last = *data.last().unwrap();
+        for (i, &v) in fc.iter().enumerate() {
+            assert!(v.is_finite(), "forecast[{i}] is not finite");
+            // For ARIMA(0,1,0), forecasts should be near last value
+            assert!((v - last).abs() < 5.0,
+                "forecast[{i}]={v}, last={last}");
+        }
+    }
+
+    #[test]
+    fn auto_arima_picks_reasonable_order() {
+        // AR(1) data — auto should pick p >= 1
+        let n = 200;
+        let mut rng = Xoshiro256::new(42);
+        let mut data = vec![0.0; n];
+        for t in 1..n {
+            data[t] = 0.8 * data[t - 1] + sample_normal(&mut rng, 0.0, 1.0);
+        }
+        let fit = auto_arima(&data, 3, 1, 2, 100);
+        // Should pick d=0 (stationary), p >= 1
+        assert_eq!(fit.d, 0, "stationary AR(1) should have d=0");
+        assert!(!fit.arma.ar.is_empty(), "should pick p >= 1 for AR(1) data");
+        assert!(fit.arma.aic.is_finite());
+    }
+
+    #[test]
+    fn arma_fit_degenerate_short_data() {
+        let fit = arma_fit(&[1.0, 2.0], 1, 1, 100);
+        // Should not panic; returns degenerate result
+        assert!(fit.sigma2.is_finite());
+    }
+
+    #[test]
+    fn arma_css_residuals_pure_ar1_small() {
+        // x = [0, 1, 2, 3, 4], AR=[0.5], MA=[]
+        // centered: [-2, -1, 0, 1, 2]
+        // predicted[1] = 0.5 * (-2) = -1.0, actual = -1, resid = 0
+        // predicted[2] = 0.5 * (-1) = -0.5, actual = 0, resid = 0.5
+        let centered = vec![-2.0, -1.0, 0.0, 1.0, 2.0];
+        let r = arma_css_residuals(&centered, &[0.5], &[]);
+        assert_eq!(r.len(), 4);
+        assert!((r[0] - 0.0).abs() < 1e-12); // t=1: pred=-1, actual=-1
+        assert!((r[1] - 0.5).abs() < 1e-12); // t=2: pred=-0.5, actual=0
     }
 }

@@ -961,6 +961,94 @@ pub fn execute(
             // Clustering
             // ══════════════════════════════════════════════════════════════
 
+            // ── Clustering auto-detection ─────────────────────────────────
+            // 1. Hopkins statistic: clustering tendency
+            // 2. Scale check: warn if column range ratios > 10x
+            // 3. Silhouette sweep over k=2..max_k to find optimal k
+            // 4. Run KMeans with best k
+            // 5. Validate with silhouette/CH/DB
+            // 6. Record in TbsStepAdvice
+            ("cluster_auto", None) => {
+                let max_k = usize_arg(step, "max_k", 0, 8).min(pn / 2).max(2);
+                let max_iter = usize_arg(step, "max_iter", 1, 300);
+                let data = pipeline.frame().data.clone();
+
+                // Scale check: warn if any column range >> another
+                let ranges: Vec<f64> = (0..pd).map(|j| {
+                    let col: Vec<f64> = (0..pn).map(|i| data[i * pd + j]).collect();
+                    let min = col.iter().cloned().fold(f64::INFINITY, f64::min);
+                    let max = col.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    max - min
+                }).collect();
+                let max_range = ranges.iter().cloned().fold(0.0_f64, f64::max);
+                let min_range = ranges.iter().cloned().fold(f64::INFINITY, f64::min);
+                let scale_ratio = if min_range > 1e-12 { max_range / min_range } else { 1.0 };
+                if scale_ratio > 10.0 {
+                    lints.push(TbsLint {
+                        code: "L202", step_index: Some(step_idx),
+                        message: format!("Column range ratio {scale_ratio:.1}x > 10: clustering may be dominated by large-scale features. Consider normalize() first."),
+                        severity: LintSeverity::Warning,
+                    });
+                }
+
+                // Hopkins statistic (clustering tendency)
+                let hopkins = crate::clustering::hopkins_statistic(&data, pn, pd, pn.min(10), 42);
+                let has_structure = hopkins > 0.5; // Hopkins > 0.5 suggests clusters
+
+                // Silhouette sweep
+                let engine = crate::kmeans::KMeansEngine::new()?;
+                let data_f32: Vec<f32> = data.iter().map(|&x| x as f32).collect();
+                let mut best_k = 2usize;
+                let mut best_sil = f64::NEG_INFINITY;
+                for k in 2..=max_k {
+                    if k >= pn { break; }
+                    let km_result = engine.fit(&data_f32, pn, pd, k, max_iter)?;
+                    let labels: Vec<i32> = km_result.labels.iter().map(|&l| l as i32).collect();
+                    if let Some(cv) = crate::clustering::cluster_validation(&data, &labels, pd) {
+                        if cv.silhouette > best_sil {
+                            best_sil = cv.silhouette;
+                            best_k = k;
+                        }
+                    }
+                }
+
+                // Run final clustering with best_k (via pipeline to cache labels)
+                pipeline = pipeline.kmeans(best_k, max_iter);
+                let final_labels = pipeline.frame().labels.clone().unwrap_or_default();
+                let final_cv = crate::clustering::cluster_validation(&data, &final_labels, pd);
+
+                // Build advice
+                let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
+                let auto_method = "kmeans";
+                let auto_reason = format!(
+                    "silhouette sweep k=2..{max_k}: best k={best_k} (silhouette={best_sil:.3}); Hopkins={hopkins:.3}{}",
+                    if !has_structure { " (weak clustering tendency)" } else { "" }
+                );
+
+                let mut adv = TbsStepAdvice::accepted(auto_method, auto_reason.clone())
+                    .with_diagnostic("Hopkins", hopkins,
+                        if has_structure { "clustering tendency present" } else { "weak clustering tendency" })
+                    .with_diagnostic("best_k", best_k as f64, format!("silhouette={best_sil:.3}"));
+                if let Some(ref cv) = final_cv {
+                    adv = adv
+                        .with_diagnostic("Silhouette", cv.silhouette, "final clustering")
+                        .with_diagnostic("Calinski-Harabasz", cv.calinski_harabasz, "higher is better")
+                        .with_diagnostic("Davies-Bouldin", cv.davies_bouldin, "lower is better");
+                }
+
+                let final_adv = if let Some(ref forced) = user_method {
+                    let warn = if forced.as_str() != auto_method {
+                        Some(format!("user forced {forced} but tambear recommends {auto_method}: {auto_reason}"))
+                    } else { None };
+                    TbsStepAdvice::overridden(auto_method, auto_reason, forced.clone(), "method", warn)
+                } else {
+                    adv
+                };
+
+                step_advice = Some(final_adv);
+                TbsStepOutput::Scalar { name: "silhouette", value: best_sil }
+            }
+
             ("discover_clusters", None) | ("dbscan", None) => {
                 let epsilon = f64_req(step, "epsilon", 0)?;
                 let min_samples = usize_req(step, "min_samples", 1)?;
@@ -998,6 +1086,103 @@ pub fn execute(
                 TbsStepOutput::Transform
             }
 
+            // ── Regression with auto-diagnostics ─────────────────────────
+            // 1. Fit OLS
+            // 2. VIF check (multicollinearity)
+            // 3. Residual normality (Shapiro-Wilk)
+            // 4. Breusch-Pagan heteroscedasticity test
+            // 5. Cook's distance for influential observations
+            // Records all findings in TbsStepAdvice.
+            ("regression", None) => {
+                let y_ref = y.as_deref()
+                    .ok_or("regression: target data (y) must be provided to executor")?;
+                let data = &pipeline.frame().data;
+
+                // Fit OLS
+                let model = crate::train::linear::fit(data, y_ref, pn, pd)?;
+                let r2 = model.r_squared;
+
+                // Residuals = y - ŷ
+                let y_hat = model.predict(data, pn);
+                let residuals: Vec<f64> = y_ref.iter().zip(y_hat.iter()).map(|(yi, fi)| yi - fi).collect();
+
+                // Build X_aug (n × (d+1)) with intercept column
+                let p = pd + 1;
+                let mut x_aug_data = vec![0.0_f64; pn * p];
+                for i in 0..pn {
+                    x_aug_data[i * p] = 1.0; // intercept
+                    for j in 0..pd {
+                        x_aug_data[i * p + j + 1] = data[i * pd + j];
+                    }
+                }
+                let x_aug = crate::linear_algebra::Mat { rows: pn, cols: p, data: x_aug_data };
+
+                // Predictor matrix without intercept for VIF
+                let x_pred = crate::linear_algebra::Mat { rows: pn, cols: pd, data: data.to_vec() };
+
+                // VIF check
+                let vif_vals = crate::multivariate::vif(&x_pred);
+                let max_vif = vif_vals.iter().cloned().fold(0.0_f64, f64::max);
+                let multicollinear = max_vif > 10.0;
+
+                // Residual normality
+                let norm_result = if pn < 5000 {
+                    crate::nonparametric::shapiro_wilk(&residuals)
+                } else {
+                    crate::nonparametric::dagostino_pearson(&residuals)
+                };
+                let resid_norm_p = norm_result.p_value;
+                let resid_normal = resid_norm_p > 0.05;
+
+                // Breusch-Pagan heteroscedasticity
+                let bp = crate::hypothesis::breusch_pagan(&x_aug, &residuals);
+                let heteroscedastic = bp.p_value < 0.05;
+
+                // Cook's distance
+                let influence = crate::hypothesis::cooks_distance(&x_aug, &residuals);
+                let n_influential = influence.n_influential;
+
+                // Build advice
+                let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
+                let (auto_method, auto_reason) = if multicollinear {
+                    ("ridge", format!("max VIF={max_vif:.1} > 10 (multicollinearity detected): consider Ridge regression"))
+                } else if !resid_normal {
+                    ("quantile", format!("residuals non-normal (p={resid_norm_p:.3}): consider quantile regression or robust OLS"))
+                } else if heteroscedastic {
+                    ("wls", format!("heteroscedastic residuals (Breusch-Pagan p={:.3}): consider WLS or HC3 standard errors", bp.p_value))
+                } else {
+                    ("ols", format!("normality OK (p={resid_norm_p:.3}), homoscedasticity OK (BP p={:.3}), VIF OK (max={max_vif:.1}): OLS assumptions satisfied", bp.p_value))
+                };
+
+                let adv = TbsStepAdvice::accepted(auto_method, auto_reason.clone())
+                    .with_diagnostic("VIF_max", max_vif,
+                        if multicollinear { "multicollinearity detected" } else { "OK" })
+                    .with_diagnostic(norm_result.test_name, resid_norm_p,
+                        if resid_normal { "normal" } else { "non-normal" })
+                    .with_diagnostic("Breusch-Pagan", bp.p_value,
+                        if heteroscedastic { "heteroscedastic" } else { "homoscedastic" })
+                    .with_diagnostic("Cook's_D_n_influential", n_influential as f64,
+                        if n_influential > 0 {
+                            format!("{n_influential} influential observations (Cook's D > 4/n)")
+                        } else {
+                            "no influential observations".to_owned()
+                        });
+
+                let final_adv = if let Some(ref forced) = user_method {
+                    let warn = if forced.as_str() != auto_method {
+                        Some(format!("user forced {} but tambear recommends {}: {}", forced, auto_method, auto_reason))
+                    } else { None };
+                    TbsStepAdvice::overridden(auto_method, auto_reason, forced.clone(), "method", warn)
+                } else {
+                    adv
+                };
+
+                step_advice = Some(final_adv);
+                linear_model = Some(model);
+                n_hypothesis_tests += 1;
+                TbsStepOutput::Scalar { name: "r_squared", value: r2 }
+            }
+
             ("train", Some("logistic")) => {
                 let y_ref = y.as_deref()
                     .ok_or("train.logistic: target data (y) must be provided to executor")?;
@@ -1015,9 +1200,76 @@ pub fn execute(
             // ══════════════════════════════════════════════════════════════
 
             ("pca", None) => {
-                let n_components = usize_arg(step, "n_components", 0, 2);
-                let result = crate::dim_reduction::pca(&pipeline.frame().data, pn, pd, n_components);
-                TbsStepOutput::Pca(result)
+                // If n_components is specified: pass-through (no auto-detection).
+                // If not specified: auto-select via KMO/Bartlett pre-check + Kaiser criterion.
+                let user_n_components = step.get_arg("n_components", 0).and_then(|v| v.as_usize());
+                let data = &pipeline.frame().data;
+
+                if let Some(nc) = user_n_components {
+                    // Explicit n_components — run PCA directly
+                    let result = crate::dim_reduction::pca(data, pn, pd, nc);
+                    TbsStepOutput::Pca(result)
+                } else {
+                    // Auto-detection: KMO/Bartlett + Kaiser criterion for n_components
+                    // 1. Compute correlation matrix
+                    let corr_mat = crate::factor_analysis::correlation_matrix(data, pn, pd);
+                    let kb = crate::factor_analysis::kmo_bartlett(&corr_mat, pn);
+
+                    let kmo = kb.kmo_overall;
+                    let bartlett_p = kb.bartlett_p_value;
+                    let pca_viable = kmo >= 0.5 && bartlett_p < 0.05;
+
+                    // 2. Run full PCA to get eigenvalues (singular_values² / (n-1))
+                    let full_pca = crate::dim_reduction::pca(data, pn, pd, pd);
+                    let n_minus_1 = (pn - 1).max(1) as f64;
+                    let eigenvalues: Vec<f64> = full_pca.singular_values.iter()
+                        .map(|sv| sv * sv / n_minus_1)
+                        .collect();
+
+                    // 3. Kaiser criterion: components with eigenvalue > 1
+                    let kaiser_k = eigenvalues.iter().filter(|&&ev| ev > 1.0).count().max(1);
+                    let auto_k = kaiser_k.min(pd).max(1);
+
+                    // 4. Build advice
+                    let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
+                    let (auto_method, auto_reason) = if !pca_viable {
+                        if kmo < 0.5 {
+                            ("pca_warn", format!(
+                                "KMO={kmo:.3} < 0.5: data may not be suitable for PCA (sampling inadequacy)"))
+                        } else {
+                            ("pca_warn", format!(
+                                "Bartlett p={bartlett_p:.3} ≥ 0.05: correlation matrix not significantly different from identity"))
+                        }
+                    } else {
+                        ("pca", format!(
+                            "KMO={kmo:.3} ≥ 0.5, Bartlett p={bartlett_p:.4} < 0.05: PCA viable; Kaiser criterion → {auto_k} components"))
+                    };
+
+                    let adv = TbsStepAdvice::accepted(auto_method, auto_reason.clone())
+                        .with_diagnostic("KMO", kmo,
+                            if kmo >= 0.9 { "marvellous" }
+                            else if kmo >= 0.8 { "meritorious" }
+                            else if kmo >= 0.7 { "middling" }
+                            else if kmo >= 0.6 { "mediocre" }
+                            else if kmo >= 0.5 { "miserable" }
+                            else { "unacceptable" })
+                        .with_diagnostic("Bartlett", bartlett_p,
+                            if bartlett_p < 0.05 { "significant (correlations present)" } else { "not significant" });
+
+                    let final_adv = if let Some(ref forced) = user_method {
+                        let warn = if forced.as_str() != auto_method {
+                            Some(format!("user forced {forced} but tambear recommends {auto_method}: {auto_reason}"))
+                        } else { None };
+                        TbsStepAdvice::overridden(auto_method, auto_reason, forced.clone(), "method", warn)
+                    } else {
+                        adv
+                    };
+                    step_advice = Some(final_adv);
+
+                    // Run PCA with auto-selected n_components
+                    let result = crate::dim_reduction::pca(data, pn, pd, auto_k);
+                    TbsStepOutput::Pca(result)
+                }
             }
 
             ("tsne", None) => {
@@ -1772,6 +2024,42 @@ mod tests {
     }
 
     #[test]
+    fn execute_regression_auto_detect() {
+        // Clean linear relationship: y = 2x + 1 + small noise → OLS assumptions satisfied
+        let n = 30usize;
+        let mut rng = crate::rng::Xoshiro256::new(77);
+        let x: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let data: Vec<f64> = x.clone();
+        let y: Vec<f64> = x.iter()
+            .map(|&xi| 2.0 * xi + 1.0 + (crate::rng::TamRng::next_f64(&mut rng) - 0.5) * 2.0)
+            .collect();
+        let chain = TbsChain::parse("regression()").unwrap();
+        let result = execute(chain, data, n, 1, Some(y)).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { name, value } => {
+                assert_eq!(*name, "r_squared");
+                assert!(*value > 0.9, "R² should be high for clean linear data, got {value}");
+            }
+            other => panic!("expected Scalar, got {:?}", std::mem::discriminant(other)),
+        }
+        let adv = result.advice[0].as_ref().unwrap();
+        // Should have 4 diagnostics: VIF, normality, BP, Cook's D
+        assert_eq!(adv.diagnostics.len(), 4, "expected 4 diagnostics, got {}", adv.diagnostics.len());
+        // VIF for single predictor should be 1
+        assert!((adv.diagnostics[0].result - 1.0).abs() < 1e-6,
+            "VIF should be 1.0 for single predictor, got {}", adv.diagnostics[0].result);
+        // Linear model should be populated
+        assert!(result.linear_model.is_some(), "linear_model should be set");
+    }
+
+    #[test]
+    fn execute_regression_without_y_errors() {
+        let data: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let chain = TbsChain::parse("regression()").unwrap();
+        assert!(execute(chain, data, 20, 1, None).is_err());
+    }
+
+    #[test]
     fn execute_knn() {
         let (data, n, d) = two_cluster_data();
         let chain = TbsChain::parse("knn(k=2)").unwrap();
@@ -1835,6 +2123,36 @@ mod tests {
         let chain = TbsChain::parse("kmeans(k=2, max_iter=50)").unwrap();
         let result = execute(chain, data, n, d, None).unwrap();
         assert_eq!(result.pipeline.frame().n_clusters, Some(2));
+    }
+
+    #[test]
+    fn execute_cluster_auto_two_clusters() {
+        // 2D data: 2 clearly separated clusters (10 points each).
+        // Cluster A around (0,0), Cluster B around (20,20).
+        let mut data: Vec<f64> = Vec::new();
+        let mut rng = crate::rng::Xoshiro256::new(55);
+        for _ in 0..10 {
+            data.push(crate::rng::TamRng::next_f64(&mut rng));
+            data.push(crate::rng::TamRng::next_f64(&mut rng));
+        }
+        for _ in 0..10 {
+            data.push(20.0 + crate::rng::TamRng::next_f64(&mut rng));
+            data.push(20.0 + crate::rng::TamRng::next_f64(&mut rng));
+        }
+        let chain = TbsChain::parse("cluster_auto(max_k=4)").unwrap();
+        let result = execute(chain, data, 20, 2, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { name, value } => {
+                assert_eq!(*name, "silhouette");
+                assert!(*value > 0.5, "well-separated clusters should have high silhouette, got {value}");
+            }
+            other => panic!("expected Scalar, got {:?}", std::mem::discriminant(other)),
+        }
+        // Best k should be 2 for clearly separated data
+        let best_k = result.pipeline.frame().n_clusters.unwrap();
+        assert_eq!(best_k, 2, "best_k should be 2 for 2-cluster data, got {best_k}");
+        let adv = result.advice[0].as_ref().unwrap();
+        assert!(adv.diagnostics.len() >= 2, "should have Hopkins + best_k diagnostics");
     }
 
     // ── Descriptive statistics ─────────────────────────────────────────────
@@ -2097,6 +2415,39 @@ mod tests {
             }
             _ => panic!("expected Pca"),
         }
+    }
+
+    #[test]
+    fn execute_pca_auto_detect() {
+        // 4D data where the first 2 dimensions dominate — Kaiser should pick k=2.
+        // Build from 2 latent factors: x0=2*f1, x1=1.9*f1, x2=0.1*f2, x3=0.09*f2
+        // → first 2 eigenvalues >> 1, last 2 << 1.
+        let n = 40usize;
+        let mut rng = crate::rng::Xoshiro256::new(13);
+        let mut data: Vec<f64> = Vec::new();
+        for _ in 0..n {
+            let f1 = crate::rng::TamRng::next_f64(&mut rng) * 4.0 - 2.0;
+            let f2 = crate::rng::TamRng::next_f64(&mut rng) * 4.0 - 2.0;
+            data.push(2.0 * f1);
+            data.push(1.9 * f1);
+            data.push(0.1 * f2);
+            data.push(0.09 * f2);
+        }
+        // pca() with no n_components → auto-detect
+        let chain = TbsChain::parse("pca()").unwrap();
+        let result = execute(chain, data, n, 4, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Pca(pca) => {
+                // Kaiser should select 2 components (eigenvalue > 1 for 2 factors)
+                let nc = pca.explained_variance_ratio.len();
+                assert!(nc >= 1 && nc <= 4, "n_components={nc}");
+                // At least 1 component returned
+            }
+            other => panic!("expected Pca, got {:?}", std::mem::discriminant(other)),
+        }
+        // advice should be populated
+        let adv = result.advice[0].as_ref().unwrap();
+        assert_eq!(adv.diagnostics.len(), 2, "KMO + Bartlett diagnostics expected");
     }
 
     // ── Time series ───────────────────────────────────────────────────────

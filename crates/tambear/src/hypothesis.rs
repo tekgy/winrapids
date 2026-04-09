@@ -90,6 +90,22 @@ pub struct AnovaResult {
     pub omega_squared: f64,
 }
 
+impl AnovaResult {
+    /// Cohen's f effect size: f = sqrt(eta² / (1 - eta²)).
+    /// Small: 0.1, Medium: 0.25, Large: 0.4.
+    pub fn cohens_f(&self) -> f64 {
+        if self.eta_squared >= 1.0 { return f64::INFINITY; }
+        (self.eta_squared / (1.0 - self.eta_squared)).sqrt()
+    }
+
+    /// Partial eta-squared (same as eta-squared for one-way ANOVA,
+    /// differs for factorial designs).
+    pub fn partial_eta_squared(&self) -> f64 {
+        if self.ss_between + self.ss_within <= 0.0 { return 0.0; }
+        self.ss_between / (self.ss_between + self.ss_within)
+    }
+}
+
 /// Result of a chi-square test.
 #[derive(Debug, Clone)]
 pub struct ChiSquareResult {
@@ -957,6 +973,66 @@ pub fn cooks_distance(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Weighted Least Squares (WLS)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of weighted least squares regression.
+#[derive(Debug, Clone)]
+pub struct WlsResult {
+    /// Coefficients β (length p, includes intercept if X has intercept column).
+    pub coefficients: Vec<f64>,
+    /// Weighted residual sum of squares.
+    pub weighted_rss: f64,
+    /// Weighted R² = 1 - WRSS / WTSS.
+    pub r_squared: f64,
+}
+
+/// Weighted least squares: β = (X'WX)⁻¹ X'Wy.
+///
+/// Equivalent to OLS on (√w_i · x_i, √w_i · y_i).
+///
+/// `x`: n×p design matrix (row-major, include intercept column if desired).
+/// `y`: response vector (length n).
+/// `weights`: observation weights (length n, all > 0).
+pub fn wls(x: &crate::linear_algebra::Mat, y: &[f64], weights: &[f64]) -> WlsResult {
+    let n = x.rows;
+    let p = x.cols;
+    assert_eq!(y.len(), n);
+    assert_eq!(weights.len(), n);
+
+    // Transform: X_w = diag(√w) X, y_w = diag(√w) y
+    let mut x_w = vec![0.0; n * p];
+    let mut y_w = vec![0.0; n];
+    for i in 0..n {
+        let sw = weights[i].max(0.0).sqrt();
+        y_w[i] = sw * y[i];
+        for j in 0..p {
+            x_w[i * p + j] = sw * x.get(i, j);
+        }
+    }
+
+    let x_mat = crate::linear_algebra::Mat::from_vec(n, p, x_w);
+    let coefficients = crate::linear_algebra::qr_solve(&x_mat, &y_w);
+
+    // Weighted residuals and R²
+    let mut wrss = 0.0;
+    let w_y_mean = {
+        let sw: f64 = weights.iter().sum();
+        if sw > 0.0 { weights.iter().zip(y.iter()).map(|(w, yi)| w * yi).sum::<f64>() / sw } else { 0.0 }
+    };
+    let mut wtss = 0.0;
+    for i in 0..n {
+        let fitted: f64 = (0..p).map(|j| x.get(i, j) * coefficients[j]).sum();
+        let resid = y[i] - fitted;
+        wrss += weights[i] * resid * resid;
+        wtss += weights[i] * (y[i] - w_y_mean) * (y[i] - w_y_mean);
+    }
+    let r_squared = if wtss > 1e-300 { (1.0 - wrss / wtss).clamp(0.0, 1.0) } else { 0.0 };
+
+    WlsResult { coefficients, weighted_rss: wrss, r_squared }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Logistic regression via IRLS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1194,6 +1270,70 @@ impl HypothesisEngine {
         let s1 = crate::descriptive::moments_ungrouped(x);
         let s2 = crate::descriptive::moments_ungrouped(y);
         welch_t(&s1, &s2)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Fisher's exact test for 2×2 contingency tables
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Fisher's exact test result.
+#[derive(Debug, Clone)]
+pub struct FisherExactResult {
+    /// Two-sided p-value (sum of probabilities ≤ observed).
+    pub p_value: f64,
+    /// Odds ratio: (a·d) / (b·c).
+    pub odds_ratio: f64,
+}
+
+/// Fisher's exact test for 2×2 contingency tables.
+///
+/// Computes the exact p-value using the hypergeometric distribution.
+/// Preferred over chi-square when any expected cell count < 5.
+///
+/// Table layout: [[a, b], [c, d]]
+///   - a = group1 & outcome1, b = group1 & outcome2
+///   - c = group2 & outcome1, d = group2 & outcome2
+///
+/// `table`: [a, b, c, d] (four cells).
+/// Returns two-sided p-value.
+pub fn fisher_exact(table: &[u64; 4]) -> FisherExactResult {
+    let a = table[0] as f64;
+    let b = table[1] as f64;
+    let c = table[2] as f64;
+    let d = table[3] as f64;
+
+    let or = if b * c < 1e-300 { f64::INFINITY } else { (a * d) / (b * c) };
+
+    let r1 = a + b;          // row 1 total
+    let r2 = c + d;          // row 2 total
+    let c1 = a + c;          // col 1 total
+    let n = r1 + r2;         // grand total
+
+    // Log-hypergeometric probability: P(X=k) = C(r1,k) C(r2, c1-k) / C(n, c1)
+    let log_hyper = |k: f64| -> f64 {
+        crate::special_functions::log_gamma(r1 + 1.0) - crate::special_functions::log_gamma(k + 1.0) - crate::special_functions::log_gamma(r1 - k + 1.0)
+        + crate::special_functions::log_gamma(r2 + 1.0) - crate::special_functions::log_gamma(c1 - k + 1.0) - crate::special_functions::log_gamma(r2 - c1 + k + 1.0)
+        - crate::special_functions::log_gamma(n + 1.0) + crate::special_functions::log_gamma(c1 + 1.0) + crate::special_functions::log_gamma(n - c1 + 1.0)
+    };
+
+    let p_obs = log_hyper(a);
+
+    // Two-sided: sum probabilities ≤ p_obs
+    let k_min = (c1 - r2).max(0.0) as u64;
+    let k_max = c1.min(r1) as u64;
+
+    let mut p_two_sided = 0.0;
+    for k in k_min..=k_max {
+        let p_k = log_hyper(k as f64);
+        if p_k <= p_obs + 1e-10 {
+            p_two_sided += p_k.exp();
+        }
+    }
+
+    FisherExactResult {
+        p_value: p_two_sided.clamp(0.0, 1.0),
+        odds_ratio: or,
     }
 }
 
@@ -1792,5 +1932,96 @@ mod tests {
         assert!(r.cooks_distance[0] > r.cooks_distance[10],
             "Outlier D={} should exceed normal point D={}",
             r.cooks_distance[0], r.cooks_distance[10]);
+    }
+
+    // ── Logistic regression via IRLS ──────────────────────────────────────
+
+    #[test]
+    fn logistic_regression_linearly_separable() {
+        // Two clear groups with some overlap so IRLS converges.
+        // x uniformly from -3 to +3 (n=30), y=Bernoulli(sigmoid(2x)).
+        // Sufficient overlap that the MLE is finite and IRLS converges.
+        let n = 30;
+        // Evenly spaced x from -2.9 to +2.9
+        let x_data: Vec<f64> = (0..n).map(|i| (i as f64 / (n - 1) as f64) * 5.8 - 2.9).collect();
+        // Deterministic labeling: y=1 when x>0, y=0 when x<0 (with some transition)
+        // Use a smooth threshold to avoid perfect separation:
+        // y = 1 if sigmoid(1.5*x) > 0.5 i.e. x > 0; add one misclassification to avoid separation
+        let y: Vec<f64> = x_data.iter().enumerate().map(|(i, &xi)| {
+            if i == 0 { 1.0 } else if xi >= 0.0 { 1.0 } else { 0.0 } // one "wrong" label
+        }).collect();
+        let x = crate::linear_algebra::Mat::from_vec(n, 1, x_data.clone());
+
+        let result = logistic_regression(&x, &y, 100, 1e-8).unwrap();
+
+        // Coefficient on x should be positive (higher x → higher P(y=1))
+        assert!(result.coefficients[0] > 0.0,
+            "coeff[x]={:.4} should be positive", result.coefficients[0]);
+        // Residual deviance < null deviance
+        assert!(result.residual_deviance < result.null_deviance,
+            "residual dev={:.4} should < null dev={:.4}",
+            result.residual_deviance, result.null_deviance);
+        // AIC should be finite and positive
+        assert!(result.aic > 0.0 && result.aic.is_finite(),
+            "AIC={:.4} should be positive finite", result.aic);
+        // SE should be positive finite
+        assert!(result.std_errors[0] > 0.0 && result.std_errors[0].is_finite(),
+            "SE={:.4} should be positive finite", result.std_errors[0]);
+    }
+
+    #[test]
+    fn logistic_regression_null_model() {
+        // When y is all one class, the coefficient should be near zero
+        // and the model should converge to the null model.
+        // Use a case where features are pure noise and y is 50/50 — coefficient near 0.
+        let n = 20;
+        // x = alternating ±1 (no signal), y = 50/50
+        let x_data: Vec<f64> = (0..n).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let y: Vec<f64> = (0..n).map(|i| if i < n / 2 { 1.0 } else { 0.0 }).collect();
+        let x = crate::linear_algebra::Mat::from_vec(n, 1, x_data);
+
+        let result = logistic_regression(&x, &y, 25, 1e-8).unwrap();
+        // With uncorrelated x and balanced y, coefficient near 0, p large
+        assert!(result.coefficients[0].abs() < 1.0,
+            "coeff[x]={:.4} should be near 0 for uncorrelated predictor", result.coefficients[0]);
+        // SE should be finite and positive
+        assert!(result.std_errors[0] > 0.0 && result.std_errors[0].is_finite(),
+            "SE={:.4} should be positive finite", result.std_errors[0]);
+    }
+
+    #[test]
+    fn logistic_regression_predict_proba_range() {
+        // Probabilities from predict_proba must all be in [0, 1]
+        // Use data with some overlap to keep coefficients moderate.
+        let n = 30;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64 / 10.0 - 1.5).collect();
+        // One deliberate mislabel at each end to avoid perfect separation
+        let y: Vec<f64> = x_data.iter().enumerate().map(|(i, &xi)| {
+            if i == 0 { 1.0 } else if xi >= 0.0 { 1.0 } else { 0.0 }
+        }).collect();
+        let x = crate::linear_algebra::Mat::from_vec(n, 1, x_data);
+
+        let result = logistic_regression(&x, &y, 25, 1e-8).unwrap();
+        let probs = result.predict_proba(&x);
+        for (i, &p) in probs.iter().enumerate() {
+            assert!(p >= 0.0 && p <= 1.0, "proba[{i}]={p} must be in [0,1]");
+        }
+        // Class 0 region (first half) should have lower mean probability than class 1 region
+        let mean_p_low: f64 = probs[..n/2].iter().sum::<f64>() / (n/2) as f64;
+        let mean_p_high: f64 = probs[n/2..].iter().sum::<f64>() / (n/2) as f64;
+        assert!(mean_p_low < mean_p_high,
+            "lower-x region mean P={:.3} should < higher-x region mean P={:.3}",
+            mean_p_low, mean_p_high);
+    }
+
+    #[test]
+    fn logistic_regression_underdetermined_returns_none() {
+        // n <= p+1 → not enough degrees of freedom
+        let x = crate::linear_algebra::Mat::from_rows(&[
+            &[1.0, 0.0],
+            &[0.0, 1.0],
+        ]);
+        let y = vec![0.0, 1.0]; // n=2, q=3 (2 features + intercept)
+        assert!(logistic_regression(&x, &y, 25, 1e-8).is_none());
     }
 }

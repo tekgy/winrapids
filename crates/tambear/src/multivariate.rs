@@ -932,6 +932,77 @@ pub fn elastic_net(x: &Mat, y: &[f64], lambda: f64, alpha: f64, max_iter: usize,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Weighted Least Squares (WLS)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of weighted least squares regression.
+#[derive(Debug, Clone)]
+pub struct WlsResult {
+    /// Coefficient vector (length p).
+    pub beta: Vec<f64>,
+    /// Weighted residual sum of squares: Σ w_i (y_i - x_i'β)².
+    pub wrss: f64,
+    /// Weighted R².
+    pub r2: f64,
+}
+
+/// Weighted least squares: β = (X'WX)⁻¹ X'Wy.
+///
+/// Minimizes Σ w_i (y_i - x_i'β)². Equivalent to OLS on the transformed
+/// system √w_i · y_i = √w_i · x_i'β + ε_i.
+///
+/// Use when observations have known unequal variances: set w_i = 1/σ²_i.
+///
+/// `x`: n × p design matrix (row-major, include intercept column if desired).
+/// `y`: response vector (length n).
+/// `weights`: non-negative weights (length n). Zero weights exclude observations.
+pub fn wls(x: &Mat, y: &[f64], weights: &[f64]) -> WlsResult {
+    let n = x.rows;
+    let p = x.cols;
+    assert_eq!(y.len(), n);
+    assert_eq!(weights.len(), n);
+
+    // X'WX and X'Wy
+    let mut xtwx = vec![0.0; p * p];
+    let mut xtwy = vec![0.0; p];
+    for i in 0..n {
+        let w = weights[i].max(0.0);
+        for j in 0..p {
+            xtwy[j] += w * x.data[i * p + j] * y[i];
+            for k in 0..p {
+                xtwx[j * p + k] += w * x.data[i * p + j] * x.data[i * p + k];
+            }
+        }
+    }
+
+    let a = Mat::from_vec(p, p, xtwx);
+    let beta = match cholesky(&a) {
+        Some(l) => cholesky_solve(&l, &xtwy),
+        None => qr_solve(&a, &xtwy),
+    };
+
+    // Weighted RSS and R²
+    let mut wrss = 0.0;
+    let mut w_total = 0.0;
+    let mut wy_sum = 0.0;
+    for i in 0..n {
+        let w = weights[i].max(0.0);
+        let fitted: f64 = (0..p).map(|j| beta[j] * x.data[i * p + j]).sum();
+        wrss += w * (y[i] - fitted).powi(2);
+        w_total += w;
+        wy_sum += w * y[i];
+    }
+    let wy_mean = if w_total > 1e-300 { wy_sum / w_total } else { 0.0 };
+    let ss_tot: f64 = (0..n).map(|i| {
+        let w = weights[i].max(0.0);
+        w * (y[i] - wy_mean).powi(2)
+    }).sum();
+    let r2 = if ss_tot < 1e-300 { 0.0 } else { (1.0 - wrss / ss_tot).clamp(0.0, 1.0) };
+
+    WlsResult { beta, wrss, r2 }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

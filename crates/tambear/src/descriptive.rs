@@ -813,6 +813,77 @@ pub fn gini(sorted: &[f64]) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Q-Q plot data
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Generate Q-Q plot data for assessing normality.
+///
+/// Returns (theoretical_quantiles, sorted_data) pairs for plotting.
+/// Points near the 45-degree line indicate normality.
+///
+/// Uses Blom's plotting position: p_i = (i - 0.375) / (n + 0.25).
+pub fn qq_normal(data: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let mut sorted: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let n = sorted.len();
+    let nf = n as f64;
+
+    let theoretical: Vec<f64> = (1..=n).map(|i| {
+        let p = (i as f64 - 0.375) / (nf + 0.25);
+        crate::special_functions::normal_quantile(p)
+    }).collect();
+
+    (theoretical, sorted)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Forecast accuracy metrics
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Forecast accuracy metrics.
+#[derive(Debug, Clone)]
+pub struct ForecastMetrics {
+    pub mae: f64,
+    pub rmse: f64,
+    pub mape: f64,
+    pub mase: f64,
+}
+
+/// Compute forecast accuracy metrics.
+///
+/// `actual`: observed values. `predicted`: forecast values. `naive_mae`: MAE of naive
+/// forecast (e.g., random walk) for MASE denominator. Pass `None` to compute
+/// from one-step naive (actual[t-1] predicts actual[t]).
+pub fn forecast_metrics(actual: &[f64], predicted: &[f64], naive_mae: Option<f64>) -> ForecastMetrics {
+    assert_eq!(actual.len(), predicted.len());
+    let n = actual.len();
+    let nf = n as f64;
+
+    let errors: Vec<f64> = actual.iter().zip(predicted.iter()).map(|(a, p)| a - p).collect();
+
+    let mae = errors.iter().map(|e| e.abs()).sum::<f64>() / nf;
+    let rmse = (errors.iter().map(|e| e * e).sum::<f64>() / nf).sqrt();
+
+    // MAPE: skip zeros in actual to avoid division by zero
+    let mape = {
+        let valid: Vec<f64> = actual.iter().zip(predicted.iter())
+            .filter(|(&a, _)| a.abs() > 1e-15)
+            .map(|(&a, &p)| ((a - p) / a).abs())
+            .collect();
+        if valid.is_empty() { f64::NAN } else { valid.iter().sum::<f64>() / valid.len() as f64 }
+    };
+
+    // MASE: MAE / naive_MAE
+    let naive = naive_mae.unwrap_or_else(|| {
+        if n < 2 { return 1.0; }
+        actual.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>() / (n - 1) as f64
+    });
+    let mase = if naive > 1e-15 { mae / naive } else { f64::NAN };
+
+    ForecastMetrics { mae, rmse, mape, mase }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

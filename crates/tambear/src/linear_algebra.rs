@@ -819,6 +819,227 @@ pub fn lstsq(a: &Mat, b: &[f64]) -> Vec<f64> {
     qr_solve(a, b)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Regularized regression: Ridge, Lasso, ElasticNet
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of a regularized regression fit.
+#[derive(Debug, Clone)]
+pub struct RegularizedResult {
+    /// Fitted coefficients (length = n_features; does NOT include intercept).
+    pub coefficients: Vec<f64>,
+    /// Intercept (fitted on centered data, then de-centered).
+    pub intercept: f64,
+    /// Training R² on the original (unscaled) data.
+    pub r_squared: f64,
+}
+
+impl RegularizedResult {
+    /// Predict on new data (n × p, no intercept column).
+    pub fn predict(&self, x: &Mat) -> Vec<f64> {
+        let p = self.coefficients.len();
+        assert_eq!(x.cols, p);
+        (0..x.rows).map(|i| {
+            let mut y = self.intercept;
+            for j in 0..p {
+                y += self.coefficients[j] * x.get(i, j);
+            }
+            y
+        }).collect()
+    }
+}
+
+/// Fit Ridge regression: β = argmin ||y - Xβ||² + λ||β||²
+///
+/// Closed form: β = (X'X + λI)⁻¹ X'y (on centered, unit-variance scaled data).
+/// Features are standardized internally; coefficients are returned on the original scale.
+///
+/// Returns `None` if the design matrix is degenerate.
+pub fn ridge(x: &Mat, y: &[f64], lambda: f64) -> Option<RegularizedResult> {
+    let n = x.rows;
+    let p = x.cols;
+    if n <= p || lambda < 0.0 { return None; }
+
+    let (xs, x_mean, x_std, y_mean) = standardize(x, y);
+
+    // X'X + λI
+    let mut xxt = vec![0.0f64; p * p];
+    for i in 0..n {
+        for j in 0..p {
+            for k in 0..p {
+                xxt[j * p + k] += xs.get(i, j) * xs.get(i, k);
+            }
+        }
+    }
+    // Add λ to diagonal
+    for j in 0..p {
+        xxt[j * p + j] += lambda;
+    }
+    let reg_mat = Mat::from_vec(p, p, xxt);
+
+    // X'y_centered
+    let y_c: Vec<f64> = y.iter().map(|&yi| yi - y_mean).collect();
+    let mut xty = vec![0.0f64; p];
+    for i in 0..n {
+        for j in 0..p {
+            xty[j] += xs.get(i, j) * y_c[i];
+        }
+    }
+
+    // Solve via Cholesky (reg_mat is SPD for λ>0)
+    let beta_scaled = if let Some(l) = cholesky(&reg_mat) {
+        cholesky_solve(&l, &xty)
+    } else {
+        // Fall back to QR
+        qr_solve(&reg_mat, &xty)
+    };
+
+    // Rescale back to original feature scale
+    let coefficients: Vec<f64> = (0..p).map(|j| {
+        if x_std[j] > 1e-15 { beta_scaled[j] / x_std[j] } else { 0.0 }
+    }).collect();
+    let intercept = y_mean - coefficients.iter().zip(&x_mean).map(|(b, m)| b * m).sum::<f64>();
+
+    let r2 = r_squared(x, y, &coefficients, intercept);
+    Some(RegularizedResult { coefficients, intercept, r_squared: r2 })
+}
+
+/// Fit Lasso regression: β = argmin ||y - Xβ||²/n + λ||β||₁
+///
+/// Uses coordinate descent on standardized features.
+/// Features are standardized internally; returns coefficients on the original scale.
+pub fn lasso(x: &Mat, y: &[f64], lambda: f64, max_iter: usize, tol: f64) -> Option<RegularizedResult> {
+    let n = x.rows;
+    let p = x.cols;
+    if n <= p || lambda < 0.0 { return None; }
+
+    let (xs, x_mean, x_std, y_mean) = standardize(x, y);
+    let y_c: Vec<f64> = y.iter().map(|&yi| yi - y_mean).collect();
+
+    // Coordinate descent on standardized X, centered y
+    // Objective: (1/n)||y_c - Xs β||² + λ||β||₁
+    let n_f = n as f64;
+    let mut beta = vec![0.0f64; p];
+
+    // Precompute column norms squared (= 1.0 for standardized, but compute anyway)
+    let col_norm_sq: Vec<f64> = (0..p).map(|j| {
+        (0..n).map(|i| xs.get(i, j).powi(2)).sum::<f64>() / n_f
+    }).collect();
+
+    for _ in 0..max_iter {
+        let mut max_change = 0.0f64;
+        for j in 0..p {
+            if col_norm_sq[j] < 1e-15 { continue; }
+            // Partial residual: r_j = y_c - Xs * β + xs_j * β_j
+            let rho: f64 = (0..n).map(|i| {
+                let fitted: f64 = (0..p).map(|k| xs.get(i, k) * beta[k]).sum();
+                xs.get(i, j) * (y_c[i] - fitted + xs.get(i, j) * beta[j])
+            }).sum::<f64>() / n_f;
+
+            let beta_j_new = soft_threshold(rho, lambda) / col_norm_sq[j];
+            let change = (beta_j_new - beta[j]).abs();
+            if change > max_change { max_change = change; }
+            beta[j] = beta_j_new;
+        }
+        if max_change < tol { break; }
+    }
+
+    let coefficients: Vec<f64> = (0..p).map(|j| {
+        if x_std[j] > 1e-15 { beta[j] / x_std[j] } else { 0.0 }
+    }).collect();
+    let intercept = y_mean - coefficients.iter().zip(&x_mean).map(|(b, m)| b * m).sum::<f64>();
+    let r2 = r_squared(x, y, &coefficients, intercept);
+    Some(RegularizedResult { coefficients, intercept, r_squared: r2 })
+}
+
+/// Fit ElasticNet regression: β = argmin ||y - Xβ||²/n + λ₁||β||₁ + λ₂||β||²
+///
+/// The elastic net combines L1 (Lasso) and L2 (Ridge) penalties.
+/// Uses coordinate descent on standardized features.
+pub fn elastic_net(x: &Mat, y: &[f64], lambda1: f64, lambda2: f64, max_iter: usize, tol: f64) -> Option<RegularizedResult> {
+    let n = x.rows;
+    let p = x.cols;
+    if n <= p || lambda1 < 0.0 || lambda2 < 0.0 { return None; }
+
+    let (xs, x_mean, x_std, y_mean) = standardize(x, y);
+    let y_c: Vec<f64> = y.iter().map(|&yi| yi - y_mean).collect();
+
+    let n_f = n as f64;
+    let mut beta = vec![0.0f64; p];
+
+    let col_norm_sq: Vec<f64> = (0..p).map(|j| {
+        (0..n).map(|i| xs.get(i, j).powi(2)).sum::<f64>() / n_f
+    }).collect();
+
+    for _ in 0..max_iter {
+        let mut max_change = 0.0f64;
+        for j in 0..p {
+            let denom = col_norm_sq[j] + lambda2;
+            if denom < 1e-15 { continue; }
+
+            let rho: f64 = (0..n).map(|i| {
+                let fitted: f64 = (0..p).map(|k| xs.get(i, k) * beta[k]).sum();
+                xs.get(i, j) * (y_c[i] - fitted + xs.get(i, j) * beta[j])
+            }).sum::<f64>() / n_f;
+
+            let beta_j_new = soft_threshold(rho, lambda1) / denom;
+            let change = (beta_j_new - beta[j]).abs();
+            if change > max_change { max_change = change; }
+            beta[j] = beta_j_new;
+        }
+        if max_change < tol { break; }
+    }
+
+    let coefficients: Vec<f64> = (0..p).map(|j| {
+        if x_std[j] > 1e-15 { beta[j] / x_std[j] } else { 0.0 }
+    }).collect();
+    let intercept = y_mean - coefficients.iter().zip(&x_mean).map(|(b, m)| b * m).sum::<f64>();
+    let r2 = r_squared(x, y, &coefficients, intercept);
+    Some(RegularizedResult { coefficients, intercept, r_squared: r2 })
+}
+
+fn soft_threshold(z: f64, gamma: f64) -> f64 {
+    if z > gamma { z - gamma } else if z < -gamma { z + gamma } else { 0.0 }
+}
+
+/// Standardize X (center and scale each column) and center y.
+/// Returns (X_standardized, x_mean, x_std, y_mean).
+fn standardize(x: &Mat, y: &[f64]) -> (Mat, Vec<f64>, Vec<f64>, f64) {
+    let n = x.rows;
+    let p = x.cols;
+    let n_f = n as f64;
+
+    let y_mean = y.iter().sum::<f64>() / n_f;
+
+    let x_mean: Vec<f64> = (0..p).map(|j| (0..n).map(|i| x.get(i, j)).sum::<f64>() / n_f).collect();
+    let x_std: Vec<f64> = (0..p).map(|j| {
+        let m = x_mean[j];
+        let var = (0..n).map(|i| (x.get(i, j) - m).powi(2)).sum::<f64>() / n_f;
+        var.sqrt().max(1e-15)
+    }).collect();
+
+    let mut xs_data = vec![0.0f64; n * p];
+    for i in 0..n {
+        for j in 0..p {
+            xs_data[i * p + j] = (x.get(i, j) - x_mean[j]) / x_std[j];
+        }
+    }
+
+    (Mat::from_vec(n, p, xs_data), x_mean, x_std, y_mean)
+}
+
+fn r_squared(x: &Mat, y: &[f64], coef: &[f64], intercept: f64) -> f64 {
+    let n = x.rows;
+    let y_mean = y.iter().sum::<f64>() / n as f64;
+    let ss_tot: f64 = y.iter().map(|&yi| (yi - y_mean).powi(2)).sum();
+    if ss_tot < 1e-15 { return 1.0; }
+    let ss_res: f64 = (0..n).map(|i| {
+        let pred = intercept + coef.iter().enumerate().map(|(j, &b)| b * x.get(i, j)).sum::<f64>();
+        (y[i] - pred).powi(2)
+    }).sum();
+    1.0 - ss_res / ss_tot
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1201,5 +1422,107 @@ mod tests {
         let (eigenvalues, _) = sym_eigen(&a);
         assert_close(eigenvalues[0], 5.0, 1e-12, "1x1 eigenvalue");
         assert_close(det(&a), 5.0, 1e-12, "1x1 det");
+    }
+
+    // ── Ridge regression ──────────────────────────────────────────────
+
+    #[test]
+    fn ridge_recovers_ols_at_zero_lambda() {
+        // With λ=0, ridge should match OLS on clean linear data
+        let n = 20;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let y: Vec<f64> = x_data.iter().map(|&xi| 2.0 * xi + 3.0).collect(); // y=2x+3
+        let x = Mat::from_vec(n, 1, x_data);
+
+        let result = ridge(&x, &y, 0.0).unwrap();
+        assert_close(result.coefficients[0], 2.0, 1e-6, "ridge coeff ≈ 2 (OLS)");
+        assert_close(result.intercept, 3.0, 1e-4, "ridge intercept ≈ 3");
+        assert_close(result.r_squared, 1.0, 1e-6, "R² = 1 for perfect linear fit");
+    }
+
+    #[test]
+    fn ridge_shrinks_toward_zero() {
+        // With large λ, ridge coefficients shrink toward zero
+        let n = 20;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let y: Vec<f64> = x_data.iter().map(|&xi| 5.0 * xi + 1.0).collect();
+        let x = Mat::from_vec(n, 1, x_data);
+
+        let result_small = ridge(&x, &y, 0.01).unwrap();
+        let result_large = ridge(&x, &y, 1000.0).unwrap();
+        assert!(result_large.coefficients[0].abs() < result_small.coefficients[0].abs(),
+            "larger λ should shrink coefficient: small={:.4}, large={:.4}",
+            result_small.coefficients[0], result_large.coefficients[0]);
+    }
+
+    // ── Lasso regression ──────────────────────────────────────────────
+
+    #[test]
+    fn lasso_recovers_signal() {
+        // Lasso on a simple linear problem should recover the signal
+        let n = 30;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
+        let y: Vec<f64> = x_data.iter().map(|&xi| 3.0 * xi + 0.5).collect();
+        let x = Mat::from_vec(n, 1, x_data);
+
+        let result = lasso(&x, &y, 0.001, 1000, 1e-8).unwrap();
+        assert!(result.coefficients[0] > 1.0,
+            "lasso coeff={:.4} should be positive and substantial", result.coefficients[0]);
+        assert!(result.r_squared > 0.8,
+            "R²={:.4} should be high for clean linear signal", result.r_squared);
+    }
+
+    #[test]
+    fn lasso_sparsity_large_lambda() {
+        // With large enough λ, Lasso should zero out the coefficient
+        let n = 20;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
+        let y: Vec<f64> = (0..n).map(|_| 1.0).collect(); // constant y, no signal
+        let x = Mat::from_vec(n, 1, x_data);
+
+        let result = lasso(&x, &y, 10.0, 1000, 1e-8).unwrap();
+        assert!(result.coefficients[0].abs() < 0.01,
+            "lasso should zero coefficient for constant y, got={:.6}", result.coefficients[0]);
+    }
+
+    // ── ElasticNet regression ─────────────────────────────────────────
+
+    #[test]
+    fn elastic_net_between_ridge_and_lasso() {
+        // ElasticNet with λ₁=λ, λ₂=0 should behave like Lasso
+        // ElasticNet with λ₁=0, λ₂=λ should behave like Ridge
+        let n = 30;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
+        let y: Vec<f64> = x_data.iter().map(|&xi| 2.0 * xi + 1.0).collect();
+        let x = Mat::from_vec(n, 1, x_data);
+
+        let ridge_r = ridge(&x, &y, 1.0).unwrap();
+        let lasso_r = lasso(&x, &y, 0.01, 1000, 1e-8).unwrap();
+        let en_r = elastic_net(&x, &y, 0.01, 1.0, 1000, 1e-8).unwrap();
+
+        // ElasticNet with λ₁>0, λ₂>0 should be between pure lasso and pure ridge
+        // In terms of coefficient magnitude
+        let en_coeff = en_r.coefficients[0].abs();
+        let ridge_coeff = ridge_r.coefficients[0].abs();
+        let lasso_coeff = lasso_r.coefficients[0].abs();
+        assert!(en_coeff > 0.0, "ElasticNet coeff should be non-zero");
+        assert!(en_coeff <= lasso_coeff.max(ridge_coeff) + 0.5,
+            "EN coeff={:.4} should be in plausible range relative to lasso={:.4} ridge={:.4}",
+            en_coeff, lasso_coeff, ridge_coeff);
+    }
+
+    #[test]
+    fn elastic_net_lasso_mode() {
+        // λ₂=0 → pure Lasso. Should produce same result as lasso().
+        let n = 30;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
+        let y: Vec<f64> = x_data.iter().map(|&xi| 2.0 * xi + 0.5).collect();
+        let x = Mat::from_vec(n, 1, x_data);
+
+        let lasso_r = lasso(&x, &y, 0.01, 2000, 1e-10).unwrap();
+        let en_r = elastic_net(&x, &y, 0.01, 0.0, 2000, 1e-10).unwrap();
+
+        assert_close(en_r.coefficients[0], lasso_r.coefficients[0], 1e-4,
+            "ElasticNet(λ₂=0) should match Lasso");
     }
 }

@@ -670,6 +670,205 @@ pub fn studentized_range_p(q: f64, k: usize, df_error: f64) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Additional distribution functions
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Weibull CDF: F(x; k, λ) = 1 - exp(-(x/λ)^k) for x ≥ 0.
+pub fn weibull_cdf(x: f64, shape: f64, scale: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    if shape <= 0.0 || scale <= 0.0 { return f64::NAN; }
+    1.0 - (-(x / scale).powf(shape)).exp()
+}
+
+/// Weibull PDF: f(x; k, λ) = (k/λ)(x/λ)^(k-1) exp(-(x/λ)^k) for x ≥ 0.
+pub fn weibull_pdf(x: f64, shape: f64, scale: f64) -> f64 {
+    if x < 0.0 { return 0.0; }
+    if shape <= 0.0 || scale <= 0.0 { return f64::NAN; }
+    if x == 0.0 {
+        return if shape == 1.0 { 1.0 / scale } else if shape < 1.0 { f64::INFINITY } else { 0.0 };
+    }
+    let z = x / scale;
+    (shape / scale) * z.powf(shape - 1.0) * (-z.powf(shape)).exp()
+}
+
+/// Weibull quantile: F⁻¹(p; k, λ) = λ (-ln(1-p))^(1/k).
+pub fn weibull_quantile(p: f64, shape: f64, scale: f64) -> f64 {
+    if p <= 0.0 { return 0.0; }
+    if p >= 1.0 { return f64::INFINITY; }
+    if shape <= 0.0 || scale <= 0.0 { return f64::NAN; }
+    scale * (-(1.0 - p).ln()).powf(1.0 / shape)
+}
+
+/// Pareto CDF: F(x; α, x_m) = 1 - (x_m/x)^α for x ≥ x_m.
+pub fn pareto_cdf(x: f64, alpha: f64, x_min: f64) -> f64 {
+    if alpha <= 0.0 || x_min <= 0.0 { return f64::NAN; }
+    if x < x_min { return 0.0; }
+    1.0 - (x_min / x).powf(alpha)
+}
+
+/// Pareto PDF: f(x; α, x_m) = α x_m^α / x^(α+1) for x ≥ x_m.
+pub fn pareto_pdf(x: f64, alpha: f64, x_min: f64) -> f64 {
+    if alpha <= 0.0 || x_min <= 0.0 { return f64::NAN; }
+    if x < x_min { return 0.0; }
+    alpha * x_min.powf(alpha) / x.powf(alpha + 1.0)
+}
+
+/// Pareto quantile: F⁻¹(p; α, x_m) = x_m / (1-p)^(1/α).
+pub fn pareto_quantile(p: f64, alpha: f64, x_min: f64) -> f64 {
+    if p <= 0.0 { return x_min; }
+    if p >= 1.0 { return f64::INFINITY; }
+    if alpha <= 0.0 || x_min <= 0.0 { return f64::NAN; }
+    x_min / (1.0 - p).powf(1.0 / alpha)
+}
+
+/// Exponential CDF: F(x; λ) = 1 - exp(-λx) for x ≥ 0.
+pub fn exponential_cdf(x: f64, rate: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    if rate <= 0.0 { return f64::NAN; }
+    1.0 - (-rate * x).exp()
+}
+
+/// Exponential PDF: f(x; λ) = λ exp(-λx) for x ≥ 0.
+pub fn exponential_pdf(x: f64, rate: f64) -> f64 {
+    if x < 0.0 { return 0.0; }
+    if rate <= 0.0 { return f64::NAN; }
+    rate * (-rate * x).exp()
+}
+
+/// Exponential quantile: F⁻¹(p; λ) = -ln(1-p)/λ.
+pub fn exponential_quantile(p: f64, rate: f64) -> f64 {
+    if p <= 0.0 { return 0.0; }
+    if p >= 1.0 { return f64::INFINITY; }
+    if rate <= 0.0 { return f64::NAN; }
+    -(1.0 - p).ln() / rate
+}
+
+/// Lognormal CDF: F(x; μ, σ) = Φ((ln x - μ)/σ).
+pub fn lognormal_cdf(x: f64, mu: f64, sigma: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    if sigma <= 0.0 { return f64::NAN; }
+    normal_cdf((x.ln() - mu) / sigma)
+}
+
+/// Lognormal PDF: f(x; μ, σ) = (1/(xσ√(2π))) exp(-((ln x - μ)/σ)²/2).
+pub fn lognormal_pdf(x: f64, mu: f64, sigma: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    if sigma <= 0.0 { return f64::NAN; }
+    let z = (x.ln() - mu) / sigma;
+    1.0 / (x * sigma * std::f64::consts::TAU.sqrt()) * (-0.5 * z * z).exp()
+}
+
+/// Lognormal quantile: F⁻¹(p; μ, σ) = exp(μ + σ Φ⁻¹(p)).
+pub fn lognormal_quantile(p: f64, mu: f64, sigma: f64) -> f64 {
+    if p <= 0.0 { return 0.0; }
+    if p >= 1.0 { return f64::INFINITY; }
+    if sigma <= 0.0 { return f64::NAN; }
+    (mu + sigma * normal_quantile(p)).exp()
+}
+
+/// Beta PDF: f(x; α, β) = x^(α-1)(1-x)^(β-1) / B(α,β) for x ∈ [0,1].
+pub fn beta_pdf(x: f64, alpha: f64, beta: f64) -> f64 {
+    if alpha <= 0.0 || beta <= 0.0 { return f64::NAN; }
+    if x < 0.0 || x > 1.0 { return 0.0; }
+    if x == 0.0 { return if alpha < 1.0 { f64::INFINITY } else if alpha == 1.0 { beta } else { 0.0 }; }
+    if x == 1.0 { return if beta < 1.0 { f64::INFINITY } else if beta == 1.0 { alpha } else { 0.0 }; }
+    let log_pdf = (alpha - 1.0) * x.ln() + (beta - 1.0) * (1.0 - x).ln() - log_beta(alpha, beta);
+    log_pdf.exp()
+}
+
+/// Beta CDF: F(x; α, β) = I_x(α, β) (regularized incomplete beta).
+pub fn beta_cdf(x: f64, alpha: f64, beta: f64) -> f64 {
+    if alpha <= 0.0 || beta <= 0.0 { return f64::NAN; }
+    if x <= 0.0 { return 0.0; }
+    if x >= 1.0 { return 1.0; }
+    regularized_incomplete_beta(x, alpha, beta)
+}
+
+/// Gamma PDF: f(x; α, β) = (β^α / Γ(α)) x^(α-1) exp(-βx) for x > 0.
+/// Here α = shape, β = rate (1/scale).
+pub fn gamma_pdf(x: f64, shape: f64, rate: f64) -> f64 {
+    if shape <= 0.0 || rate <= 0.0 { return f64::NAN; }
+    if x < 0.0 { return 0.0; }
+    if x == 0.0 { return if shape < 1.0 { f64::INFINITY } else if shape == 1.0 { rate } else { 0.0 }; }
+    let log_pdf = shape * rate.ln() - log_gamma(shape) + (shape - 1.0) * x.ln() - rate * x;
+    log_pdf.exp()
+}
+
+/// Gamma CDF: F(x; α, β) = P(α, βx) (regularized lower gamma).
+pub fn gamma_cdf(x: f64, shape: f64, rate: f64) -> f64 {
+    if shape <= 0.0 || rate <= 0.0 { return f64::NAN; }
+    if x <= 0.0 { return 0.0; }
+    regularized_gamma_p(shape, rate * x)
+}
+
+/// Poisson PMF: P(X = k) = λ^k e^(-λ) / k!
+pub fn poisson_pmf(k: u64, lambda: f64) -> f64 {
+    if lambda < 0.0 { return f64::NAN; }
+    if lambda == 0.0 { return if k == 0 { 1.0 } else { 0.0 }; }
+    (k as f64 * lambda.ln() - lambda - log_gamma(k as f64 + 1.0)).exp()
+}
+
+/// Poisson CDF: P(X ≤ k) = Q(k+1, λ) (regularized upper gamma).
+pub fn poisson_cdf(k: u64, lambda: f64) -> f64 {
+    if lambda < 0.0 { return f64::NAN; }
+    if lambda == 0.0 { return 1.0; }
+    regularized_gamma_q(k as f64 + 1.0, lambda)
+}
+
+/// Binomial PMF: P(X = k) = C(n,k) p^k (1-p)^(n-k).
+pub fn binomial_pmf(k: u64, n: u64, p: f64) -> f64 {
+    if p < 0.0 || p > 1.0 { return f64::NAN; }
+    if k > n { return 0.0; }
+    let log_pmf = log_gamma(n as f64 + 1.0)
+        - log_gamma(k as f64 + 1.0) - log_gamma((n - k) as f64 + 1.0)
+        + k as f64 * p.ln() + (n - k) as f64 * (1.0 - p).ln();
+    log_pmf.exp()
+}
+
+/// Binomial CDF: P(X ≤ k) = I_{1-p}(n-k, k+1).
+pub fn binomial_cdf(k: u64, n: u64, p: f64) -> f64 {
+    if p < 0.0 || p > 1.0 { return f64::NAN; }
+    if k >= n { return 1.0; }
+    regularized_incomplete_beta(1.0 - p, (n - k) as f64, k as f64 + 1.0)
+}
+
+/// Negative binomial PMF: P(X = k) = C(k+r-1, k) p^r (1-p)^k.
+/// r = number of successes, p = success probability.
+pub fn neg_binomial_pmf(k: u64, r: f64, p: f64) -> f64 {
+    if p <= 0.0 || p > 1.0 || r <= 0.0 { return f64::NAN; }
+    let log_pmf = log_gamma(k as f64 + r) - log_gamma(r) - log_gamma(k as f64 + 1.0)
+        + r * p.ln() + k as f64 * (1.0 - p).ln();
+    log_pmf.exp()
+}
+
+/// Negative binomial CDF: P(X ≤ k) = I_p(r, k+1).
+pub fn neg_binomial_cdf(k: u64, r: f64, p: f64) -> f64 {
+    if p <= 0.0 || p > 1.0 || r <= 0.0 { return f64::NAN; }
+    regularized_incomplete_beta(p, r, k as f64 + 1.0)
+}
+
+/// Cauchy CDF: F(x; x₀, γ) = 1/π arctan((x - x₀)/γ) + 1/2.
+pub fn cauchy_cdf(x: f64, x0: f64, gamma: f64) -> f64 {
+    if gamma <= 0.0 { return f64::NAN; }
+    0.5 + ((x - x0) / gamma).atan() / std::f64::consts::PI
+}
+
+/// Cauchy PDF: f(x; x₀, γ) = 1 / (πγ(1 + ((x-x₀)/γ)²)).
+pub fn cauchy_pdf(x: f64, x0: f64, gamma: f64) -> f64 {
+    if gamma <= 0.0 { return f64::NAN; }
+    let z = (x - x0) / gamma;
+    1.0 / (std::f64::consts::PI * gamma * (1.0 + z * z))
+}
+
+/// Cauchy quantile: F⁻¹(p) = x₀ + γ tan(π(p - 1/2)).
+pub fn cauchy_quantile(p: f64, x0: f64, gamma: f64) -> f64 {
+    if p <= 0.0 { return f64::NEG_INFINITY; }
+    if p >= 1.0 { return f64::INFINITY; }
+    if gamma <= 0.0 { return f64::NAN; }
+    x0 + gamma * (std::f64::consts::PI * (p - 0.5)).tan()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -976,5 +1175,101 @@ mod tests {
         // Very small p
         let q = normal_quantile(1e-10);
         assert!(q < -6.0, "quantile(1e-10)={} should be < -6", q);
+    }
+
+    // ── Distribution functions ──────────────────────────────────────────
+
+    #[test]
+    fn weibull_roundtrip() {
+        let (k, lam) = (2.0, 3.0);
+        for &x in &[0.5, 1.0, 2.0, 5.0] {
+            let p = weibull_cdf(x, k, lam);
+            let q = weibull_quantile(p, k, lam);
+            assert!((q - x).abs() < 1e-10, "Weibull roundtrip: x={x}, q={q}");
+        }
+        assert!(weibull_pdf(1.0, 2.0, 3.0) > 0.0);
+        assert_eq!(weibull_cdf(0.0, 2.0, 3.0), 0.0);
+    }
+
+    #[test]
+    fn pareto_roundtrip() {
+        let (alpha, xm) = (3.0, 1.0);
+        for &x in &[1.5, 2.0, 5.0, 10.0] {
+            let p = pareto_cdf(x, alpha, xm);
+            let q = pareto_quantile(p, alpha, xm);
+            assert!((q - x).abs() < 1e-10, "Pareto roundtrip: x={x}, q={q}");
+        }
+        assert_eq!(pareto_cdf(0.5, alpha, xm), 0.0); // below x_min
+    }
+
+    #[test]
+    fn exponential_is_weibull_k1() {
+        // Exp(λ) = Weibull(k=1, λ=1/rate)
+        let rate = 2.0;
+        let x = 1.5;
+        let p_exp = exponential_cdf(x, rate);
+        let p_weibull = weibull_cdf(x, 1.0, 1.0 / rate);
+        assert!((p_exp - p_weibull).abs() < 1e-10);
+    }
+
+    #[test]
+    fn lognormal_roundtrip() {
+        let (mu, sigma) = (1.0, 0.5);
+        for &x in &[0.5, 1.0, 3.0, 10.0] {
+            let p = lognormal_cdf(x, mu, sigma);
+            let q = lognormal_quantile(p, mu, sigma);
+            assert!((q - x).abs() / x < 1e-8, "Lognormal roundtrip: x={x}, q={q}");
+        }
+    }
+
+    #[test]
+    fn beta_cdf_at_half() {
+        // Beta(1,1) = Uniform(0,1) → CDF(0.5) = 0.5
+        assert!((beta_cdf(0.5, 1.0, 1.0) - 0.5).abs() < 1e-10);
+        // Beta(2,2) is symmetric → CDF(0.5) = 0.5
+        assert!((beta_cdf(0.5, 2.0, 2.0) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn poisson_sum_to_one() {
+        let lambda = 5.0;
+        let total: f64 = (0..50).map(|k| poisson_pmf(k, lambda)).sum();
+        assert!((total - 1.0).abs() < 1e-10, "Poisson PMF should sum to 1, got {total}");
+    }
+
+    #[test]
+    fn binomial_pmf_sum_to_one() {
+        let (n, p) = (20, 0.3);
+        let total: f64 = (0..=n).map(|k| binomial_pmf(k, n, p)).sum();
+        assert!((total - 1.0).abs() < 1e-10, "Binomial PMF should sum to 1, got {total}");
+    }
+
+    #[test]
+    fn neg_binomial_pmf_sum_converges() {
+        let (r, p) = (5.0, 0.4);
+        let total: f64 = (0..200).map(|k| neg_binomial_pmf(k, r, p)).sum();
+        assert!((total - 1.0).abs() < 1e-6, "NegBin PMF should sum to 1, got {total}");
+    }
+
+    #[test]
+    fn cauchy_roundtrip() {
+        let (x0, gamma) = (2.0, 1.5);
+        for &x in &[-5.0, 0.0, 2.0, 10.0] {
+            let p = cauchy_cdf(x, x0, gamma);
+            let q = cauchy_quantile(p, x0, gamma);
+            assert!((q - x).abs() < 1e-8, "Cauchy roundtrip: x={x}, q={q}");
+        }
+        assert!((cauchy_cdf(2.0, 2.0, 1.0) - 0.5).abs() < 1e-10); // median = x0
+    }
+
+    #[test]
+    fn gamma_matches_chi2() {
+        // χ²(k) = Gamma(k/2, 1/2) in rate parameterization
+        let k = 6.0;
+        let x = 4.0;
+        let p_chi2 = chi2_cdf(x, k);
+        let p_gamma = gamma_cdf(x, k / 2.0, 0.5);
+        assert!((p_chi2 - p_gamma).abs() < 1e-10,
+            "chi2_cdf={p_chi2} should match gamma_cdf={p_gamma}");
     }
 }

@@ -672,6 +672,30 @@ pub fn dagostino_pearson(data: &[f64]) -> NonparametricResult {
     }
 }
 
+/// Jarque-Bera test for normality (Jarque & Bera 1980).
+///
+/// JB = (n/6)(S² + K²/4) where S = skewness, K = excess kurtosis.
+/// Under H₀ (normality): JB ~ χ²(2).
+///
+/// The simplest normality test — O(1) from MomentStats. Less powerful than
+/// Shapiro-Wilk for small n but valid for all n ≥ 8.
+pub fn jarque_bera(data: &[f64]) -> NonparametricResult {
+    let clean: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
+    let n = clean.len();
+    if n < 8 {
+        return NonparametricResult {
+            test_name: "Jarque-Bera", statistic: f64::NAN, p_value: f64::NAN,
+        };
+    }
+    let moments = crate::descriptive::moments_ungrouped(&clean);
+    let skew = moments.skewness(false); // bias-corrected
+    let kurt = moments.kurtosis(true, false); // bias-corrected excess kurtosis
+    let nf = n as f64;
+    let jb = (nf / 6.0) * (skew * skew + kurt * kurt / 4.0);
+    let p = 1.0 - crate::special_functions::chi2_cdf(jb, 2.0);
+    NonparametricResult { test_name: "Jarque-Bera", statistic: jb, p_value: p }
+}
+
 /// Shapiro-Wilk coefficients.
 ///
 /// For n <= 5: tabled exact values (Shapiro & Wilk 1965).
@@ -1389,6 +1413,130 @@ pub fn distance_correlation(x: &[f64], y: &[f64]) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Anderson-Darling normality test
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Anderson-Darling test for normality.
+///
+/// A² = -n - (1/n) Σᵢ (2i-1) [ln Φ(zᵢ) + ln(1-Φ(z_{n+1-i}))]
+///
+/// More sensitive to tail departures than Kolmogorov-Smirnov.
+/// Critical values (adjusted A²*): 0.576 (15%), 0.656 (10%), 0.787 (5%),
+/// 0.918 (2.5%), 1.092 (1%).
+///
+/// Returns adjusted A²* statistic and approximate p-value.
+pub fn anderson_darling(data: &[f64]) -> NonparametricResult {
+    let mut sorted: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let n = sorted.len();
+
+    if n < 3 {
+        return NonparametricResult {
+            test_name: "Anderson-Darling", statistic: f64::NAN, p_value: f64::NAN,
+        };
+    }
+
+    let nf = n as f64;
+    let mean = sorted.iter().sum::<f64>() / nf;
+    let var: f64 = sorted.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (nf - 1.0);
+    let std = var.sqrt();
+
+    if std < 1e-15 {
+        // Constant data is trivially normal (degenerate)
+        return NonparametricResult {
+            test_name: "Anderson-Darling", statistic: 0.0, p_value: 1.0,
+        };
+    }
+
+    // Standardize
+    let z: Vec<f64> = sorted.iter().map(|x| (x - mean) / std).collect();
+
+    // Compute A²
+    let mut sum = 0.0;
+    for i in 0..n {
+        let phi_z = crate::special_functions::normal_cdf(z[i]);
+        let phi_rev = crate::special_functions::normal_cdf(z[n - 1 - i]);
+        let ln_phi = phi_z.max(1e-300).ln();
+        let ln_1_phi = (1.0 - phi_rev).max(1e-300).ln();
+        sum += (2.0 * (i as f64) + 1.0) * (ln_phi + ln_1_phi);
+    }
+    let a2 = -nf - sum / nf;
+
+    // Adjusted statistic: A²* = A² (1 + 0.75/n + 2.25/n²)
+    let a2_star = a2 * (1.0 + 0.75 / nf + 2.25 / (nf * nf));
+
+    // Approximate p-value (D'Agostino & Stephens 1986)
+    let p = if a2_star < 0.2 {
+        1.0 - (-13.436 + 101.14 * a2_star - 223.73 * a2_star * a2_star).exp()
+    } else if a2_star < 0.34 {
+        1.0 - (-8.318 + 42.796 * a2_star - 59.938 * a2_star * a2_star).exp()
+    } else if a2_star < 0.6 {
+        (-0.9177 - 4.279 * a2_star - 1.38 * a2_star * a2_star).exp()
+    } else if a2_star < 13.0 {
+        (-1.2937 - 5.709 * a2_star + 0.0186 * a2_star * a2_star).exp()
+    } else {
+        0.0
+    };
+
+    NonparametricResult {
+        test_name: "Anderson-Darling",
+        statistic: a2_star,
+        p_value: p.clamp(0.0, 1.0),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Friedman test for repeated measures
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Friedman test for k related samples (repeated measures, non-parametric).
+///
+/// Tests H₀: no difference among k treatments applied to n subjects.
+/// Data is ranked within each subject (block), then between-group rank sums are compared.
+///
+/// Q = [12 / (nk(k+1))] Σⱼ Rⱼ² - 3n(k+1) ~ χ²(k-1)
+///
+/// `data`: n × k matrix (row-major). Each row is one subject, columns are treatments.
+/// `n_subjects`: number of subjects (rows).
+/// `n_treatments`: number of treatments (columns).
+pub fn friedman_test(data: &[f64], n_subjects: usize, n_treatments: usize) -> NonparametricResult {
+    let n = n_subjects;
+    let k = n_treatments;
+
+    if k < 2 || n < 2 {
+        return NonparametricResult {
+            test_name: "Friedman", statistic: f64::NAN, p_value: f64::NAN,
+        };
+    }
+
+    // Rank within each subject (row)
+    let mut rank_sums = vec![0.0; k];
+    for i in 0..n {
+        let row: Vec<f64> = (0..k).map(|j| data[i * k + j]).collect();
+        let ranks = rank(&row);
+        for j in 0..k {
+            rank_sums[j] += ranks[j];
+        }
+    }
+
+    let nf = n as f64;
+    let kf = k as f64;
+
+    // Friedman Q statistic
+    let sum_rj2: f64 = rank_sums.iter().map(|r| r * r).sum();
+    let q = (12.0 / (nf * kf * (kf + 1.0))) * sum_rj2 - 3.0 * nf * (kf + 1.0);
+
+    let df = kf - 1.0;
+    let p = crate::special_functions::chi2_right_tail_p(q, df);
+
+    NonparametricResult {
+        test_name: "Friedman",
+        statistic: q,
+        p_value: p,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2010,5 +2158,94 @@ mod tests {
         // After regressing z out of x and y (both collapse to residuals near 0),
         // the partial correlation is undefined but we just verify no panic
         assert!(pc.is_finite() || pc.is_nan());
+    }
+
+    // ── Anderson-Darling normality test ──────────────────────────────────
+
+    #[test]
+    fn anderson_darling_normal_data_passes() {
+        // Data drawn from N(0,1) by deterministic Box-Muller-like spacing
+        // Using quantiles of a fine grid (known normal) — p should be > 0.05
+        // Generate 50 normal quantiles: Φ⁻¹((i-0.375)/(n+0.25)) for i=1..n
+        let n = 50usize;
+        let data: Vec<f64> = (1..=n).map(|i| {
+            crate::special_functions::normal_quantile((i as f64 - 0.375) / (n as f64 + 0.25))
+        }).collect();
+        let r = anderson_darling(&data);
+        assert_eq!(r.test_name, "Anderson-Darling");
+        assert!(r.statistic.is_finite(), "A²* should be finite");
+        assert!(r.p_value > 0.05,
+            "Normal quantiles should pass AD test, p={:.4}", r.p_value);
+    }
+
+    #[test]
+    fn anderson_darling_uniform_rejects() {
+        // Uniform data should fail the normality test (p < 0.05)
+        let n = 50;
+        let data: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
+        let r = anderson_darling(&data);
+        assert!(r.p_value < 0.05,
+            "Uniform data should fail AD normality test, p={:.4}", r.p_value);
+    }
+
+    #[test]
+    fn anderson_darling_too_short_returns_nan() {
+        let r = anderson_darling(&[1.0, 2.0]);
+        assert!(r.statistic.is_nan() && r.p_value.is_nan());
+    }
+
+    #[test]
+    fn anderson_darling_constant_returns_p1() {
+        // Constant data is "trivially normal" (degenerate distribution)
+        let data = vec![5.0; 20];
+        let r = anderson_darling(&data);
+        assert!(r.p_value >= 0.99, "constant data p={:.4} should be ~1", r.p_value);
+    }
+
+    // ── Friedman test for repeated measures ──────────────────────────────
+
+    #[test]
+    fn friedman_clear_treatment_effect() {
+        // 5 subjects, 3 treatments. Treatment 3 clearly dominates.
+        // Data[i][j] = base[i] + treatment[j]
+        // Expected: Q large, p < 0.05
+        let treatments = [0.0, 1.0, 5.0]; // big difference between T1 and T3
+        let n = 5;
+        let k = 3;
+        let mut data = vec![0.0; n * k];
+        for i in 0..n {
+            let base = i as f64;
+            for j in 0..k {
+                data[i * k + j] = base + treatments[j];
+            }
+        }
+        let r = friedman_test(&data, n, k);
+        assert_eq!(r.test_name, "Friedman");
+        assert!(r.statistic > 5.0, "Q={:.4} should be large for clear effect", r.statistic);
+        assert!(r.p_value < 0.05, "p={:.4} should be significant", r.p_value);
+    }
+
+    #[test]
+    fn friedman_no_treatment_effect() {
+        // All treatments have the same expected rank within each subject
+        // Data: all cells equal → tied ranks → Q = 0
+        let n = 5;
+        let k = 3;
+        let data = vec![1.0; n * k]; // all same value → tied ranks
+        let r = friedman_test(&data, n, k);
+        // Q should be 0 or near 0 (all tied → no variation in rank sums)
+        assert!(r.statistic.abs() < 1e-6, "Q={:.6} should be ~0 for tied data", r.statistic);
+        assert!(r.p_value > 0.5, "p={:.4} should be large for no effect", r.p_value);
+    }
+
+    #[test]
+    fn friedman_minimum_size_returns_result() {
+        // k<2 or n<2 → NaN
+        let r = friedman_test(&[1.0], 1, 1);
+        assert!(r.statistic.is_nan());
+        // k=2, n=2 → should compute
+        let data = vec![1.0, 2.0, 2.0, 1.0]; // 2 subjects × 2 treatments
+        let r2 = friedman_test(&data, 2, 2);
+        assert!(r2.statistic.is_finite());
     }
 }

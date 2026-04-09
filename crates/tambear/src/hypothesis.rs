@@ -54,12 +54,50 @@ pub struct TestResult {
     pub effect_size: f64,
     /// Name of effect size measure.
     pub effect_size_name: &'static str,
+    /// Lower bound of confidence interval on the estimand (NaN if not computed).
+    pub ci_lower: f64,
+    /// Upper bound of confidence interval on the estimand (NaN if not computed).
+    pub ci_upper: f64,
+    /// Confidence level used (e.g., 0.95). NaN if CI not computed.
+    pub ci_level: f64,
 }
 
 impl TestResult {
     /// Is the result significant at the given alpha level?
     pub fn significant_at(&self, alpha: f64) -> bool {
         self.p_value < alpha
+    }
+
+    /// Does the confidence interval contain the given null value?
+    /// Returns None if CI was not computed.
+    pub fn ci_contains(&self, null_value: f64) -> Option<bool> {
+        if self.ci_lower.is_nan() || self.ci_upper.is_nan() { return None; }
+        Some(self.ci_lower <= null_value && null_value <= self.ci_upper)
+    }
+
+    /// Builder: construct a TestResult without a CI (legacy / tests without an estimand CI).
+    pub fn no_ci(
+        test_name: &'static str,
+        statistic: f64, df: f64, p_value: f64,
+        effect_size: f64, effect_size_name: &'static str,
+    ) -> Self {
+        Self {
+            test_name, statistic, df, p_value, effect_size, effect_size_name,
+            ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
+        }
+    }
+
+    /// Builder: construct a TestResult with a CI on the estimand.
+    pub fn with_ci(
+        test_name: &'static str,
+        statistic: f64, df: f64, p_value: f64,
+        effect_size: f64, effect_size_name: &'static str,
+        ci_lower: f64, ci_upper: f64, ci_level: f64,
+    ) -> Self {
+        Self {
+            test_name, statistic, df, p_value, effect_size, effect_size_name,
+            ci_lower, ci_upper, ci_level,
+        }
     }
 }
 
@@ -138,6 +176,7 @@ pub fn one_sample_t(stats: &MomentStats, mu: f64) -> TestResult {
             test_name: "One-sample t-test",
             statistic: f64::NAN, df: f64::NAN, p_value: f64::NAN,
             effect_size: f64::NAN, effect_size_name: "Cohen's d",
+            ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
         };
     }
     let mean = stats.mean();
@@ -147,10 +186,17 @@ pub fn one_sample_t(stats: &MomentStats, mu: f64) -> TestResult {
     let p = t_two_tail_p(t, df);
     let d = (mean - mu) / stats.std(1); // Cohen's d
 
+    // 95% CI on the mean: x̄ ± t_{0.975, n-1} · SE
+    let t_crit = crate::special_functions::t_quantile(0.975, df);
+    let ci_half = t_crit * se;
+    let ci_lower = mean - ci_half;
+    let ci_upper = mean + ci_half;
+
     TestResult {
         test_name: "One-sample t-test",
         statistic: t, df, p_value: p,
         effect_size: d, effect_size_name: "Cohen's d",
+        ci_lower, ci_upper, ci_level: 0.95,
     }
 }
 
@@ -169,21 +215,30 @@ pub fn two_sample_t(stats1: &MomentStats, stats2: &MomentStats) -> TestResult {
             test_name: "Two-sample t-test",
             statistic: f64::NAN, df: f64::NAN, p_value: f64::NAN,
             effect_size: f64::NAN, effect_size_name: "Cohen's d",
+            ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
         };
     }
     let mean1 = stats1.mean();
     let mean2 = stats2.mean();
+    let mean_diff = mean1 - mean2;
     let df = n1 + n2 - 2.0;
     let pooled_var = (stats1.m2 + stats2.m2) / df;
     let se = (pooled_var * (1.0 / n1 + 1.0 / n2)).sqrt();
-    let t = (mean1 - mean2) / se;
+    let t = mean_diff / se;
     let p = t_two_tail_p(t, df);
-    let d = (mean1 - mean2) / pooled_var.sqrt(); // Cohen's d (pooled)
+    let d = mean_diff / pooled_var.sqrt(); // Cohen's d (pooled)
+
+    // 95% CI on (μ₁ - μ₂): (x̄₁ - x̄₂) ± t_{0.975, df} · SE_diff
+    let t_crit = crate::special_functions::t_quantile(0.975, df);
+    let ci_half = t_crit * se;
 
     TestResult {
         test_name: "Two-sample t-test",
         statistic: t, df, p_value: p,
         effect_size: d, effect_size_name: "Cohen's d",
+        ci_lower: mean_diff - ci_half,
+        ci_upper: mean_diff + ci_half,
+        ci_level: 0.95,
     }
 }
 
@@ -202,6 +257,7 @@ pub fn welch_t(stats1: &MomentStats, stats2: &MomentStats) -> TestResult {
             test_name: "Welch's t-test",
             statistic: f64::NAN, df: f64::NAN, p_value: f64::NAN,
             effect_size: f64::NAN, effect_size_name: "Cohen's d",
+            ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
         };
     }
     let var1 = stats1.variance(1);
@@ -209,8 +265,8 @@ pub fn welch_t(stats1: &MomentStats, stats2: &MomentStats) -> TestResult {
     let vn1 = var1 / n1;
     let vn2 = var2 / n2;
     let se = (vn1 + vn2).sqrt();
-
-    let t = (stats1.mean() - stats2.mean()) / se;
+    let mean_diff = stats1.mean() - stats2.mean();
+    let t = mean_diff / se;
 
     // Welch-Satterthwaite degrees of freedom
     let num = (vn1 + vn2).powi(2);
@@ -221,10 +277,17 @@ pub fn welch_t(stats1: &MomentStats, stats2: &MomentStats) -> TestResult {
     // Cohen's d using proper pooled SD: sqrt((m2₁ + m2₂) / (n₁ + n₂ - 2))
     let d = cohens_d(stats1, stats2);
 
+    // 95% CI on (μ₁ - μ₂) using Welch's df
+    let t_crit = crate::special_functions::t_quantile(0.975, df);
+    let ci_half = t_crit * se;
+
     TestResult {
         test_name: "Welch's t-test",
         statistic: t, df, p_value: p,
         effect_size: d, effect_size_name: "Cohen's d",
+        ci_lower: mean_diff - ci_half,
+        ci_upper: mean_diff + ci_half,
+        ci_level: 0.95,
     }
 }
 
@@ -578,6 +641,7 @@ pub fn one_proportion_z(successes: f64, n: f64, p0: f64) -> TestResult {
             test_name: "One-proportion z-test",
             statistic: f64::NAN, df: f64::NAN, p_value: f64::NAN,
             effect_size: f64::NAN, effect_size_name: "Cohen's h",
+            ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
         };
     }
     let p_hat = successes / n;
@@ -587,10 +651,20 @@ pub fn one_proportion_z(successes: f64, n: f64, p0: f64) -> TestResult {
     // Cohen's h = 2 arcsin(√p̂) - 2 arcsin(√p₀)
     let h = 2.0 * p_hat.sqrt().asin() - 2.0 * p0.sqrt().asin();
 
+    // Wilson score 95% CI on p̂ (better than normal approximation, especially near 0/1)
+    let z_crit = crate::special_functions::normal_quantile(0.975);
+    let z2 = z_crit * z_crit;
+    let denom_wilson = 1.0 + z2 / n;
+    let center = (p_hat + z2 / (2.0 * n)) / denom_wilson;
+    let halfw = (z_crit * (p_hat * (1.0 - p_hat) / n + z2 / (4.0 * n * n)).sqrt()) / denom_wilson;
+
     TestResult {
         test_name: "One-proportion z-test",
         statistic: z, df: f64::NAN, p_value: p,
         effect_size: h, effect_size_name: "Cohen's h",
+        ci_lower: center - halfw,
+        ci_upper: center + halfw,
+        ci_level: 0.95,
     }
 }
 
@@ -605,6 +679,7 @@ pub fn two_proportion_z(successes1: f64, n1: f64, successes2: f64, n2: f64) -> T
             test_name: "Two-proportion z-test",
             statistic: f64::NAN, df: f64::NAN, p_value: f64::NAN,
             effect_size: f64::NAN, effect_size_name: "Cohen's h",
+            ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
         };
     }
     let p1 = successes1 / n1;
@@ -615,10 +690,19 @@ pub fn two_proportion_z(successes1: f64, n1: f64, successes2: f64, n2: f64) -> T
     let p = normal_two_tail_p(z);
     let h = 2.0 * p1.sqrt().asin() - 2.0 * p2.sqrt().asin();
 
+    // 95% CI on (p₁ - p₂) using unpooled SE (standard for CI, even though test uses pooled)
+    let diff = p1 - p2;
+    let se_diff = (p1 * (1.0 - p1) / n1 + p2 * (1.0 - p2) / n2).sqrt();
+    let z_crit = crate::special_functions::normal_quantile(0.975);
+    let ci_half = z_crit * se_diff;
+
     TestResult {
         test_name: "Two-proportion z-test",
         statistic: z, df: f64::NAN, p_value: p,
         effect_size: h, effect_size_name: "Cohen's h",
+        ci_lower: diff - ci_half,
+        ci_upper: diff + ci_half,
+        ci_level: 0.95,
     }
 }
 
@@ -1355,6 +1439,7 @@ pub fn jarque_bera(stats: &MomentStats) -> TestResult {
         return TestResult {
             test_name: "Jarque-Bera", statistic: f64::NAN, p_value: f64::NAN,
             df: 2.0, effect_size: f64::NAN, effect_size_name: "",
+            ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
         };
     }
     let s = stats.skewness(false);
@@ -1364,6 +1449,7 @@ pub fn jarque_bera(stats: &MomentStats) -> TestResult {
     TestResult {
         test_name: "Jarque-Bera", statistic: jb, p_value: p,
         df: 2.0, effect_size: f64::NAN, effect_size_name: "",
+        ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
     }
 }
 
@@ -1388,6 +1474,7 @@ pub fn mcnemar(table: &[f64; 4], continuity: bool) -> TestResult {
         return TestResult {
             test_name: "McNemar", statistic: 0.0, p_value: 1.0,
             df: 1.0, effect_size: f64::NAN, effect_size_name: "",
+            ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
         };
     }
 
@@ -1399,6 +1486,7 @@ pub fn mcnemar(table: &[f64; 4], continuity: bool) -> TestResult {
     TestResult {
         test_name: "McNemar", statistic: chi2, p_value: p,
         df: 1.0, effect_size: f64::NAN, effect_size_name: "",
+        ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
     }
 }
 
@@ -1422,6 +1510,7 @@ pub fn cochran_q(data: &[f64], n_subjects: usize, n_treatments: usize) -> TestRe
         return TestResult {
             test_name: "Cochran's Q", statistic: f64::NAN, p_value: f64::NAN,
             df: 0.0, effect_size: f64::NAN, effect_size_name: "",
+            ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
         };
     }
 
@@ -1449,6 +1538,7 @@ pub fn cochran_q(data: &[f64], n_subjects: usize, n_treatments: usize) -> TestRe
         return TestResult {
             test_name: "Cochran's Q", statistic: 0.0, p_value: 1.0,
             df: kf - 1.0, effect_size: f64::NAN, effect_size_name: "",
+            ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
         };
     }
 
@@ -1459,6 +1549,7 @@ pub fn cochran_q(data: &[f64], n_subjects: usize, n_treatments: usize) -> TestRe
     TestResult {
         test_name: "Cochran's Q", statistic: q, p_value: p,
         df, effect_size: f64::NAN, effect_size_name: "",
+        ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
     }
 }
 
@@ -1931,6 +2022,7 @@ mod tests {
         let r = TestResult {
             test_name: "test", statistic: 2.0, df: 10.0, p_value: 0.03,
             effect_size: 0.5, effect_size_name: "d",
+            ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
         };
         assert!(r.significant_at(0.05));
         assert!(!r.significant_at(0.01));

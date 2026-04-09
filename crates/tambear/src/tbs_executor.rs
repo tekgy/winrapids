@@ -629,6 +629,7 @@ pub fn execute(
                                 df: f64::NAN,
                                 effect_size: f64::NAN,
                                 effect_size_name: "",
+                                ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
                             }
                         }
                         _ => crate::hypothesis::two_sample_t(&sx, &sy),
@@ -729,6 +730,7 @@ pub fn execute(
                     TbsStepOutput::Test(crate::hypothesis::TestResult {
                         test_name: "ANOVA", statistic: f64::NAN, p_value: f64::NAN,
                         df: f64::NAN, effect_size: f64::NAN, effect_size_name: "",
+                        ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
                     })
                 } else {
                     // Normality check per group
@@ -792,6 +794,7 @@ pub fn execute(
                                     df: res.df_between,
                                     effect_size: f64::NAN,
                                     effect_size_name: "",
+                                    ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
                                 })
                             }
                             "kruskal_wallis" | "kruskal" => {

@@ -200,6 +200,52 @@ pub fn brent(f: impl Fn(f64) -> f64, mut a: f64, mut b: f64, tol: f64, max_iter:
     RootResult { root: b, iterations: max_iter, converged: false, function_value: fb }
 }
 
+/// Brent's method with dynamic bracket expansion.
+///
+/// Like `brent`, but automatically expands the bracket [a, b] until it contains
+/// a sign change before running Brent's iterations. Useful when only a rough
+/// estimate of the root's location is known (e.g., inverting a CDF via quantile seed).
+///
+/// Expansion: at each step, whichever endpoint has smaller |f| is moved outward
+/// by the current bracket width. Up to `max_expand` expansion steps.
+///
+/// Returns NaN root if no sign change found within expansion budget.
+pub fn brent_expand(
+    f: impl Fn(f64) -> f64,
+    mut a: f64,
+    mut b: f64,
+    tol: f64,
+    max_iter: usize,
+    max_expand: usize,
+) -> RootResult {
+    let mut fa = f(a);
+    let mut fb = f(b);
+    let mut expansions = 0;
+
+    while fa * fb > 0.0 && expansions < max_expand {
+        let width = b - a;
+        if fa.abs() < fb.abs() {
+            a -= 2.0 * width;
+            fa = f(a);
+        } else {
+            b += 2.0 * width;
+            fb = f(b);
+        }
+        expansions += 1;
+    }
+
+    if fa * fb > 0.0 {
+        return RootResult {
+            root: f64::NAN,
+            iterations: expansions,
+            converged: false,
+            function_value: f64::NAN,
+        };
+    }
+
+    brent(f, a, b, tol, max_iter)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Numerical differentiation
 // ═══════════════════════════════════════════════════════════════════════════

@@ -710,8 +710,10 @@ pub fn mahalanobis_distances(x: &Mat) -> Option<(Vec<f64>, Vec<f64>)> {
     let mut p_values = Vec::with_capacity(n);
     for i in 0..n {
         let diff: Vec<f64> = (0..p).map(|j| x.data[i * p + j] - mean[j]).collect();
-        let solved = cholesky_solve(&l, &diff);
-        let di2: f64 = solved.iter().map(|v| v * v).sum();
+        // D²(xᵢ) = diffᵀ S⁻¹ diff.
+        // cholesky_solve returns S⁻¹·diff. Taking the dot product with diff gives D².
+        let s_inv_diff = cholesky_solve(&l, &diff);
+        let di2: f64 = diff.iter().zip(s_inv_diff.iter()).map(|(a, b)| a * b).sum();
         d2.push(di2);
         // chi2 right-tail p-value
         let pv = crate::special_functions::chi2_right_tail_p(di2, pf);
@@ -719,6 +721,214 @@ pub fn mahalanobis_distances(x: &Mat) -> Option<(Vec<f64>, Vec<f64>)> {
     }
 
     Some((d2, p_values))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Regularized regression: Ridge, Lasso, Elastic Net
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of regularized regression.
+#[derive(Debug, Clone)]
+pub struct RegularizedResult {
+    /// Coefficient vector (length p, does NOT include intercept).
+    pub beta: Vec<f64>,
+    /// Intercept term.
+    pub intercept: f64,
+    /// Residual sum of squares.
+    pub rss: f64,
+    /// R² on training data.
+    pub r2: f64,
+    /// Number of non-zero coefficients (for Lasso/Elastic Net sparsity).
+    pub n_nonzero: usize,
+    /// Number of iterations (for Lasso/Elastic Net coordinate descent).
+    pub iterations: usize,
+}
+
+/// Ridge regression: OLS with L2 penalty.
+///
+/// Minimizes ‖y - Xβ - β₀‖² + λ‖β‖²
+///
+/// Closed-form solution: β = (X'X + λI)⁻¹ X'y (after centering).
+/// Ridge never sets coefficients exactly to zero; it shrinks them toward zero.
+///
+/// `x`: n × p design matrix (row-major, NO intercept column).
+/// `y`: response vector (length n).
+/// `lambda`: L2 penalty strength (λ ≥ 0). λ=0 reduces to OLS.
+pub fn ridge(x: &Mat, y: &[f64], lambda: f64) -> RegularizedResult {
+    let n = x.rows;
+    let p = x.cols;
+    assert_eq!(y.len(), n);
+
+    // Center X and y
+    let mut x_means = vec![0.0; p];
+    let y_mean = y.iter().sum::<f64>() / n as f64;
+    for j in 0..p {
+        x_means[j] = (0..n).map(|i| x.data[i * p + j]).sum::<f64>() / n as f64;
+    }
+
+    // Build X'X + λI and X'y (centered)
+    let mut xtx = vec![0.0; p * p];
+    let mut xty = vec![0.0; p];
+    for i in 0..n {
+        let yi = y[i] - y_mean;
+        for j in 0..p {
+            let xij = x.data[i * p + j] - x_means[j];
+            xty[j] += xij * yi;
+            for k in 0..p {
+                let xik = x.data[i * p + k] - x_means[k];
+                xtx[j * p + k] += xij * xik;
+            }
+        }
+    }
+    // Add ridge penalty
+    for j in 0..p {
+        xtx[j * p + j] += lambda;
+    }
+
+    // Solve via Cholesky (X'X + λI is always PD for λ > 0)
+    let a = Mat::from_vec(p, p, xtx);
+    let beta = match cholesky(&a) {
+        Some(l) => cholesky_solve(&l, &xty),
+        None => {
+            // Fallback to QR if Cholesky fails (shouldn't happen with λ > 0)
+            qr_solve(&a, &xty)
+        }
+    };
+
+    // Intercept: β₀ = ȳ - Σ β_j · x̄_j
+    let intercept = y_mean - beta.iter().zip(x_means.iter()).map(|(b, m)| b * m).sum::<f64>();
+
+    // RSS and R²
+    let ss_tot: f64 = y.iter().map(|yi| (yi - y_mean).powi(2)).sum();
+    let mut rss = 0.0;
+    for i in 0..n {
+        let predicted = intercept + (0..p).map(|j| beta[j] * x.data[i * p + j]).sum::<f64>();
+        rss += (y[i] - predicted).powi(2);
+    }
+    let r2 = if ss_tot < 1e-300 { 0.0 } else { 1.0 - rss / ss_tot };
+
+    RegularizedResult {
+        n_nonzero: beta.iter().filter(|&&b| b.abs() > 1e-10).count(),
+        beta, intercept, rss, r2: r2.clamp(0.0, 1.0), iterations: 1,
+    }
+}
+
+/// Lasso regression: OLS with L1 penalty via coordinate descent.
+///
+/// Minimizes ‖y - Xβ - β₀‖² / (2n) + λ‖β‖₁
+///
+/// Solved via cyclic coordinate descent with soft-thresholding.
+/// Lasso can set coefficients exactly to zero (feature selection).
+///
+/// `x`: n × p design matrix (row-major, NO intercept column).
+/// `y`: response vector (length n).
+/// `lambda`: L1 penalty strength (λ ≥ 0). λ=0 reduces to OLS.
+/// `max_iter`: maximum coordinate descent iterations.
+/// `tol`: convergence tolerance on max coefficient change.
+pub fn lasso(x: &Mat, y: &[f64], lambda: f64, max_iter: usize, tol: f64) -> RegularizedResult {
+    elastic_net(x, y, lambda, 1.0, max_iter, tol)
+}
+
+/// Elastic Net regression: combined L1 + L2 penalty via coordinate descent.
+///
+/// Minimizes ‖y - Xβ - β₀‖² / (2n) + λ · [α‖β‖₁ + (1-α)‖β‖²/2]
+///
+/// `alpha`: mixing parameter. α=1 is Lasso, α=0 is Ridge.
+/// `lambda`: total penalty strength.
+/// `max_iter`: maximum coordinate descent iterations.
+/// `tol`: convergence tolerance.
+pub fn elastic_net(x: &Mat, y: &[f64], lambda: f64, alpha: f64, max_iter: usize, tol: f64) -> RegularizedResult {
+    let n = x.rows;
+    let p = x.cols;
+    assert_eq!(y.len(), n);
+    let nf = n as f64;
+
+    // Center X and y
+    let mut x_means = vec![0.0; p];
+    let y_mean = y.iter().sum::<f64>() / nf;
+    for j in 0..p {
+        x_means[j] = (0..n).map(|i| x.data[i * p + j]).sum::<f64>() / nf;
+    }
+    let y_centered: Vec<f64> = y.iter().map(|yi| yi - y_mean).collect();
+
+    // Precompute X'X diagonal (for coordinate descent denominator)
+    let mut x_col_sq = vec![0.0; p];
+    for j in 0..p {
+        for i in 0..n {
+            let xij = x.data[i * p + j] - x_means[j];
+            x_col_sq[j] += xij * xij;
+        }
+    }
+
+    // Initialize beta = 0
+    let mut beta = vec![0.0; p];
+    let mut residual = y_centered.clone();
+    let mut iterations = 0;
+
+    // Soft-thresholding operator
+    let soft_threshold = |z: f64, gamma: f64| -> f64 {
+        if z > gamma { z - gamma }
+        else if z < -gamma { z + gamma }
+        else { 0.0 }
+    };
+
+    for iter in 0..max_iter {
+        iterations = iter + 1;
+        let mut max_change = 0.0_f64;
+
+        for j in 0..p {
+            // Add back current beta_j's contribution to residual
+            if beta[j] != 0.0 {
+                for i in 0..n {
+                    residual[i] += beta[j] * (x.data[i * p + j] - x_means[j]);
+                }
+            }
+
+            // Compute partial residual correlation
+            let mut rho = 0.0;
+            for i in 0..n {
+                rho += (x.data[i * p + j] - x_means[j]) * residual[i];
+            }
+
+            // Update beta_j via soft-thresholding
+            let denom = x_col_sq[j] + nf * lambda * (1.0 - alpha);
+            let new_beta = if denom < 1e-300 {
+                0.0
+            } else {
+                soft_threshold(rho, nf * lambda * alpha) / denom
+            };
+
+            let change = (new_beta - beta[j]).abs();
+            if change > max_change { max_change = change; }
+            beta[j] = new_beta;
+
+            // Subtract new beta_j's contribution from residual
+            if beta[j] != 0.0 {
+                for i in 0..n {
+                    residual[i] -= beta[j] * (x.data[i * p + j] - x_means[j]);
+                }
+            }
+        }
+
+        if max_change < tol { break; }
+    }
+
+    // Intercept
+    let intercept = y_mean - beta.iter().zip(x_means.iter()).map(|(b, m)| b * m).sum::<f64>();
+
+    // RSS and R²
+    let ss_tot: f64 = y.iter().map(|yi| (yi - y_mean).powi(2)).sum();
+    let mut rss = 0.0;
+    for i in 0..n {
+        let predicted = intercept + (0..p).map(|j| beta[j] * x.data[i * p + j]).sum::<f64>();
+        rss += (y[i] - predicted).powi(2);
+    }
+    let r2 = if ss_tot < 1e-300 { 0.0 } else { 1.0 - rss / ss_tot };
+
+    RegularizedResult {
+        n_nonzero: beta.iter().filter(|&&b| b.abs() > 1e-10).count(),
+        beta, intercept, rss, r2: r2.clamp(0.0, 1.0), iterations,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -985,5 +1195,87 @@ mod tests {
         for (j, &vi) in v.iter().enumerate() {
             assert!(vi < 5.0, "VIF[{j}]={vi} should be low for uncorrelated predictors");
         }
+    }
+
+    // ── Mahalanobis distance ──────────────────────────────────────────────
+
+    #[test]
+    fn mahalanobis_centroid_has_zero_distance() {
+        // The centroid of the distribution has D²=0.
+        // Use identity covariance: D² = Euclidean² from mean.
+        // Points symmetrically placed so mean = (0,0).
+        let data = Mat::from_rows(&[
+            &[1.0, 0.0], &[-1.0, 0.0], &[0.0, 1.0], &[0.0, -1.0],
+        ]);
+        let (d2, _) = mahalanobis_distances(&data).unwrap();
+        assert_eq!(d2.len(), 4);
+        // All points are equidistant from mean (symmetric)
+        let first = d2[0];
+        for &di in &d2 {
+            assert!((di - first).abs() < 1e-10, "symmetric data: all D² equal, got {di}");
+        }
+    }
+
+    #[test]
+    fn mahalanobis_outlier_has_large_distance() {
+        // Use a large symmetric cluster so the mean stays near (0,0) and the
+        // sample covariance stays near I₂, making D² ≈ squared Euclidean distance.
+        // Cluster points are the 4 cardinal unit vectors repeated many times
+        // (mean = 0, covariance ≈ I). Outlier at (5,0) should have D²≈25.
+        //
+        // With N=200 balanced points, one outlier at (5,0) can only shift the
+        // mean by ~5/201 ≈ 0.025, and barely perturbs the covariance.
+        let mut data_flat: Vec<f64> = Vec::new();
+        // 50 copies of each of the 4 cardinal unit vectors → 200 points, mean=(0,0)
+        for _ in 0..50 {
+            data_flat.extend_from_slice(&[1.0, 0.0]);
+            data_flat.extend_from_slice(&[-1.0, 0.0]);
+            data_flat.extend_from_slice(&[0.0, 1.0]);
+            data_flat.extend_from_slice(&[0.0, -1.0]);
+        }
+        // Outlier at (5, 0)
+        let n_cluster = 200;
+        data_flat.push(5.0);
+        data_flat.push(0.0);
+        let n_total = n_cluster + 1;
+        let data = Mat { rows: n_total, cols: 2, data: data_flat };
+        let (d2, _p_values) = mahalanobis_distances(&data).unwrap();
+        let outlier_d2 = d2[n_cluster];
+        let max_non_outlier = d2[..n_cluster].iter().cloned().fold(0.0f64, f64::max);
+        assert!(outlier_d2 > max_non_outlier,
+            "outlier D²={outlier_d2:.2} should be > max non-outlier D²={max_non_outlier:.2}");
+        // Outlier at (5,0) from distribution with σ≈1 → D²≈25; cluster max is ≈1
+        assert!(outlier_d2 > 5.0 * max_non_outlier,
+            "outlier D²={outlier_d2:.2} should be >> cluster D²={max_non_outlier:.4}");
+    }
+
+    #[test]
+    fn mahalanobis_underdetermined_returns_none() {
+        // n <= p: singular covariance → should return None
+        let data = Mat::from_rows(&[
+            &[1.0, 0.0, 0.0],
+            &[0.0, 1.0, 0.0],
+        ]);
+        // n=2, p=3: under-determined
+        assert!(mahalanobis_distances(&data).is_none());
+    }
+
+    #[test]
+    fn mahalanobis_d2_chi2_distribution() {
+        // For multivariate normal data, D²ᵢ ~ χ²(p) approximately
+        // So the mean of D² values should be approximately p
+        let n = 100;
+        let p = 2;
+        let mut rng = 0xdeadbeef_u64;
+        let data_flat: Vec<f64> = (0..n * p).map(|_| {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (rng as f64 / u64::MAX as f64 - 0.5) * 2.0 * 1.7320508 // uniform ≈ N(0,1)
+        }).collect();
+        let data = Mat { rows: n, cols: p, data: data_flat };
+        let (d2, _) = mahalanobis_distances(&data).unwrap();
+        let mean_d2: f64 = d2.iter().sum::<f64>() / n as f64;
+        // E[D²] = p for χ²(p). Tolerance: ±p (very loose).
+        assert!((mean_d2 - p as f64).abs() < p as f64,
+            "mean D²={mean_d2:.2} should be near p={p}");
     }
 }

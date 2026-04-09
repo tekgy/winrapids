@@ -956,6 +956,218 @@ pub fn cooks_distance(
     InfluenceResult { cooks_distance, leverage, n_influential }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Logistic regression via IRLS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of fitting a logistic regression model via IRLS.
+///
+/// Coefficients are on the log-odds scale. Standard errors, z-statistics,
+/// and p-values come from the observed Fisher information matrix at convergence.
+#[derive(Debug, Clone)]
+pub struct LogisticRegressionResult {
+    /// Coefficients β (length = n_features + 1; last element is intercept).
+    pub coefficients: Vec<f64>,
+    /// Standard errors of each coefficient (same length as `coefficients`).
+    pub std_errors: Vec<f64>,
+    /// z-statistics = coefficient / SE (same length as `coefficients`).
+    pub z_statistics: Vec<f64>,
+    /// Two-tailed p-values under H₀: βⱼ = 0 (same length as `coefficients`).
+    pub p_values: Vec<f64>,
+    /// Null deviance: −2 ln L(intercept-only model).
+    pub null_deviance: f64,
+    /// Residual deviance: −2 ln L(fitted model).
+    pub residual_deviance: f64,
+    /// AIC = residual_deviance + 2 * (n_features + 1).
+    pub aic: f64,
+    /// Number of IRLS iterations run.
+    pub iterations: usize,
+    /// Whether the algorithm converged within tolerance.
+    pub converged: bool,
+}
+
+impl LogisticRegressionResult {
+    /// Predict P(y=1|x) for new observations.
+    ///
+    /// `x` is row-major with n_features columns (no intercept column needed).
+    pub fn predict_proba(&self, x: &crate::linear_algebra::Mat) -> Vec<f64> {
+        let p = self.coefficients.len() - 1;
+        assert_eq!(x.cols, p, "x has {} cols, model has {} features", x.cols, p);
+        (0..x.rows).map(|i| {
+            let mut z = self.coefficients[p]; // intercept
+            for j in 0..p {
+                z += self.coefficients[j] * x.get(i, j);
+            }
+            sigmoid(z)
+        }).collect()
+    }
+}
+
+fn sigmoid(z: f64) -> f64 {
+    1.0 / (1.0 + (-z).exp())
+}
+
+/// Fit binary logistic regression via Iteratively Reweighted Least Squares (IRLS).
+///
+/// IRLS is Newton-Raphson on the log-likelihood:
+/// ```text
+/// β_new = (X'WX)⁻¹ X'W z_adj
+/// where W = diag(μ(1-μ)), z_adj = Xβ + (y - μ)/W_diag
+/// ```
+///
+/// # Parameters
+/// - `x`: design matrix, n × p (rows = observations, cols = features). No intercept column.
+/// - `y`: binary response (0.0 or 1.0), length n.
+/// - `max_iter`: maximum IRLS iterations (typically 25 is more than sufficient).
+/// - `tol`: convergence tolerance on max absolute coefficient change.
+///
+/// # Returns
+/// `None` if the design matrix is rank-deficient or has fewer observations than parameters.
+pub fn logistic_regression(
+    x: &crate::linear_algebra::Mat,
+    y: &[f64],
+    max_iter: usize,
+    tol: f64,
+) -> Option<LogisticRegressionResult> {
+    use crate::linear_algebra::{Mat, mat_mul, cholesky, cholesky_solve, inv};
+
+    let n = x.rows;
+    let p = x.cols;
+    if n <= p + 1 { return None; }
+
+    // Augment X with intercept column (rightmost): n × (p+1)
+    let q = p + 1; // number of parameters
+    let mut xa_data = vec![0.0f64; n * q];
+    for i in 0..n {
+        for j in 0..p {
+            xa_data[i * q + j] = x.get(i, j);
+        }
+        xa_data[i * q + p] = 1.0; // intercept
+    }
+    let xa = Mat::from_vec(n, q, xa_data);
+
+    // Initialize β = 0
+    let mut beta = vec![0.0f64; q];
+    let mut iterations = 0;
+    let mut converged = false;
+
+    for _ in 0..max_iter {
+        iterations += 1;
+
+        // Compute linear predictor η = Xaβ and μ = sigmoid(η)
+        let mut eta = vec![0.0f64; n];
+        let mut mu = vec![0.0f64; n];
+        let mut w_diag = vec![0.0f64; n];
+        for i in 0..n {
+            let mut sum = 0.0f64;
+            for j in 0..q {
+                sum += xa.get(i, j) * beta[j];
+            }
+            eta[i] = sum;
+            let m = sigmoid(eta[i]);
+            // Clamp to keep weights finite
+            mu[i] = m.clamp(1e-10, 1.0 - 1e-10);
+            w_diag[i] = mu[i] * (1.0 - mu[i]);
+        }
+
+        // Adjusted dependent variable: z_adj_i = η_i + (y_i - μ_i) / w_i
+        let z_adj: Vec<f64> = (0..n).map(|i| eta[i] + (y[i] - mu[i]) / w_diag[i]).collect();
+
+        // Form X'WX (q × q) and X'Wz_adj (q × 1)
+        let mut xtwx = vec![0.0f64; q * q];
+        let mut xtwz = vec![0.0f64; q];
+        for i in 0..n {
+            let wi = w_diag[i];
+            for j in 0..q {
+                xtwz[j] += xa.get(i, j) * wi * z_adj[i];
+                for k in 0..q {
+                    xtwx[j * q + k] += xa.get(i, j) * wi * xa.get(i, k);
+                }
+            }
+        }
+        let xtwx_mat = Mat::from_vec(q, q, xtwx);
+
+        // Solve (X'WX) β_new = X'Wz_adj via Cholesky (X'WX is SPD)
+        let beta_new = if let Some(l) = cholesky(&xtwx_mat) {
+            cholesky_solve(&l, &xtwz)
+        } else {
+            // Singular (perfect separation or rank deficiency) — stop
+            return None;
+        };
+
+        // Check convergence
+        let max_change = beta.iter().zip(&beta_new)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
+        beta = beta_new;
+        if max_change < tol {
+            converged = true;
+            break;
+        }
+    }
+
+    // ── Standard errors from Fisher information I = X'WX at final β ────────
+    // Recompute W at final β
+    let mut w_final = vec![0.0f64; n];
+    let mut mu_final = vec![0.0f64; n];
+    for i in 0..n {
+        let mut z = 0.0f64;
+        for j in 0..q {
+            z += xa.get(i, j) * beta[j];
+        }
+        let m = sigmoid(z).clamp(1e-10, 1.0 - 1e-10);
+        mu_final[i] = m;
+        w_final[i] = m * (1.0 - m);
+    }
+
+    let mut xtwx_final = vec![0.0f64; q * q];
+    for i in 0..n {
+        for j in 0..q {
+            for k in 0..q {
+                xtwx_final[j * q + k] += xa.get(i, j) * w_final[i] * xa.get(i, k);
+            }
+        }
+    }
+    let info_mat = Mat::from_vec(q, q, xtwx_final);
+    let cov_mat = inv(&info_mat)?; // variance-covariance matrix
+
+    let std_errors: Vec<f64> = (0..q).map(|j| cov_mat.get(j, j).max(0.0).sqrt()).collect();
+    let z_statistics: Vec<f64> = beta.iter().zip(&std_errors)
+        .map(|(b, se)| if *se > 0.0 { b / se } else { 0.0 })
+        .collect();
+    let p_values: Vec<f64> = z_statistics.iter()
+        .map(|&z| normal_two_tail_p(z))
+        .collect();
+
+    // ── Deviances ────────────────────────────────────────────────────────────
+    // Null deviance: intercept-only model, μ_null = ȳ
+    let y_mean = y.iter().sum::<f64>() / n as f64;
+    let y_null = y_mean.clamp(1e-15, 1.0 - 1e-15);
+    let null_deviance = -2.0 * y.iter().map(|&yi| {
+        yi * y_null.ln() + (1.0 - yi) * (1.0 - y_null).ln()
+    }).sum::<f64>();
+
+    // Residual deviance: fitted model
+    let residual_deviance = -2.0 * (0..n).map(|i| {
+        let pi = mu_final[i].clamp(1e-15, 1.0 - 1e-15);
+        y[i] * pi.ln() + (1.0 - y[i]) * (1.0 - pi).ln()
+    }).sum::<f64>();
+
+    let aic = residual_deviance + 2.0 * q as f64;
+
+    Some(LogisticRegressionResult {
+        coefficients: beta,
+        std_errors,
+        z_statistics,
+        p_values,
+        null_deviance,
+        residual_deviance,
+        aic,
+        iterations,
+        converged,
+    })
+}
+
 /// Engine that wraps a ComputeEngine for hypothesis tests on raw data.
 ///
 /// For tests that only need MomentStats, use the free functions directly.

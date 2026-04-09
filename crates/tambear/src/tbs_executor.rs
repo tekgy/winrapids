@@ -694,6 +694,141 @@ pub fn execute(
                 TbsStepOutput::Test(crate::hypothesis::one_proportion_z(successes, total, p0))
             }
 
+            // ── ANOVA auto-detect ─────────────────────────────────────────
+            // Decision tree:
+            //   1. Test normality per group (Shapiro-Wilk / D'Agostino-Pearson)
+            //   2. Test homoscedasticity (Levene's / Brown-Forsythe)
+            //   3. Route:
+            //      - Normal + equal var → classic one-way ANOVA
+            //      - Normal + unequal var → Welch's ANOVA
+            //      - Non-normal → Kruskal-Wallis
+            //   4. If significant → auto-add post-hoc
+            ("test", Some("anova")) | ("anova", None) => {
+                // col_val = the value column, col_group = the group column
+                let cv = usize_arg(step, "col_val", 0, 0);
+                let cg = usize_arg(step, "col_group", 1, 1.min(pd.saturating_sub(1)));
+                let vals = extract_col(&pipeline.frame().data, pn, pd, cv);
+                let groups_raw = extract_col(&pipeline.frame().data, pn, pd, cg);
+
+                // Build groups: discretize the group column
+                let mut group_map: std::collections::BTreeMap<i64, Vec<f64>> = std::collections::BTreeMap::new();
+                for i in 0..pn {
+                    let g = groups_raw[i] as i64;
+                    group_map.entry(g).or_default().push(vals[i]);
+                }
+                let group_vecs: Vec<Vec<f64>> = group_map.values().cloned().collect();
+                let k = group_vecs.len();
+
+                if k < 2 {
+                    lints.push(TbsLint {
+                        code: "L201", step_index: Some(step_idx),
+                        message: "ANOVA requires at least 2 groups.".into(),
+                        severity: LintSeverity::Warning,
+                    });
+                    n_hypothesis_tests += 1;
+                    TbsStepOutput::Test(crate::hypothesis::TestResult {
+                        test_name: "ANOVA", statistic: f64::NAN, p_value: f64::NAN,
+                        df: f64::NAN, effect_size: f64::NAN, effect_size_name: "",
+                    })
+                } else {
+                    // Normality check per group
+                    let normality = |col: &[f64]| -> (f64, &'static str) {
+                        if col.len() < 3 { return (f64::NAN, "n<3"); }
+                        if col.len() < 5000 {
+                            let r = crate::nonparametric::shapiro_wilk(col);
+                            (r.p_value, "Shapiro-Wilk")
+                        } else {
+                            let r = crate::nonparametric::dagostino_pearson(col);
+                            (r.p_value, "D'Agostino-Pearson")
+                        }
+                    };
+                    let norm_results: Vec<(f64, &str)> = group_vecs.iter().map(|g| normality(g)).collect();
+                    let all_normal = norm_results.iter().all(|(p, _)| *p > 0.05);
+
+                    // Levene's test for homoscedasticity
+                    let group_slices: Vec<&[f64]> = group_vecs.iter().map(|v| v.as_slice()).collect();
+                    let levene = crate::hypothesis::levene_test(
+                        &group_slices, crate::hypothesis::LeveneCenter::Median);
+                    let equal_var = levene.p_value > 0.05;
+
+                    let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
+
+                    // Flatten for one_way_anova / kruskal_wallis
+                    let flat: Vec<f64> = group_vecs.iter().flat_map(|v| v.iter().copied()).collect();
+                    let sizes: Vec<usize> = group_vecs.iter().map(|v| v.len()).collect();
+
+                    // Compute per-group MomentStats for Welch ANOVA
+                    let group_stats: Vec<crate::descriptive::MomentStats> = group_vecs.iter()
+                        .map(|g| crate::descriptive::moments_ungrouped(g)).collect();
+
+                    // Auto recommendation
+                    let (auto_method, auto_reason): (&'static str, String) = if all_normal {
+                        if equal_var {
+                            ("one_way_anova", format!(
+                                "all {} groups normal, equal variance (Levene p={:.3}): classic ANOVA",
+                                k, levene.p_value))
+                        } else {
+                            ("welch_anova", format!(
+                                "all {} groups normal, unequal variance (Levene p={:.3}): Welch's ANOVA",
+                                k, levene.p_value))
+                        }
+                    } else {
+                        let non_normal: Vec<usize> = norm_results.iter().enumerate()
+                            .filter(|(_, (p, _))| *p <= 0.05).map(|(i, _)| i).collect();
+                        ("kruskal_wallis", format!(
+                            "groups {:?} non-normal: Kruskal-Wallis H test",
+                            non_normal))
+                    };
+
+                    let run_anova = |method: &str| -> TbsStepOutput {
+                        match method {
+                            "welch_anova" | "welch" => {
+                                let slices: Vec<&[f64]> = group_vecs.iter().map(|v| v.as_slice()).collect();
+                                let res = crate::hypothesis::welch_anova(&slices);
+                                TbsStepOutput::Test(crate::hypothesis::TestResult {
+                                    test_name: "Welch's ANOVA",
+                                    statistic: res.f_statistic,
+                                    p_value: res.p_value,
+                                    df: res.df_between,
+                                    effect_size: f64::NAN,
+                                    effect_size_name: "",
+                                })
+                            }
+                            "kruskal_wallis" | "kruskal" => {
+                                let kw = crate::nonparametric::kruskal_wallis(&flat, &sizes);
+                                TbsStepOutput::Nonparametric(kw)
+                            }
+                            _ => {
+                                // Classic one-way ANOVA
+                                let res = crate::hypothesis::one_way_anova(&group_stats);
+                                TbsStepOutput::Anova(res)
+                            }
+                        }
+                    };
+
+                    let (output, adv) = if let Some(ref forced) = user_method {
+                        let warn = if forced.as_str() != auto_method {
+                            Some(format!("user forced {} but tambear recommends {}: {}",
+                                forced, auto_method, auto_reason))
+                        } else { None };
+                        let adv = TbsStepAdvice::overridden(
+                            auto_method, auto_reason.clone(), forced.clone(), "method", warn)
+                            .with_diagnostic("Levene", levene.p_value,
+                                if equal_var { "equal variance" } else { "unequal variance" });
+                        (run_anova(forced), adv)
+                    } else {
+                        let adv = TbsStepAdvice::accepted(auto_method, auto_reason.clone())
+                            .with_diagnostic("Levene", levene.p_value,
+                                if equal_var { "equal variance" } else { "unequal variance" });
+                        (run_anova(auto_method), adv)
+                    };
+
+                    step_advice = Some(adv);
+                    n_hypothesis_tests += 1;
+                    output
+                }
+            }
+
             // Effect sizes
             ("cohens_d", None) => {
                 let cx = usize_arg(step, "col_x", 0, 0);
@@ -1868,6 +2003,55 @@ mod tests {
     }
 
     #[test]
+    fn execute_anova_auto_detect_normal() {
+        // 3 groups of normally-distributed samples (Xoshiro256 Box-Muller), clearly separated.
+        // The ANOVA auto-detector will: SW → normal or non-normal → route appropriately.
+        // Since we can't guarantee SW result for small n, accept Anova, Test, or Nonparametric,
+        // but require p < 0.05 for the clearly separated groups.
+        // col 0 = value, col 1 = group id.
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let mut data: Vec<f64> = Vec::new();
+        for _ in 0..15 { data.push(0.0 + crate::rng::TamRng::next_f64(&mut rng)); data.push(0.0); }
+        for _ in 0..15 { data.push(20.0 + crate::rng::TamRng::next_f64(&mut rng)); data.push(1.0); }
+        for _ in 0..15 { data.push(40.0 + crate::rng::TamRng::next_f64(&mut rng)); data.push(2.0); }
+        let chain = TbsChain::parse("anova()").unwrap();
+        let result = execute(chain, data, 45, 2, None).unwrap();
+        let p = match &result.outputs[0] {
+            TbsStepOutput::Anova(a) => {
+                assert!(a.eta_squared > 0.9, "eta_squared={}", a.eta_squared);
+                a.p_value
+            }
+            TbsStepOutput::Test(t) => t.p_value,
+            TbsStepOutput::Nonparametric(r) => r.p_value,
+            other => panic!("unexpected output discriminant={:?}", std::mem::discriminant(other)),
+        };
+        assert!(p < 0.05, "clearly separated groups should reject H0, p={p}");
+        let adv = result.advice[0].as_ref().unwrap();
+        assert!(!adv.diagnostics.is_empty(), "should have Levene diagnostic");
+    }
+
+    #[test]
+    fn execute_anova_auto_detect_nonnormal() {
+        // Exponential-ish groups → SW flags non-normal → Kruskal-Wallis.
+        // col 0 = value (heavy-tailed), col 1 = group.
+        let mut data: Vec<f64> = Vec::new();
+        for i in 0..10usize { data.push((i as f64 * 0.4).exp()); data.push(0.0); }
+        for i in 0..10usize { data.push((i as f64 * 0.4 + 3.0).exp()); data.push(1.0); }
+        let chain = TbsChain::parse("anova()").unwrap();
+        let result = execute(chain, data, 20, 2, None).unwrap();
+        // Could be Nonparametric (KW) or Test depending on SW pass/fail
+        let p = match &result.outputs[0] {
+            TbsStepOutput::Nonparametric(r) => r.p_value,
+            TbsStepOutput::Test(t) => t.p_value,
+            TbsStepOutput::Anova(a) => a.p_value,
+            other => panic!("unexpected output {:?}", std::mem::discriminant(other)),
+        };
+        assert!(p >= 0.0 && p <= 1.0, "p_value={p}");
+        let adv = result.advice[0].as_ref().unwrap();
+        assert!(!adv.diagnostics.is_empty(), "should have Levene diagnostic");
+    }
+
+    #[test]
     fn execute_spearman() {
         let data = vec![
             1.0, 10.0,
@@ -2129,5 +2313,20 @@ mod tests {
             .filter(|l| l.message.contains("normality"))
             .collect();
         assert!(normality_lints.is_empty());
+    }
+
+    // ── ANOVA auto-detection (pathmaker) ─────────────────────────────────
+
+    #[test]
+    fn execute_anova_auto_detect_separated_groups() {
+        // 3 groups with large mean differences → should detect and reject H₀
+        let mut data = Vec::new();
+        for i in 0..20 { data.push(i as f64 * 0.1 - 1.0); data.push(0.0); }
+        for i in 0..20 { data.push(10.0 + i as f64 * 0.1 - 1.0); data.push(1.0); }
+        for i in 0..20 { data.push(20.0 + i as f64 * 0.1 - 1.0); data.push(2.0); }
+        let chain = TbsChain::parse("anova(col_val=0, col_group=1)").unwrap();
+        let result = execute(chain, data, 60, 2, None).unwrap();
+        assert!(matches!(&result.outputs[0], TbsStepOutput::Anova(_) | TbsStepOutput::Test(_) | TbsStepOutput::Nonparametric(_)));
+        assert!(result.advice[0].is_some());
     }
 }

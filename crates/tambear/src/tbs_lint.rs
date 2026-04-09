@@ -30,6 +30,7 @@ pub struct TbsLint {
 pub enum LintSeverity {
     Info,
     Warning,
+    Error,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

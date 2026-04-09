@@ -884,6 +884,86 @@ pub fn forecast_metrics(actual: &[f64], predicted: &[f64], naive_mae: Option<f64
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Box-Cox transformation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of a Box-Cox transformation.
+#[derive(Debug, Clone)]
+pub struct BoxCoxResult {
+    /// Optimal λ that maximizes the profile log-likelihood.
+    pub lambda: f64,
+    /// Transformed data y'(λ).
+    pub transformed: Vec<f64>,
+    /// Profile log-likelihood at the optimum.
+    pub log_likelihood: f64,
+}
+
+/// Apply the Box-Cox transformation with a given λ.
+///
+/// y'(λ) = (y^λ - 1)/λ for λ ≠ 0, or ln(y) for λ = 0.
+/// All `y_i` must be strictly positive; returns NaN for non-positive inputs.
+pub fn box_cox_transform(y: &[f64], lambda: f64) -> Vec<f64> {
+    if lambda.abs() < 1e-12 {
+        y.iter().map(|&v| if v > 0.0 { v.ln() } else { f64::NAN }).collect()
+    } else {
+        y.iter().map(|&v| {
+            if v > 0.0 { (v.powf(lambda) - 1.0) / lambda } else { f64::NAN }
+        }).collect()
+    }
+}
+
+/// Box-Cox profile log-likelihood at a given λ.
+///
+/// ℓ(λ) = -(n/2)·ln(σ²(λ)) + (λ - 1)·Σ ln(y_i)
+/// where σ²(λ) is the variance of the transformed values (ddof=0).
+pub fn box_cox_log_likelihood(y: &[f64], lambda: f64) -> f64 {
+    let n = y.len();
+    if n < 2 { return f64::NAN; }
+    for &v in y { if v <= 0.0 { return f64::NAN; } }
+
+    let transformed = box_cox_transform(y, lambda);
+    let nf = n as f64;
+    let mean: f64 = transformed.iter().sum::<f64>() / nf;
+    let var: f64 = transformed.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / nf;
+
+    if var < 1e-300 { return f64::NEG_INFINITY; }
+
+    let log_sum_y: f64 = y.iter().map(|v| v.ln()).sum();
+    -(nf / 2.0) * var.ln() + (lambda - 1.0) * log_sum_y
+}
+
+/// Fit Box-Cox transformation by maximizing profile log-likelihood.
+///
+/// Searches for optimal λ in [`lambda_min`, `lambda_max`] (default [-2, 2])
+/// via golden section search.
+///
+/// All `y_i` must be strictly positive. Returns `BoxCoxResult` with optimal λ
+/// and transformed values.
+pub fn box_cox_fit(y: &[f64], lambda_min: Option<f64>, lambda_max: Option<f64>) -> BoxCoxResult {
+    let lo = lambda_min.unwrap_or(-2.0);
+    let hi = lambda_max.unwrap_or(2.0);
+
+    // Validate input
+    for &v in y {
+        if v <= 0.0 || !v.is_finite() {
+            return BoxCoxResult { lambda: f64::NAN, transformed: vec![f64::NAN; y.len()], log_likelihood: f64::NAN };
+        }
+    }
+    if y.len() < 2 {
+        return BoxCoxResult { lambda: f64::NAN, transformed: vec![f64::NAN; y.len()], log_likelihood: f64::NAN };
+    }
+
+    // Maximize log-likelihood (minimize negative) via golden section
+    let neg_ll = |lambda: f64| -box_cox_log_likelihood(y, lambda);
+    let opt = crate::optimization::golden_section(&neg_ll, lo, hi, 1e-6);
+    let lambda = opt.x[0];
+    let ll = -opt.f_val;
+    let transformed = box_cox_transform(y, lambda);
+
+    BoxCoxResult { lambda, transformed, log_likelihood: ll }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1904,5 +1984,60 @@ mod tests {
         }
 
         assert!(true, "Kreiss constant diagnostic completed");
+    }
+
+    // ── Box-Cox ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn box_cox_identity_at_lambda_1() {
+        // y'(1) = (y^1 - 1)/1 = y - 1
+        let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let t = box_cox_transform(&y, 1.0);
+        for i in 0..y.len() {
+            assert!((t[i] - (y[i] - 1.0)).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn box_cox_log_at_lambda_0() {
+        // y'(0) = ln(y)
+        let y = vec![1.0, 2.718281828, 7.389056, 20.0855];
+        let t = box_cox_transform(&y, 0.0);
+        assert!((t[0] - 0.0).abs() < 1e-8);
+        assert!((t[1] - 1.0).abs() < 1e-6);
+        assert!((t[2] - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn box_cox_fit_lognormal_finds_zero() {
+        // Lognormal data should have optimal λ near 0 (log transform makes it normal)
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let normal: Vec<f64> = (0..200).map(|_| {
+            crate::rng::sample_normal(&mut rng, 2.0, 0.5)
+        }).collect();
+        // Exponentiate to get lognormal
+        let y: Vec<f64> = normal.iter().map(|v| v.exp()).collect();
+        let result = box_cox_fit(&y, None, None);
+        assert!(result.lambda.abs() < 0.3,
+            "λ for lognormal data should be near 0, got {}", result.lambda);
+    }
+
+    #[test]
+    fn box_cox_fit_normal_finds_one() {
+        // Normal-ish positive data should have optimal λ near 1 (no transform needed)
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let y: Vec<f64> = (0..200).map(|_| {
+            crate::rng::sample_normal(&mut rng, 10.0, 1.0).max(0.1)
+        }).collect();
+        let result = box_cox_fit(&y, None, None);
+        assert!((result.lambda - 1.0).abs() < 0.5,
+            "λ for normal data should be near 1, got {}", result.lambda);
+    }
+
+    #[test]
+    fn box_cox_rejects_nonpositive() {
+        let y = vec![1.0, 2.0, -0.5, 3.0];
+        let result = box_cox_fit(&y, None, None);
+        assert!(result.lambda.is_nan());
     }
 }

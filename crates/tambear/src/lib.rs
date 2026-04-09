@@ -49,7 +49,9 @@ pub mod accumulate;
 pub mod clustering;
 pub mod codegen;
 pub mod compute_engine;
+pub mod data_quality;
 pub mod descriptive;
+pub mod spectral_clustering;
 pub mod complexity;
 pub mod hypothesis;
 pub mod information_theory;
@@ -141,6 +143,15 @@ pub use special_functions::{
     binomial_pmf, binomial_cdf,
     neg_binomial_pmf, neg_binomial_cdf,
     cauchy_cdf, cauchy_pdf, cauchy_quantile,
+    // Orthogonal polynomials
+    chebyshev_t, chebyshev_u, chebyshev_series,
+    legendre_p, legendre_p_deriv, gauss_legendre_nodes_weights,
+    hermite_he, laguerre_l,
+    // Bessel functions
+    bessel_j0, bessel_j1, bessel_jn, bessel_i0, bessel_i1,
+    // Random matrix theory
+    marchenko_pastur_pdf, marchenko_pastur_bounds, marchenko_pastur_classify,
+    chebyshev_outlier,
 };
 pub use hypothesis::{
     TestResult, AnovaResult, ChiSquareResult, HypothesisEngine,
@@ -156,6 +167,9 @@ pub use hypothesis::{
     WlsResult, wls,
     TukeyComparison, tukey_hsd,
     LogisticRegressionResult, logistic_regression,
+    MediationResult, mediation,
+    ModerationResult, moderation,
+    BayesFactorResult, bayes_factor_t_one_sample, bayes_factor_correlation,
 };
 pub use nonparametric::{
     rank, spearman, kendall_tau,
@@ -164,6 +178,7 @@ pub use nonparametric::{
     ks_test_normal, ks_test_normal_standardized, ks_test_two_sample,
     shapiro_wilk, dagostino_pearson, jarque_bera, anderson_darling, friedman_test,
     DunnComparison, dunn_test,
+    partial_correlation, PartialCorrelationResult, partial_correlation_full,
     bootstrap_percentile, BootstrapResult,
     permutation_test_mean_diff,
     kde, kde_fft, silverman_bandwidth, KernelType,
@@ -172,6 +187,7 @@ pub use nonparametric::{
     GutenbergRichterResult, gutenberg_richter_fit,
     OmoriResult, omori_fit,
     BathResult, bath_law,
+    SdeResult, sde_estimate,
 };
 pub use complexity::{
     sample_entropy, approx_entropy, permutation_entropy, normalized_permutation_entropy,
@@ -267,7 +283,18 @@ pub mod proof;
 pub mod extremal_orbit;
 pub mod layer_bijection;
 pub mod series_accel;
+pub mod parallel;
+pub use parallel::{parallel_range_reduce, parallel_slice_reduce};
 pub mod spectral_gap;
+pub use spectral_gap::{
+    ArnoldiResult, arnoldi_eigenvalues,
+    SparseDeterministicMap, CycleStructure,
+};
+/// Type alias: a functional graph (every node has exactly one out-edge)
+/// is the same structure as a deterministic state-transition map. Use this
+/// name when the application is graph-theoretic (cycle detection on a digraph)
+/// rather than dynamical (sparse transition operator on a state space).
+pub type FunctionalGraph = spectral_gap::SparseDeterministicMap;
 pub mod fold_irreversibility;
 pub mod spec_compiler;
 pub mod superposition;
@@ -321,6 +348,7 @@ pub use number_theory::{
     isqrt, perfect_square, sum_of_two_squares, pell_fundamental,
     partition_count, euler_product_approx, basel_sum_exact,
     rsa_keygen, rsa_encrypt, rsa_decrypt, dh_public_key, dh_shared_secret,
+    LinearRecurrenceStep, compose_steps,
 };
 pub mod physics;
 pub use physics::{
@@ -408,6 +436,9 @@ pub use signal_processing::{
     zero_crossing_rate, median_filter,
     path_signature_2d, log_signature_2d,
     regularize_interp, regularize_bin_mean, regularize_subsample,
+    WvdResult, wvd_features,
+    IcaResult, fast_ica,
+    EmdResult, emd,
 };
 pub use pipeline::{TamFrame, TamPipeline, ClusterSpec, ClusterView, ColumnDescribe, DescribeResult, DiscoveryResult};
 pub use manifold::{Manifold, ManifoldMixture, ManifoldDistanceOp};

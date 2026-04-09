@@ -739,6 +739,120 @@ pub fn dh_shared_secret(g_b: u64, a: u64, p: u64) -> u64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// SECTION N — Integer Linear Recurrences (accumulate-friendly)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A single affine step in an integer linear recurrence of the form
+/// `n → (a·n + b) / 2^shift`, with an associated `steps` counter describing how
+/// many atomic operations the step represents.
+///
+/// This is the *general* form that sits underneath every integer 1D affine map
+/// tambear works with:
+/// - Collatz bit-chunk transforms (`a = 3^k`, `b`, `shift = Σ vᵢ`)
+/// - Generalized T_m bit-chunk transforms (`a = m^k`, `b`, `shift = Σ vᵢ`)
+/// - Multiply-then-divide arithmetic maps on sparse transition operators
+/// - Any affine recurrence with a power-of-two divisor
+///
+/// ## Composition (monoid)
+///
+/// Composition `T₂ ∘ T₁` (apply T₁ first, then T₂) has the form:
+/// ```text
+///   T₁(n) = (a₁·n + b₁) / 2^s₁
+///   T₂(T₁(n)) = (a₂·(a₁·n + b₁)/2^s₁ + b₂) / 2^s₂
+///             = (a₂·a₁·n + a₂·b₁ + 2^s₁·b₂) / 2^(s₁+s₂)
+/// ```
+/// This is associative, so a sequence of steps admits a **parallel prefix
+/// scan** (the same principle underpinning the Sarkka 5-tuple Kalman filter
+/// and the `tridiagonal_scan`: a composable step type lifted through `accumulate`).
+///
+/// The identity step is `{ a: 1, b: 0, shift: 0, steps: 0 }`.
+///
+/// ## Overflow
+///
+/// All fields are `u128` — sufficient for any single bit-chunk transform up to
+/// ~80 bits of state, but composition can overflow for long scans. Callers
+/// that compose many steps should use `compose_checked` or clamp via
+/// `saturating_*` primitives appropriate to their domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinearRecurrenceStep {
+    /// Multiplicative coefficient.
+    pub a: u128,
+    /// Additive coefficient.
+    pub b: u128,
+    /// Right-shift (power-of-two divisor) applied after the affine step.
+    pub shift: u32,
+    /// Number of atomic underlying operations represented by this step.
+    pub steps: u32,
+}
+
+impl LinearRecurrenceStep {
+    /// The identity transform: `n → n`.
+    pub const IDENTITY: Self = Self { a: 1, b: 0, shift: 0, steps: 0 };
+
+    /// Build a step from explicit coefficients.
+    pub const fn new(a: u128, b: u128, shift: u32, steps: u32) -> Self {
+        Self { a, b, shift, steps }
+    }
+
+    /// Apply this step to an integer `n`: returns `(a·n + b) >> shift`.
+    /// Returns `None` on overflow or if the result is not integer (the
+    /// division is assumed exact; callers in dynamical-system contexts
+    /// verify this via bit-pattern preconditions).
+    pub fn apply(&self, n: u128) -> Option<u128> {
+        let mul = self.a.checked_mul(n)?;
+        let add = mul.checked_add(self.b)?;
+        Some(add >> self.shift)
+    }
+
+    /// Compose `other` after `self`: returns the step that computes
+    /// `other.apply(self.apply(n))` in a single step, using checked
+    /// arithmetic. Returns `None` on overflow.
+    ///
+    /// Composition formula:
+    /// `T₂ ∘ T₁ = { a: a₂·a₁, b: a₂·b₁ + 2^s₁·b₂, shift: s₁+s₂, steps: steps₁+steps₂ }`
+    ///
+    /// Note this composes the two steps as if the divisor by `2^s₁` is exact;
+    /// callers relying on fractional intermediate results should use domain-
+    /// specific composition (see `extremal_orbit::build_affine_table`).
+    pub fn compose_checked(self, other: Self) -> Option<Self> {
+        let new_a = other.a.checked_mul(self.a)?;
+        let two_s1 = 1u128.checked_shl(self.shift)?;
+        let term1 = other.a.checked_mul(self.b)?;
+        let term2 = two_s1.checked_mul(other.b)?;
+        let new_b = term1.checked_add(term2)?;
+        let new_shift = self.shift.checked_add(other.shift)?;
+        let new_steps = self.steps.checked_add(other.steps)?;
+        Some(Self { a: new_a, b: new_b, shift: new_shift, steps: new_steps })
+    }
+
+    /// Saturating composition: returns `LinearRecurrenceStep` with fields
+    /// clamped to `u128::MAX` / `u32::MAX` on overflow rather than `None`.
+    /// Useful as an overflow sentinel in bulk scans.
+    pub fn compose_saturating(self, other: Self) -> Self {
+        let new_a = other.a.saturating_mul(self.a);
+        let two_s1 = 1u128.checked_shl(self.shift).unwrap_or(u128::MAX);
+        let term1 = other.a.saturating_mul(self.b);
+        let term2 = two_s1.saturating_mul(other.b);
+        let new_b = term1.saturating_add(term2);
+        let new_shift = self.shift.saturating_add(other.shift);
+        let new_steps = self.steps.saturating_add(other.steps);
+        Self { a: new_a, b: new_b, shift: new_shift, steps: new_steps }
+    }
+}
+
+/// Fold a slice of steps via left-to-right composition.
+///
+/// Equivalent to `accumulate(steps, All, compose_checked)` — the sequential
+/// reference against which a parallel prefix-scan implementation is verified.
+pub fn compose_steps(steps: &[LinearRecurrenceStep]) -> Option<LinearRecurrenceStep> {
+    let mut acc = LinearRecurrenceStep::IDENTITY;
+    for &s in steps {
+        acc = acc.compose_checked(s)?;
+    }
+    Some(acc)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1113,6 +1227,115 @@ mod tests {
         assert_eq!(isqrt(100), 10);
         assert_eq!(isqrt(99), 9);
         assert_eq!(isqrt(101), 10);
+    }
+
+    // ── Section N: LinearRecurrenceStep ─────────────────────────────────
+
+    #[test]
+    fn lrs_identity_is_fixed_point() {
+        let id = LinearRecurrenceStep::IDENTITY;
+        assert_eq!(id.apply(42).unwrap(), 42);
+        assert_eq!(id.apply(0).unwrap(), 0);
+        assert_eq!(id.apply(u128::MAX).unwrap(), u128::MAX);
+    }
+
+    #[test]
+    fn lrs_identity_composes_as_identity() {
+        let id = LinearRecurrenceStep::IDENTITY;
+        let step = LinearRecurrenceStep::new(3, 1, 1, 1); // (3n+1)/2
+        let left = id.compose_checked(step).unwrap();
+        let right = step.compose_checked(id).unwrap();
+        assert_eq!(left, step);
+        assert_eq!(right, step);
+    }
+
+    #[test]
+    fn lrs_apply_collatz_step() {
+        // Classic Collatz odd-step: n → (3n+1)/2  on odd n
+        let step = LinearRecurrenceStep::new(3, 1, 1, 1);
+        // n = 5 (odd): (3*5+1)/2 = 16/2 = 8
+        assert_eq!(step.apply(5).unwrap(), 8);
+        // n = 7: (3*7+1)/2 = 22/2 = 11
+        assert_eq!(step.apply(7).unwrap(), 11);
+    }
+
+    #[test]
+    fn lrs_composition_matches_sequential() {
+        // Two consecutive Collatz odd-steps: T = (3n+1)/2, then T again.
+        // On n=5: 5 → 8, so the composed shouldn't match unless we handle
+        // parity. Pick starting point where both steps are 'odd': use shift=0
+        // to act as pure (3n+1) then (3n+1).
+        let s = LinearRecurrenceStep::new(3, 1, 0, 1);
+        let composed = s.compose_checked(s).unwrap();
+        // Expected: T2(T1(n)) = 3*(3n+1) + 1 = 9n + 4
+        assert_eq!(composed.a, 9);
+        assert_eq!(composed.b, 4);
+        assert_eq!(composed.shift, 0);
+        assert_eq!(composed.steps, 2);
+        // Sanity: apply to n=2: sequential 3*2+1=7, 3*7+1=22. Composed: 9*2+4=22. ✓
+        assert_eq!(composed.apply(2).unwrap(), 22);
+        let seq = s.apply(s.apply(2).unwrap()).unwrap();
+        assert_eq!(seq, 22);
+    }
+
+    #[test]
+    fn lrs_composition_with_shift() {
+        // s1 = (3n+1)/2  (odd-step),  s2 = n/2  (single halving).
+        // Composed: T2(T1(n)) = ((3n+1)/2)/2 = (3n+1)/4.
+        let s1 = LinearRecurrenceStep::new(3, 1, 1, 1);
+        let s2 = LinearRecurrenceStep::new(1, 0, 1, 1);
+        let c = s1.compose_checked(s2).unwrap();
+        // Expected: a = 1*3 = 3, b = 1*1 + 2^1*0 = 1, shift = 1+1 = 2
+        assert_eq!(c.a, 3);
+        assert_eq!(c.b, 1);
+        assert_eq!(c.shift, 2);
+        assert_eq!(c.steps, 2);
+        // Apply on n=5 (where both steps produce integers):
+        // s1(5) = (15+1)/2 = 8, s2(8) = 4. Composed: (15+1)/4 = 4. ✓
+        assert_eq!(c.apply(5).unwrap(), 4);
+    }
+
+    #[test]
+    fn lrs_compose_steps_fold() {
+        let s = LinearRecurrenceStep::new(3, 1, 0, 1);
+        let folded = compose_steps(&[s, s, s]).unwrap();
+        // (3n+1) applied 3x: 3(3(3n+1)+1)+1 = 27n + 13
+        assert_eq!(folded.a, 27);
+        assert_eq!(folded.b, 13);
+        assert_eq!(folded.steps, 3);
+        assert_eq!(folded.apply(2).unwrap(), 67);
+    }
+
+    #[test]
+    fn lrs_compose_empty_is_identity() {
+        let f = compose_steps(&[]).unwrap();
+        assert_eq!(f, LinearRecurrenceStep::IDENTITY);
+    }
+
+    #[test]
+    fn lrs_compose_checked_overflow() {
+        // a = u128::MAX squared overflows.
+        let big = LinearRecurrenceStep::new(u128::MAX, 0, 0, 1);
+        let result = big.compose_checked(big);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn lrs_compose_saturating_clamps() {
+        let big = LinearRecurrenceStep::new(u128::MAX, 0, 0, 1);
+        let s = big.compose_saturating(big);
+        assert_eq!(s.a, u128::MAX);
+    }
+
+    #[test]
+    fn lrs_associativity() {
+        // (s1 ∘ s2) ∘ s3  ==  s1 ∘ (s2 ∘ s3)
+        let s1 = LinearRecurrenceStep::new(3, 1, 1, 1);
+        let s2 = LinearRecurrenceStep::new(1, 0, 1, 1);
+        let s3 = LinearRecurrenceStep::new(5, 2, 0, 1);
+        let left = s1.compose_checked(s2).unwrap().compose_checked(s3).unwrap();
+        let right = s1.compose_checked(s2.compose_checked(s3).unwrap()).unwrap();
+        assert_eq!(left, right);
     }
 }
 

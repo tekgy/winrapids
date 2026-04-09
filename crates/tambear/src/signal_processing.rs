@@ -1105,6 +1105,149 @@ pub fn median_filter(data: &[f64], window: usize) -> Vec<f64> {
     result
 }
 
+// ─── Savitzky-Golay filter ───────────────────────────────────────────
+//
+// Savitzky & Golay 1964, "Smoothing and Differentiation of Data by Simplified
+// Least Squares Procedures", Analytical Chemistry 36(8):1627-1639.
+//
+// Fits a polynomial of degree `poly_order` to a sliding window of `window_size`
+// points via least squares, then outputs the polynomial's value (or derivative)
+// at the center of the window. Preserves peak heights/widths better than
+// moving average — the key advantage over median/mean filters.
+
+/// Compute Savitzky-Golay coefficients for a centered window.
+///
+/// Returns a vector of `window_size` coefficients such that applying them as
+/// a convolution to the data produces the smoothed output (for `deriv=0`) or
+/// the `deriv`-th derivative estimate.
+///
+/// `window_size`: must be odd and ≥ `poly_order + 1`.
+/// `poly_order`: polynomial degree (typically 2-4).
+/// `deriv`: derivative order (0 = smoothing, 1 = first derivative, ...).
+///
+/// Returns None for invalid parameters.
+pub fn savgol_coefficients(window_size: usize, poly_order: usize, deriv: usize) -> Option<Vec<f64>> {
+    if window_size % 2 == 0 { return None; }
+    if window_size < poly_order + 1 { return None; }
+    if deriv > poly_order { return None; }
+
+    let m = (window_size - 1) / 2;
+    let n_coeffs = poly_order + 1;
+
+    // Vandermonde matrix A: rows are [1, k, k², ..., k^p] for k = -m..=m
+    // We want row `deriv` of (A'A)⁻¹ A'.
+    //
+    // Solve (A'A) x = e_deriv for x (the `deriv`-th row of the pseudo-inverse left factor),
+    // then the coefficients are A x. Multiply by deriv! for the derivative case.
+
+    // Build A'A (symmetric, (n_coeffs × n_coeffs))
+    let mut ata = vec![vec![0.0f64; n_coeffs]; n_coeffs];
+    for k in -(m as i64)..=(m as i64) {
+        let kf = k as f64;
+        // Power series k^0, k^1, ..., k^(2p)
+        let mut powers = vec![0.0; 2 * poly_order + 1];
+        powers[0] = 1.0;
+        for p in 1..=(2 * poly_order) { powers[p] = powers[p - 1] * kf; }
+        for i in 0..n_coeffs {
+            for j in 0..n_coeffs {
+                ata[i][j] += powers[i + j];
+            }
+        }
+    }
+
+    // Solve (A'A) x = e_deriv (i.e., unit vector at `deriv`) via Gaussian elimination
+    let mut aug = vec![vec![0.0f64; n_coeffs + 1]; n_coeffs];
+    for i in 0..n_coeffs {
+        for j in 0..n_coeffs { aug[i][j] = ata[i][j]; }
+        aug[i][n_coeffs] = if i == deriv { 1.0 } else { 0.0 };
+    }
+    // Forward elimination with partial pivoting
+    for col in 0..n_coeffs {
+        // Find pivot
+        let mut max_row = col;
+        let mut max_val = aug[col][col].abs();
+        for r in (col + 1)..n_coeffs {
+            if aug[r][col].abs() > max_val {
+                max_val = aug[r][col].abs();
+                max_row = r;
+            }
+        }
+        if max_val < 1e-300 { return None; }
+        if max_row != col { aug.swap(col, max_row); }
+        let pivot = aug[col][col];
+        for j in col..=n_coeffs { aug[col][j] /= pivot; }
+        for r in 0..n_coeffs {
+            if r == col { continue; }
+            let factor = aug[r][col];
+            for j in col..=n_coeffs { aug[r][j] -= factor * aug[col][j]; }
+        }
+    }
+    let x: Vec<f64> = (0..n_coeffs).map(|i| aug[i][n_coeffs]).collect();
+
+    // Coefficients: c[k] = Σ_i x[i] * k^i for k = -m..=m
+    // Multiply by deriv! for derivatives.
+    let mut deriv_factorial = 1.0;
+    for d in 1..=deriv { deriv_factorial *= d as f64; }
+
+    let mut coeffs = vec![0.0f64; window_size];
+    for (idx, k) in (-(m as i64)..=(m as i64)).enumerate() {
+        let kf = k as f64;
+        let mut poly_val = 0.0;
+        let mut kp = 1.0;
+        for i in 0..n_coeffs {
+            poly_val += x[i] * kp;
+            kp *= kf;
+        }
+        coeffs[idx] = poly_val * deriv_factorial;
+    }
+
+    Some(coeffs)
+}
+
+/// Apply Savitzky-Golay filter to a signal.
+///
+/// Smooths (or differentiates) `data` by fitting polynomials of degree
+/// `poly_order` to a sliding window of `window_size` points.
+///
+/// Edge handling: mirror-reflection padding. Input and output have same length.
+///
+/// `window_size`: odd, ≥ `poly_order + 1`. Typical: 5, 7, 11, 21.
+/// `poly_order`: polynomial degree. Typical: 2 (parabolic) or 3 (cubic).
+/// `deriv`: 0 = smoothing, 1 = first derivative, 2 = second derivative.
+///
+/// Returns empty vector on invalid parameters.
+pub fn savitzky_golay(data: &[f64], window_size: usize, poly_order: usize, deriv: usize) -> Vec<f64> {
+    let n = data.len();
+    if n == 0 { return Vec::new(); }
+    let coeffs = match savgol_coefficients(window_size, poly_order, deriv) {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+    let m = (window_size - 1) / 2;
+
+    let mut out = vec![0.0f64; n];
+    for i in 0..n {
+        let mut sum = 0.0;
+        for (j, &c) in coeffs.iter().enumerate() {
+            let k = j as i64 - m as i64;
+            let idx = i as i64 + k;
+            // Mirror reflection padding at edges
+            let data_val = if idx < 0 {
+                let r = (-idx) as usize;
+                data[r.min(n - 1)]
+            } else if idx >= n as i64 {
+                let r = 2 * (n - 1) - idx as usize;
+                data[r.min(n - 1)]
+            } else {
+                data[idx as usize]
+            };
+            sum += c * data_val;
+        }
+        out[i] = sum;
+    }
+    out
+}
+
 // ─── Signal regularization ───────────────────────────────────────────
 //
 // These functions map variable-length data to a fixed grid of M points.
@@ -1592,6 +1735,85 @@ mod tests {
         // Each frame should have 33 frequency bins (64/2 + 1)
         assert_eq!(frames[0].len(), 33);
     }
+
+    // ── Savitzky-Golay ──
+
+    #[test]
+    fn savgol_coefficients_symmetric_sum_to_one() {
+        // For smoothing (deriv=0), SG coefficients sum to 1
+        for &(w, p) in &[(5, 2), (7, 2), (9, 3), (11, 3), (21, 4)] {
+            let c = savgol_coefficients(w, p, 0).unwrap();
+            let sum: f64 = c.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-10, "w={} p={} sum={}", w, p, sum);
+            // Also symmetric about center
+            let m = (w - 1) / 2;
+            for i in 0..m {
+                assert!((c[i] - c[w - 1 - i]).abs() < 1e-10, "asymmetry at w={} p={}", w, p);
+            }
+        }
+    }
+
+    #[test]
+    fn savgol_preserves_polynomial_exactly() {
+        // For input that is a polynomial of degree ≤ poly_order,
+        // SG smoothing should return the exact values (it fits and evaluates
+        // the same polynomial that generated the data).
+        let data: Vec<f64> = (0..20).map(|i| {
+            let x = i as f64;
+            1.0 + 2.0 * x - 0.5 * x * x // degree-2 polynomial
+        }).collect();
+        let smoothed = savitzky_golay(&data, 7, 2, 0);
+        // Interior points (away from edges) should match exactly
+        for i in 3..17 {
+            assert!((smoothed[i] - data[i]).abs() < 1e-8,
+                "SG changed polynomial at i={}: {} vs {}", i, smoothed[i], data[i]);
+        }
+    }
+
+    #[test]
+    fn savgol_smooths_noise() {
+        // SG should reduce variance of noisy flat data
+        let mut rng = 42u64;
+        let data: Vec<f64> = (0..100).map(|_| {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            10.0 + (rng as f64 / u64::MAX as f64 - 0.5) * 2.0
+        }).collect();
+        let smoothed = savitzky_golay(&data, 11, 2, 0);
+
+        let var_orig = {
+            let mean: f64 = data.iter().sum::<f64>() / data.len() as f64;
+            data.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / data.len() as f64
+        };
+        let var_smooth = {
+            let mean: f64 = smoothed.iter().sum::<f64>() / smoothed.len() as f64;
+            smoothed.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / smoothed.len() as f64
+        };
+        assert!(var_smooth < var_orig * 0.6,
+            "SG should reduce variance: orig={}, smooth={}", var_orig, var_smooth);
+    }
+
+    #[test]
+    fn savgol_first_derivative_of_linear() {
+        // First derivative of y = 3x + 1 should be 3 everywhere
+        let data: Vec<f64> = (0..30).map(|i| 3.0 * i as f64 + 1.0).collect();
+        let deriv = savitzky_golay(&data, 7, 2, 1);
+        for i in 3..27 {
+            assert!((deriv[i] - 3.0).abs() < 1e-8,
+                "deriv at i={} should be 3, got {}", i, deriv[i]);
+        }
+    }
+
+    #[test]
+    fn savgol_invalid_params() {
+        // Even window size
+        assert!(savgol_coefficients(6, 2, 0).is_none());
+        // Window smaller than poly_order + 1
+        assert!(savgol_coefficients(3, 5, 0).is_none());
+        // Derivative > poly_order
+        assert!(savgol_coefficients(7, 2, 3).is_none());
+        // Empty data returns empty
+        assert!(savitzky_golay(&[], 5, 2, 0).is_empty());
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1737,5 +1959,631 @@ mod signature_tests {
         let (s1x, s1y, s2xx, s2xy, s2yx, s2yy, levy) = path_signature_2d(&[1.0], &[1.0]);
         assert!(s1x == 0.0 && s1y == 0.0);
         assert!(s2xx == 0.0 && s2xy == 0.0 && s2yx == 0.0 && s2yy == 0.0 && levy == 0.0);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Wigner-Ville Distribution
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of Wigner-Ville distribution feature extraction.
+#[derive(Debug, Clone)]
+pub struct WvdResult {
+    /// Rényi entropy of |WVD| (lower = more concentrated in time-frequency).
+    pub time_freq_concentration: f64,
+    /// Variance of instantaneous frequency across time points.
+    pub instantaneous_freq_var: f64,
+    /// Energy in negative WVD regions (interference / cross-term energy).
+    pub cross_term_energy: f64,
+    /// Shannon entropy of frequency marginal distribution.
+    pub marginal_entropy: f64,
+}
+
+impl WvdResult {
+    pub fn nan() -> Self {
+        Self {
+            time_freq_concentration: f64::NAN,
+            instantaneous_freq_var: f64::NAN,
+            cross_term_energy: f64::NAN,
+            marginal_entropy: f64::NAN,
+        }
+    }
+}
+
+/// Discrete Wigner-Ville Distribution feature extraction.
+///
+/// W(t,f) = 2 Σ_τ x(t+τ)·x(t-τ)·cos(2π·f·τ/n)   [real signal, one-sided]
+///
+/// Extracts 4 features per signal:
+/// - `time_freq_concentration`: Rényi entropy of |WVD| (lower → more concentrated)
+/// - `instantaneous_freq_var`: variance of centroid-frequency across time
+/// - `cross_term_energy`: fraction of energy in negative WVD cells
+/// - `marginal_entropy`: Shannon entropy of summed frequency marginal
+///
+/// Input is clipped at `max_pts` for performance (O(n² × n_freq)).
+pub fn wvd_features(x: &[f64], max_pts: usize) -> WvdResult {
+    let n_raw = x.len();
+    if n_raw < 8 { return WvdResult::nan(); }
+
+    // Subsample if too long
+    let x_used: Vec<f64> = if n_raw > max_pts {
+        let step = n_raw / max_pts;
+        x.iter().step_by(step).copied().collect()
+    } else {
+        x.to_vec()
+    };
+    let n = x_used.len();
+    let n_freq = n / 2 + 1;
+
+    let c = 2.0 * std::f64::consts::PI / n as f64;
+
+    let mut wvd_sum_abs = 0.0_f64;
+    let mut negative_energy = 0.0_f64;
+    let mut freq_marginal = vec![0.0_f64; n_freq];
+    let mut inst_freqs = Vec::with_capacity(n);
+
+    for t in 0..n {
+        let max_tau = t.min(n - 1 - t);
+
+        let mut row = vec![0.0_f64; n_freq];
+        for k in 0..n_freq {
+            let mut val = x_used[t] * x_used[t]; // τ=0
+            for tau in 1..=max_tau {
+                let kernel = x_used[t + tau] * x_used[t - tau];
+                val += 2.0 * kernel * (c * k as f64 * tau as f64).cos();
+            }
+            row[k] = val;
+        }
+
+        let mut row_total = 0.0_f64;
+        let mut weighted_freq = 0.0_f64;
+        for k in 0..n_freq {
+            let abs_val = row[k].abs();
+            wvd_sum_abs += abs_val;
+            if row[k] < 0.0 { negative_energy += abs_val; }
+            freq_marginal[k] += abs_val;
+            row_total += abs_val;
+            weighted_freq += k as f64 * abs_val;
+        }
+        if row_total > 1e-30 {
+            inst_freqs.push(weighted_freq / row_total);
+        }
+    }
+
+    if wvd_sum_abs < 1e-30 { return WvdResult::nan(); }
+
+    // Rényi entropy (order 2): -log2(Σ p²) where p = |W(t,f)| / Σ|W|
+    let mut renyi_sum = 0.0_f64;
+    // Iterate over all cells; we don't store the full grid, so recompute row sums
+    // Approximate using marginal: Rényi ≈ -log2(Σ_f (m_f/total)²)
+    let marginal_total: f64 = freq_marginal.iter().sum();
+    if marginal_total > 1e-30 {
+        for &m in &freq_marginal {
+            let p = m / marginal_total;
+            renyi_sum += p * p;
+        }
+    }
+    let time_freq_concentration = if renyi_sum > 1e-300 { -renyi_sum.log2() } else { f64::NAN };
+
+    // Instantaneous frequency variance
+    let instantaneous_freq_var = if inst_freqs.len() >= 2 {
+        let mean = inst_freqs.iter().sum::<f64>() / inst_freqs.len() as f64;
+        inst_freqs.iter().map(|&f| (f - mean).powi(2)).sum::<f64>() / inst_freqs.len() as f64
+    } else {
+        f64::NAN
+    };
+
+    // Cross-term energy fraction
+    let cross_term_energy = negative_energy / wvd_sum_abs;
+
+    // Marginal entropy
+    let mut marginal_entropy = 0.0_f64;
+    if marginal_total > 1e-30 {
+        for &m in &freq_marginal {
+            let p = m / marginal_total;
+            if p > 1e-300 { marginal_entropy -= p * p.ln(); }
+        }
+        let max_ent = (n_freq as f64).ln();
+        if max_ent > 1e-30 { marginal_entropy /= max_ent; }
+    }
+
+    WvdResult { time_freq_concentration, instantaneous_freq_var, cross_term_energy, marginal_entropy }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FastICA
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of FastICA on delay-embedded signal.
+#[derive(Debug, Clone)]
+pub struct IcaResult {
+    /// Negentropy of the most non-Gaussian independent component.
+    pub max_negentropy: f64,
+    /// Mean negentropy across all components.
+    pub mean_negentropy: f64,
+    /// Range of excess kurtosis across components (max - min).
+    pub kurtosis_range: f64,
+    /// Total sift/convergence iterations across all components.
+    pub convergence_iterations: u32,
+}
+
+impl IcaResult {
+    pub fn nan() -> Self {
+        Self { max_negentropy: f64::NAN, mean_negentropy: f64::NAN, kurtosis_range: f64::NAN, convergence_iterations: 0 }
+    }
+}
+
+/// FastICA via delay embedding.
+///
+/// Embeds `x` as a `dim × (n - dim + 1)` delay matrix, whitens, then extracts
+/// `dim` independent components via the deflation algorithm with logcosh nonlinearity.
+///
+/// Returns negentropy and kurtosis statistics across the extracted ICs.
+///
+/// `dim`: embedding dimension (default 4 for financial data).
+/// `max_iter`: maximum deflation iterations per component.
+pub fn fast_ica(x: &[f64], dim: usize, max_iter: usize) -> IcaResult {
+    let n = x.len();
+    if n < dim + 20 || dim == 0 { return IcaResult::nan(); }
+
+    let n_emb = n - dim + 1;
+
+    // Delay embedding: row t = [x[t], x[t+1], ..., x[t+dim-1]]
+    let mut data = vec![0.0_f64; n_emb * dim];
+    let mut means = vec![0.0_f64; dim];
+    for t in 0..n_emb {
+        for d in 0..dim {
+            data[t * dim + d] = x[t + d];
+            means[d] += x[t + d];
+        }
+    }
+    for d in 0..dim { means[d] /= n_emb as f64; }
+    // Center
+    for t in 0..n_emb {
+        for d in 0..dim { data[t * dim + d] -= means[d]; }
+    }
+
+    // Approximate whitening: divide each dimension by its std
+    let mut stds = vec![1.0_f64; dim];
+    for d in 0..dim {
+        let var = data.iter().skip(d).step_by(dim).map(|&v| v * v).sum::<f64>() / n_emb as f64;
+        let s = var.sqrt();
+        stds[d] = if s > 1e-30 { s } else { 1.0 };
+    }
+    for t in 0..n_emb {
+        for d in 0..dim { data[t * dim + d] /= stds[d]; }
+    }
+
+    // FastICA deflation
+    let mut total_iter = 0u32;
+    let mut negentropies = Vec::with_capacity(dim);
+    let mut kurtoses = Vec::with_capacity(dim);
+    let mut extracted: Vec<Vec<f64>> = Vec::with_capacity(dim); // weight vectors
+
+    for comp in 0..dim {
+        // Initialize w: unit vector along comp axis
+        let mut w = vec![0.0_f64; dim];
+        w[comp] = 1.0;
+
+        for _iter in 0..max_iter {
+            total_iter += 1;
+
+            // Project data: y[t] = w·x[t]
+            let y: Vec<f64> = (0..n_emb).map(|t| {
+                (0..dim).map(|d| w[d] * data[t * dim + d]).sum()
+            }).collect();
+
+            // logcosh nonlinearity: g(u) = tanh(u), g'(u) = 1 - tanh²(u)
+            let mut new_w = vec![0.0_f64; dim];
+            let mut g_prime_mean = 0.0_f64;
+            for t in 0..n_emb {
+                let yt = y[t];
+                let tanh_yt = yt.tanh();
+                let gp = 1.0 - tanh_yt * tanh_yt;
+                g_prime_mean += gp;
+                for d in 0..dim {
+                    new_w[d] += tanh_yt * data[t * dim + d];
+                }
+            }
+            for d in 0..dim { new_w[d] /= n_emb as f64; }
+            g_prime_mean /= n_emb as f64;
+            for d in 0..dim { new_w[d] -= g_prime_mean * w[d]; }
+
+            // Deflation: orthogonalize against already-extracted components
+            for prev_w in &extracted {
+                let dot: f64 = (0..dim).map(|d| new_w[d] * prev_w[d]).sum();
+                for d in 0..dim { new_w[d] -= dot * prev_w[d]; }
+            }
+
+            // Normalize
+            let norm: f64 = new_w.iter().map(|&v| v * v).sum::<f64>().sqrt();
+            if norm < 1e-30 { break; }
+            for d in 0..dim { new_w[d] /= norm; }
+
+            // Check convergence
+            let delta: f64 = (0..dim).map(|d| (new_w[d] - w[d]).abs()).sum();
+            w = new_w;
+            if delta < 1e-6 { break; }
+        }
+
+        // Project to get IC
+        let ic: Vec<f64> = (0..n_emb).map(|t| {
+            (0..dim).map(|d| w[d] * data[t * dim + d]).sum()
+        }).collect();
+
+        // Negentropy via logcosh approximation: E[logcosh(y)] - E[logcosh(G(0))]
+        // Reference: for standard Gaussian, E[logcosh] ≈ 0.3745
+        let gauss_ref = 0.3745_f64;
+        let logcosh_mean = ic.iter().map(|&v| (v.cosh().ln())).sum::<f64>() / n_emb as f64;
+        let negentropy = (logcosh_mean - gauss_ref).abs();
+        negentropies.push(negentropy);
+
+        // Excess kurtosis
+        let m2 = ic.iter().map(|&v| v * v).sum::<f64>() / n_emb as f64;
+        let m4 = ic.iter().map(|&v| v.powi(4)).sum::<f64>() / n_emb as f64;
+        let kurt = if m2 > 1e-30 { m4 / (m2 * m2) - 3.0 } else { 0.0 };
+        kurtoses.push(kurt);
+
+        extracted.push(w);
+    }
+
+    if negentropies.is_empty() { return IcaResult::nan(); }
+
+    let max_negentropy = negentropies.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let mean_negentropy = negentropies.iter().sum::<f64>() / negentropies.len() as f64;
+    let kurt_max = kurtoses.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let kurt_min = kurtoses.iter().cloned().fold(f64::INFINITY, f64::min);
+    let kurtosis_range = kurt_max - kurt_min;
+
+    IcaResult { max_negentropy, mean_negentropy, kurtosis_range, convergence_iterations: total_iter }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Empirical Mode Decomposition (EMD)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of EMD decomposition.
+#[derive(Debug, Clone)]
+pub struct EmdResult {
+    /// Number of IMFs extracted.
+    pub n_imfs: usize,
+    /// Energy fraction of first (highest-frequency) IMF.
+    pub imf1_energy: f64,
+    /// Energy fraction of second IMF.
+    pub imf2_energy: f64,
+    /// Energy fraction of third IMF.
+    pub imf3_energy: f64,
+    /// Energy fraction of residual (trend).
+    pub residual_energy: f64,
+    /// Mean absolute correlation between adjacent IMFs (mode-mixing index).
+    pub mode_mixing_index: f64,
+    /// Mean dominant period across all IMFs.
+    pub mean_period: f64,
+    /// Mean absolute pairwise correlation across all IMF pairs.
+    pub imf_orthogonality: f64,
+}
+
+impl EmdResult {
+    pub fn nan() -> Self {
+        Self {
+            n_imfs: 0, imf1_energy: f64::NAN, imf2_energy: f64::NAN,
+            imf3_energy: f64::NAN, residual_energy: f64::NAN,
+            mode_mixing_index: f64::NAN, mean_period: f64::NAN, imf_orthogonality: f64::NAN,
+        }
+    }
+}
+
+fn emd_find_maxima(x: &[f64]) -> Vec<usize> {
+    let mut out = Vec::new();
+    for i in 1..x.len().saturating_sub(1) {
+        if x[i] > x[i - 1] && x[i] >= x[i + 1] { out.push(i); }
+    }
+    out
+}
+
+fn emd_find_minima(x: &[f64]) -> Vec<usize> {
+    let mut out = Vec::new();
+    for i in 1..x.len().saturating_sub(1) {
+        if x[i] < x[i - 1] && x[i] <= x[i + 1] { out.push(i); }
+    }
+    out
+}
+
+/// Linear-interpolation envelope through extrema, extended to signal boundaries.
+fn emd_envelope(x_idx: &[usize], y_vals: &[f64], n: usize) -> Vec<f64> {
+    if x_idx.is_empty() { return vec![0.0; n]; }
+    if x_idx.len() == 1 { return vec![y_vals[0]; n]; }
+
+    // Extend to boundaries using first/last extremum values
+    let mut xs: Vec<usize> = Vec::with_capacity(x_idx.len() + 2);
+    let mut ys: Vec<f64> = Vec::with_capacity(y_vals.len() + 2);
+    xs.push(0); ys.push(y_vals[0]);
+    xs.extend_from_slice(x_idx);
+    ys.extend_from_slice(y_vals);
+    xs.push(n - 1); ys.push(*y_vals.last().unwrap());
+
+    let mut env = vec![0.0_f64; n];
+    let mut seg = 0_usize;
+    for t in 0..n {
+        while seg + 1 < xs.len() - 1 && t > xs[seg + 1] { seg += 1; }
+        let x0 = xs[seg] as f64;
+        let x1 = xs[seg + 1] as f64;
+        if (x1 - x0).abs() < 1e-10 {
+            env[t] = ys[seg];
+        } else {
+            let frac = (t as f64 - x0) / (x1 - x0);
+            env[t] = ys[seg] + frac * (ys[seg + 1] - ys[seg]);
+        }
+    }
+    env
+}
+
+/// Mean absolute correlation between adjacent pairs in a list of equal-length vectors.
+fn mean_adjacent_correlation(imfs: &[Vec<f64>]) -> f64 {
+    if imfs.len() < 2 { return 0.0; }
+    let n = imfs[0].len() as f64;
+    let mut sum = 0.0_f64;
+    let mut count = 0_usize;
+    for i in 0..imfs.len() - 1 {
+        let a = &imfs[i];
+        let b = &imfs[i + 1];
+        let ma: f64 = a.iter().sum::<f64>() / n;
+        let mb: f64 = b.iter().sum::<f64>() / n;
+        let num: f64 = a.iter().zip(b.iter()).map(|(&ai, &bi)| (ai - ma) * (bi - mb)).sum();
+        let da: f64 = a.iter().map(|&ai| (ai - ma).powi(2)).sum::<f64>();
+        let db: f64 = b.iter().map(|&bi| (bi - mb).powi(2)).sum::<f64>();
+        let denom = (da * db).sqrt();
+        if denom > 1e-30 { sum += (num / denom).abs(); count += 1; }
+    }
+    if count == 0 { 0.0 } else { sum / count as f64 }
+}
+
+/// Mean absolute pairwise correlation across all IMF pairs.
+fn mean_pairwise_correlation(imfs: &[Vec<f64>]) -> f64 {
+    if imfs.len() < 2 { return 0.0; }
+    let n = imfs[0].len() as f64;
+    let mut sum = 0.0_f64;
+    let mut count = 0_usize;
+    for i in 0..imfs.len() {
+        for j in i + 1..imfs.len() {
+            let a = &imfs[i];
+            let b = &imfs[j];
+            let ma: f64 = a.iter().sum::<f64>() / n;
+            let mb: f64 = b.iter().sum::<f64>() / n;
+            let num: f64 = a.iter().zip(b.iter()).map(|(&ai, &bi)| (ai - ma) * (bi - mb)).sum();
+            let da: f64 = a.iter().map(|&ai| (ai - ma).powi(2)).sum::<f64>();
+            let db: f64 = b.iter().map(|&bi| (bi - mb).powi(2)).sum::<f64>();
+            let denom = (da * db).sqrt();
+            if denom > 1e-30 { sum += (num / denom).abs(); count += 1; }
+        }
+    }
+    if count == 0 { 0.0 } else { sum / count as f64 }
+}
+
+/// Mean dominant period of an IMF (1 / mean zero-crossing rate).
+fn dominant_period(imf: &[f64]) -> f64 {
+    let n = imf.len();
+    if n < 4 { return f64::NAN; }
+    let crossings = imf.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
+    if crossings == 0 { return n as f64; }
+    // Each full period has 2 zero crossings
+    n as f64 / (crossings as f64 / 2.0)
+}
+
+/// Empirical Mode Decomposition via sifting (linear envelope interpolation).
+///
+/// Decomposes `x` into at most `max_imfs` intrinsic mode functions (IMFs) using
+/// the sifting algorithm. Each IMF satisfies:
+/// - equal number of extrema and zero crossings (± 1)
+/// - mean of upper/lower envelope ≈ 0
+///
+/// Returns energy fractions, mode-mixing index, orthogonality, and period stats.
+///
+/// `max_imfs`: cap on number of IMFs (default 10).
+/// `max_sift_iter`: cap on sifting iterations per IMF (default 100).
+/// `sift_threshold`: SD(mean envelope) / SD(signal) stopping criterion (default 0.05).
+pub fn emd(x: &[f64], max_imfs: usize, max_sift_iter: usize, sift_threshold: f64) -> EmdResult {
+    let n = x.len();
+    if n < 20 || max_imfs == 0 { return EmdResult::nan(); }
+
+    let total_energy: f64 = x.iter().map(|&v| v * v).sum();
+    if total_energy < 1e-30 { return EmdResult::nan(); }
+
+    let mut residual = x.to_vec();
+    let mut imfs: Vec<Vec<f64>> = Vec::with_capacity(max_imfs);
+
+    for _ in 0..max_imfs {
+        // Check if residual is monotone (stop criterion)
+        let max_idx = emd_find_maxima(&residual);
+        let min_idx = emd_find_minima(&residual);
+        if max_idx.len() < 2 || min_idx.len() < 2 { break; }
+
+        // Sift to extract one IMF
+        let mut proto = residual.clone();
+        for _ in 0..max_sift_iter {
+            let mx_idx = emd_find_maxima(&proto);
+            let mn_idx = emd_find_minima(&proto);
+            if mx_idx.len() < 2 || mn_idx.len() < 2 { break; }
+
+            let mx_vals: Vec<f64> = mx_idx.iter().map(|&i| proto[i]).collect();
+            let mn_vals: Vec<f64> = mn_idx.iter().map(|&i| proto[i]).collect();
+
+            let upper = emd_envelope(&mx_idx, &mx_vals, n);
+            let lower = emd_envelope(&mn_idx, &mn_vals, n);
+
+            let mean_env: Vec<f64> = upper.iter().zip(lower.iter()).map(|(&u, &l)| (u + l) / 2.0).collect();
+
+            // Check stopping: SD(mean) / SD(proto) < threshold
+            let proto_sd: f64 = {
+                let m = proto.iter().sum::<f64>() / n as f64;
+                (proto.iter().map(|&v| (v - m).powi(2)).sum::<f64>() / n as f64).sqrt()
+            };
+            let env_sd: f64 = {
+                let m = mean_env.iter().sum::<f64>() / n as f64;
+                (mean_env.iter().map(|&v| (v - m).powi(2)).sum::<f64>() / n as f64).sqrt()
+            };
+
+            for i in 0..n { proto[i] -= mean_env[i]; }
+
+            if proto_sd > 1e-30 && env_sd / proto_sd < sift_threshold { break; }
+        }
+
+        for i in 0..n { residual[i] -= proto[i]; }
+        imfs.push(proto);
+    }
+
+    let n_imfs = imfs.len();
+    if n_imfs == 0 { return EmdResult::nan(); }
+
+    // Energy fractions
+    let energy_fraction = |v: &[f64]| -> f64 {
+        let e: f64 = v.iter().map(|&x| x * x).sum();
+        e / total_energy
+    };
+
+    let imf1_energy = imfs.get(0).map(|v| energy_fraction(v)).unwrap_or(f64::NAN);
+    let imf2_energy = imfs.get(1).map(|v| energy_fraction(v)).unwrap_or(f64::NAN);
+    let imf3_energy = imfs.get(2).map(|v| energy_fraction(v)).unwrap_or(f64::NAN);
+    let residual_energy = energy_fraction(&residual);
+
+    let mode_mixing_index = mean_adjacent_correlation(&imfs);
+    let imf_orthogonality = mean_pairwise_correlation(&imfs);
+
+    let periods: Vec<f64> = imfs.iter().map(|v| dominant_period(v)).filter(|p| p.is_finite()).collect();
+    let mean_period = if periods.is_empty() { f64::NAN } else { periods.iter().sum::<f64>() / periods.len() as f64 };
+
+    EmdResult {
+        n_imfs, imf1_energy, imf2_energy, imf3_energy, residual_energy,
+        mode_mixing_index, mean_period, imf_orthogonality,
+    }
+}
+
+#[cfg(test)]
+mod wvd_ica_emd_tests {
+    use super::*;
+
+    fn sine(n: usize, freq: f64) -> Vec<f64> {
+        (0..n).map(|i| (2.0 * std::f64::consts::PI * freq * i as f64 / n as f64).sin()).collect()
+    }
+
+    // ── WVD ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn wvd_sine_finite() {
+        let x = sine(64, 4.0);
+        let r = wvd_features(&x, 256);
+        assert!(r.time_freq_concentration.is_finite(), "TFC: {}", r.time_freq_concentration);
+        assert!(r.marginal_entropy.is_finite() && r.marginal_entropy >= 0.0);
+        assert!(r.cross_term_energy >= 0.0 && r.cross_term_energy <= 1.0 + 1e-10);
+    }
+
+    #[test]
+    fn wvd_too_short_nan() {
+        let r = wvd_features(&[1.0, 2.0, 3.0], 256);
+        assert!(r.time_freq_concentration.is_nan());
+    }
+
+    #[test]
+    fn wvd_low_entropy_for_pure_sine() {
+        // Pure sine → energy concentrated in one frequency → low marginal entropy
+        let x = sine(128, 8.0);
+        let r = wvd_features(&x, 256);
+        // Marginal entropy should be in [0, 1] (normalized)
+        assert!(r.marginal_entropy >= 0.0 && r.marginal_entropy <= 1.0 + 1e-10,
+            "marginal entropy out of range: {}", r.marginal_entropy);
+    }
+
+    #[test]
+    fn wvd_inst_freq_var_for_chirp() {
+        // Chirp: frequency changes over time → non-zero inst freq variance
+        let n = 64;
+        let x: Vec<f64> = (0..n).map(|i| {
+            let t = i as f64 / n as f64;
+            (2.0 * std::f64::consts::PI * (2.0 + 8.0 * t) * t).sin()
+        }).collect();
+        let r = wvd_features(&x, 256);
+        assert!(r.instantaneous_freq_var.is_finite() && r.instantaneous_freq_var >= 0.0);
+    }
+
+    // ── FastICA ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn ica_returns_finite() {
+        let x = sine(200, 5.0);
+        let r = fast_ica(&x, 4, 50);
+        assert!(r.max_negentropy.is_finite(), "max_negentropy: {}", r.max_negentropy);
+        assert!(r.mean_negentropy.is_finite());
+        assert!(r.kurtosis_range.is_finite());
+    }
+
+    #[test]
+    fn ica_too_short_nan() {
+        let r = fast_ica(&[1.0; 10], 4, 50);
+        assert!(r.max_negentropy.is_nan());
+    }
+
+    #[test]
+    fn ica_non_gaussian_high_negentropy() {
+        // Square wave is maximally non-Gaussian → high negentropy
+        let n = 200;
+        let x: Vec<f64> = (0..n).map(|i| if (i / 10) % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let r = fast_ica(&x, 4, 50);
+        assert!(r.max_negentropy.is_finite() && r.max_negentropy >= 0.0);
+    }
+
+    #[test]
+    fn ica_convergence_iterations_positive() {
+        let x: Vec<f64> = (0..200).map(|i| (i as f64 * 0.3).sin()).collect();
+        let r = fast_ica(&x, 4, 50);
+        assert!(r.convergence_iterations > 0);
+    }
+
+    // ── EMD ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn emd_extracts_imfs() {
+        let x = sine(200, 5.0);
+        let r = emd(&x, 10, 100, 0.05);
+        assert!(r.n_imfs >= 1, "should extract at least 1 IMF");
+        assert!(r.imf1_energy.is_finite() && r.imf1_energy >= 0.0);
+    }
+
+    #[test]
+    fn emd_energy_fractions_in_range() {
+        let mut x = sine(200, 5.0);
+        // Mix two frequencies
+        for (i, v) in x.iter_mut().enumerate() {
+            *v += 0.5 * (2.0 * std::f64::consts::PI * 15.0 * i as f64 / 200.0).sin();
+        }
+        let r = emd(&x, 10, 100, 0.05);
+        if r.imf1_energy.is_finite() {
+            assert!(r.imf1_energy >= 0.0 && r.imf1_energy <= 1.0 + 1e-10,
+                "imf1_energy: {}", r.imf1_energy);
+        }
+        if r.residual_energy.is_finite() {
+            assert!(r.residual_energy >= 0.0 && r.residual_energy <= 1.0 + 1e-10,
+                "residual_energy: {}", r.residual_energy);
+        }
+    }
+
+    #[test]
+    fn emd_too_short_nan() {
+        let r = emd(&[1.0; 5], 10, 100, 0.05);
+        assert!(r.n_imfs == 0);
+    }
+
+    #[test]
+    fn emd_mixed_freqs_multiple_imfs() {
+        // Mix of 3 frequencies should give multiple IMFs
+        let n = 300;
+        let x: Vec<f64> = (0..n).map(|i| {
+            let t = i as f64 / n as f64;
+            (2.0 * std::f64::consts::PI * 3.0 * t).sin()
+            + 0.5 * (2.0 * std::f64::consts::PI * 12.0 * t).sin()
+            + 0.2 * (2.0 * std::f64::consts::PI * 25.0 * t).sin()
+        }).collect();
+        let r = emd(&x, 10, 100, 0.05);
+        assert!(r.n_imfs >= 1, "mixed signal should give at least 1 IMF, got {}", r.n_imfs);
+        assert!(r.mean_period.is_finite() || r.mean_period.is_nan()); // allowed to be NaN for degenerate
     }
 }

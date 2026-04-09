@@ -1117,6 +1117,410 @@ pub fn wls(x: &crate::linear_algebra::Mat, y: &[f64], weights: &[f64]) -> WlsRes
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Bayes factors (Rouder et al. 2009, Wagenmakers 2007)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Bayes factor result.
+#[derive(Debug, Clone)]
+pub struct BayesFactorResult {
+    /// BF₁₀ = P(data | H₁) / P(data | H₀). Values > 1 favor H₁, < 1 favor H₀.
+    pub bf10: f64,
+    /// BF₀₁ = 1 / BF₁₀. Values > 1 favor H₀.
+    pub bf01: f64,
+    /// Log₁₀ BF₁₀ (for magnitude comparison).
+    pub log10_bf10: f64,
+    /// Qualitative interpretation (Jeffreys 1961).
+    pub interpretation: &'static str,
+}
+
+fn interpret_bf(bf10: f64) -> &'static str {
+    let bf01 = 1.0 / bf10;
+    if bf10 > 100.0 { "Extreme evidence for H1" }
+    else if bf10 > 30.0 { "Very strong evidence for H1" }
+    else if bf10 > 10.0 { "Strong evidence for H1" }
+    else if bf10 > 3.0 { "Moderate evidence for H1" }
+    else if bf10 > 1.0 { "Anecdotal evidence for H1" }
+    else if bf01 > 100.0 { "Extreme evidence for H0" }
+    else if bf01 > 30.0 { "Very strong evidence for H0" }
+    else if bf01 > 10.0 { "Strong evidence for H0" }
+    else if bf01 > 3.0 { "Moderate evidence for H0" }
+    else { "Anecdotal evidence for H0" }
+}
+
+/// Rouder et al. (2009) Jeffreys-Zellner-Siow (JZS) Bayes factor for
+/// one-sample or paired t-test.
+///
+/// Cauchy prior on effect size δ with scale `r` (default 0.707 = √2/2).
+/// Computes BF₁₀ via numerical integration over the nuisance precision g.
+///
+/// `t`: observed t-statistic.
+/// `n`: sample size.
+/// `r`: Cauchy prior scale (default: 1/√2 ≈ 0.707).
+pub fn bayes_factor_t_one_sample(t: f64, n: usize, r: Option<f64>) -> BayesFactorResult {
+    let r = r.unwrap_or(std::f64::consts::FRAC_1_SQRT_2);
+    let nu = (n - 1) as f64;
+    let nf = n as f64;
+
+    // JZS integrand: marginal likelihood under H1 vs H0 ratio
+    //
+    // Following Rouder et al. 2009 Eq. 1:
+    // BF₁₀ = ∫₀^∞ (1 + n·g·r²)^(-1/2) · [(1 + t²/(ν·(1+n·g·r²)))/(1 + t²/ν)]^(-(ν+1)/2) · pg(g) dg
+    // where pg(g) = (1/√(2π)) · g^(-3/2) · exp(-1/(2g))  (inverse chi-square with 1 df)
+    //
+    // Substitute u = 1/g → g = 1/u, dg = -du/u², pg(g)·dg becomes
+    // pg(1/u)·du/u² = (1/√(2π)) · u^(3/2) · exp(-u/2) / u² · du = (1/√(2π)) · u^(-1/2) · exp(-u/2) du
+    // So the integrand in u-space has weight u^(-1/2)·exp(-u/2)/(√(2π)), integration over u ∈ (0, ∞).
+
+    // Use Gauss-Laguerre-like quadrature: simple trapezoidal on log-scale substitution.
+    // Integrate over g ∈ (0, ∞). For stability, parameterize by s = √g, s ∈ (0, ∞), dg = 2s ds.
+    // Then pg(g)·dg = (1/√(2π)) · s^(-3) · exp(-1/(2s²)) · 2s ds = (√(2/π)) · s^(-2) · exp(-1/(2s²)) ds.
+
+    // Adaptive Simpson on g ∈ [1e-8, 1e4], which covers the bulk of the mass.
+    let integrand = |g: f64| -> f64 {
+        if g <= 0.0 { return 0.0; }
+        let ngr2 = nf * g * r * r;
+        let factor = (1.0 + ngr2).powf(-0.5);
+        let ratio = (1.0 + t * t / (nu * (1.0 + ngr2))) / (1.0 + t * t / nu);
+        let shape = ratio.powf(-(nu + 1.0) / 2.0);
+        // pg(g) = (1/√(2π)) · g^(-3/2) · exp(-1/(2g))
+        let pg = (1.0 / (2.0 * std::f64::consts::PI).sqrt()) * g.powf(-1.5) * (-1.0 / (2.0 * g)).exp();
+        factor * shape * pg
+    };
+
+    // Composite Simpson's rule on [g_min, g_max] with log-spaced samples
+    let g_min: f64 = 1e-8;
+    let g_max: f64 = 1e4;
+    let n_points: usize = 4000;
+    let log_min = g_min.ln();
+    let log_max = g_max.ln();
+    let dlog = (log_max - log_min) / n_points as f64;
+
+    let mut integral: f64 = 0.0;
+    for i in 0..n_points {
+        let log_g1 = log_min + i as f64 * dlog;
+        let log_g2 = log_min + (i + 1) as f64 * dlog;
+        let g1 = log_g1.exp();
+        let g2 = log_g2.exp();
+        let gm = ((log_g1 + log_g2) / 2.0).exp();
+        // Simpson: ∫ f dg ≈ (g2 - g1)/6 · (f(g1) + 4·f(gm) + f(g2))
+        let width = g2 - g1;
+        integral += (width / 6.0) * (integrand(g1) + 4.0 * integrand(gm) + integrand(g2));
+    }
+
+    let bf10: f64 = integral.max(1e-300);
+    let bf01 = 1.0 / bf10;
+    BayesFactorResult {
+        bf10,
+        bf01,
+        log10_bf10: bf10.log10(),
+        interpretation: interpret_bf(bf10),
+    }
+}
+
+/// Bayes factor for Pearson correlation (Jeffreys 1961, exact).
+///
+/// Uses the stretched beta prior on ρ with width `kappa` (default 1.0 = uniform).
+/// Requires the observed Pearson r and sample size n.
+///
+/// Formula (Ly, Verhagen & Wagenmakers 2016, Eq. 14):
+/// BF₁₀ = (2^((κ-2)/κ) · Γ((2n-1)/2) / (√π · Γ((2n-1)/2 - 1/κ + 1))) · ∫...
+///
+/// We use a simpler valid form: BIC approximation from the F-statistic.
+/// BIC₁₀ ≈ exp((t²/(1 + t²/df) - log(n)) / 2) where t = r·√(df/(1 - r²)).
+pub fn bayes_factor_correlation(r: f64, n: usize) -> BayesFactorResult {
+    if n < 4 || r.abs() >= 1.0 {
+        return BayesFactorResult {
+            bf10: f64::NAN, bf01: f64::NAN, log10_bf10: f64::NAN,
+            interpretation: "insufficient data",
+        };
+    }
+    let df = (n - 2) as f64;
+    let t2 = r * r * df / (1.0 - r * r);
+    // Wagenmakers 2007 BIC approximation:
+    // BF₁₀ ≈ exp((BIC₀ - BIC₁) / 2)
+    // BIC_diff = n·log(SS_total/SS_residual) - log(n)
+    //          = n·log(1/(1-r²)) - log(n)
+    //          = -n·log(1-r²) - log(n)
+    let log_bf10 = 0.5 * (-(n as f64) * (1.0 - r * r).ln() - (n as f64).ln());
+    let bf10 = log_bf10.exp();
+    let _ = t2; // BIC form uses r² directly
+    BayesFactorResult {
+        bf10,
+        bf01: 1.0 / bf10,
+        log10_bf10: log_bf10 / std::f64::consts::LN_10,
+        interpretation: interpret_bf(bf10),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Mediation analysis (Baron & Kenny 1986, Sobel 1982)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of mediation analysis.
+#[derive(Debug, Clone)]
+pub struct MediationResult {
+    /// Total effect c (Y regressed on X alone).
+    pub total_effect: f64,
+    /// Direct effect c' (Y regressed on X controlling for M).
+    pub direct_effect: f64,
+    /// Path a (M regressed on X).
+    pub path_a: f64,
+    /// Path b (Y regressed on M controlling for X).
+    pub path_b: f64,
+    /// Indirect effect (a × b).
+    pub indirect_effect: f64,
+    /// Sobel z-statistic for indirect effect.
+    pub sobel_z: f64,
+    /// Sobel p-value (two-tailed).
+    pub sobel_p: f64,
+    /// Proportion mediated: indirect / total (may exceed 1 or be negative).
+    pub proportion_mediated: f64,
+}
+
+/// Simple 1-predictor OLS: returns (intercept, slope, residuals, se_slope).
+fn ols_simple(x: &[f64], y: &[f64]) -> (f64, f64, Vec<f64>, f64) {
+    let n = x.len();
+    let nf = n as f64;
+    let mx: f64 = x.iter().sum::<f64>() / nf;
+    let my: f64 = y.iter().sum::<f64>() / nf;
+    let mut sxx = 0.0;
+    let mut sxy = 0.0;
+    for i in 0..n {
+        let dx = x[i] - mx;
+        sxx += dx * dx;
+        sxy += dx * (y[i] - my);
+    }
+    let slope = if sxx > 1e-300 { sxy / sxx } else { 0.0 };
+    let intercept = my - slope * mx;
+    let residuals: Vec<f64> = (0..n).map(|i| y[i] - intercept - slope * x[i]).collect();
+    let rss: f64 = residuals.iter().map(|r| r * r).sum();
+    let mse = if n > 2 { rss / (n - 2) as f64 } else { 0.0 };
+    let se_slope = if sxx > 1e-300 { (mse / sxx).sqrt() } else { 0.0 };
+    (intercept, slope, residuals, se_slope)
+}
+
+/// 2-predictor OLS (x, m → y with intercept): returns (b0, b_x, b_m, se_b_m).
+fn ols_two_predictor(x: &[f64], m: &[f64], y: &[f64]) -> (f64, f64, f64, f64) {
+    let n = x.len();
+    let nf = n as f64;
+    if n < 4 { return (0.0, 0.0, 0.0, 0.0); }
+
+    // Build 3x3 normal equations X'X where X = [1, x, m]
+    let sum_x: f64 = x.iter().sum();
+    let sum_m: f64 = m.iter().sum();
+    let sum_y: f64 = y.iter().sum();
+    let sum_xx: f64 = x.iter().map(|&v| v * v).sum();
+    let sum_mm: f64 = m.iter().map(|&v| v * v).sum();
+    let sum_xm: f64 = x.iter().zip(m.iter()).map(|(&a, &b)| a * b).sum();
+    let sum_xy: f64 = x.iter().zip(y.iter()).map(|(&a, &b)| a * b).sum();
+    let sum_my: f64 = m.iter().zip(y.iter()).map(|(&a, &b)| a * b).sum();
+
+    // Solve (X'X) β = X'y via 3x3 matrix inversion (Cramer's rule)
+    // X'X = [[n, sum_x, sum_m], [sum_x, sum_xx, sum_xm], [sum_m, sum_xm, sum_mm]]
+    let a = [
+        [nf, sum_x, sum_m],
+        [sum_x, sum_xx, sum_xm],
+        [sum_m, sum_xm, sum_mm],
+    ];
+    let rhs = [sum_y, sum_xy, sum_my];
+
+    let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+            - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+            + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+    if det.abs() < 1e-300 { return (0.0, 0.0, 0.0, 0.0); }
+
+    // Inverse of symmetric 3x3 (cofactors)
+    let cof = [
+        [a[1][1] * a[2][2] - a[1][2] * a[2][1], -(a[0][1] * a[2][2] - a[0][2] * a[2][1]), a[0][1] * a[1][2] - a[0][2] * a[1][1]],
+        [-(a[1][0] * a[2][2] - a[1][2] * a[2][0]), a[0][0] * a[2][2] - a[0][2] * a[2][0], -(a[0][0] * a[1][2] - a[0][2] * a[1][0])],
+        [a[1][0] * a[2][1] - a[1][1] * a[2][0], -(a[0][0] * a[2][1] - a[0][1] * a[2][0]), a[0][0] * a[1][1] - a[0][1] * a[1][0]],
+    ];
+
+    let b0 = (cof[0][0] * rhs[0] + cof[0][1] * rhs[1] + cof[0][2] * rhs[2]) / det;
+    let b_x = (cof[1][0] * rhs[0] + cof[1][1] * rhs[1] + cof[1][2] * rhs[2]) / det;
+    let b_m = (cof[2][0] * rhs[0] + cof[2][1] * rhs[1] + cof[2][2] * rhs[2]) / det;
+
+    // SE of b_m from (X'X)⁻¹[2,2] * σ²
+    let inv_mm = cof[2][2] / det;
+    let mut rss = 0.0;
+    for i in 0..n { let e = y[i] - b0 - b_x * x[i] - b_m * m[i]; rss += e * e; }
+    let mse = rss / (n - 3) as f64;
+    let se_b_m = (mse * inv_mm).sqrt();
+
+    (b0, b_x, b_m, se_b_m)
+}
+
+/// Mediation analysis: does mediator M explain the X → Y relationship?
+///
+/// Fits three models:
+/// 1. Y on X (total effect c)
+/// 2. M on X (path a)
+/// 3. Y on X + M (direct effect c', path b)
+///
+/// Indirect effect = a × b (= c - c' when all variables are centered).
+/// Sobel test: z = ab / √(b²·SE(a)² + a²·SE(b)²).
+pub fn mediation(x: &[f64], m: &[f64], y: &[f64]) -> MediationResult {
+    assert_eq!(x.len(), m.len());
+    assert_eq!(x.len(), y.len());
+    let n = x.len();
+    if n < 4 {
+        return MediationResult {
+            total_effect: f64::NAN, direct_effect: f64::NAN,
+            path_a: f64::NAN, path_b: f64::NAN,
+            indirect_effect: f64::NAN, sobel_z: f64::NAN,
+            sobel_p: f64::NAN, proportion_mediated: f64::NAN,
+        };
+    }
+
+    // 1. Y on X → total effect c
+    let (_, c, _, _) = ols_simple(x, y);
+
+    // 2. M on X → path a (and SE of a)
+    let (_, a, _, se_a) = ols_simple(x, m);
+
+    // 3. Y on X + M → direct effect c', path b (and SE of b)
+    let (_, c_prime, b, se_b) = ols_two_predictor(x, m, y);
+
+    let indirect = a * b;
+    // Sobel z-statistic
+    let var_ab = b * b * se_a * se_a + a * a * se_b * se_b;
+    let sobel_z = if var_ab > 1e-300 { indirect / var_ab.sqrt() } else { 0.0 };
+    let sobel_p = 2.0 * (1.0 - crate::special_functions::normal_cdf(sobel_z.abs()));
+
+    let proportion_mediated = if c.abs() > 1e-15 { indirect / c } else { f64::NAN };
+
+    MediationResult {
+        total_effect: c,
+        direct_effect: c_prime,
+        path_a: a,
+        path_b: b,
+        indirect_effect: indirect,
+        sobel_z,
+        sobel_p,
+        proportion_mediated,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Moderation analysis (interaction terms + simple slopes)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of moderation analysis.
+#[derive(Debug, Clone)]
+pub struct ModerationResult {
+    /// Intercept β₀.
+    pub intercept: f64,
+    /// Main effect of X (β₁).
+    pub main_x: f64,
+    /// Main effect of Z (β₂).
+    pub main_z: f64,
+    /// Interaction coefficient (β₃).
+    pub interaction: f64,
+    /// Standard error of the interaction coefficient.
+    pub se_interaction: f64,
+    /// t-statistic for the interaction (β₃ / SE).
+    pub t_interaction: f64,
+    /// Two-tailed p-value for the interaction.
+    pub p_interaction: f64,
+    /// Simple slope of X when Z = Z_mean − SD.
+    pub simple_slope_low: f64,
+    /// Simple slope of X when Z = Z_mean.
+    pub simple_slope_mid: f64,
+    /// Simple slope of X when Z = Z_mean + SD.
+    pub simple_slope_high: f64,
+}
+
+/// Moderation analysis: does Z moderate the X → Y relationship?
+///
+/// Fits: Y = β₀ + β₁·X + β₂·Z + β₃·(X·Z) + ε
+///
+/// A significant β₃ indicates moderation. Simple slopes are computed at
+/// Z_mean - SD, Z_mean, Z_mean + SD to visualize the conditional effect of X.
+pub fn moderation(x: &[f64], z: &[f64], y: &[f64]) -> ModerationResult {
+    assert_eq!(x.len(), z.len());
+    assert_eq!(x.len(), y.len());
+    let n = x.len();
+    if n < 5 {
+        return ModerationResult {
+            intercept: f64::NAN, main_x: f64::NAN, main_z: f64::NAN,
+            interaction: f64::NAN, se_interaction: f64::NAN,
+            t_interaction: f64::NAN, p_interaction: f64::NAN,
+            simple_slope_low: f64::NAN, simple_slope_mid: f64::NAN, simple_slope_high: f64::NAN,
+        };
+    }
+
+    // Build 4-column design matrix: [1, x, z, xz]
+    let xz: Vec<f64> = x.iter().zip(z.iter()).map(|(&a, &b)| a * b).collect();
+    let mut design = vec![0.0; n * 4];
+    for i in 0..n {
+        design[i * 4] = 1.0;
+        design[i * 4 + 1] = x[i];
+        design[i * 4 + 2] = z[i];
+        design[i * 4 + 3] = xz[i];
+    }
+    let x_mat = crate::linear_algebra::Mat::from_vec(n, 4, design);
+    let beta = crate::linear_algebra::qr_solve(&x_mat, y);
+    if beta.len() != 4 {
+        return ModerationResult {
+            intercept: f64::NAN, main_x: f64::NAN, main_z: f64::NAN,
+            interaction: f64::NAN, se_interaction: f64::NAN,
+            t_interaction: f64::NAN, p_interaction: f64::NAN,
+            simple_slope_low: f64::NAN, simple_slope_mid: f64::NAN, simple_slope_high: f64::NAN,
+        };
+    }
+
+    let (b0, b_x, b_z, b_xz) = (beta[0], beta[1], beta[2], beta[3]);
+
+    // Residual sum of squares and MSE
+    let mut rss = 0.0;
+    for i in 0..n {
+        let fitted = b0 + b_x * x[i] + b_z * z[i] + b_xz * xz[i];
+        let e = y[i] - fitted;
+        rss += e * e;
+    }
+    let mse = rss / (n - 4).max(1) as f64;
+
+    // SE of interaction: (X'X)⁻¹[3,3] * σ²
+    // Compute (X'X)⁻¹ directly
+    let mut xtx = vec![0.0; 16];
+    for i in 0..n {
+        for a in 0..4 {
+            for b in 0..4 {
+                xtx[a * 4 + b] += x_mat.get(i, a) * x_mat.get(i, b);
+            }
+        }
+    }
+    // Invert 4x4 via Cholesky
+    let xtx_mat = crate::linear_algebra::Mat::from_vec(4, 4, xtx);
+    let inv_diag_33 = if let Some(l) = crate::linear_algebra::cholesky(&xtx_mat) {
+        let e3 = vec![0.0, 0.0, 0.0, 1.0];
+        let col = crate::linear_algebra::cholesky_solve(&l, &e3);
+        col[3]
+    } else { 0.0 };
+    let se_interaction = (mse * inv_diag_33).sqrt();
+
+    let t_interaction = if se_interaction > 1e-300 { b_xz / se_interaction } else { 0.0 };
+    let df = (n - 4).max(1) as f64;
+    let p_interaction = 2.0 * (1.0 - crate::special_functions::t_cdf(t_interaction.abs(), df));
+
+    // Simple slopes at Z_mean ± SD
+    let z_mean: f64 = z.iter().sum::<f64>() / n as f64;
+    let z_var: f64 = z.iter().map(|&v| (v - z_mean).powi(2)).sum::<f64>() / (n - 1).max(1) as f64;
+    let z_sd = z_var.sqrt();
+
+    let simple_slope = |z_val: f64| b_x + b_xz * z_val;
+
+    ModerationResult {
+        intercept: b0, main_x: b_x, main_z: b_z,
+        interaction: b_xz, se_interaction,
+        t_interaction, p_interaction,
+        simple_slope_low: simple_slope(z_mean - z_sd),
+        simple_slope_mid: simple_slope(z_mean),
+        simple_slope_high: simple_slope(z_mean + z_sd),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Logistic regression via IRLS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2383,5 +2787,131 @@ mod tests {
         ]);
         let y = vec![0.0, 1.0]; // n=2, q=3 (2 features + intercept)
         assert!(logistic_regression(&x, &y, 25, 1e-8).is_none());
+    }
+
+    // ── Mediation ──
+
+    #[test]
+    fn mediation_full_mediation() {
+        // Full mediation: X → M → Y, no direct X → Y path
+        // M = 2 * X + noise, Y = 3 * M + noise → indirect = 2*3 = 6
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let n = 200;
+        let x: Vec<f64> = (0..n).map(|i| (i as f64) / 20.0).collect();
+        let m: Vec<f64> = x.iter().map(|&xi| {
+            2.0 * xi + crate::rng::sample_normal(&mut rng, 0.0, 0.3)
+        }).collect();
+        let y: Vec<f64> = m.iter().map(|&mi| {
+            3.0 * mi + crate::rng::sample_normal(&mut rng, 0.0, 0.3)
+        }).collect();
+
+        let res = mediation(&x, &m, &y);
+        // Path a ≈ 2, path b ≈ 3
+        assert!((res.path_a - 2.0).abs() < 0.2, "a={}", res.path_a);
+        assert!((res.path_b - 3.0).abs() < 0.3, "b={}", res.path_b);
+        // Indirect ≈ 6
+        assert!((res.indirect_effect - 6.0).abs() < 0.5, "indirect={}", res.indirect_effect);
+        // Direct effect should be small (no X → Y direct path)
+        assert!(res.direct_effect.abs() < 0.5, "direct={}", res.direct_effect);
+        // Sobel z should be large (significant mediation)
+        assert!(res.sobel_z.abs() > 3.0, "sobel z={}", res.sobel_z);
+        assert!(res.sobel_p < 0.01, "sobel p={}", res.sobel_p);
+    }
+
+    #[test]
+    fn mediation_no_mediation() {
+        // No mediation: M is random, unrelated to X
+        let mut rng = crate::rng::Xoshiro256::new(99);
+        let n = 200;
+        let x: Vec<f64> = (0..n).map(|i| (i as f64) / 20.0).collect();
+        let m: Vec<f64> = (0..n).map(|_| crate::rng::sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let y: Vec<f64> = x.iter().map(|&xi| {
+            2.0 * xi + crate::rng::sample_normal(&mut rng, 0.0, 0.3)
+        }).collect();
+
+        let res = mediation(&x, &m, &y);
+        // Path a should be ~0 (M unrelated to X)
+        assert!(res.path_a.abs() < 0.3, "a={} should be ~0", res.path_a);
+        // Indirect should be ~0
+        assert!(res.indirect_effect.abs() < 0.3, "indirect={} should be ~0", res.indirect_effect);
+        // Sobel should not reject
+        assert!(res.sobel_p > 0.05, "sobel p={} should not reject", res.sobel_p);
+    }
+
+    // ── Moderation ──
+
+    #[test]
+    fn moderation_interaction_detected() {
+        // y = 1 + 2x + 0.5z + 1.5*x*z + noise
+        // The x*z coefficient (1.5) should be detected as significant
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let n = 300;
+        let x: Vec<f64> = (0..n).map(|i| ((i as f64) / (n as f64) - 0.5) * 4.0).collect();
+        let z: Vec<f64> = (0..n).map(|_| crate::rng::sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let y: Vec<f64> = (0..n).map(|i| {
+            1.0 + 2.0 * x[i] + 0.5 * z[i] + 1.5 * x[i] * z[i]
+                + crate::rng::sample_normal(&mut rng, 0.0, 0.3)
+        }).collect();
+
+        let res = moderation(&x, &z, &y);
+        assert!((res.interaction - 1.5).abs() < 0.3,
+            "interaction={} should be ~1.5", res.interaction);
+        assert!(res.p_interaction < 0.001,
+            "p_interaction={} should be significant", res.p_interaction);
+        // Simple slopes should differ at high vs low z
+        assert!(res.simple_slope_high > res.simple_slope_low,
+            "high={} should exceed low={}",
+            res.simple_slope_high, res.simple_slope_low);
+    }
+
+    // ── Bayes factors ──
+
+    #[test]
+    fn bayes_factor_t_no_effect_favors_null() {
+        // Small t-statistic → should favor H0
+        let result = bayes_factor_t_one_sample(0.2, 30, None);
+        assert!(result.bf10 < 1.0, "BF10={} should be < 1 for small t", result.bf10);
+        assert!(result.bf01 > 1.0);
+    }
+
+    #[test]
+    fn bayes_factor_t_large_effect_favors_alternative() {
+        // Large t-statistic → should favor H1
+        let result = bayes_factor_t_one_sample(4.0, 30, None);
+        assert!(result.bf10 > 10.0, "BF10={} should be > 10 for large t", result.bf10);
+        assert!(result.bf01 < 0.1);
+    }
+
+    #[test]
+    fn bayes_factor_correlation_zero_favors_null() {
+        let result = bayes_factor_correlation(0.05, 50);
+        assert!(result.bf10 < 1.0, "BF10={} should be < 1 for near-zero r", result.bf10);
+    }
+
+    #[test]
+    fn bayes_factor_correlation_strong_favors_alternative() {
+        let result = bayes_factor_correlation(0.7, 30);
+        assert!(result.bf10 > 10.0, "BF10={} should be > 10 for strong r", result.bf10);
+    }
+
+    #[test]
+    fn moderation_no_interaction() {
+        // y = 1 + 2x + 0.5z + noise (no x*z term)
+        let mut rng = crate::rng::Xoshiro256::new(99);
+        let n = 300;
+        let x: Vec<f64> = (0..n).map(|i| ((i as f64) / (n as f64) - 0.5) * 4.0).collect();
+        let z: Vec<f64> = (0..n).map(|_| crate::rng::sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let y: Vec<f64> = (0..n).map(|i| {
+            1.0 + 2.0 * x[i] + 0.5 * z[i]
+                + crate::rng::sample_normal(&mut rng, 0.0, 0.3)
+        }).collect();
+
+        let res = moderation(&x, &z, &y);
+        // Interaction coefficient should be ~0
+        assert!(res.interaction.abs() < 0.2,
+            "interaction={} should be ~0", res.interaction);
+        // And not significant
+        assert!(res.p_interaction > 0.05,
+            "p_interaction={} should not be significant", res.p_interaction);
     }
 }

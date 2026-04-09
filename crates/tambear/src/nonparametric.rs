@@ -212,6 +212,75 @@ pub fn partial_correlation(x: &[f64], y: &[f64], covariates: &[&[f64]]) -> f64 {
     pearson_r(&rx, &ry)
 }
 
+/// Partial correlation with p-value and confidence interval.
+#[derive(Debug, Clone)]
+pub struct PartialCorrelationResult {
+    /// Partial correlation coefficient r.
+    pub r: f64,
+    /// Number of observations.
+    pub n: usize,
+    /// Number of covariates controlled for.
+    pub k: usize,
+    /// Degrees of freedom: n - k - 2.
+    pub df: f64,
+    /// t-statistic: r × √(df/(1-r²)).
+    pub t_statistic: f64,
+    /// Two-tailed p-value from Student's t distribution.
+    pub p_value: f64,
+    /// Lower bound of the 95% confidence interval via Fisher z-transform.
+    pub ci_lower: f64,
+    /// Upper bound of the 95% confidence interval via Fisher z-transform.
+    pub ci_upper: f64,
+}
+
+/// Partial correlation with significance test and confidence interval.
+///
+/// Tests H₀: ρ_XY.Z = 0 via t-test with df = n - k - 2, where k is the number
+/// of covariates. CI via Fisher z-transform: z = atanh(r), SE(z) = 1/√(n-k-3),
+/// back-transformed via tanh.
+///
+/// For α = 0.05 (default 95% CI), use `alpha = Some(0.05)`.
+pub fn partial_correlation_full(
+    x: &[f64], y: &[f64], covariates: &[&[f64]], alpha: Option<f64>,
+) -> PartialCorrelationResult {
+    let r = partial_correlation(x, y, covariates);
+    let n = x.len();
+    let k = covariates.len();
+    let df = (n as f64 - k as f64 - 2.0).max(1.0);
+    let alpha = alpha.unwrap_or(0.05);
+
+    if !r.is_finite() || n < k + 3 {
+        return PartialCorrelationResult {
+            r, n, k, df,
+            t_statistic: f64::NAN, p_value: f64::NAN,
+            ci_lower: f64::NAN, ci_upper: f64::NAN,
+        };
+    }
+
+    // t-statistic and p-value
+    let denom = (1.0 - r * r).max(1e-300);
+    let t_stat = r * (df / denom).sqrt();
+    let p_value = crate::special_functions::t_two_tail_p(t_stat, df);
+
+    // Fisher z-transform CI
+    let z_r = r.atanh();
+    let se_z = 1.0 / ((n as f64 - k as f64 - 3.0).max(1.0)).sqrt();
+    // z_{α/2} from normal quantile
+    let z_crit = crate::special_functions::normal_quantile(1.0 - alpha / 2.0);
+    let z_lo = z_r - z_crit * se_z;
+    let z_hi = z_r + z_crit * se_z;
+    let ci_lower = z_lo.tanh();
+    let ci_upper = z_hi.tanh();
+
+    PartialCorrelationResult {
+        r, n, k, df,
+        t_statistic: t_stat,
+        p_value,
+        ci_lower,
+        ci_upper,
+    }
+}
+
 /// OLS slope of y on x: β = cov(y,x) / var(x)
 fn ols_slope(y: &[f64], x: &[f64]) -> f64 {
     let n = y.len() as f64;
@@ -2048,6 +2117,46 @@ mod tests {
         assert_eq!(r[2], 1.0); // 1.0 is rank 1
     }
 
+    // ── Partial correlation ──────────────────────────────────────────────
+
+    #[test]
+    fn partial_correlation_full_basic() {
+        // Simulate: Y = 2X + Z + noise, where X and Z are correlated
+        // After controlling for Z, X→Y slope should still be ~2
+        // Partial correlation between X and Y given Z should be significant
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let n = 200;
+        let z: Vec<f64> = (0..n).map(|_| crate::rng::sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let x: Vec<f64> = z.iter().map(|zi| {
+            zi * 0.5 + crate::rng::sample_normal(&mut rng, 0.0, 1.0)
+        }).collect();
+        let y: Vec<f64> = (0..n).map(|i| {
+            2.0 * x[i] + z[i] + crate::rng::sample_normal(&mut rng, 0.0, 0.3)
+        }).collect();
+
+        let res = partial_correlation_full(&x, &y, &[&z], None);
+        assert!(res.r > 0.5, "Partial r={} should be positive and large", res.r);
+        assert!(res.p_value < 0.001, "p={} should be significant", res.p_value);
+        assert_eq!(res.df, (n - 1 - 2) as f64);
+        // CI should contain the estimate and be narrow for large n
+        assert!(res.ci_lower < res.r && res.r < res.ci_upper);
+        assert!((res.ci_upper - res.ci_lower) < 0.3, "CI should be narrow for n=200");
+    }
+
+    #[test]
+    fn partial_correlation_full_null_hypothesis() {
+        // X and Y both independent of Z but independent of each other
+        let mut rng = crate::rng::Xoshiro256::new(99);
+        let n = 200;
+        let x: Vec<f64> = (0..n).map(|_| crate::rng::sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let y: Vec<f64> = (0..n).map(|_| crate::rng::sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let z: Vec<f64> = (0..n).map(|_| crate::rng::sample_normal(&mut rng, 0.0, 1.0)).collect();
+
+        let res = partial_correlation_full(&x, &y, &[&z], None);
+        assert!(res.r.abs() < 0.2, "r={} should be near 0", res.r);
+        assert!(res.p_value > 0.05, "p={} should not reject null", res.p_value);
+    }
+
     // ── Spearman ─────────────────────────────────────────────────────────
 
     #[test]
@@ -3016,5 +3125,200 @@ mod seismic_tests {
         let r = bath_law(6.5, &[]);
         assert!(r.largest_aftershock.is_nan());
         assert!(r.delta_m.is_nan());
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SDE Drift/Diffusion via Nadaraya-Watson Kernel Regression
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of SDE drift/diffusion estimation.
+///
+/// Non-parametric Nadaraya-Watson estimates of µ(x) and σ(x) evaluated on a
+/// regular grid over the observed price range, then summarized.
+#[derive(Debug, Clone)]
+pub struct SdeResult {
+    /// Mean drift across the state-space grid.
+    pub drift_mean: f64,
+    /// OLS slope of drift vs. state (mean-reversion if negative).
+    pub drift_slope: f64,
+    /// Mean diffusion (local volatility) across the state-space grid.
+    pub diffusion_mean: f64,
+    /// OLS slope of diffusion vs. state (volatility smile if non-zero).
+    pub diffusion_slope: f64,
+    /// Pearson correlation between grid-estimated drift and diffusion (leverage).
+    pub drift_diffusion_corr: f64,
+}
+
+impl SdeResult {
+    pub fn nan() -> Self {
+        Self {
+            drift_mean: f64::NAN, drift_slope: f64::NAN,
+            diffusion_mean: f64::NAN, diffusion_slope: f64::NAN,
+            drift_diffusion_corr: f64::NAN,
+        }
+    }
+}
+
+/// Estimate drift µ(x) and diffusion σ(x) of a price series via Nadaraya-Watson.
+///
+/// Algorithm (matches fintek's `sde.rs` K02P11C02R01):
+/// 1. Form `x = prices[0..n-1]`, `dx = diff(prices)`.
+/// 2. Bandwidth: `h = 1.06 · std(x) · n^{-0.2}` (Silverman's rule-of-thumb).
+/// 3. Evaluate µ̂(g) = Σ_j K((x_j−g)/h)·dx_j / Σ_j K((x_j−g)/h) on 20-point grid.
+/// 4. Evaluate σ̂(g) = sqrt(weighted residual variance) on same grid.
+/// 5. Summarize with mean, OLS slope, and Pearson correlation.
+///
+/// Uses the Gaussian kernel K(z) = exp(-z²/2).
+/// Returns `SdeResult::nan()` if series is too short (< 10 prices) or degenerate.
+pub fn sde_estimate(prices: &[f64], n_grid: usize) -> SdeResult {
+    let n = prices.len();
+    if n < 10 { return SdeResult::nan(); }
+
+    let m = n - 1;
+    let x: Vec<f64> = prices[..m].to_vec();
+    let dx: Vec<f64> = (0..m).map(|i| prices[i + 1] - prices[i]).collect();
+
+    // Silverman bandwidth
+    let mean_x: f64 = x.iter().sum::<f64>() / m as f64;
+    let var_x: f64 = x.iter().map(|v| (v - mean_x).powi(2)).sum::<f64>() / m as f64;
+    let std_x = var_x.sqrt();
+    if std_x < 1e-30 { return SdeResult::nan(); }
+    let h = 1.06 * std_x * (m as f64).powf(-0.2);
+    if h < 1e-30 { return SdeResult::nan(); }
+
+    let x_min = x.iter().copied().fold(f64::INFINITY, f64::min);
+    let x_max = x.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if (x_max - x_min).abs() < 1e-30 { return SdeResult::nan(); }
+
+    let ng = n_grid.max(3);
+    let step = (x_max - x_min) / (ng - 1) as f64;
+    let grid: Vec<f64> = (0..ng).map(|k| x_min + k as f64 * step).collect();
+
+    let mut drift_g = vec![f64::NAN; ng];
+    let mut diff_g = vec![f64::NAN; ng];
+
+    for (gi, &g) in grid.iter().enumerate() {
+        let mut w_sum = 0.0_f64;
+        let mut w_dx_sum = 0.0_f64;
+        for j in 0..m {
+            let z = (x[j] - g) / h;
+            let w = (-0.5 * z * z).exp();
+            w_sum += w;
+            w_dx_sum += w * dx[j];
+        }
+        if w_sum < 1e-30 { continue; }
+        let mu = w_dx_sum / w_sum;
+        drift_g[gi] = mu;
+
+        let mut w_r2 = 0.0_f64;
+        let mut w2_sum = 0.0_f64;
+        for j in 0..m {
+            let z = (x[j] - g) / h;
+            let w = (-0.5 * z * z).exp();
+            let r = dx[j] - mu;
+            w_r2 += w * r * r;
+            w2_sum += w;
+        }
+        if w2_sum > 1e-30 { diff_g[gi] = (w_r2 / w2_sum).sqrt(); }
+    }
+
+    // Collect valid grid points
+    let valid: Vec<(f64, f64, f64)> = grid.iter().zip(drift_g.iter()).zip(diff_g.iter())
+        .filter(|((_, d), df)| d.is_finite() && df.is_finite())
+        .map(|((&g, &d), &df)| (g, d, df))
+        .collect();
+
+    if valid.len() < 3 { return SdeResult::nan(); }
+    let nv = valid.len() as f64;
+
+    let drift_mean = valid.iter().map(|(_, d, _)| d).sum::<f64>() / nv;
+    let diffusion_mean = valid.iter().map(|(_, _, df)| df).sum::<f64>() / nv;
+    let mean_g = valid.iter().map(|(g, _, _)| g).sum::<f64>() / nv;
+
+    let mut cov_gd = 0.0_f64;
+    let mut var_g = 0.0_f64;
+    let mut cov_gdf = 0.0_f64;
+    let mut cov_d_df = 0.0_f64;
+    let mut var_d = 0.0_f64;
+    let mut var_df = 0.0_f64;
+
+    for &(g, d, df) in &valid {
+        let dg = g - mean_g;
+        let dd = d - drift_mean;
+        let ddf = df - diffusion_mean;
+        cov_gd += dg * dd;
+        var_g += dg * dg;
+        cov_gdf += dg * ddf;
+        cov_d_df += dd * ddf;
+        var_d += dd * dd;
+        var_df += ddf * ddf;
+    }
+
+    let drift_slope = if var_g > 1e-30 { cov_gd / var_g } else { 0.0 };
+    let diffusion_slope = if var_g > 1e-30 { cov_gdf / var_g } else { 0.0 };
+    let denom = (var_d * var_df).sqrt();
+    let drift_diffusion_corr = if denom > 1e-30 { (cov_d_df / denom).clamp(-1.0, 1.0) } else { 0.0 };
+
+    SdeResult { drift_mean, drift_slope, diffusion_mean, diffusion_slope, drift_diffusion_corr }
+}
+
+#[cfg(test)]
+mod sde_tests {
+    use super::*;
+
+    #[test]
+    fn sde_random_walk_finite() {
+        // GBM-like: prices drift up
+        let n = 100;
+        let mut prices = vec![100.0_f64];
+        for i in 1..n {
+            // deterministic ramp + small noise approximation
+            prices.push(prices[i - 1] + 0.1 + 0.5 * ((i as f64 * 1.7).sin()));
+        }
+        let r = sde_estimate(&prices, 20);
+        assert!(r.drift_mean.is_finite(), "drift_mean: {}", r.drift_mean);
+        assert!(r.diffusion_mean.is_finite() && r.diffusion_mean >= 0.0);
+        assert!(r.drift_diffusion_corr >= -1.0 && r.drift_diffusion_corr <= 1.0);
+    }
+
+    #[test]
+    fn sde_too_short_nan() {
+        let r = sde_estimate(&[1.0, 2.0, 3.0], 20);
+        assert!(r.drift_mean.is_nan());
+    }
+
+    #[test]
+    fn sde_constant_prices_nan() {
+        let r = sde_estimate(&vec![100.0; 50], 20);
+        // std_x = 0 → degenerate
+        assert!(r.drift_mean.is_nan());
+    }
+
+    #[test]
+    fn sde_mean_reverting_negative_slope() {
+        // Ornstein-Uhlenbeck: if prices wander far from mean, dx tends to pull back
+        // Simulate: dx = -0.3*(x - 100) + noise (mean-reverting)
+        let mut prices = vec![110.0_f64]; // start away from mean
+        for i in 0..200 {
+            let last = *prices.last().unwrap();
+            // Use i for deterministic variation (sin noise)
+            let dx = -0.3 * (last - 100.0) + 0.5 * ((i as f64 * 2.3).sin());
+            prices.push(last + dx);
+        }
+        let r = sde_estimate(&prices, 20);
+        assert!(r.drift_slope.is_finite(), "drift_slope: {}", r.drift_slope);
+        // Mean-reverting → drift slope should be negative (drift pulls toward center)
+        assert!(r.drift_slope < 0.0,
+            "OU process should have negative drift slope, got {}", r.drift_slope);
+    }
+
+    #[test]
+    fn sde_output_range_valid() {
+        let prices: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64 * 0.5).sin()).collect();
+        let r = sde_estimate(&prices, 20);
+        assert!(r.drift_mean.is_finite());
+        assert!(r.diffusion_mean.is_finite() && r.diffusion_mean >= 0.0);
+        assert!(r.drift_diffusion_corr.abs() <= 1.0 + 1e-10);
     }
 }

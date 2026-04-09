@@ -37,6 +37,29 @@ pub struct SparseDeterministicMap {
 }
 
 impl SparseDeterministicMap {
+    /// Build from an arbitrary target vector. Each `target[j]` is the unique
+    /// successor of state `j` in `[0, n)`. Any out-of-range targets are
+    /// clamped to a self-loop (`target[j] = j`).
+    ///
+    /// This is the general constructor for a *functional graph* — a directed
+    /// graph in which every node has exactly one outgoing edge. The struct
+    /// alias [`crate::FunctionalGraph`] is provided for graph-theoretic uses.
+    pub fn from_targets(target: Vec<usize>) -> Self {
+        let n = target.len();
+        let mut t = target;
+        for j in 0..n {
+            if t[j] >= n { t[j] = j; }
+        }
+        SparseDeterministicMap { n, target: t }
+    }
+
+    /// Build from a closure `f: usize -> usize`. Out-of-range outputs become
+    /// self-loops. Convenient for defining a functional graph by a rule.
+    pub fn from_fn<F: Fn(usize) -> usize>(n: usize, f: F) -> Self {
+        let target: Vec<usize> = (0..n).map(|j| f(j)).collect();
+        Self::from_targets(target)
+    }
+
     /// Build from an arithmetic map parameterized by (m, d).
     ///
     /// For state n in [1, N]:
@@ -621,6 +644,37 @@ mod tests {
     use super::*;
 
     // ── Sparse map construction ────────────────────────────────────────
+
+    // ── Generic functional-graph constructors ────────────────────────────
+
+    #[test]
+    fn from_targets_general() {
+        // A simple 5-node functional graph: rho-shape with tail 0 -> 1 -> 2
+        // and cycle 2 -> 3 -> 4 -> 2.
+        let g = SparseDeterministicMap::from_targets(vec![1, 2, 3, 4, 2]);
+        assert_eq!(g.n, 5);
+        let cs = g.cycle_structure();
+        assert_eq!(cs.cycle_count, 1);
+        assert_eq!(cs.cycle_lengths, vec![3]);
+        assert_eq!(cs.transient_count, 2);
+    }
+
+    #[test]
+    fn from_targets_clamps_out_of_range() {
+        // Targets >= n become self-loops.
+        let g = SparseDeterministicMap::from_targets(vec![99, 0, 1]);
+        assert_eq!(g.target, vec![0, 0, 1]); // position 0 was 99 -> self-loop 0
+    }
+
+    #[test]
+    fn from_fn_constructor() {
+        // f(j) = (j + 1) mod n  — a single n-cycle
+        let g = SparseDeterministicMap::from_fn(7, |j| (j + 1) % 7);
+        let cs = g.cycle_structure();
+        assert_eq!(cs.cycle_count, 1);
+        assert_eq!(cs.cycle_lengths, vec![7]);
+        assert_eq!(cs.transient_count, 0);
+    }
 
     #[test]
     fn arithmetic_map_collatz_small() {

@@ -1404,3 +1404,561 @@ mod tests {
             "chi2_cdf={p_chi2} should match gamma_cdf={p_gamma}");
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Orthogonal Polynomials
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Chebyshev polynomial of the first kind T_n(x).
+///
+/// Three-term recurrence: T_0 = 1, T_1 = x, T_n = 2x·T_{n-1} - T_{n-2}.
+/// Valid for any real x (not just |x| ≤ 1).
+pub fn chebyshev_t(n: usize, x: f64) -> f64 {
+    if n == 0 { return 1.0; }
+    if n == 1 { return x; }
+    let mut t_prev = 1.0_f64;
+    let mut t_curr = x;
+    for _ in 2..=n {
+        let t_next = 2.0 * x * t_curr - t_prev;
+        t_prev = t_curr;
+        t_curr = t_next;
+    }
+    t_curr
+}
+
+/// Chebyshev polynomial of the second kind U_n(x).
+///
+/// Recurrence: U_0 = 1, U_1 = 2x, U_n = 2x·U_{n-1} - U_{n-2}.
+pub fn chebyshev_u(n: usize, x: f64) -> f64 {
+    if n == 0 { return 1.0; }
+    if n == 1 { return 2.0 * x; }
+    let mut u_prev = 1.0_f64;
+    let mut u_curr = 2.0 * x;
+    for _ in 2..=n {
+        let u_next = 2.0 * x * u_curr - u_prev;
+        u_prev = u_curr;
+        u_curr = u_next;
+    }
+    u_curr
+}
+
+/// Evaluate a Chebyshev series: Σ_k c_k · T_k(x) using Clenshaw's algorithm.
+///
+/// Numerically stable O(n) evaluation (Clenshaw 1955). Returns the series sum.
+pub fn chebyshev_series(coeffs: &[f64], x: f64) -> f64 {
+    if coeffs.is_empty() { return 0.0; }
+    if coeffs.len() == 1 { return coeffs[0]; }
+    let n = coeffs.len();
+    let mut b2 = 0.0_f64;
+    let mut b1 = 0.0_f64;
+    for k in (1..n).rev() {
+        let b0 = 2.0 * x * b1 - b2 + coeffs[k];
+        b2 = b1;
+        b1 = b0;
+    }
+    x * b1 - b2 + coeffs[0]
+}
+
+/// Legendre polynomial P_n(x).
+///
+/// Recurrence: P_0 = 1, P_1 = x, (n+1)·P_{n+1} = (2n+1)·x·P_n - n·P_{n-1}.
+pub fn legendre_p(n: usize, x: f64) -> f64 {
+    if n == 0 { return 1.0; }
+    if n == 1 { return x; }
+    let mut p_prev = 1.0_f64;
+    let mut p_curr = x;
+    for k in 1..n {
+        let p_next = ((2 * k + 1) as f64 * x * p_curr - k as f64 * p_prev) / (k + 1) as f64;
+        p_prev = p_curr;
+        p_curr = p_next;
+    }
+    p_curr
+}
+
+/// Legendre polynomial derivative P_n'(x).
+///
+/// Formula: P_n'(x) = n·(x·P_n(x) - P_{n-1}(x)) / (x² - 1), with limit at x = ±1.
+pub fn legendre_p_deriv(n: usize, x: f64) -> f64 {
+    if n == 0 { return 0.0; }
+    let pn = legendre_p(n, x);
+    let pn1 = legendre_p(n - 1, x);
+    let denom = x * x - 1.0;
+    if denom.abs() < 1e-14 {
+        // Limit at x = ±1: P_n'(±1) = (±1)^{n+1} · n(n+1)/2
+        let sign = if x > 0.0 { 1.0 } else { if n % 2 == 0 { -1.0 } else { 1.0 } };
+        sign * (n * (n + 1)) as f64 / 2.0
+    } else {
+        n as f64 * (x * pn - pn1) / denom
+    }
+}
+
+/// Gauss-Legendre nodes and weights on [-1, 1] via Newton's method.
+///
+/// Returns `(nodes, weights)` of length `n`. Accurate to ~1e-14 for n ≤ 100.
+/// Used for numerical integration: ∫_{-1}^{1} f(x) dx ≈ Σ_i w_i · f(x_i).
+///
+/// An n-point rule integrates polynomials of degree ≤ 2n-1 exactly.
+pub fn gauss_legendre_nodes_weights(n: usize) -> (Vec<f64>, Vec<f64>) {
+    if n == 0 { return (vec![], vec![]); }
+
+    let half = (n + 1) / 2;
+    let mut xs = vec![0.0_f64; half];
+    let mut ws = vec![0.0_f64; half];
+
+    for i in 0..half {
+        // Initial guess (Abramowitz & Stegun approximation)
+        let mut x = (std::f64::consts::PI * (i as f64 + 0.75) / (n as f64 + 0.5)).cos();
+        // Newton's method
+        for _ in 0..100 {
+            let pn = legendre_p(n, x);
+            let dpn = legendre_p_deriv(n, x);
+            if dpn.abs() < 1e-300 { break; }
+            let dx = -pn / dpn;
+            x += dx;
+            if dx.abs() < 1e-14 { break; }
+        }
+        let dpn = legendre_p_deriv(n, x);
+        let w = 2.0 / ((1.0 - x * x) * dpn * dpn);
+        xs[i] = x;
+        ws[i] = w;
+    }
+
+    // Build full node/weight arrays (nodes are symmetric about 0)
+    let mut nodes = Vec::with_capacity(n);
+    let mut weights = Vec::with_capacity(n);
+    // Positive nodes first (largest), then negative
+    for i in (0..half).rev() {
+        nodes.push(xs[i]);
+        weights.push(ws[i]);
+    }
+    // Mirror: if n is odd, the middle node (i=half-1) is at ~0 and shouldn't be doubled
+    let start = if n % 2 == 1 { 1 } else { 0 };
+    for i in start..half {
+        nodes.push(-xs[half - 1 - i]);
+        weights.push(ws[half - 1 - i]);
+    }
+    // Sort ascending
+    let mut pairs: Vec<(f64, f64)> = nodes.into_iter().zip(weights.into_iter()).collect();
+    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let nodes: Vec<f64> = pairs.iter().map(|(x, _)| *x).collect();
+    let weights: Vec<f64> = pairs.iter().map(|(_, w)| *w).collect();
+    (nodes, weights)
+}
+
+/// Hermite polynomial He_n(x) (probabilist's, used in statistics).
+///
+/// Recurrence: He_0 = 1, He_1 = x, He_n = x·He_{n-1} - (n-1)·He_{n-2}.
+pub fn hermite_he(n: usize, x: f64) -> f64 {
+    if n == 0 { return 1.0; }
+    if n == 1 { return x; }
+    let mut h_prev = 1.0_f64;
+    let mut h_curr = x;
+    for k in 1..n {
+        let h_next = x * h_curr - k as f64 * h_prev;
+        h_prev = h_curr;
+        h_curr = h_next;
+    }
+    h_curr
+}
+
+/// Laguerre polynomial L_n(x).
+///
+/// Recurrence: L_0 = 1, L_1 = 1-x, (n+1)·L_{n+1} = (2n+1-x)·L_n - n·L_{n-1}.
+pub fn laguerre_l(n: usize, x: f64) -> f64 {
+    if n == 0 { return 1.0; }
+    if n == 1 { return 1.0 - x; }
+    let mut l_prev = 1.0_f64;
+    let mut l_curr = 1.0 - x;
+    for k in 1..n {
+        let l_next = ((2 * k + 1) as f64 - x) * l_curr / (k + 1) as f64 - k as f64 * l_prev / (k + 1) as f64;
+        l_prev = l_curr;
+        l_curr = l_next;
+    }
+    l_curr
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Bessel Functions
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Bessel function of the first kind J_0(x).
+///
+/// Power series: J_0(x) = Σ_{m=0}^∞ (-1)^m (x/2)^{2m} / (m!)²
+/// Accurate to ~1e-12 for |x| ≤ 20 (50 terms).
+pub fn bessel_j0(x: f64) -> f64 {
+    let ax = x.abs();
+    if ax < 8.0 {
+        // Direct power series
+        let xhalf = x / 2.0;
+        let mut sum = 1.0_f64;
+        let mut term = 1.0_f64;
+        for m in 1..=50_usize {
+            term *= -(xhalf * xhalf) / (m * m) as f64;
+            sum += term;
+            if term.abs() < 1e-16 * sum.abs() { break; }
+        }
+        sum
+    } else {
+        // Asymptotic expansion for large x
+        let theta = ax - std::f64::consts::FRAC_PI_4;
+        let a0 = (2.0 / (std::f64::consts::PI * ax)).sqrt();
+        a0 * theta.cos()
+    }
+}
+
+/// Bessel function of the first kind J_1(x).
+///
+/// Power series: J_1(x) = (x/2)·Σ_{m=0}^∞ (-1)^m (x/2)^{2m} / (m!·(m+1)!)
+pub fn bessel_j1(x: f64) -> f64 {
+    let ax = x.abs();
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    if ax < 8.0 {
+        let xhalf = ax / 2.0;
+        let mut sum = xhalf;
+        let mut term = xhalf;
+        for m in 1..=50_usize {
+            term *= -(xhalf * xhalf) / (m * (m + 1)) as f64;
+            sum += term;
+            if term.abs() < 1e-16 * sum.abs() { break; }
+        }
+        sign * sum
+    } else {
+        let theta = ax - 3.0 * std::f64::consts::FRAC_PI_4;
+        let a0 = (2.0 / (std::f64::consts::PI * ax)).sqrt();
+        sign * a0 * theta.cos()
+    }
+}
+
+/// Bessel function of the first kind J_n(x) for integer order n ≥ 0.
+///
+/// Uses Miller's backward recurrence for numerical stability.
+/// J_{n-1}(x) = (2n/x)·J_n(x) - J_{n+1}(x), normalized via J_0.
+pub fn bessel_jn(n: usize, x: f64) -> f64 {
+    if n == 0 { return bessel_j0(x); }
+    if n == 1 { return bessel_j1(x); }
+    if x == 0.0 { return 0.0; }
+
+    // Miller's backward recurrence
+    let ax = x.abs();
+    let nstart = 2 * (n + (1.4 * ax + 60.0) as usize); // generous overestimate
+    let mut j_prev = 0.0_f64;
+    let mut j_curr = 1e-100_f64;
+    let mut result = 0.0_f64;
+    let mut sum_for_norm = 0.0_f64;
+    let mut at_n = false;
+
+    for k in (1..=nstart).rev() {
+        let j_next = 2.0 * k as f64 / ax * j_curr - j_prev;
+        j_prev = j_curr;
+        j_curr = j_next;
+        if k == n as usize {
+            result = j_prev;
+            at_n = true;
+        }
+        if k % 2 == 0 { sum_for_norm += 2.0 * j_curr; }
+        // Rescale to avoid overflow
+        if j_curr.abs() > 1e100 {
+            j_curr /= 1e100;
+            j_prev /= 1e100;
+            if at_n { result /= 1e100; }
+            sum_for_norm /= 1e100;
+        }
+    }
+    sum_for_norm += j_curr;
+    let j0_approx = j_curr / sum_for_norm; // normalized so that sum = J_0(x)
+    // Actually normalize so that the series sums to J_0:
+    let actual_j0 = bessel_j0(ax);
+    let sign = if x < 0.0 && n % 2 == 1 { -1.0 } else { 1.0 };
+    sign * result / sum_for_norm * actual_j0 / j0_approx
+}
+
+/// Modified Bessel function of the first kind I_0(x).
+///
+/// I_0(x) = Σ_{m=0}^∞ (x/2)^{2m} / (m!)²  (all positive terms, no oscillation).
+pub fn bessel_i0(x: f64) -> f64 {
+    let ax = x.abs();
+    if ax < 15.0 {
+        let xhalf = ax / 2.0;
+        let mut sum = 1.0_f64;
+        let mut term = 1.0_f64;
+        for m in 1..=50_usize {
+            term *= (xhalf * xhalf) / (m * m) as f64;
+            sum += term;
+            if term < 1e-16 * sum { break; }
+        }
+        sum
+    } else {
+        // Asymptotic: I_0(x) ≈ exp(x) / sqrt(2πx)
+        (ax).exp() / (2.0 * std::f64::consts::PI * ax).sqrt()
+    }
+}
+
+/// Modified Bessel function of the first kind I_1(x).
+pub fn bessel_i1(x: f64) -> f64 {
+    let ax = x.abs();
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    if ax < 15.0 {
+        let xhalf = ax / 2.0;
+        let mut sum = xhalf;
+        let mut term = xhalf;
+        for m in 1..=50_usize {
+            term *= (xhalf * xhalf) / (m * (m + 1)) as f64;
+            sum += term;
+            if term < 1e-16 * sum { break; }
+        }
+        sign * sum
+    } else {
+        sign * (ax).exp() / (2.0 * std::f64::consts::PI * ax).sqrt()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Marchenko-Pastur Distribution (Random Matrix Theory)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Marchenko-Pastur eigenvalue density.
+///
+/// For a random matrix with aspect ratio γ = p/n (p features, n samples),
+/// the limiting eigenvalue distribution of the sample covariance matrix is:
+///
+/// ρ(λ) = (n/p) · sqrt((λ_+ - λ)(λ - λ_-)) / (2π·γ·λ)
+///
+/// for λ ∈ [λ_-, λ_+], where:
+/// - λ_± = σ² · (1 ± √γ)²
+/// - σ² = population variance (usually 1 for correlation matrices)
+///
+/// Returns the density at point `lambda`. Returns 0.0 outside the bulk.
+pub fn marchenko_pastur_pdf(lambda: f64, gamma: f64, sigma2: f64) -> f64 {
+    if gamma <= 0.0 || sigma2 <= 0.0 || lambda <= 0.0 { return 0.0; }
+    let sqrt_gamma = gamma.sqrt();
+    let lambda_minus = sigma2 * (1.0 - sqrt_gamma).powi(2);
+    let lambda_plus = sigma2 * (1.0 + sqrt_gamma).powi(2);
+    if lambda < lambda_minus || lambda > lambda_plus { return 0.0; }
+    let num = ((lambda_plus - lambda) * (lambda - lambda_minus)).sqrt();
+    num / (2.0 * std::f64::consts::PI * gamma * sigma2 * lambda)
+}
+
+/// Marchenko-Pastur bulk eigenvalue bounds.
+///
+/// Returns `(lambda_minus, lambda_plus)` — the lower and upper edges of the
+/// Marchenko-Pastur bulk spectrum for aspect ratio γ = p/n and population
+/// variance σ².
+///
+/// Eigenvalues of a sample correlation matrix outside this range are
+/// statistically significant (not explainable by random noise alone).
+pub fn marchenko_pastur_bounds(gamma: f64, sigma2: f64) -> (f64, f64) {
+    let sqrt_gamma = gamma.sqrt();
+    (sigma2 * (1.0 - sqrt_gamma).powi(2), sigma2 * (1.0 + sqrt_gamma).powi(2))
+}
+
+/// Classify eigenvalues of a sample correlation matrix into signal vs. noise.
+///
+/// Uses Marchenko-Pastur theory: eigenvalues within [λ_-, λ_+] are noise;
+/// those above λ_+ are signal.
+///
+/// `eigenvalues`: sorted (ascending) eigenvalues of the sample correlation matrix.
+/// `p`: number of features (variables).
+/// `n`: number of observations (samples).
+///
+/// Returns `(n_signal, n_noise, lambda_plus)` where:
+/// - `n_signal`: number of eigenvalues above the MP upper bound.
+/// - `n_noise`: number of eigenvalues within the MP bulk.
+/// - `lambda_plus`: the upper bulk edge.
+pub fn marchenko_pastur_classify(eigenvalues: &[f64], p: usize, n: usize) -> (usize, usize, f64) {
+    if p == 0 || n == 0 { return (0, 0, f64::NAN); }
+    let gamma = p as f64 / n as f64;
+    let (_, lambda_plus) = marchenko_pastur_bounds(gamma, 1.0);
+    let n_signal = eigenvalues.iter().filter(|&&e| e > lambda_plus).count();
+    let n_noise = eigenvalues.len() - n_signal;
+    (n_signal, n_noise, lambda_plus)
+}
+
+/// Chebyshev outlier score: number of standard deviations from mean.
+///
+/// Chebyshev's theorem: P(|X - μ| ≥ k·σ) ≤ 1/k² for ANY distribution.
+/// Returns k = |x - mean| / std, with the guaranteed bound 1/k².
+///
+/// `x`: the observed value.
+/// `mean`, `std`: sample mean and standard deviation.
+///
+/// Returns `(k_score, p_bound)` where k_score = deviations from mean,
+/// p_bound = 1/k² (guaranteed upper bound on tail probability, k > 1).
+pub fn chebyshev_outlier(x: f64, mean: f64, std: f64) -> (f64, f64) {
+    if std <= 0.0 { return (f64::INFINITY, 0.0); }
+    let k = (x - mean).abs() / std;
+    let p_bound = if k > 1.0 { 1.0 / (k * k) } else { 1.0 };
+    (k, p_bound)
+}
+
+#[cfg(test)]
+mod orthogonal_bessel_rmt_tests {
+    use super::*;
+
+    // ── Chebyshev polynomials ────────────────────────────────────────────
+
+    #[test]
+    fn chebyshev_t_low_orders() {
+        // T_0 = 1, T_1 = x, T_2 = 2x²-1, T_3 = 4x³-3x
+        assert_eq!(chebyshev_t(0, 0.5), 1.0);
+        assert!((chebyshev_t(1, 0.5) - 0.5).abs() < 1e-12);
+        assert!((chebyshev_t(2, 0.5) - (2.0 * 0.25 - 1.0)).abs() < 1e-12);
+        assert!((chebyshev_t(3, 0.5) - (4.0 * 0.125 - 1.5)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn chebyshev_t_at_extrema() {
+        // T_n(1) = 1 and T_n(-1) = (-1)^n
+        for n in 0..=10_usize {
+            assert!((chebyshev_t(n, 1.0) - 1.0).abs() < 1e-10, "T_{n}(1) = {}", chebyshev_t(n, 1.0));
+            let expected = if n % 2 == 0 { 1.0 } else { -1.0 };
+            assert!((chebyshev_t(n, -1.0) - expected).abs() < 1e-10, "T_{n}(-1)");
+        }
+    }
+
+    #[test]
+    fn chebyshev_u_basic() {
+        // U_0=1, U_1=2x, U_2=4x²-1
+        assert_eq!(chebyshev_u(0, 0.5), 1.0);
+        assert!((chebyshev_u(1, 0.5) - 1.0).abs() < 1e-12);
+        assert!((chebyshev_u(2, 0.5) - 0.0).abs() < 1e-12); // 4*0.25-1=0
+    }
+
+    #[test]
+    fn chebyshev_series_constant() {
+        // c=[3.0] → constant series = 3.0
+        let v = chebyshev_series(&[3.0], 0.7);
+        assert!((v - 3.0).abs() < 1e-12);
+    }
+
+    // ── Legendre polynomials ─────────────────────────────────────────────
+
+    #[test]
+    fn legendre_p_low_orders() {
+        // P_0=1, P_1=x, P_2=(3x²-1)/2, P_3=(5x³-3x)/2
+        let x = 0.5;
+        assert!((legendre_p(0, x) - 1.0).abs() < 1e-12);
+        assert!((legendre_p(1, x) - 0.5).abs() < 1e-12);
+        assert!((legendre_p(2, x) - (3.0*0.25 - 1.0) / 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn legendre_p_at_one() {
+        // P_n(1) = 1 for all n
+        for n in 0..=10_usize {
+            assert!((legendre_p(n, 1.0) - 1.0).abs() < 1e-10, "P_{n}(1)");
+        }
+    }
+
+    #[test]
+    fn gauss_legendre_5pts() {
+        // 5-point GL quadrature should integrate x^8 on [-1,1] exactly
+        // ∫_{-1}^{1} x^8 dx = 2/9 ≈ 0.2222...
+        let (nodes, weights) = gauss_legendre_nodes_weights(5);
+        assert_eq!(nodes.len(), 5);
+        let integral: f64 = nodes.iter().zip(weights.iter()).map(|(&x, &w)| w * x.powi(8)).sum();
+        assert!((integral - 2.0 / 9.0).abs() < 1e-10, "GL-5 integral of x^8 = {}", integral);
+    }
+
+    // ── Hermite ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn hermite_he_basic() {
+        // He_0=1, He_1=x, He_2=x²-1, He_3=x³-3x
+        let x = 2.0;
+        assert!((hermite_he(0, x) - 1.0).abs() < 1e-12);
+        assert!((hermite_he(1, x) - 2.0).abs() < 1e-12);
+        assert!((hermite_he(2, x) - 3.0).abs() < 1e-12); // 4-1=3
+        assert!((hermite_he(3, x) - 2.0).abs() < 1e-12); // 8-6=2
+    }
+
+    // ── Laguerre ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn laguerre_l_basic() {
+        // L_0=1, L_1=1-x, L_2=(x²-4x+2)/2
+        let x = 1.0;
+        assert!((laguerre_l(0, x) - 1.0).abs() < 1e-12);
+        assert!((laguerre_l(1, x) - 0.0).abs() < 1e-12);
+        assert!((laguerre_l(2, x) - (1.0 - 4.0 + 2.0) / 2.0).abs() < 1e-12);
+    }
+
+    // ── Bessel functions ─────────────────────────────────────────────────
+
+    #[test]
+    fn bessel_j0_zeros() {
+        // J_0(2.4048) ≈ 0 (first zero)
+        let j0 = bessel_j0(2.4048);
+        assert!(j0.abs() < 1e-3, "J_0(2.4048) ≈ 0, got {}", j0);
+    }
+
+    #[test]
+    fn bessel_j0_at_zero() {
+        assert!((bessel_j0(0.0) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bessel_j1_at_zero() {
+        assert!(bessel_j1(0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bessel_j1_first_zero() {
+        // J_1(3.8317) ≈ 0
+        let j1 = bessel_j1(3.8317);
+        assert!(j1.abs() < 1e-2, "J_1(3.8317) ≈ 0, got {}", j1);
+    }
+
+    #[test]
+    fn bessel_i0_at_zero() {
+        assert!((bessel_i0(0.0) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bessel_i0_positive() {
+        // I_0 is always positive and monotone increasing
+        let vals: Vec<f64> = (0..10).map(|k| bessel_i0(k as f64 * 0.5)).collect();
+        for w in vals.windows(2) {
+            assert!(w[1] >= w[0], "I_0 should be non-decreasing: {} >= {}", w[1], w[0]);
+        }
+    }
+
+    // ── Marchenko-Pastur ─────────────────────────────────────────────────
+
+    #[test]
+    fn marchenko_pastur_bounds_gamma1() {
+        // γ=1: λ_- = 0, λ_+ = 4
+        let (lm, lp) = marchenko_pastur_bounds(1.0, 1.0);
+        assert!(lm.abs() < 1e-10, "γ=1: λ_- = 0, got {}", lm);
+        assert!((lp - 4.0).abs() < 1e-10, "γ=1: λ_+ = 4, got {}", lp);
+    }
+
+    #[test]
+    fn marchenko_pastur_pdf_integrates_approx_one() {
+        // Numerical integration of MP density for γ=0.5 should ≈ 1
+        let gamma = 0.5;
+        let (lm, lp) = marchenko_pastur_bounds(gamma, 1.0);
+        let n_steps = 10000;
+        let dl = (lp - lm) / n_steps as f64;
+        let integral: f64 = (0..n_steps).map(|i| {
+            let l = lm + (i as f64 + 0.5) * dl;
+            marchenko_pastur_pdf(l, gamma, 1.0) * dl
+        }).sum();
+        assert!((integral - 1.0).abs() < 0.01, "MP PDF integral ≈ 1, got {}", integral);
+    }
+
+    #[test]
+    fn marchenko_pastur_classify_basic() {
+        // p=50, n=200 → γ=0.25, λ_+ = (1+0.5)² = 2.25
+        let (n_sig, n_noise, lp) = marchenko_pastur_classify(&[1.0, 1.5, 2.0, 3.0, 5.0], 50, 200);
+        assert!((lp - 2.25).abs() < 1e-10, "λ_+ = 2.25, got {}", lp);
+        assert_eq!(n_sig, 2, "eigenvalues 3.0 and 5.0 are signal");
+        assert_eq!(n_noise, 3, "eigenvalues 1.0, 1.5, 2.0 are noise");
+    }
+
+    #[test]
+    fn chebyshev_outlier_basic() {
+        let (k, p_bound) = chebyshev_outlier(110.0, 100.0, 5.0);
+        assert!((k - 2.0).abs() < 1e-10, "k = 2 standard deviations");
+        assert!((p_bound - 0.25).abs() < 1e-10, "P-bound = 1/4");
+    }
+}

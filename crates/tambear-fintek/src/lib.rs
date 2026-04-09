@@ -42,6 +42,8 @@ pub mod family7_wavelets;
 pub mod family8_correlation;
 pub mod family9_volatility;
 pub mod family10_nonlinear;
+pub mod family11_tick_microstructure;
+pub mod family12_causality_info;
 pub mod family13_dim_reduction;
 pub mod family14_topological;
 pub mod family16_extremes;

@@ -78,11 +78,15 @@ Every primitive decomposes into tambear's operations: `accumulate(grouping, expr
 
 **Rationale**: the accumulate+gather skeleton is what makes everything composable across backends. A method expressed this way runs on CPU, GPU, NPU, or any future accelerator without rewrites. A method that hides its dependency structure behind opaque loops is a dead-end.
 
-### 3. Shareable intermediates via TamSession
+### 3. Shareable intermediates via TamSession — with compatibility enforcement
 
 Every expensive intermediate — distance matrix, covariance, FFT, sorted order statistics, moment stats, QR factorization, eigendecomposition — registers in TamSession with a content-addressed IntermediateTag. Consumers pull from cache. Never recompute.
 
-**Rationale**: in a typical fintek bin, ~15 methods share the same FFT, ~15 share MomentStats, ~6 share the phase-space distance matrix. Computing each intermediate once per bin per session is the only way the library stays fast at scale.
+**But sharing is conditional, not automatic**. Two methods asking for "the distance matrix" may have different requirements. Method A may accept any Lp distance; method B may require a Mahalanobis-corrected distance against the pooled covariance; method C may require a phase-space delay embedding before computing distances. The sharing contract enforces compatibility — if the cached intermediate was computed under assumptions that don't match the consumer's method, it is NOT reusable, and the consumer gets a fresh computation tagged with its own assumptions. Sharing only happens when the upstream intermediate is *provably correct for the downstream method*, not merely "has the same shape and dtype."
+
+This is a correctness invariant, not a performance hint. Incorrect sharing would silently return wrong answers. The IntermediateTag carries enough metadata (method signature, parameters, assumption fingerprint) that a consumer can check `is_compatible(tag, my_requirements)` before pulling.
+
+**Rationale**: in a typical fintek bin, ~15 methods share the same FFT, ~15 share MomentStats, ~6 share the phase-space distance matrix — but only when they share compatible definitions. Computing each intermediate once per bin per session is the only way the library stays fast at scale; computing it *correctly shared* is the only way it stays right.
 
 ### 4. Every parameter tunable
 
@@ -210,20 +214,70 @@ Fock boundary issues, orchestration, sequential dependencies, cross-device place
 
 When something is genuinely hard (a Fock boundary, a non-liftable operation, a stateful iterator), the primitive honestly declares its constraints and TAM handles the resolution. The primitive is pure; TAM is the orchestrator.
 
+### 10. Publication-grade rigor — prove every implementation
+
+Every primitive is worked up as if preparing for a Nature paper. Not metaphorically — literally. Before we call anything "done":
+
+- **Every assumption documented**. The math paper assumes X; we state X explicitly in the docs, the test, and the error conditions. If a user violates X, we detect it and say so, not silently produce garbage.
+- **Every parameter documented**. Name, type, range, default, meaning, impact on output, when to tune it. A domain expert reading our docs should immediately see the full knob set without going to the source.
+- **Benchmarked against every competing implementation**. scipy, R, MATLAB, Julia, Stata, SAS, NumPyro, Stan, PyMC, statsmodels, scikit-learn, Eigen, cuBLAS, cuDNN, LAPACK, FFTW, GSL, Armadillo, NLopt, CVXPY — whatever the reference is, we measure against it. Same inputs, same parameters, same assumptions.
+- **Bit-perfect or bug-finding**. Under identical parameter assumptions, our answer matches theirs to numerical precision — OR we find the bug in theirs. We do not treat other implementations as ground truth. They are peers to be verified against mpmath/SymPy/closed-form analytical reference at 50-digit precision. Every bug we find in scipy/R/MATLAB gets filed upstream — even users who never switch to tambear benefit from our rigor.
+- **Benchmarked at every scale**. From master-thesis-size datasets (the kind a graduate student runs on a laptop) up through the largest datasets in human or model history. Synthetic datasets with billions of rows, trillions of cells, hundreds of thousands of columns. Real benchmark datasets from every domain that has them (UCI, OpenML, LIBSVM, ImageNet-scale, LAION-scale, climate reanalyses, genomic corpora, high-frequency tick archives). We document the scaling law for every primitive: O(n) constant factor, break points where the algorithm changes regime, memory ceiling, GPU crossover point.
+- **Proven correct under the tests that matter**. Not "tests pass" — *tests that would fail if the math were wrong*. Adversarial edge cases: singular matrices, perfect collinearity, zero variance, heavy tails, ties, missing values, extreme magnitudes, ill-conditioning, boundary conditions. Gold-standard oracles for every published result where one exists.
+
+**Rationale**: the value proposition is correctness and depth, not velocity. A library that gets the answer wrong once loses its users forever. A library that finds bugs in its competitors becomes the reference. The work of proving every implementation is the product — not overhead on top of the product.
+
+### 11. Auto-detection with override transparency
+
+Primitives don't just compute — they think. When a user asks for a generic thing ("correlation", "regression", "clustering", "anova"), the pipeline runs the diagnostics that a senior statistician would run before picking a method, picks the appropriate variant, runs it, and reports *both* the decision and its rationale in the output.
+
+Example — user asks for `correlation(x, y)`:
+1. Pipeline pre-checks normality (Shapiro-Wilk for n<5000, D'Agostino-Pearson for larger).
+2. Checks variable type (continuous / ordinal / binary / count).
+3. Checks outlier influence (Mahalanobis, leverage).
+4. Picks: Pearson (both normal continuous), Spearman (non-normal continuous), Kendall tau-b (ordinal with ties), polychoric (both ordinal categorical), tetrachoric (both binary), point-biserial (one binary one continuous), distance correlation (nonlinear dependence), etc.
+5. Runs the selected method.
+6. **Writes both into the output**: what was run, the diagnostic values that justified the choice, what tambear would have run absent any override, and — if the user forced a different method via `using()` — runs *both* and reports both so the user sees exactly what their override cost them.
+
+Output structure is the contract: `TbsStepAdvice` carries `recommended` (method + reason), `user_override` (method + which `using()` key + warning if the override is statistically questionable), and `diagnostics` (the tests that were run and what they concluded). The user can trust our default *or* override with full visibility into the trade-off. Neither silently wins.
+
+**Rationale**: domain expertise is rare and expensive. Every pipeline should act like a $10M/year quant/statistician sat next to the user and whispered "your data is non-normal, you should use Spearman here" before execution. When the user disagrees, they disagree with their eyes open. This is what makes tambear *smart*, not just fast.
+
+### 12. Expert pipelines as persisted defaults
+
+Common workflows ship as curated pipelines — not frameworks to build pipelines, but *specific persisted pipelines* tuned by the equivalent of a decade-experienced domain expert hired to build that one thing from scratch. Users load them, run them, and get the expert's workflow with every diagnostic, every sanity check, every auto-detection, every parameter default selected for scientific defensibility rather than convenience.
+
+Examples of persisted pipelines we own:
+- `two_group_comparison(a, b)` — normality check → variance homogeneity → pick t-test variant (Student / Welch / Mann-Whitney / permutation) → effect size (Cohen's d / Hedges' g / Cliff's delta) → power analysis → CI → robustness check
+- `regression_diagnostics(X, y)` — fit → residual analysis → homoscedasticity (Breusch-Pagan, White) → normality of residuals → autocorrelation (Durbin-Watson, Breusch-Godfrey) → multicollinearity (VIF) → influential observations (Cook's, leverage, DFFITS) → recommended transformations or robust variants
+- `time_series_analysis(y)` — stationarity (ADF + KPSS confirmatory) → structural break detection → seasonality (STL, Fourier) → ACF/PACF → model order (AIC/BIC/HQIC) → fit → residual diagnostics → forecast intervals
+- `clustering_workflow(X)` — scale check → clustering tendency (Hopkins) → optimal K (elbow, gap statistic, silhouette) → method comparison (K-means / hierarchical / DBSCAN / GMM) → stability (bootstrap cluster agreement) → validation metrics
+- `survival_analysis(time, event, covariates)` — KM curves → log-rank → Cox PH fit → PH assumption test (Schoenfeld) → time-varying coefficients if violated → competing risks → AFT alternative
+
+Each persisted pipeline is version-controlled, has its own test suite against published benchmark datasets, and ships as a first-class artifact. Users call one function and get a workup that a professional statistician would charge serious money for.
+
+**Rationale**: most users don't need a toolkit to assemble their own workflow — they need the workflow an expert would build. Shipping the expert's workflow as the default is how we deliver the value of the expertise at scale. The toolkit stays available for people who want to assemble their own; the pipeline is what most people load.
+
 ### The Filter Test
 
 Before shipping any primitive, confirm:
 
 - [ ] Written from first principles, not wrapping a library
 - [ ] Expresses as accumulate + gather where possible (kingdom declared otherwise)
-- [ ] Registers shareable intermediates via TamSession where appropriate
-- [ ] Every parameter tunable, nothing hardcoded beyond documented defaults
+- [ ] Registers shareable intermediates via TamSession with compatibility tags
+- [ ] Every parameter tunable and documented (name, type, range, default, meaning, when to tune)
+- [ ] Assumptions explicit — documented, tested, detected at runtime
+- [ ] Benchmarked against every competing implementation (bit-perfect or bug filed upstream)
+- [ ] Benchmarked at multiple scales up through billion/trillion-row synthetic data
+- [ ] Gold-standard oracle against mpmath/SymPy/closed-form at high precision
 - [ ] Hardware details hidden behind tambear-wgpu / tam-gpu
 - [ ] Runs on CPU, GPU, and future accelerators with no code changes
 - [ ] Honestly declares its Kingdom (A/B/C/D) so TAM knows how to schedule it
-- [ ] Is one more piece of "every math, our way, everywhere"
+- [ ] Adversarial test suite exercises edge cases (singular, collinear, heavy tail, ties, missing, ill-conditioned)
+- [ ] If part of an expert pipeline: auto-detection diagnostics wired, `using()` override transparent in output
+- [ ] Is one more piece of "every math, our way, everywhere, provably correct"
 
-If all eight pass, ship. If any fail, fix first.
+If all pass, ship. If any fail, fix first.
 
 ---
 

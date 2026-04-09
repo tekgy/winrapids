@@ -530,6 +530,83 @@ impl InformationEngine {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Transfer entropy (Schreiber 2000)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Transfer entropy from X to Y (Schreiber 2000).
+///
+/// TE(X→Y) = H(Y_{t+1} | Y_t) - H(Y_{t+1} | Y_t, X_t)
+///
+/// Measures the reduction in uncertainty about Y's next value given knowledge
+/// of X's current value, beyond what Y's own past tells us. Asymmetric —
+/// TE(X→Y) ≠ TE(Y→X) in general.
+///
+/// Uses bin-based estimation on quantile-symbolized data:
+/// 1. Symbolize x and y into `n_bins` quantile bins
+/// 2. Count joint/marginal histograms
+/// 3. Compute TE from the counts
+///
+/// `x`, `y`: paired time series (same length).
+/// `n_bins`: discretization bins (typically 3-10).
+/// Returns TE in bits (log base 2).
+pub fn transfer_entropy(x: &[f64], y: &[f64], n_bins: usize) -> f64 {
+    let n = x.len();
+    if n < 3 || y.len() != n || n_bins < 2 { return f64::NAN; }
+
+    // Symbolize both series into quantile bins
+    let sym_x = crate::nonparametric::quantile_symbolize(x, n_bins);
+    let sym_y = crate::nonparametric::quantile_symbolize(y, n_bins);
+
+    // Build joint counts:
+    // p(y_{t+1}, y_t, x_t) — 3D, shape (n_bins)³
+    // p(y_t, x_t)         — 2D
+    // p(y_{t+1}, y_t)     — 2D
+    // p(y_t)              — 1D
+    let b = n_bins;
+    let mut p_yxx = vec![0.0_f64; b * b * b]; // index: y_next*b²+y_t*b+x_t
+    let mut p_yx = vec![0.0_f64; b * b];      // index: y_t*b+x_t
+    let mut p_yy = vec![0.0_f64; b * b];      // index: y_next*b+y_t
+    let mut p_y = vec![0.0_f64; b];           // index: y_t
+
+    let total = (n - 1) as f64;
+    for t in 0..(n - 1) {
+        let y_next = sym_y[t + 1] as usize;
+        let y_t = sym_y[t] as usize;
+        let x_t = sym_x[t] as usize;
+        if y_next >= b || y_t >= b || x_t >= b { continue; }
+        p_yxx[y_next * b * b + y_t * b + x_t] += 1.0;
+        p_yx[y_t * b + x_t] += 1.0;
+        p_yy[y_next * b + y_t] += 1.0;
+        p_y[y_t] += 1.0;
+    }
+    if total < 1.0 { return f64::NAN; }
+
+    // TE = Σ p(y_{t+1}, y_t, x_t) · log [ p(y_{t+1}|y_t, x_t) / p(y_{t+1}|y_t) ]
+    //    = Σ p(y_{t+1}, y_t, x_t) · log [ p(y_{t+1}, y_t, x_t) · p(y_t) / (p(y_t, x_t) · p(y_{t+1}, y_t)) ]
+    let mut te = 0.0_f64;
+    for y_next in 0..b {
+        for y_t in 0..b {
+            for x_t in 0..b {
+                let idx3 = y_next * b * b + y_t * b + x_t;
+                let n_yxx = p_yxx[idx3];
+                if n_yxx < 1e-15 { continue; }
+                let n_yx = p_yx[y_t * b + x_t];
+                let n_yy = p_yy[y_next * b + y_t];
+                let n_y = p_y[y_t];
+                if n_yx < 1e-15 || n_yy < 1e-15 || n_y < 1e-15 { continue; }
+                // Ratio inside log (counts cancel to probabilities)
+                let ratio = (n_yxx * n_y) / (n_yx * n_yy);
+                if ratio > 0.0 {
+                    let p_joint = n_yxx / total;
+                    te += p_joint * ratio.log2();
+                }
+            }
+        }
+    }
+    te.max(0.0) // TE is non-negative by construction; guard numerical noise
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

@@ -237,6 +237,88 @@ pub fn difference(data: &[f64], d: usize) -> Vec<f64> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// CUSUM and binary segmentation changepoint detection
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of a CUSUM changepoint scan.
+#[derive(Debug, Clone)]
+pub struct CusumResult {
+    /// Location of maximum |CUSUM| statistic (candidate changepoint index).
+    pub argmax: usize,
+    /// Maximum |CUSUM| value.
+    pub max_abs_cusum: f64,
+    /// CUSUM series (length n).
+    pub cusum: Vec<f64>,
+}
+
+/// Classical CUSUM on the mean: S_k = Σ_{t=1}^{k} (x_t - x̄).
+///
+/// At a changepoint, the CUSUM deviates maximally from zero. `argmax` of |S|
+/// is the most likely changepoint location.
+pub fn cusum_mean(data: &[f64]) -> CusumResult {
+    let n = data.len();
+    if n == 0 {
+        return CusumResult { argmax: 0, max_abs_cusum: 0.0, cusum: vec![] };
+    }
+    let mean = data.iter().sum::<f64>() / n as f64;
+    let mut cusum = Vec::with_capacity(n);
+    let mut running = 0.0_f64;
+    let mut max_abs = 0.0_f64;
+    let mut argmax = 0;
+    for (i, &x) in data.iter().enumerate() {
+        running += x - mean;
+        cusum.push(running);
+        let a = running.abs();
+        if a > max_abs { max_abs = a; argmax = i; }
+    }
+    CusumResult { argmax, max_abs_cusum: max_abs, cusum }
+}
+
+/// Binary segmentation changepoint detection via CUSUM.
+///
+/// Recursively splits the series at the maximum CUSUM point, accepting the
+/// split if the max |CUSUM| exceeds `threshold`. Returns sorted changepoint
+/// indices.
+///
+/// `data`: time series.
+/// `threshold`: minimum max|CUSUM| to accept a split (e.g., 2·σ·√n).
+/// `min_segment_size`: minimum size of any returned segment.
+/// `max_changepoints`: cap on returned changepoints (to bound recursion).
+pub fn cusum_binary_segmentation(
+    data: &[f64],
+    threshold: f64,
+    min_segment_size: usize,
+    max_changepoints: usize,
+) -> Vec<usize> {
+    let mut cps: Vec<usize> = Vec::new();
+    if data.len() < 2 * min_segment_size || max_changepoints == 0 {
+        return cps;
+    }
+
+    // Stack of (start, end) intervals to process
+    let mut stack: Vec<(usize, usize)> = vec![(0, data.len())];
+    while let Some((s, e)) = stack.pop() {
+        if e - s < 2 * min_segment_size { continue; }
+        if cps.len() >= max_changepoints { break; }
+        let segment = &data[s..e];
+        let result = cusum_mean(segment);
+        if result.max_abs_cusum < threshold { continue; }
+        // Candidate changepoint is at argmax + 1 (split after that index)
+        let cp_rel = result.argmax + 1;
+        if cp_rel < min_segment_size || (e - s - cp_rel) < min_segment_size {
+            continue;
+        }
+        let cp_abs = s + cp_rel;
+        cps.push(cp_abs);
+        // Recurse on both halves
+        stack.push((s, cp_abs));
+        stack.push((cp_abs, e));
+    }
+    cps.sort_unstable();
+    cps
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Exponential Smoothing
 // ═══════════════════════════════════════════════════════════════════════════
 

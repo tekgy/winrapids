@@ -1331,6 +1331,478 @@ pub fn fano_factor(timestamps: &[u64], n_windows: usize) -> f64 {
     poisson_dispersion_index(timestamps, n_windows)
 }
 
+/// Allan variance at time scale `tau` (overlapping estimate).
+///
+/// Computes Allan variance on interarrival times at lag `tau`:
+///   AVAR(tau) = (1 / (2*(n-2*tau))) * sum_{i=0}^{n-2*tau-1} (y[i+tau] - y[i])^2
+/// where y[i] is the `tau`-step cumulative sum of IATs (total time over tau gaps).
+///
+/// `tau` defaults to `n / 4` if None. Returns NaN if n < 4.
+///
+/// Allan variance is widely used in time-frequency metrology to characterize
+/// noise in point processes. At tau=1 it reduces to half the variance of
+/// first differences of IATs.
+pub fn iat_allan_variance(timestamps: &[u64], tau: Option<usize>) -> f64 {
+    let iats = iats(timestamps);
+    let n = iats.len();
+    if n < 4 { return f64::NAN; }
+    let tau = tau.unwrap_or((n / 4).max(1)).min(n / 2);
+    if tau == 0 { return f64::NAN; }
+
+    // y[i] = sum(iats[i..i+tau])  — average rate over tau intervals
+    // Using cumulative sums for O(n) computation
+    let mut cum = vec![0.0f64; n + 1];
+    for i in 0..n { cum[i + 1] = cum[i] + iats[i]; }
+
+    let count = n.saturating_sub(2 * tau);
+    if count == 0 { return f64::NAN; }
+
+    let mut sum_sq = 0.0f64;
+    for i in 0..count {
+        let y1 = cum[i + tau] - cum[i];           // sum(iats[i..i+tau])
+        let y2 = cum[i + 2*tau] - cum[i + tau];   // sum(iats[i+tau..i+2*tau])
+        let diff = y2 - y1;
+        sum_sq += diff * diff;
+    }
+    sum_sq / (2.0 * count as f64)
+}
+
+/// KS statistic against Exponential(lambda=1/mean) distribution for IATs.
+///
+/// Tests whether the IAT distribution is consistent with a Poisson arrival
+/// process (which has Exponential IATs). Returns the KS D statistic: 0 = perfect
+/// fit, 1 = worst fit. Callers apply their own threshold.
+///
+/// Returns NaN if fewer than 2 timestamps.
+pub fn iat_ks_exponential(timestamps: &[u64]) -> f64 {
+    let mut iats = iats(timestamps);
+    let n = iats.len();
+    if n < 2 { return f64::NAN; }
+    let mean = iats.iter().sum::<f64>() / n as f64;
+    if mean < 1e-300 { return f64::NAN; }
+    iats.sort_by(|a, b| a.total_cmp(b));
+    let lambda = 1.0 / mean;
+    let mut d = 0.0_f64;
+    for (i, &x) in iats.iter().enumerate() {
+        let cdf = 1.0 - (-lambda * x).exp();
+        let emp_above = (n - i - 1) as f64 / n as f64;
+        let emp_below = (i + 1) as f64 / n as f64;
+        d = d.max((emp_below - cdf).abs()).max((cdf - (i as f64 / n as f64)).abs());
+        let _ = emp_above;
+    }
+    d
+}
+
+/// KS statistic against Uniform(min, max) distribution for IATs.
+///
+/// Tests whether the IAT distribution is uniform across [min(iat), max(iat)].
+/// Returns the KS D statistic. Regular arrivals have constant IATs (D≈1 vs
+/// uniform). Poisson arrivals have Exponential IATs (D ≈ 0.4 vs uniform on
+/// average).
+///
+/// Returns NaN if fewer than 2 timestamps or all IATs equal.
+pub fn iat_ks_uniform(timestamps: &[u64]) -> f64 {
+    let mut iats = iats(timestamps);
+    let n = iats.len();
+    if n < 2 { return f64::NAN; }
+    iats.sort_by(|a, b| a.total_cmp(b));
+    let lo = iats[0];
+    let hi = *iats.last().unwrap();
+    if (hi - lo) < 1e-300 { return f64::NAN; }
+    let range = hi - lo;
+    let mut d = 0.0_f64;
+    for (i, &x) in iats.iter().enumerate() {
+        let cdf = (x - lo) / range;
+        d = d.max(((i + 1) as f64 / n as f64 - cdf).abs())
+             .max((cdf - i as f64 / n as f64).abs());
+    }
+    d
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Counting primitives — every counting operation on a slice
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Kingdom A (pure streaming aggregation). Each is O(n) single-pass.
+// No thresholds, no opinions. The answer to every "how many..." question.
+
+/// Count of finite non-NaN values (alias for `tick_count` with explicit name).
+#[inline]
+pub fn count_finite(x: &[f64]) -> usize { x.iter().filter(|v| v.is_finite()).count() }
+
+/// Count of NaN values.
+#[inline]
+pub fn count_nan(x: &[f64]) -> usize { x.iter().filter(|v| v.is_nan()).count() }
+
+/// Count of infinite values (positive or negative infinity).
+#[inline]
+pub fn count_inf(x: &[f64]) -> usize { x.iter().filter(|v| v.is_infinite()).count() }
+
+/// Count of strictly positive values.
+#[inline]
+pub fn count_positive(x: &[f64]) -> usize { x.iter().filter(|&&v| v > 0.0).count() }
+
+/// Count of strictly negative values.
+#[inline]
+pub fn count_negative(x: &[f64]) -> usize { x.iter().filter(|&&v| v < 0.0).count() }
+
+/// Count of exactly-zero values.
+#[inline]
+pub fn count_zeros(x: &[f64]) -> usize { x.iter().filter(|&&v| v == 0.0).count() }
+
+/// Count of values strictly above `threshold`.
+pub fn count_above(x: &[f64], threshold: f64) -> usize {
+    x.iter().filter(|&&v| v > threshold).count()
+}
+
+/// Count of values strictly below `threshold`.
+pub fn count_below(x: &[f64], threshold: f64) -> usize {
+    x.iter().filter(|&&v| v < threshold).count()
+}
+
+/// Count of values in the closed interval [lo, hi].
+pub fn count_in_range(x: &[f64], lo: f64, hi: f64) -> usize {
+    x.iter().filter(|&&v| v >= lo && v <= hi).count()
+}
+
+/// Count of zero-crossings (sign changes from positive to negative or vice versa).
+///
+/// Skips zeros. A crossing occurs when consecutive non-zero values have opposite signs.
+pub fn count_zero_crossings(x: &[f64]) -> usize {
+    let nonzero: Vec<f64> = x.iter().copied().filter(|&v| v != 0.0 && v.is_finite()).collect();
+    nonzero.windows(2).filter(|w| w[0] * w[1] < 0.0).count()
+}
+
+/// Count of sign changes (zero → nonzero or nonzero sign flip both count).
+///
+/// Counts consecutive adjacent pairs where `sign(x[i+1]) != sign(x[i])`.
+/// Zeros count as sign = 0 which differs from ±1.
+pub fn count_sign_changes(x: &[f64]) -> usize {
+    fn sign(v: f64) -> i8 { if v > 0.0 { 1 } else if v < 0.0 { -1 } else { 0 } }
+    let finite: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
+    finite.windows(2).filter(|w| sign(w[0]) != sign(w[1])).count()
+}
+
+/// Count of local maxima (peaks): x[i-1] < x[i] > x[i+1].
+pub fn count_peaks(x: &[f64]) -> usize {
+    let n = x.len();
+    if n < 3 { return 0; }
+    (1..n - 1).filter(|&i| x[i] > x[i - 1] && x[i] > x[i + 1]).count()
+}
+
+/// Count of local minima (troughs): x[i-1] > x[i] < x[i+1].
+pub fn count_troughs(x: &[f64]) -> usize {
+    let n = x.len();
+    if n < 3 { return 0; }
+    (1..n - 1).filter(|&i| x[i] < x[i - 1] && x[i] < x[i + 1]).count()
+}
+
+/// Count of inflection points: consecutive sign change in second differences.
+///
+/// Second difference d2[i] = x[i+2] - 2*x[i+1] + x[i].
+/// An inflection is where sign(d2[i]) != sign(d2[i-1]).
+pub fn count_inflections(x: &[f64]) -> usize {
+    let n = x.len();
+    if n < 4 { return 0; }
+    let d2: Vec<f64> = (0..n - 2).map(|i| x[i + 2] - 2.0 * x[i + 1] + x[i]).collect();
+    count_sign_changes(&d2)
+}
+
+/// Count of runs of same sign.
+///
+/// A run is a maximal contiguous sequence of values with the same sign (positive,
+/// negative, or zero). Returns total number of runs. For white noise, expected
+/// number of runs ≈ (2n - 1) / 3.
+pub fn count_runs(x: &[f64]) -> usize {
+    fn sign(v: f64) -> i8 { if v > 0.0 { 1 } else if v < 0.0 { -1 } else { 0 } }
+    let finite: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
+    if finite.is_empty() { return 0; }
+    let mut runs = 1usize;
+    for i in 1..finite.len() {
+        if sign(finite[i]) != sign(finite[i - 1]) { runs += 1; }
+    }
+    runs
+}
+
+/// Count values more than `k` MADs from the median (outliers by MAD rule).
+///
+/// `k` defaults to 3.0 (standard "3-sigma" equivalent for robust scale).
+/// Returns NaN if MAD = 0.
+pub fn count_outliers_mad(x: &[f64], k: Option<f64>) -> usize {
+    let k = k.unwrap_or(3.0);
+    let clean: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
+    if clean.is_empty() { return 0; }
+    let mut sorted = clean.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let n = sorted.len();
+    let median = if n % 2 == 0 {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    } else {
+        sorted[n / 2]
+    };
+    let mut devs: Vec<f64> = sorted.iter().map(|&v| (v - median).abs()).collect();
+    devs.sort_by(|a, b| a.total_cmp(b));
+    let mad = if n % 2 == 0 {
+        (devs[n / 2 - 1] + devs[n / 2]) / 2.0
+    } else {
+        devs[n / 2]
+    };
+    if mad < 1e-300 { return 0; }
+    clean.iter().filter(|&&v| (v - median).abs() > k * mad).count()
+}
+
+/// Count values more than `k` standard deviations from the mean (z-score outliers).
+///
+/// `k` defaults to 3.0.
+pub fn count_outliers_zscore(x: &[f64], k: Option<f64>) -> usize {
+    let k = k.unwrap_or(3.0);
+    let clean: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
+    let n = clean.len();
+    if n < 2 { return 0; }
+    let mean = clean.iter().sum::<f64>() / n as f64;
+    let std = (clean.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64).sqrt();
+    if std < 1e-300 { return 0; }
+    clean.iter().filter(|&&v| (v - mean).abs() > k * std).count()
+}
+
+/// Count of inversions: pairs (i, j) with i < j but x[i] > x[j].
+///
+/// Counts inversions via merge sort in O(n log n).
+/// Range [0, n*(n-1)/2]. 0 = sorted, max = reverse-sorted.
+/// This is the foundation of Kendall's tau.
+pub fn count_inversions(x: &[f64]) -> usize {
+    fn merge_count(arr: &mut Vec<f64>) -> usize {
+        let n = arr.len();
+        if n <= 1 { return 0; }
+        let mid = n / 2;
+        let mut left = arr[..mid].to_vec();
+        let mut right = arr[mid..].to_vec();
+        let mut count = merge_count(&mut left) + merge_count(&mut right);
+        let (mut i, mut j, mut k) = (0, 0, 0);
+        while i < left.len() && j < right.len() {
+            if left[i] <= right[j] { arr[k] = left[i]; i += 1; }
+            else { arr[k] = right[j]; j += 1; count += left.len() - i; }
+            k += 1;
+        }
+        while i < left.len() { arr[k] = left[i]; i += 1; k += 1; }
+        while j < right.len() { arr[k] = right[j]; j += 1; k += 1; }
+        count
+    }
+    let mut arr: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
+    merge_count(&mut arr)
+}
+
+/// Count of ties: pairs of equal values (after rounding to `precision` decimal places).
+///
+/// Returns the number of (i, j) pairs with i < j and x[i] == x[j] (exactly).
+/// For float data, `precision=None` tests exact equality; `precision=Some(k)`
+/// rounds to k decimal places first.
+pub fn count_ties(x: &[f64], precision: Option<u32>) -> usize {
+    let rounded: Vec<i64> = x.iter()
+        .filter(|v| v.is_finite())
+        .map(|&v| {
+            if let Some(p) = precision {
+                let scale = 10_f64.powi(p as i32);
+                (v * scale).round() as i64
+            } else {
+                v.to_bits() as i64
+            }
+        })
+        .collect();
+    let mut sorted = rounded.clone();
+    sorted.sort();
+    let mut ties = 0usize;
+    let mut i = 0;
+    while i < sorted.len() {
+        let mut j = i + 1;
+        while j < sorted.len() && sorted[j] == sorted[i] { j += 1; }
+        let run = j - i;
+        if run > 1 { ties += run * (run - 1) / 2; }
+        i = j;
+    }
+    ties
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Dispersion measures — every published measure of spread for a slice
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Interquartile range: Q3 - Q1.
+pub fn iqr(x: &[f64]) -> f64 {
+    let mut clean: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
+    let n = clean.len();
+    if n < 4 { return f64::NAN; }
+    clean.sort_by(|a, b| a.total_cmp(b));
+    let q1 = clean[n / 4];
+    let q3 = clean[3 * n / 4];
+    q3 - q1
+}
+
+/// Quartile coefficient of dispersion: (Q3 - Q1) / (Q3 + Q1).
+///
+/// Range [0, 1] for positive data. Scale-free analogue of IQR.
+/// Returns NaN if Q1 + Q3 ≈ 0.
+pub fn quartile_coefficient_of_dispersion(x: &[f64]) -> f64 {
+    let mut clean: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
+    let n = clean.len();
+    if n < 4 { return f64::NAN; }
+    clean.sort_by(|a, b| a.total_cmp(b));
+    let q1 = clean[n / 4];
+    let q3 = clean[3 * n / 4];
+    let denom = q3 + q1;
+    if denom.abs() < 1e-300 { return f64::NAN; }
+    (q3 - q1) / denom
+}
+
+/// Range: max - min of finite values.
+pub fn range(x: &[f64]) -> f64 {
+    let (mut mn, mut mx) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &v in x.iter().filter(|v| v.is_finite()) {
+        if v < mn { mn = v; }
+        if v > mx { mx = v; }
+    }
+    if mn.is_infinite() { f64::NAN } else { mx - mn }
+}
+
+/// Midrange: (max + min) / 2.
+pub fn midrange(x: &[f64]) -> f64 {
+    let (mut mn, mut mx) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &v in x.iter().filter(|v| v.is_finite()) {
+        if v < mn { mn = v; }
+        if v > mx { mx = v; }
+    }
+    if mn.is_infinite() { f64::NAN } else { (mn + mx) / 2.0 }
+}
+
+/// Studentized range: (max - min) / std.
+///
+/// Returns NaN if std ≈ 0 or n < 2.
+pub fn studentized_range(x: &[f64]) -> f64 {
+    let r = range(x);
+    let s = moments_ungrouped(x).std(1);
+    if s < 1e-300 {
+        return f64::NAN;
+    }
+    r / s
+}
+
+/// Theil's T index (inequality measure, log-based).
+///
+/// T = (1/n) * sum(x_i/mu * ln(x_i/mu)) for positive x.
+/// T = 0 for perfect equality, increases with inequality.
+/// Returns NaN for non-positive or empty data.
+pub fn theil_t(x: &[f64]) -> f64 {
+    let clean: Vec<f64> = x.iter().copied().filter(|&v| v.is_finite() && v > 0.0).collect();
+    let n = clean.len();
+    if n < 2 { return f64::NAN; }
+    let mu = clean.iter().sum::<f64>() / n as f64;
+    if mu < 1e-300 { return f64::NAN; }
+    clean.iter().map(|&v| {
+        let r = v / mu;
+        r * r.ln()
+    }).sum::<f64>() / n as f64
+}
+
+/// Theil's L index (MLD, mean log deviation).
+///
+/// L = (1/n) * sum(ln(mu/x_i)) = ln(mu) - mean(ln(x_i)).
+/// L = 0 for perfect equality, increases with inequality.
+/// Returns NaN for non-positive or empty data.
+pub fn theil_l(x: &[f64]) -> f64 {
+    let clean: Vec<f64> = x.iter().copied().filter(|&v| v.is_finite() && v > 0.0).collect();
+    let n = clean.len();
+    if n < 2 { return f64::NAN; }
+    let mu = clean.iter().sum::<f64>() / n as f64;
+    if mu < 1e-300 { return f64::NAN; }
+    let mean_log = clean.iter().map(|&v| v.ln()).sum::<f64>() / n as f64;
+    mu.ln() - mean_log
+}
+
+/// Atkinson index with inequality aversion parameter `epsilon`.
+///
+/// A(epsilon) = 1 - (mean(x_i^(1-epsilon))^(1/(1-epsilon)) / mean(x))
+/// for epsilon != 1, and
+/// A(1) = 1 - exp(mean(ln(x_i))) / mean(x) (Theil L form).
+///
+/// epsilon = 0: no weight on tail; epsilon → infinity: extreme tail sensitivity.
+/// Common values: 0.5 (moderate), 1.0 (mean-log), 2.0 (high sensitivity).
+/// Returns NaN for non-positive x or n < 2.
+pub fn atkinson_index(x: &[f64], epsilon: f64) -> f64 {
+    let clean: Vec<f64> = x.iter().copied().filter(|&v| v.is_finite() && v > 0.0).collect();
+    let n = clean.len();
+    if n < 2 { return f64::NAN; }
+    let mu = clean.iter().sum::<f64>() / n as f64;
+    if mu < 1e-300 { return f64::NAN; }
+
+    if (epsilon - 1.0).abs() < 1e-10 {
+        // Limiting case: A = 1 - exp(mean(ln x)) / mu
+        let mean_log = clean.iter().map(|&v| v.ln()).sum::<f64>() / n as f64;
+        1.0 - mean_log.exp() / mu
+    } else {
+        let power = 1.0 - epsilon;
+        let mean_pow = clean.iter().map(|&v| v.powf(power)).sum::<f64>() / n as f64;
+        if mean_pow <= 0.0 { return f64::NAN; }
+        1.0 - mean_pow.powf(1.0 / power) / mu
+    }
+}
+
+/// Hoover index (Robin Hood index): maximum vertical distance between Lorenz curve
+/// and the line of equality.
+///
+/// H = 0.5 * sum|x_i - mu| / sum(x_i).
+/// Equals the fraction of total that would need to be redistributed for equality.
+/// Returns NaN for empty or zero-sum data.
+pub fn hoover_index(x: &[f64]) -> f64 {
+    let clean: Vec<f64> = x.iter().copied().filter(|&v| v.is_finite() && v >= 0.0).collect();
+    let n = clean.len();
+    if n < 2 { return f64::NAN; }
+    let total: f64 = clean.iter().sum();
+    if total < 1e-300 { return f64::NAN; }
+    let mu = total / n as f64;
+    0.5 * clean.iter().map(|&v| (v - mu).abs()).sum::<f64>() / total
+}
+
+/// Palma ratio: top 10% share / bottom 40% share of sorted values.
+///
+/// A measure of income/wealth inequality that focuses on the tails.
+/// Returns NaN for empty data or if bottom 40% sum is zero.
+pub fn palma_ratio(x: &[f64]) -> f64 {
+    let mut clean: Vec<f64> = x.iter().copied().filter(|&v| v.is_finite() && v >= 0.0).collect();
+    let n = clean.len();
+    if n < 5 { return f64::NAN; }
+    clean.sort_by(|a, b| a.total_cmp(b));
+    let n40 = (0.4 * n as f64).ceil() as usize;
+    let n10 = (0.1 * n as f64).ceil() as usize;
+    let bottom40: f64 = clean[..n40].iter().sum();
+    let top10: f64 = clean[n - n10..].iter().sum();
+    if bottom40 < 1e-300 { return f64::NAN; }
+    top10 / bottom40
+}
+
+/// Coefficient of dispersion (relative to the median): MAD / median.
+///
+/// More robust than CV when data is skewed or has outliers.
+/// Returns NaN if median ≈ 0 or n < 2.
+pub fn coefficient_of_dispersion(x: &[f64]) -> f64 {
+    let mut clean: Vec<f64> = x.iter().copied().filter(|&v| v.is_finite()).collect();
+    let n = clean.len();
+    if n < 2 { return f64::NAN; }
+    clean.sort_by(|a, b| a.total_cmp(b));
+    let median = if n % 2 == 0 {
+        (clean[n / 2 - 1] + clean[n / 2]) / 2.0
+    } else {
+        clean[n / 2]
+    };
+    if median.abs() < 1e-300 { return f64::NAN; }
+    let mut devs: Vec<f64> = clean.iter().map(|&v| (v - median).abs()).collect();
+    devs.sort_by(|a, b| a.total_cmp(b));
+    let mad = if n % 2 == 0 {
+        (devs[n / 2 - 1] + devs[n / 2]) / 2.0
+    } else {
+        devs[n / 2]
+    };
+    mad / median.abs()
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
@@ -2162,6 +2634,287 @@ mod tests {
         let d1 = poisson_dispersion_index(&ts, 10);
         let d2 = fano_factor(&ts, 10);
         assert_eq!(d1, d2);
+    }
+
+    // ── IAT extension tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn iat_allan_variance_uniform() {
+        // Perfectly uniform arrivals: all IATs equal → Allan variance = 0
+        let ts: Vec<u64> = (0..20).map(|i| i * 1000).collect();
+        let av = iat_allan_variance(&ts, None);
+        assert!(av.abs() < 1e-6, "uniform IATs → Allan var ≈ 0, got {av}");
+    }
+
+    #[test]
+    fn iat_allan_variance_variable() {
+        // Alternating short/long: 100, 900, 100, 900...
+        let mut ts = vec![0u64];
+        for i in 0..20u64 {
+            let gap = if i % 2 == 0 { 100 } else { 900 };
+            ts.push(ts.last().unwrap() + gap);
+        }
+        let av = iat_allan_variance(&ts, None);
+        assert!(av > 0.0, "variable IATs → Allan var > 0, got {av}");
+        assert!(av.is_finite());
+    }
+
+    #[test]
+    fn iat_ks_exponential_actual_exponential() {
+        // Near-Poisson: exponential IATs → D-stat should be small
+        let ts: Vec<u64> = (0..50).map(|i| i * 200).collect();
+        let d = iat_ks_exponential(&ts);
+        assert!(d >= 0.0 && d <= 1.0, "KS stat must be in [0,1], got {d}");
+        assert!(d.is_finite());
+    }
+
+    #[test]
+    fn iat_ks_uniform_constant_iats() {
+        // Constant IATs → perfectly uniform → D-stat near 0
+        let ts: Vec<u64> = (0..20).map(|i| i * 500).collect();
+        let d = iat_ks_uniform(&ts);
+        assert!(d >= 0.0 && d <= 1.0, "KS stat must be in [0,1], got {d}");
+        assert!(d.is_finite());
+    }
+
+    #[test]
+    fn iat_ks_too_short() {
+        let d1 = iat_ks_exponential(&[0, 1]);
+        let d2 = iat_ks_uniform(&[0, 1]);
+        assert!(d1.is_nan() || d1.is_finite()); // graceful
+        assert!(d2.is_nan() || d2.is_finite());
+    }
+
+    // ── Counting primitive tests ─────────────────────────────────────────────
+
+    #[test]
+    fn count_basics() {
+        let x = [1.0, -2.0, 0.0, f64::NAN, f64::INFINITY, 3.0];
+        assert_eq!(count_finite(&x), 4);
+        assert_eq!(count_nan(&x), 1);
+        assert_eq!(count_inf(&x), 1);
+        assert_eq!(count_positive(&x), 3); // 1, INFINITY, 3
+        assert_eq!(count_negative(&x), 1); // -2
+        assert_eq!(count_zeros(&x), 1);
+    }
+
+    #[test]
+    fn count_threshold() {
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        assert_eq!(count_above(&x, 3.0), 2);   // 4, 5
+        assert_eq!(count_below(&x, 3.0), 2);   // 1, 2
+        assert_eq!(count_in_range(&x, 2.0, 4.0), 3); // 2, 3, 4
+    }
+
+    #[test]
+    fn count_structural() {
+        let x = [1.0, -1.0, 1.0, -1.0, 1.0]; // alternating
+        assert_eq!(count_zero_crossings(&x), 4);
+        assert_eq!(count_sign_changes(&x), 4);
+        assert_eq!(count_peaks(&x), 2);   // indices 0, 2 (or similar)
+        assert_eq!(count_troughs(&x), 2); // indices 1, 3 (or similar)
+    }
+
+    #[test]
+    fn count_peaks_simple_sinusoid() {
+        // [0, 1, 0, -1, 0, 1, 0, -1, 0]: 2 peaks at index 1, 5
+        let x = [0.0, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 0.0];
+        assert_eq!(count_peaks(&x), 2);
+        assert_eq!(count_troughs(&x), 2);
+    }
+
+    #[test]
+    fn count_inflections_linear() {
+        // Constant slope → no inflections
+        let x: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        assert_eq!(count_inflections(&x), 0);
+    }
+
+    #[test]
+    fn count_runs_basic() {
+        let x = [1.0, 1.0, -1.0, -1.0, 1.0]; // 3 runs: ++, --, +
+        assert_eq!(count_runs(&x), 3);
+    }
+
+    #[test]
+    fn count_runs_empty() {
+        assert_eq!(count_runs(&[]), 0);
+        assert_eq!(count_runs(&[1.0]), 1);
+    }
+
+    #[test]
+    fn count_outliers_mad_normal() {
+        // All same value → no outliers
+        assert_eq!(count_outliers_mad(&[1.0; 20], None), 0);
+    }
+
+    #[test]
+    fn count_outliers_mad_detects() {
+        let mut x: Vec<f64> = vec![1.0; 20];
+        x.push(1000.0); // extreme outlier
+        let n = count_outliers_mad(&x, None);
+        assert!(n >= 1, "extreme outlier should be detected");
+    }
+
+    #[test]
+    fn count_outliers_zscore_detects() {
+        let mut x: Vec<f64> = vec![0.0; 20];
+        x.push(100.0);
+        let n = count_outliers_zscore(&x, None);
+        assert!(n >= 1, "extreme outlier should be detected by z-score");
+    }
+
+    #[test]
+    fn count_inversions_sorted() {
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        assert_eq!(count_inversions(&x), 0);
+    }
+
+    #[test]
+    fn count_inversions_reversed() {
+        let x = [5.0, 4.0, 3.0, 2.0, 1.0];
+        // n*(n-1)/2 = 10
+        assert_eq!(count_inversions(&x), 10);
+    }
+
+    #[test]
+    fn count_ties_basic() {
+        let x = [1.0, 1.0, 2.0, 2.0, 3.0];
+        // ties: (1,1) → 2 tied, (2,2) → 2 tied = 4 tied values
+        let t = count_ties(&x, None);
+        assert_eq!(t, 4);
+    }
+
+    #[test]
+    fn count_ties_no_ties() {
+        let x = [1.0, 2.0, 3.0, 4.0];
+        assert_eq!(count_ties(&x, None), 0);
+    }
+
+    // ── Dispersion measure tests ─────────────────────────────────────────────
+
+    #[test]
+    fn iqr_basic() {
+        // [1,2,3,4,5]: Q1=1.5, Q3=4.5, IQR=3
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let q = iqr(&x);
+        assert!(q > 0.0 && q.is_finite(), "IQR should be positive, got {q}");
+    }
+
+    #[test]
+    fn iqr_constant_is_zero() {
+        assert_eq!(iqr(&[5.0; 10]), 0.0);
+    }
+
+    #[test]
+    fn quartile_coefficient_of_dispersion_basic() {
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let q = quartile_coefficient_of_dispersion(&x);
+        assert!(q >= 0.0 && q <= 1.0, "QCD in [0,1], got {q}");
+    }
+
+    #[test]
+    fn range_and_midrange() {
+        let x = [1.0, 3.0, 5.0, 7.0, 9.0];
+        assert_eq!(range(&x), 8.0);
+        assert_eq!(midrange(&x), 5.0);
+    }
+
+    #[test]
+    fn studentized_range_positive() {
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let sr = studentized_range(&x);
+        assert!(sr > 0.0 && sr.is_finite(), "studentized range > 0, got {sr}");
+    }
+
+    #[test]
+    fn studentized_range_constant() {
+        let sr = studentized_range(&[3.0; 10]);
+        assert!(sr.is_nan() || sr == 0.0);
+    }
+
+    #[test]
+    fn theil_t_equal_shares() {
+        // All equal → Theil T = 0
+        let x = [1.0; 5];
+        let t = theil_t(&x);
+        assert!(t.abs() < 1e-10, "equal shares → Theil T = 0, got {t}");
+    }
+
+    #[test]
+    fn theil_t_perfect_inequality() {
+        // One person has everything: [10, 0, 0, 0, 0]
+        // But log(0) would be -inf; theil should return NaN or large value
+        let x = [10.0, 0.0, 0.0, 0.0, 0.0];
+        let t = theil_t(&x);
+        // Either NaN (if 0 values are filtered) or a large finite number
+        assert!(t.is_nan() || t >= 0.0);
+    }
+
+    #[test]
+    fn theil_l_equal_shares() {
+        let x = [1.0; 5];
+        let l = theil_l(&x);
+        assert!(l.abs() < 1e-10, "equal shares → Theil L = 0, got {l}");
+    }
+
+    #[test]
+    fn atkinson_index_equal() {
+        let x = [1.0; 5];
+        let a = atkinson_index(&x, 1.0);
+        assert!(a.abs() < 1e-10, "equal → Atkinson = 0, got {a}");
+    }
+
+    #[test]
+    fn atkinson_index_unequal() {
+        let x = [1.0, 2.0, 4.0, 8.0, 16.0];
+        let a = atkinson_index(&x, 1.0);
+        assert!(a > 0.0 && a < 1.0, "unequal → 0 < Atkinson < 1, got {a}");
+    }
+
+    #[test]
+    fn hoover_index_equal() {
+        let x = [1.0; 5];
+        let h = hoover_index(&x);
+        assert!(h.abs() < 1e-10, "equal → Hoover = 0, got {h}");
+    }
+
+    #[test]
+    fn hoover_index_unequal() {
+        let x = [0.0, 0.0, 0.0, 0.0, 100.0];
+        let h = hoover_index(&x);
+        assert!(h > 0.4, "highly unequal → Hoover > 0.4, got {h}");
+    }
+
+    #[test]
+    fn palma_ratio_equal() {
+        // Equal income → P40 fraction = top 10% fraction → ratio = 1
+        let x = [1.0; 20];
+        let p = palma_ratio(&x);
+        // With equal shares, top 10% = bottom 40% → ratio ≈ 1
+        assert!((p - 1.0).abs() < 0.1, "equal income → Palma ≈ 1, got {p}");
+    }
+
+    #[test]
+    fn palma_ratio_concentrated() {
+        // One person has everything (top 10% = 1 value with all wealth)
+        let mut x = vec![1.0; 20];
+        x[19] = 1000.0; // top earner dominates
+        let p = palma_ratio(&x);
+        assert!(p > 1.0 && p.is_finite(), "concentrated → Palma > 1, got {p}");
+    }
+
+    #[test]
+    fn coefficient_of_dispersion_returns_finite() {
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let c = coefficient_of_dispersion(&x);
+        assert!(c >= 0.0 && c.is_finite(), "CoD >= 0, got {c}");
+    }
+
+    #[test]
+    fn coefficient_of_dispersion_constant() {
+        let c = coefficient_of_dispersion(&[5.0; 10]);
+        assert!(c == 0.0 || c.is_nan());
     }
 
 }

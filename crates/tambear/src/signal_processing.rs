@@ -1528,3 +1528,149 @@ mod tests {
         assert_eq!(frames[0].len(), 33);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Path Signature (Chen, 1954) — level 1 and level 2 terms
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The signature of a path X: [0,T] → ℝ^d is the collection of all iterated
+// integrals. For a 2D path (x_t, y_t):
+//
+//   Level 1 (increments): S^x = ∫ dX = x_T - x_0
+//                          S^y = ∫ dY = y_T - y_0
+//
+//   Level 2 (Lévy area):  S^xy = ∫∫_{s<t} dX_s dY_t  (iterated integral)
+//                          S^yx = ∫∫_{s<t} dY_s dX_t
+//                          S^xx = ∫∫_{s<t} dX_s dX_t  = (S^x)^2 / 2
+//                          S^yy = ∫∫_{s<t} dY_s dY_t  = (S^y)^2 / 2
+//
+// The Lévy area A = (S^xy - S^yx) / 2 captures the signed area enclosed by
+// the path. It is invariant to time reparameterisation and captures non-linear
+// path shape that the first-order signature misses.
+//
+// Used by fintek's `tick_geometry.rs` leaf for 2D convex-hull signature and
+// by roughness measures in `log_signature.rs`.
+
+/// Level-1 and level-2 path signature for a 2D path.
+///
+/// The path is given as two equal-length slices `xs` and `ys`.
+///
+/// # Returns
+/// `(s1_x, s1_y, s2_xx, s2_xy, s2_yx, s2_yy, levy_area)`
+///
+/// where:
+/// - `s1_x = x_T − x_0`, `s1_y = y_T − y_0` (level-1)
+/// - `s2_xx = (s1_x)²/2`, `s2_yy = (s1_y)²/2` (Chen identity)
+/// - `s2_xy = Σ (cumX_i − cumX_0) · ΔY_i` (discrete iterated integral)
+/// - `s2_yx = Σ (cumY_i − cumY_0) · ΔX_i`
+/// - `levy_area = (s2_xy − s2_yx) / 2`
+pub fn path_signature_2d(xs: &[f64], ys: &[f64]) -> (f64, f64, f64, f64, f64, f64, f64) {
+    assert_eq!(xs.len(), ys.len(), "xs and ys must have equal length");
+    let n = xs.len();
+    if n < 2 {
+        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    }
+
+    // Level-1
+    let s1_x = xs[n - 1] - xs[0];
+    let s1_y = ys[n - 1] - ys[0];
+
+    // Level-2 iterated integrals via discrete approximation.
+    // S^xy = Σ_i X_{i-1} · (Y_i - Y_{i-1})  where X_{i-1} is relative to X_0
+    // Using left-point evaluation (consistent with Itô convention).
+    let mut s2_xy = 0.0_f64;
+    let mut s2_yx = 0.0_f64;
+    for i in 1..n {
+        let dx = xs[i] - xs[i - 1];
+        let dy = ys[i] - ys[i - 1];
+        let cum_x = xs[i - 1] - xs[0]; // X_{i-1} relative to start
+        let cum_y = ys[i - 1] - ys[0]; // Y_{i-1} relative to start
+        s2_xy += cum_x * dy;
+        s2_yx += cum_y * dx;
+    }
+
+    // Chen identity for diagonal terms: S^xx = (S^x)^2 / 2
+    let s2_xx = s1_x * s1_x / 2.0;
+    let s2_yy = s1_y * s1_y / 2.0;
+
+    let levy_area = (s2_xy - s2_yx) / 2.0;
+
+    (s1_x, s1_y, s2_xx, s2_xy, s2_yx, s2_yy, levy_area)
+}
+
+/// Log-signature: the logarithm of the signature in the free Lie algebra.
+///
+/// For level 1 and 2, the log-signature has basis {e_x, e_y, [e_x, e_y]}:
+///
+///   log-sig = (s1_x, s1_y, levy_area)
+///
+/// The Lévy area is the only level-2 log-signature term because
+/// log[e_x, e_x] = 0 and log[e_y, e_y] = 0.
+///
+/// Returns `(log_s1_x, log_s1_y, log_levy)` which equals
+/// `(s1_x, s1_y, levy_area)` at levels 1-2 (the BCH correction only
+/// appears at level 3 and above).
+pub fn log_signature_2d(xs: &[f64], ys: &[f64]) -> (f64, f64, f64) {
+    let (s1_x, s1_y, _, _, _, _, levy_area) = path_signature_2d(xs, ys);
+    (s1_x, s1_y, levy_area)
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::*;
+
+    #[test]
+    fn signature_straight_line() {
+        // Path: (0,0) → (1,0) — pure x movement, no area
+        let xs = vec![0.0, 0.5, 1.0];
+        let ys = vec![0.0, 0.0, 0.0];
+        let (s1x, s1y, s2xx, s2xy, s2yx, s2yy, levy) = path_signature_2d(&xs, &ys);
+        assert!((s1x - 1.0).abs() < 1e-12);
+        assert!(s1y.abs() < 1e-12);
+        assert!((s2xx - 0.5).abs() < 1e-12, "S^xx = (1)^2/2 = 0.5, got {}", s2xx);
+        assert!(s2xy.abs() < 1e-12);
+        assert!(s2yx.abs() < 1e-12);
+        assert!(s2yy.abs() < 1e-12);
+        assert!(levy.abs() < 1e-12);
+    }
+
+    #[test]
+    fn signature_unit_square_positive_area() {
+        // CCW unit square: (0,0)→(1,0)→(1,1)→(0,1)→(0,0)
+        // Lévy area = (S^xy - S^yx)/2 = (∫x dy - ∫y dx)/2 = area = 1.0 for unit square.
+        // (Both ∫x dy and ∫y dx contribute; the signed area via Green's theorem is 1.)
+        let xs = vec![0.0, 1.0, 1.0, 0.0, 0.0];
+        let ys = vec![0.0, 0.0, 1.0, 1.0, 0.0];
+        let (_, _, _, _, _, _, levy) = path_signature_2d(&xs, &ys);
+        assert!(levy > 0.0, "CCW unit square Lévy area must be positive, got {}", levy);
+        assert!((levy - 1.0).abs() < 1e-10, "levy_area for CCW unit square = 1.0, got {}", levy);
+    }
+
+    #[test]
+    fn signature_cw_negative_area() {
+        // CW unit square: (0,0)→(0,1)→(1,1)→(1,0)→(0,0) — opposite sign to CCW
+        let xs = vec![0.0, 0.0, 1.0, 1.0, 0.0];
+        let ys = vec![0.0, 1.0, 1.0, 0.0, 0.0];
+        let (_, _, _, _, _, _, levy) = path_signature_2d(&xs, &ys);
+        assert!(levy < 0.0, "CW unit square Lévy area must be negative, got {}", levy);
+        assert!((levy + 1.0).abs() < 1e-10, "CW: levy = -1.0, got {}", levy);
+    }
+
+    #[test]
+    fn log_signature_matches() {
+        let xs = vec![0.0, 1.0, 2.0];
+        let ys = vec![0.0, 1.0, 0.0];
+        let (ls1, ls2, ll) = log_signature_2d(&xs, &ys);
+        let (s1x, s1y, _, _, _, _, levy) = path_signature_2d(&xs, &ys);
+        assert!((ls1 - s1x).abs() < 1e-12);
+        assert!((ls2 - s1y).abs() < 1e-12);
+        assert!((ll - levy).abs() < 1e-12);
+    }
+
+    #[test]
+    fn signature_single_point() {
+        let (s1x, s1y, s2xx, s2xy, s2yx, s2yy, levy) = path_signature_2d(&[1.0], &[1.0]);
+        assert!(s1x == 0.0 && s1y == 0.0);
+        assert!(s2xx == 0.0 && s2xy == 0.0 && s2yx == 0.0 && s2yy == 0.0 && levy == 0.0);
+    }
+}

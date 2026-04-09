@@ -115,6 +115,7 @@ pub use information_theory::{
     conditional_entropy, probabilities,
     mutual_info_score, normalized_mutual_info_score, adjusted_mutual_info_score,
     entropy_histogram,
+    mutual_info_miller_madow, fisher_information_histogram,
 };
 pub use descriptive::{
     DescriptiveEngine, DescriptiveResult, MomentStats, GroupedMomentStats,
@@ -168,6 +169,9 @@ pub use nonparametric::{
     kde, kde_fft, silverman_bandwidth, KernelType,
     runs_test, runs_test_numeric, sign_test,
     level_spacing_r_stat,
+    GutenbergRichterResult, gutenberg_richter_fit,
+    OmoriResult, omori_fit,
+    BathResult, bath_law,
 };
 pub use complexity::{
     sample_entropy, approx_entropy, permutation_entropy, normalized_permutation_entropy,
@@ -234,6 +238,7 @@ pub mod survival;
 pub mod mixture;
 pub mod bayesian;
 pub mod time_series;
+pub use time_series::{StlResult, stl_decompose};
 pub mod volatility;
 pub mod factor_analysis;
 pub mod irt;
@@ -353,6 +358,7 @@ pub use spatial::{
     KrigingResult, ordinary_kriging,
     SpatialWeights, morans_i, gearys_c,
     ripleys_k, ripleys_l, nn_distances, clark_evans_r,
+    convex_hull_2d, polygon_area, polygon_perimeter,
 };
 pub use interpolation::{
     lagrange, newton_divided_diff, newton_eval, neville, lerp, nearest,
@@ -381,6 +387,7 @@ pub use signal_processing::{
     db4_dwt, db4_idwt,
     goertzel, goertzel_mag,
     zero_crossing_rate, median_filter,
+    path_signature_2d, log_signature_2d,
 };
 pub use pipeline::{TamFrame, TamPipeline, ClusterSpec, ClusterView, ColumnDescribe, DescribeResult, DiscoveryResult};
 pub use manifold::{Manifold, ManifoldMixture, ManifoldDistanceOp};

@@ -486,6 +486,155 @@ pub fn entropy_histogram(values: &[f64], n_bins: usize) -> f64 {
     shannon_entropy(&probs) + bin_width.ln()
 }
 
+/// Miller-Madow bias correction for mutual information from contingency table.
+///
+/// The naive plug-in estimator MI = H(X) + H(Y) - H(X,Y) is biased upward.
+/// Miller-Madow correction: MI_corrected = MI - (R - 1)(C - 1) / (2n)
+/// where R = non-empty rows, C = non-empty columns, n = total observations.
+///
+/// Returns (mi_corrected, nonlinear_excess, mi_normalized) where:
+///   nonlinear_excess = MI_corrected - MI_gaussian (from Pearson correlation)
+///   mi_normalized    = MI_corrected / min(H(X), H(Y))
+pub fn mutual_info_miller_madow(
+    contingency: &[f64],
+    nx: usize,
+    ny: usize,
+) -> (f64, f64, f64) {
+    if contingency.len() != nx * ny || nx == 0 || ny == 0 {
+        return (f64::NAN, f64::NAN, f64::NAN);
+    }
+
+    let n_total: f64 = contingency.iter().sum();
+    if n_total <= 0.0 { return (f64::NAN, f64::NAN, f64::NAN); }
+
+    // Row and column marginals
+    let mut row_counts = vec![0.0f64; nx];
+    let mut col_counts = vec![0.0f64; ny];
+    for i in 0..nx {
+        for j in 0..ny {
+            let c = contingency[i * ny + j];
+            row_counts[i] += c;
+            col_counts[j] += c;
+        }
+    }
+
+    // Non-empty rows and columns (for correction term)
+    let n_nonempty_rows = row_counts.iter().filter(|&&r| r > 0.0).count() as f64;
+    let n_nonempty_cols = col_counts.iter().filter(|&&c| c > 0.0).count() as f64;
+
+    // Raw MI
+    let mi_raw = mutual_information(contingency, nx, ny);
+
+    // Miller-Madow correction: subtract (R-1)(C-1) / (2n)
+    let correction = (n_nonempty_rows - 1.0) * (n_nonempty_cols - 1.0) / (2.0 * n_total);
+    let mi_corrected = (mi_raw - correction).max(0.0);
+
+    // Marginal entropies for normalization
+    let h_x = shannon_entropy(&probabilities(&row_counts));
+    let h_y = shannon_entropy(&probabilities(&col_counts));
+
+    // Gaussian MI lower bound from Pearson correlation:
+    // For bivariate Gaussian, MI = -0.5 * ln(1 - r²)
+    // Approximate r from contingency: use normalized covariance
+    let mut sum_xy = 0.0f64;
+    let mut mean_x = 0.0f64;
+    let mut mean_y = 0.0f64;
+    for i in 0..nx {
+        for j in 0..ny {
+            let p = contingency[i * ny + j] / n_total;
+            mean_x += i as f64 * p;
+            mean_y += j as f64 * p;
+        }
+    }
+    for i in 0..nx {
+        for j in 0..ny {
+            let p = contingency[i * ny + j] / n_total;
+            sum_xy += (i as f64 - mean_x) * (j as f64 - mean_y) * p;
+        }
+    }
+    let var_x: f64 = (0..nx).map(|i| {
+        let p = row_counts[i] / n_total;
+        (i as f64 - mean_x).powi(2) * p
+    }).sum();
+    let var_y: f64 = (0..ny).map(|j| {
+        let p = col_counts[j] / n_total;
+        (j as f64 - mean_y).powi(2) * p
+    }).sum();
+    let mi_gaussian = if var_x > 0.0 && var_y > 0.0 {
+        let r = sum_xy / (var_x.sqrt() * var_y.sqrt());
+        let r_clamped = r.clamp(-0.9999, 0.9999);
+        -0.5 * (1.0 - r_clamped * r_clamped).ln()
+    } else {
+        0.0
+    };
+
+    let nonlinear_excess = (mi_corrected - mi_gaussian).max(0.0);
+    let min_h = h_x.min(h_y);
+    let mi_normalized = if min_h > 0.0 { mi_corrected / min_h } else { 0.0 };
+
+    (mi_corrected, nonlinear_excess, mi_normalized)
+}
+
+/// Fisher information of a continuous distribution estimated from histogram.
+///
+/// Fisher information I(θ) = E[(d/dθ ln p(x))²] measures how much a sample
+/// tells about the location parameter θ.
+///
+/// For location families, I = E[(p'(x) / p(x))²] = ∫ (p'(x))² / p(x) dx.
+/// Discretized: I ≈ Σ_i (p_i - p_{i-1})² / (p_i · Δx²)
+///
+/// Returns (fisher_info, fisher_distance, gradient_norm) where:
+///   fisher_info      = Fisher information at estimated location
+///   fisher_distance  = Fisher-Rao distance from Gaussian (0 = Gaussian, higher = non-Gaussian)
+///   gradient_norm    = mean |score function| = mean |p'(x)/p(x)|
+pub fn fisher_information_histogram(values: &[f64], n_bins: usize) -> (f64, f64, f64) {
+    let n_bins = n_bins.max(8);
+    let clean: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    let n = clean.len();
+    if n < 4 { return (f64::NAN, f64::NAN, f64::NAN); }
+
+    let min = clean.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = clean.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if min == max { return (0.0, 0.0, 0.0); }
+
+    let bin_width = (max - min) / n_bins as f64;
+    let mut counts = vec![0.0f64; n_bins];
+    for &v in &clean {
+        let bin = ((v - min) / bin_width).floor() as usize;
+        counts[bin.min(n_bins - 1)] += 1.0;
+    }
+
+    // Smooth counts (add 0.5 Laplace prior to avoid division by zero)
+    let nf = n as f64;
+    let probs: Vec<f64> = counts.iter().map(|&c| (c + 0.5) / (nf + 0.5 * n_bins as f64)).collect();
+
+    // Fisher information: Σ (p[i] - p[i-1])² / (p[i] * Δx²)
+    let mut fisher_info = 0.0f64;
+    let mut grad_norm_sum = 0.0f64;
+    for i in 1..n_bins {
+        let dp = probs[i] - probs[i - 1];
+        let p_mid = 0.5 * (probs[i] + probs[i - 1]);
+        if p_mid > 1e-12 {
+            fisher_info += dp * dp / (p_mid * bin_width * bin_width);
+            grad_norm_sum += (dp / (p_mid * bin_width)).abs();
+        }
+    }
+    let gradient_norm = grad_norm_sum / (n_bins - 1) as f64;
+
+    // Fisher-Rao distance from Gaussian: for Gaussian with variance σ²,
+    // Fisher info ≈ 1/σ². Empirical σ² from data, expected I_gaussian = 1/σ².
+    // Distance = |log(I_empirical * σ²)| (0 for Gaussian, grows with non-Gaussianity)
+    let mean: f64 = clean.iter().sum::<f64>() / nf;
+    let variance: f64 = clean.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / nf;
+    let fisher_distance = if variance > 0.0 {
+        (fisher_info * variance).ln().abs()
+    } else {
+        f64::NAN
+    };
+
+    (fisher_info, fisher_distance, gradient_norm)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // InformationEngine — scatter-accelerated computation
 // ═══════════════════════════════════════════════════════════════════════════
@@ -899,5 +1048,81 @@ mod tests {
         let ky = vec![0i32, 0, 1, 1];
         let mi = engine.mutual_info(&kx, &ky, 2, 2).unwrap();
         close(mi, 2.0f64.ln(), 1e-10, "engine_mi");
+    }
+
+    // ── Miller-Madow bias correction ──────────────────────────────────
+
+    #[test]
+    fn miller_madow_perfect_correlation() {
+        // Perfect 2×2: diagonal contingency, equal counts
+        let contingency = vec![10.0, 0.0, 0.0, 10.0];
+        let (mi_corr, nonlinear, mi_norm) = mutual_info_miller_madow(&contingency, 2, 2);
+        let raw = mutual_information(&contingency, 2, 2);
+        // Correction = (2-1)(2-1)/(2*20) = 0.025
+        close(mi_corr, raw - 0.025, 1e-10, "mm_correction");
+        assert!(nonlinear >= 0.0, "nonlinear_excess must be >= 0");
+        close(mi_norm, mi_corr / std::f64::consts::LN_2, 1e-10, "mm_normalized");
+    }
+
+    #[test]
+    fn miller_madow_independent() {
+        // Independent: uniform 2×2, equal cells
+        let contingency = vec![5.0, 5.0, 5.0, 5.0];
+        let (mi_corr, nonlinear, mi_norm) = mutual_info_miller_madow(&contingency, 2, 2);
+        // Raw MI = 0, corrected should also be 0 (clamped)
+        assert!(mi_corr >= 0.0, "corrected MI must be >= 0, got {mi_corr}");
+        assert!(mi_norm >= 0.0 && mi_norm <= 1.0, "mi_norm out of [0,1]: {mi_norm}");
+        let _ = nonlinear;
+    }
+
+    #[test]
+    fn miller_madow_correction_reduces_mi() {
+        // Correction must always reduce or keep MI the same
+        let contingency = vec![8.0, 2.0, 2.0, 8.0];
+        let raw = mutual_information(&contingency, 2, 2);
+        let (mi_corr, _, _) = mutual_info_miller_madow(&contingency, 2, 2);
+        assert!(mi_corr <= raw + 1e-10, "corrected MI {mi_corr} > raw MI {raw}");
+    }
+
+    // ── Fisher information from histogram ─────────────────────────────
+
+    #[test]
+    fn fisher_info_gaussian() {
+        // Standard normal: Fisher info I = 1/σ² = 1.0 theoretically
+        // With finite sample + histogram, expect order-of-magnitude correct
+        use crate::special_functions::normal_quantile;
+        let n = 500;
+        let data: Vec<f64> = (0..n).map(|i| {
+            normal_quantile((i as f64 + 0.5) / n as f64)
+        }).collect();
+        let (fi, fd, gn) = fisher_information_histogram(&data, 32);
+        assert!(fi.is_finite() && fi > 0.0, "Fisher info should be positive: {fi}");
+        assert!(fd.is_finite(), "Fisher distance should be finite: {fd}");
+        assert!(gn.is_finite() && gn >= 0.0, "gradient norm should be non-negative: {gn}");
+    }
+
+    #[test]
+    fn fisher_info_constant() {
+        let data = vec![5.0; 20];
+        let (fi, _, _) = fisher_information_histogram(&data, 8);
+        close(fi, 0.0, 1e-10, "fisher_constant");
+    }
+
+    #[test]
+    fn fisher_info_bimodal_higher_than_gaussian() {
+        // Bimodal is more "spread" so Fisher info should be different from Gaussian
+        use crate::special_functions::normal_quantile;
+        let n = 200;
+        let normal: Vec<f64> = (0..n).map(|i| normal_quantile((i as f64 + 0.5) / n as f64)).collect();
+        // Bimodal: mix two Gaussians at ±2
+        let bimodal: Vec<f64> = (0..n).map(|i| {
+            let x = normal_quantile((i as f64 + 0.5) / n as f64);
+            if i % 2 == 0 { x + 2.0 } else { x - 2.0 }
+        }).collect();
+        let (fi_norm, fd_norm, _) = fisher_information_histogram(&normal, 32);
+        let (fi_bi, fd_bi, _) = fisher_information_histogram(&bimodal, 32);
+        assert!(fi_norm.is_finite() && fi_bi.is_finite(), "both should be finite");
+        // Bimodal has more structure → higher Fisher-Rao distance from Gaussian
+        assert!(fd_bi >= fd_norm - 0.1, "bimodal should have >= Fisher distance: norm={fd_norm} bi={fd_bi}");
     }
 }

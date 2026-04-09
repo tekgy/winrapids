@@ -2724,3 +2724,297 @@ mod tests {
         assert!(r2.statistic.is_finite());
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Seismic / Extreme-value laws
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Three classic empirical laws used in seismology and point-process analysis:
+//
+//   Gutenberg-Richter: log₁₀(N ≥ M) = a − b·M   (frequency-magnitude relation)
+//   Omori-Utsu:        λ(t) = K / (t + c)^p       (aftershock decay rate)
+//   Bath's law:        ΔM ≈ 1.2                   (mainshock–largest-aftershock gap)
+//
+// Although named after earthquakes these appear in financial markets (power-law
+// tail counts, aftershock-like volatility clustering, cascade decay).
+
+/// Gutenberg-Richter fit result.
+///
+/// Model: `log10(N(≥ M)) = a − b · M`
+///
+/// `b` is estimated by maximum-likelihood (Aki 1965):
+///     b = log10(e) / (M_mean − M_min)
+/// `a` is computed from the total count N.
+#[derive(Debug, Clone, Copy)]
+pub struct GutenbergRichterResult {
+    /// b-value: slope of the frequency-magnitude relation (>0; typical range 0.5–2).
+    pub b_value: f64,
+    /// a-value: log10 of the total number of events above M_min.
+    pub a_value: f64,
+    /// Sample mean magnitude.
+    pub mean_magnitude: f64,
+    /// M_min used for estimation.
+    pub m_min: f64,
+    /// Number of events with M ≥ m_min.
+    pub n_events: usize,
+}
+
+impl GutenbergRichterResult {
+    pub fn nan() -> Self {
+        Self {
+            b_value: f64::NAN,
+            a_value: f64::NAN,
+            mean_magnitude: f64::NAN,
+            m_min: f64::NAN,
+            n_events: 0,
+        }
+    }
+
+    /// Expected log10 count of events ≥ m.
+    pub fn log10_count(&self, m: f64) -> f64 {
+        self.a_value - self.b_value * m
+    }
+}
+
+/// Fit a Gutenberg-Richter b-value via Aki (1965) MLE.
+///
+/// `magnitudes`: slice of observed magnitudes (any ordering).
+/// `m_min`: minimum magnitude threshold; events below are discarded.
+///
+/// Returns `GutenbergRichterResult::nan()` when < 2 events survive the threshold.
+pub fn gutenberg_richter_fit(magnitudes: &[f64], m_min: f64) -> GutenbergRichterResult {
+    let above: Vec<f64> = magnitudes.iter().copied().filter(|&m| m >= m_min).collect();
+    let n = above.len();
+    if n < 2 {
+        return GutenbergRichterResult::nan();
+    }
+    let mean_m = above.iter().sum::<f64>() / n as f64;
+    // Aki 1965: b = log10(e) / (M_mean − M_min)
+    let denom = mean_m - m_min;
+    if denom <= 0.0 {
+        return GutenbergRichterResult::nan();
+    }
+    let b_value = std::f64::consts::LOG10_E / denom;
+    let a_value = (n as f64).log10() + b_value * m_min;
+    GutenbergRichterResult { b_value, a_value, mean_magnitude: mean_m, m_min, n_events: n }
+}
+
+/// Omori-Utsu aftershock decay fit result.
+///
+/// Model: `λ(t) = K / (t + c)^p`  (rate at time t after mainshock)
+///
+/// Parameters estimated by grid-search MLE over `p ∈ [0.5, 2.0]` with
+/// K and c analytically profiled for each p (Ogata 1983).
+#[derive(Debug, Clone, Copy)]
+pub struct OmoriResult {
+    /// Productivity constant K (events per unit time at t=0 when c=0).
+    pub k: f64,
+    /// Time offset c (prevents divergence at t=0; seconds or days).
+    pub c: f64,
+    /// Decay exponent p (typically 0.8–1.5; 1.0 = pure 1/t Omori).
+    pub p: f64,
+    /// Log-likelihood at the fitted parameters.
+    pub log_likelihood: f64,
+}
+
+impl OmoriResult {
+    pub fn nan() -> Self {
+        Self { k: f64::NAN, c: f64::NAN, p: f64::NAN, log_likelihood: f64::NEG_INFINITY }
+    }
+
+    /// Expected cumulative count from t=0 to t=T under fitted model.
+    pub fn cumulative_count(&self, t_end: f64) -> f64 {
+        if (self.p - 1.0).abs() < 1e-6 {
+            // p = 1 case: ∫ K/(t+c) dt = K·ln((T+c)/c)
+            self.k * ((t_end + self.c) / self.c).ln()
+        } else {
+            // General: K·[(T+c)^(1-p) − c^(1-p)] / (1-p)
+            self.k * ((t_end + self.c).powf(1.0 - self.p) - self.c.powf(1.0 - self.p))
+                / (1.0 - self.p)
+        }
+    }
+}
+
+/// Fit Omori-Utsu parameters to aftershock times.
+///
+/// `times`: times since mainshock (must be > 0; any positive unit).
+/// `t_end`: end of observation window.
+///
+/// Uses grid search over `p` ∈ {0.5, 0.6, …, 2.0} with 0.1 step.
+/// For each `p`, K is set analytically: `K = n / Σ 1/(tᵢ+c)^p` with `c = 0.01 * median(times)`.
+///
+/// Returns `OmoriResult::nan()` when < 2 events are provided.
+pub fn omori_fit(times: &[f64], t_end: f64) -> OmoriResult {
+    let n = times.len();
+    if n < 2 {
+        return OmoriResult::nan();
+    }
+    let mut sorted = times.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median_t = sorted[n / 2];
+    let c = (0.01 * median_t).max(1e-9);
+
+    let mut best = OmoriResult::nan();
+
+    // Grid search over p
+    let mut p = 0.5_f64;
+    while p <= 2.0 + 1e-9 {
+        // Analytical K given p and c: MLE gives K = n / ∫₀^{T}(t+c)^{-p} dt
+        let integral = if (p - 1.0).abs() < 1e-6 {
+            (t_end + c).ln() - c.ln()
+        } else {
+            ((t_end + c).powf(1.0 - p) - c.powf(1.0 - p)) / (1.0 - p)
+        };
+        if integral <= 0.0 { p += 0.1; continue; }
+        let k = n as f64 / integral;
+
+        // Log-likelihood: Σ log(K/(tᵢ+c)^p) − K·∫₀^T (t+c)^{-p} dt
+        //               = n·log(K) − p·Σ log(tᵢ+c) − K·integral
+        let ll: f64 = n as f64 * k.ln()
+            - p * times.iter().map(|&t| (t + c).ln()).sum::<f64>()
+            - k * integral;
+
+        if ll > best.log_likelihood {
+            best = OmoriResult { k, c, p, log_likelihood: ll };
+        }
+        p += 0.1;
+    }
+    best
+}
+
+/// Bath's law result.
+///
+/// Bath (1965) observed that the largest aftershock is typically ~1.2 magnitude
+/// units below the mainshock, regardless of mainshock magnitude.
+///
+/// This struct reports the empirical gap and flags whether the observation
+/// is consistent with the Bath constant (|gap − 1.2| < 0.3).
+#[derive(Debug, Clone, Copy)]
+pub struct BathResult {
+    /// Mainshock magnitude.
+    pub mainshock_magnitude: f64,
+    /// Largest aftershock magnitude found (NAN if no aftershocks).
+    pub largest_aftershock: f64,
+    /// Empirical ΔM = M_mainshock − M_largest_aftershock.
+    pub delta_m: f64,
+    /// True when |delta_m − 1.2| < 0.3 (consistent with Bath's constant).
+    pub bath_consistent: bool,
+}
+
+/// Compute Bath's law for a set of aftershock magnitudes.
+///
+/// `mainshock_magnitude`: magnitude of the mainshock event.
+/// `aftershock_magnitudes`: magnitudes of all detected aftershocks.
+///
+/// Returns a `BathResult` with `NAN` fields when no aftershocks are provided.
+pub fn bath_law(mainshock_magnitude: f64, aftershock_magnitudes: &[f64]) -> BathResult {
+    if aftershock_magnitudes.is_empty() {
+        return BathResult {
+            mainshock_magnitude,
+            largest_aftershock: f64::NAN,
+            delta_m: f64::NAN,
+            bath_consistent: false,
+        };
+    }
+    let largest = aftershock_magnitudes
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let delta_m = mainshock_magnitude - largest;
+    BathResult {
+        mainshock_magnitude,
+        largest_aftershock: largest,
+        delta_m,
+        bath_consistent: (delta_m - 1.2).abs() < 0.3,
+    }
+}
+
+#[cfg(test)]
+mod seismic_tests {
+    use super::*;
+
+    #[test]
+    fn gr_typical_b_value() {
+        // Synthetic catalog: magnitudes from exponential distribution with b≈1.0
+        // M = M_min − ln(U) / (b · ln(10))  where U~Uniform(0,1)
+        let b_true = 1.0_f64;
+        let m_min = 2.0_f64;
+        use crate::rng::TamRng;
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let mags: Vec<f64> = (0..1000)
+            .map(|_| {
+                let u: f64 = rng.next_f64().max(1e-15);
+                m_min - u.ln() / (b_true * std::f64::consts::LN_10)
+            })
+            .collect();
+        let r = gutenberg_richter_fit(&mags, m_min);
+        assert!(r.b_value.is_finite());
+        assert!((r.b_value - b_true).abs() < 0.2,
+            "b_value={:.3}, expected ~{:.1}", r.b_value, b_true);
+        assert!(r.a_value > 0.0);
+    }
+
+    #[test]
+    fn gr_too_few_events() {
+        let r = gutenberg_richter_fit(&[3.0], 2.0);
+        assert!(r.b_value.is_nan());
+    }
+
+    #[test]
+    fn gr_all_below_m_min() {
+        let r = gutenberg_richter_fit(&[1.0, 1.5, 1.8], 2.0);
+        assert!(r.b_value.is_nan());
+    }
+
+    #[test]
+    fn gr_log10_count_decreases() {
+        let mags: Vec<f64> = (0..200).map(|i| 2.0 + i as f64 * 0.01).collect();
+        let r = gutenberg_richter_fit(&mags, 2.0);
+        assert!(r.log10_count(3.0) < r.log10_count(2.0),
+            "higher M should have fewer events");
+    }
+
+    #[test]
+    fn omori_returns_finite() {
+        // Synthetic aftershock times roughly following 1/t
+        let times: Vec<f64> = (1..=50).map(|i| i as f64 * 0.1).collect();
+        let r = omori_fit(&times, 10.0);
+        assert!(r.k.is_finite() && r.c.is_finite() && r.p.is_finite());
+        assert!(r.p >= 0.5 && r.p <= 2.0);
+    }
+
+    #[test]
+    fn omori_cumulative_monotone() {
+        let times: Vec<f64> = (1..=30).map(|i| i as f64 * 0.2).collect();
+        let r = omori_fit(&times, 10.0);
+        assert!(r.cumulative_count(5.0) < r.cumulative_count(10.0));
+    }
+
+    #[test]
+    fn omori_too_few_events() {
+        let r = omori_fit(&[0.5], 10.0);
+        assert!(r.k.is_nan());
+    }
+
+    #[test]
+    fn bath_consistent() {
+        // ΔM = 1.2 → consistent
+        let r = bath_law(7.0, &[5.8, 5.5, 4.0]);
+        assert!((r.delta_m - 1.2).abs() < 1e-9);
+        assert!(r.bath_consistent);
+    }
+
+    #[test]
+    fn bath_inconsistent() {
+        // ΔM = 3.0 → not consistent
+        let r = bath_law(7.0, &[4.0, 3.5]);
+        assert!(!r.bath_consistent);
+    }
+
+    #[test]
+    fn bath_no_aftershocks() {
+        let r = bath_law(6.5, &[]);
+        assert!(r.largest_aftershock.is_nan());
+        assert!(r.delta_m.is_nan());
+    }
+}

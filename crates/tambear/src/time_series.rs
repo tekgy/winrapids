@@ -928,3 +928,217 @@ mod tests {
             r.statistic, r.critical_5pct);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STL-like Seasonal-Trend Decomposition
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Cleveland et al. (1990) STL (Seasonal-Trend decomposition using Loess)
+// decomposes a time series Y = T + S + R where:
+//   T = trend component
+//   S = seasonal component (periodic with given period)
+//   R = remainder Y - T - S
+//
+// Full STL iterates inner and outer loops. This implements a simplified
+// single-pass version sufficient for the fintek leaf:
+//
+//   1. Compute moving-average trend (window = period, centered)
+//   2. Detrend: Y - T
+//   3. Seasonal component: for each position within cycle, average the
+//      detrended values at that phase across all cycles
+//   4. Remainder: Y - T - S
+//
+// This is the "X-11 inner loop" approximation used when n_iter=1.
+
+/// Decomposed time series result.
+#[derive(Debug, Clone)]
+pub struct StlResult {
+    /// Trend component (moving average; NaN at boundaries).
+    pub trend: Vec<f64>,
+    /// Seasonal component (periodic with length = input series).
+    pub seasonal: Vec<f64>,
+    /// Remainder = observed − trend − seasonal.
+    pub remainder: Vec<f64>,
+    /// Seasonal period used.
+    pub period: usize,
+}
+
+impl StlResult {
+    /// Reconstructs the series: trend + seasonal + remainder.
+    ///
+    /// At boundary positions where trend is NaN, the trend term is treated as 0
+    /// (remainder absorbs the full observed value at those positions).
+    pub fn reconstruct(&self) -> Vec<f64> {
+        (0..self.trend.len())
+            .map(|i| {
+                let t = if self.trend[i].is_finite() { self.trend[i] } else { 0.0 };
+                t + self.seasonal[i] + self.remainder[i]
+            })
+            .collect()
+    }
+
+    /// Seasonal strength: Var(S) / (Var(S) + Var(R)) per Cleveland 1990.
+    pub fn seasonal_strength(&self) -> f64 {
+        let var_s = variance_of(&self.seasonal);
+        let var_r = variance_of(&self.remainder);
+        if var_s + var_r < 1e-30 { return 0.0; }
+        (1.0 - var_r / (var_s + var_r)).max(0.0)
+    }
+
+    /// Trend strength: Var(T) / (Var(T) + Var(R)).
+    pub fn trend_strength(&self) -> f64 {
+        let var_t = variance_of(&self.trend);
+        let var_r = variance_of(&self.remainder);
+        if var_t + var_r < 1e-30 { return 0.0; }
+        (1.0 - var_r / (var_t + var_r)).max(0.0)
+    }
+}
+
+fn variance_of(v: &[f64]) -> f64 {
+    let valid: Vec<f64> = v.iter().copied().filter(|x| x.is_finite()).collect();
+    let n = valid.len();
+    if n < 2 { return 0.0; }
+    let mean = valid.iter().sum::<f64>() / n as f64;
+    valid.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (n - 1) as f64
+}
+
+/// Decompose a time series into trend, seasonal, and remainder.
+///
+/// `data`: observed time series (any length ≥ 2·period).
+/// `period`: seasonal period in time steps (e.g., 252 for annual in daily data).
+/// `robust`: if true, use median instead of mean for the seasonal averaging step.
+///
+/// Returns `None` when `data.len() < 2 * period` or `period < 2`.
+pub fn stl_decompose(data: &[f64], period: usize, robust: bool) -> Option<StlResult> {
+    let n = data.len();
+    if period < 2 || n < 2 * period {
+        return None;
+    }
+
+    // Step 1: Moving-average trend (centered, window = period).
+    // For even period, apply a 2×(period/2) MA to avoid phase shift.
+    let mut trend = vec![f64::NAN; n];
+    let half = period / 2;
+    if period % 2 == 1 {
+        // Odd: simple centered MA of width `period`
+        for i in half..(n - half) {
+            let sum: f64 = data[i - half..=i + half].iter().sum();
+            trend[i] = sum / period as f64;
+        }
+    } else {
+        // Even: 2×(period/2) — average of two offset MAs
+        for i in half..(n - half) {
+            let sum_a: f64 = data[(i - half + 1)..=(i + half)].iter().sum();
+            let sum_b: f64 = data[(i - half)..=(i + half - 1)].iter().sum();
+            trend[i] = (sum_a + sum_b) / (2.0 * period as f64);
+        }
+    }
+
+    // Step 2: Detrend where trend is available.
+    let detrended: Vec<f64> = (0..n)
+        .map(|i| if trend[i].is_finite() { data[i] - trend[i] } else { f64::NAN })
+        .collect();
+
+    // Step 3: Seasonal component — for each phase p ∈ [0, period),
+    // collect all detrended values at that phase and take mean (or median).
+    let mut seasonal = vec![0.0_f64; n];
+    for p in 0..period {
+        let vals: Vec<f64> = (0..n)
+            .filter(|&i| i % period == p && detrended[i].is_finite())
+            .map(|i| detrended[i])
+            .collect();
+        if vals.is_empty() { continue; }
+        let center = if robust { median_val(&vals) } else { vals.iter().sum::<f64>() / vals.len() as f64 };
+        for i in (p..n).step_by(period) {
+            seasonal[i] = center;
+        }
+    }
+
+    // Step 4: Remainder.
+    let remainder: Vec<f64> = (0..n)
+        .map(|i| {
+            let t = if trend[i].is_finite() { trend[i] } else { 0.0 };
+            data[i] - t - seasonal[i]
+        })
+        .collect();
+
+    Some(StlResult { trend, seasonal, remainder, period })
+}
+
+fn median_val(v: &[f64]) -> f64 {
+    let mut sorted = v.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = sorted.len();
+    if n % 2 == 1 { sorted[n / 2] } else { (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0 }
+}
+
+#[cfg(test)]
+mod stl_tests {
+    use super::*;
+
+    #[test]
+    fn stl_pure_seasonal() {
+        // Series = sin(2π·i/period) with no trend or noise
+        let period = 20_usize;
+        let n = 200;
+        let data: Vec<f64> = (0..n)
+            .map(|i| (2.0 * std::f64::consts::PI * i as f64 / period as f64).sin())
+            .collect();
+        let r = stl_decompose(&data, period, false).expect("should decompose");
+        // Seasonal strength should be high
+        let ss = r.seasonal_strength();
+        assert!(ss > 0.8, "seasonal_strength={:.3} for pure sinusoid", ss);
+    }
+
+    #[test]
+    fn stl_pure_trend() {
+        // Linear trend, no seasonality.
+        // Single-pass STL captures the trend via moving average. The MA boundary
+        // (half-period NaN at each end) limits how much trend variance is extracted,
+        // but trend should still dominate over remainder for long series.
+        let period = 10;
+        let n = 200;
+        let data: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let r = stl_decompose(&data, period, false).expect("should decompose");
+        let ts = r.trend_strength();
+        assert!(ts > 0.5, "trend_strength={:.3} for linear ramp", ts);
+    }
+
+    #[test]
+    fn stl_reconstruction() {
+        let period = 12;
+        let n = 120;
+        let data: Vec<f64> = (0..n)
+            .map(|i| i as f64 * 0.1 + (i % period) as f64)
+            .collect();
+        let r = stl_decompose(&data, period, false).expect("should decompose");
+        // Reconstruction should match observed data
+        let rec = r.reconstruct();
+        assert_eq!(rec.len(), n);
+        for i in 0..n {
+            assert!((rec[i] - data[i]).abs() < 1e-9, "mismatch at i={}: rec={:.6} vs data={:.6}", i, rec[i], data[i]);
+        }
+    }
+
+    #[test]
+    fn stl_too_short() {
+        let r = stl_decompose(&[1.0, 2.0, 3.0], 5, false);
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn stl_period_1_rejected() {
+        let data: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        assert!(stl_decompose(&data, 1, false).is_none());
+    }
+
+    #[test]
+    fn stl_robust_mode() {
+        // Robust (median) should also work
+        let period = 7;
+        let n = 70;
+        let data: Vec<f64> = (0..n).map(|i| (i % period) as f64).collect();
+        let r = stl_decompose(&data, period, true).expect("should decompose");
+        assert!(r.seasonal_strength() > 0.5);
+    }
+}

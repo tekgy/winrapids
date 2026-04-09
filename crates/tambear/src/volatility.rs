@@ -507,6 +507,173 @@ pub fn arch_lm_test(residuals: &[f64], n_lags: usize) -> Option<ArchLmResult> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// VPIN — Volume-synchronized Probability of Informed Trading
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// VPIN result (Easley, Lopez de Prado, O'Hara 2012).
+#[derive(Debug, Clone)]
+pub struct VpinResult {
+    /// VPIN values per volume bucket.
+    pub vpin: Vec<f64>,
+    /// Number of volume buckets formed.
+    pub n_buckets: usize,
+}
+
+/// Compute VPIN via Bulk Volume Classification (BVC).
+///
+/// BVC classifies each trade's volume as buy/sell using the CDF of
+/// standardized price changes: V_buy = V * Φ(ΔP / σ_ΔP), V_sell = V - V_buy.
+///
+/// Volume is partitioned into equal-sized buckets of `bucket_volume`.
+/// VPIN per bucket = |V_buy - V_sell| / V_bucket, averaged over `n_avg`
+/// trailing buckets.
+///
+/// # Parameters
+/// - `prices`: trade prices (length n)
+/// - `volumes`: trade volumes (length n, must be positive)
+/// - `bucket_volume`: target volume per bucket (e.g., daily_volume / 50)
+/// - `n_avg`: number of trailing buckets to average (e.g., 50)
+///
+/// Returns `VpinResult` with one VPIN value per bucket starting from bucket `n_avg`.
+pub fn vpin_bvc(prices: &[f64], volumes: &[f64], bucket_volume: f64, n_avg: usize) -> VpinResult {
+    let n = prices.len();
+    if n < 2 || volumes.len() != n || bucket_volume <= 0.0 || n_avg == 0 {
+        return VpinResult { vpin: vec![], n_buckets: 0 };
+    }
+
+    // Price changes and their standard deviation
+    let dp: Vec<f64> = prices.windows(2).map(|w| w[1] - w[0]).collect();
+    let mean_dp = dp.iter().sum::<f64>() / dp.len() as f64;
+    let var_dp = dp.iter().map(|d| (d - mean_dp).powi(2)).sum::<f64>() / dp.len().max(1) as f64;
+    let sigma = var_dp.sqrt().max(1e-15);
+
+    // BVC: classify each trade (starting from index 1) as buy/sell fraction
+    // using Φ(ΔP / σ)
+    let mut buy_vol_accum = 0.0_f64;
+    let mut total_vol_accum = 0.0_f64;
+    let mut bucket_order_imbalances: Vec<f64> = Vec::new();
+
+    for i in 0..dp.len() {
+        let z = dp[i] / sigma;
+        let phi_z = crate::special_functions::normal_cdf(z); // Φ(z)
+        let v = volumes[i + 1]; // trade at index i+1
+        let v_buy = v * phi_z;
+        let v_sell = v - v_buy;
+
+        buy_vol_accum += v_buy;
+        total_vol_accum += v;
+
+        // Check if bucket is full
+        while total_vol_accum >= bucket_volume {
+            let overflow = total_vol_accum - bucket_volume;
+            // Fraction of this trade that belongs to the current bucket
+            let frac_in = if v > 1e-15 { 1.0 - overflow / v } else { 1.0 };
+            let adj_buy = buy_vol_accum - v_buy * (1.0 - frac_in.clamp(0.0, 1.0));
+            let adj_sell = bucket_volume - adj_buy;
+            let oi = (adj_buy - adj_sell).abs() / bucket_volume;
+            bucket_order_imbalances.push(oi);
+
+            // Carry remainder to next bucket
+            buy_vol_accum = v_buy * (1.0 - frac_in.clamp(0.0, 1.0));
+            total_vol_accum = overflow;
+        }
+    }
+
+    let nb = bucket_order_imbalances.len();
+    if nb < n_avg {
+        return VpinResult { vpin: vec![], n_buckets: nb };
+    }
+
+    // Rolling average of order imbalance over n_avg buckets
+    let mut vpin_vals = Vec::with_capacity(nb - n_avg + 1);
+    let mut sum: f64 = bucket_order_imbalances[..n_avg].iter().sum();
+    vpin_vals.push(sum / n_avg as f64);
+    for i in n_avg..nb {
+        sum += bucket_order_imbalances[i] - bucket_order_imbalances[i - n_avg];
+        vpin_vals.push(sum / n_avg as f64);
+    }
+
+    VpinResult { vpin: vpin_vals, n_buckets: nb }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visibility Graphs (NVG / HVG)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Natural Visibility Graph degree sequence (Lacasa et al. 2008).
+///
+/// Two samples (t_a, y_a) and (t_b, y_b) are connected if all intermediate
+/// points (t_c, y_c) satisfy: y_c < y_a + (y_b - y_a) * (t_c - t_a) / (t_b - t_a).
+///
+/// Returns the degree of each node (length = data.len()).
+pub fn nvg_degree(data: &[f64]) -> Vec<u32> {
+    let n = data.len();
+    if n == 0 { return vec![]; }
+    let mut degree = vec![0u32; n];
+
+    for a in 0..n {
+        for b in (a + 1)..n {
+            // Check visibility: all c in (a+1..b) must satisfy the criterion
+            let ya = data[a];
+            let yb = data[b];
+            let span = (b - a) as f64;
+            let visible = (a + 1..b).all(|c| {
+                let t_frac = (c - a) as f64 / span;
+                data[c] < ya + (yb - ya) * t_frac
+            });
+            if visible {
+                degree[a] += 1;
+                degree[b] += 1;
+            }
+        }
+    }
+    degree
+}
+
+/// Horizontal Visibility Graph degree sequence (Luque et al. 2009).
+///
+/// Two samples (t_a, y_a) and (t_b, y_b) are connected if all intermediate
+/// points satisfy: y_c < min(y_a, y_b).
+///
+/// Returns the degree of each node (length = data.len()).
+pub fn hvg_degree(data: &[f64]) -> Vec<u32> {
+    let n = data.len();
+    if n == 0 { return vec![]; }
+    let mut degree = vec![0u32; n];
+
+    for a in 0..n {
+        for b in (a + 1)..n {
+            let threshold = data[a].min(data[b]);
+            let visible = (a + 1..b).all(|c| data[c] < threshold);
+            if visible {
+                degree[a] += 1;
+                degree[b] += 1;
+            }
+        }
+    }
+    degree
+}
+
+/// Mean degree of the natural visibility graph.
+///
+/// For random iid series, E[degree] → 4 (Lacasa et al. 2008).
+/// For periodic series, degree distribution has characteristic peaks.
+pub fn nvg_mean_degree(data: &[f64]) -> f64 {
+    let deg = nvg_degree(data);
+    if deg.is_empty() { return f64::NAN; }
+    deg.iter().map(|&d| d as f64).sum::<f64>() / deg.len() as f64
+}
+
+/// Mean degree of the horizontal visibility graph.
+///
+/// For random iid series, E[degree] = 4 exactly.
+pub fn hvg_mean_degree(data: &[f64]) -> f64 {
+    let deg = hvg_degree(data);
+    if deg.is_empty() { return f64::NAN; }
+    deg.iter().map(|&d| d as f64).sum::<f64>() / deg.len() as f64
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

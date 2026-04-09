@@ -593,3 +593,200 @@ mod tests {
         assert!(vario.is_empty());
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2D Convex Hull — Graham scan
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Graham (1972) scan in O(n log n). Used by tick_geometry.rs fintek leaf
+// for convex-hull area and perimeter of price-volume trajectories.
+
+/// Compute the 2D convex hull of a set of points using the Graham scan.
+///
+/// Returns the hull vertices in counter-clockwise order starting from the
+/// lowest-left point. Returns an empty vec when fewer than 3 distinct points
+/// are provided (collinear or degenerate inputs return the unique points in
+/// CCW order).
+///
+/// Points are `(x, y)` tuples.
+pub fn convex_hull_2d(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let n = points.len();
+    if n < 3 {
+        return points.to_vec();
+    }
+
+    // Find the lowest (then leftmost) point — the pivot.
+    let mut pts: Vec<(f64, f64)> = points.to_vec();
+    let pivot_idx = pts
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            a.1.partial_cmp(&b.1)
+                .unwrap()
+                .then(a.0.partial_cmp(&b.0).unwrap())
+        })
+        .map(|(i, _)| i)
+        .unwrap();
+    pts.swap(0, pivot_idx);
+    let pivot = pts[0];
+
+    // Sort remaining points by polar angle with respect to pivot.
+    // Break ties by distance (closer first).
+    pts[1..].sort_by(|&(ax, ay), &(bx, by)| {
+        let cross = (ax - pivot.0) * (by - pivot.1) - (ay - pivot.1) * (bx - pivot.0);
+        if cross.abs() < 1e-12 {
+            // Collinear — sort by distance
+            let da = (ax - pivot.0).hypot(ay - pivot.1);
+            let db = (bx - pivot.0).hypot(by - pivot.1);
+            da.partial_cmp(&db).unwrap()
+        } else if cross > 0.0 {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
+        }
+    });
+
+    // Remove collinear duplicates keeping only the farthest.
+    let mut filtered: Vec<(f64, f64)> = vec![pivot];
+    for &p in &pts[1..] {
+        while filtered.len() > 1 {
+            let len = filtered.len();
+            let o = filtered[len - 2];
+            let a = filtered[len - 1];
+            let cross = (a.0 - o.0) * (p.1 - o.1) - (a.1 - o.1) * (p.0 - o.0);
+            if cross.abs() < 1e-12 {
+                // Collinear — keep farthest
+                filtered.pop();
+            } else {
+                break;
+            }
+        }
+        filtered.push(p);
+    }
+
+    if filtered.len() < 3 {
+        return filtered;
+    }
+
+    // Graham scan on the filtered list.
+    let mut hull: Vec<(f64, f64)> = Vec::with_capacity(filtered.len());
+    for &p in &filtered {
+        while hull.len() > 1 {
+            let len = hull.len();
+            let o = hull[len - 2];
+            let a = hull[len - 1];
+            // Cross product: (a-o) × (p-o); negative → right turn → pop
+            let cross = (a.0 - o.0) * (p.1 - o.1) - (a.1 - o.1) * (p.0 - o.0);
+            if cross <= 0.0 {
+                hull.pop();
+            } else {
+                break;
+            }
+        }
+        hull.push(p);
+    }
+    hull
+}
+
+/// Signed area of a polygon given as CCW vertex list (shoelace formula).
+///
+/// Returns positive area for CCW ordering. For a convex hull returned by
+/// [`convex_hull_2d`], the result is always non-negative.
+pub fn polygon_area(vertices: &[(f64, f64)]) -> f64 {
+    let n = vertices.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut area = 0.0_f64;
+    for i in 0..n {
+        let (x0, y0) = vertices[i];
+        let (x1, y1) = vertices[(i + 1) % n];
+        area += x0 * y1 - x1 * y0;
+    }
+    area.abs() / 2.0
+}
+
+/// Perimeter of a polygon given as a vertex list (consecutive edges + closing edge).
+pub fn polygon_perimeter(vertices: &[(f64, f64)]) -> f64 {
+    let n = vertices.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let mut perim = 0.0_f64;
+    for i in 0..n {
+        let (x0, y0) = vertices[i];
+        let (x1, y1) = vertices[(i + 1) % n];
+        perim += (x1 - x0).hypot(y1 - y0);
+    }
+    perim
+}
+
+#[cfg(test)]
+mod hull_tests {
+    use super::*;
+
+    #[test]
+    fn hull_square() {
+        let pts = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.5, 0.5)];
+        let hull = convex_hull_2d(&pts);
+        assert_eq!(hull.len(), 4, "interior point should be excluded");
+        let area = polygon_area(&hull);
+        assert!((area - 1.0).abs() < 1e-10, "area={}", area);
+    }
+
+    #[test]
+    fn hull_triangle() {
+        let pts = vec![(0.0, 0.0), (4.0, 0.0), (2.0, 3.0)];
+        let hull = convex_hull_2d(&pts);
+        assert_eq!(hull.len(), 3);
+        let area = polygon_area(&hull);
+        // base=4, height=3 → area=6
+        assert!((area - 6.0).abs() < 1e-10, "area={}", area);
+    }
+
+    #[test]
+    fn hull_collinear_points() {
+        // All collinear → degenerate, hull is endpoints
+        let pts = vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 0.0)];
+        let hull = convex_hull_2d(&pts);
+        // At most 2 distinct non-collinear points
+        assert!(hull.len() <= 4);
+        let area = polygon_area(&hull);
+        assert!(area.abs() < 1e-10);
+    }
+
+    #[test]
+    fn hull_single_point() {
+        let pts = vec![(1.0, 2.0)];
+        let hull = convex_hull_2d(&pts);
+        assert_eq!(hull.len(), 1);
+    }
+
+    #[test]
+    fn hull_perimeter_unit_square() {
+        let square = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        let p = polygon_perimeter(&square);
+        assert!((p - 4.0).abs() < 1e-10, "perimeter={}", p);
+    }
+
+    #[test]
+    fn hull_interior_points_excluded() {
+        // Circle of 8 points + 10 interior points
+        use std::f64::consts::TAU;
+        let mut pts: Vec<(f64, f64)> = (0..8)
+            .map(|i| {
+                let a = TAU * i as f64 / 8.0;
+                (a.cos(), a.sin())
+            })
+            .collect();
+        // Interior points
+        for i in 0..10 {
+            pts.push((0.05 * i as f64, 0.0));
+        }
+        let hull = convex_hull_2d(&pts);
+        assert_eq!(hull.len(), 8, "interior points should not appear in hull");
+        let area = polygon_area(&hull);
+        // Regular octagon inscribed in unit circle: area = 2√2 ≈ 2.828
+        assert!((area - 2.0 * 2.0_f64.sqrt()).abs() < 0.01, "area={}", area);
+    }
+}

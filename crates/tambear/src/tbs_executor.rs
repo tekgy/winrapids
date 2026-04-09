@@ -228,6 +228,16 @@ fn usize_req(step: &TbsStep, name: &str, pos: usize) -> Result<usize, Box<dyn st
         .ok_or_else(|| format!("{}: {name} required (named or positional[{pos}])", step.name).into())
 }
 
+/// Read a named-or-positional bool arg with a default.
+fn bool_arg(step: &TbsStep, name: &str, pos: usize, default: bool) -> bool {
+    step.get_arg(name, pos).map(|v| match v {
+        crate::tbs_parser::TbsValue::Bool(b) => *b,
+        crate::tbs_parser::TbsValue::Int(i) => *i != 0,
+        crate::tbs_parser::TbsValue::Float(f) => *f != 0.0,
+        crate::tbs_parser::TbsValue::Str(s) => matches!(s.as_str(), "true" | "yes" | "1"),
+    }).unwrap_or(default)
+}
+
 // ---------------------------------------------------------------------------
 // Executor
 // ---------------------------------------------------------------------------
@@ -1987,6 +1997,745 @@ pub fn execute(
             }
 
             // ══════════════════════════════════════════════════════════════
+            // IRT — Item Response Theory
+            // ══════════════════════════════════════════════════════════════
+
+            // fit_2pl: data is n_persons × n_items binary response matrix (0/1 as f64).
+            // Returns item params as flat vector: [disc1, diff1, disc2, diff2, ...].
+            ("irt_2pl", None) | ("fit_2pl", None) => {
+                let n_items = usize_req(step, "n_items", 0)?;
+                let n_persons = pn;
+                let max_iter = usize_arg(step, "max_iter", 1, 100);
+                let data = &pipeline.frame().data;
+                // Convert f64 → u8 responses
+                let responses: Vec<u8> = data.iter().map(|&v| if v >= 0.5 { 1 } else { 0 }).collect();
+                let items = crate::irt::fit_2pl(&responses, n_persons, n_items, max_iter);
+                let flat: Vec<f64> = items.iter().flat_map(|it| [it.discrimination, it.difficulty]).collect();
+                TbsStepOutput::Vector { name: "irt_item_params", values: flat }
+            }
+
+            // ability_mle: data must have exactly n_items columns; first row is used.
+            // item_params_flat from a previous irt_2pl step must be in step args.
+            // Simpler: expose ability_mle for single-person scoring.
+            // Convention: col 0..n_items are binary responses; item params come from args.
+            ("ability_mle", None) => {
+                let n_items = usize_req(step, "n_items", 0)?;
+                let disc_arg = f64_arg(step, "discrimination", 1, 1.0);
+                let diff_arg = f64_arg(step, "difficulty", 2, 0.0);
+                let data = &pipeline.frame().data;
+                // Build one ItemParams per item from args or use same params for all items.
+                let items: Vec<crate::irt::ItemParams> = (0..n_items).map(|_| crate::irt::ItemParams {
+                    discrimination: disc_arg,
+                    difficulty: diff_arg,
+                }).collect();
+                // Use first row as the response pattern
+                let responses: Vec<u8> = (0..n_items).map(|j| {
+                    if j < pd { if data[j] >= 0.5 { 1 } else { 0 } } else { 0 }
+                }).collect();
+                let theta = crate::irt::ability_mle(&items, &responses);
+                TbsStepOutput::Scalar { name: "ability_mle", value: theta }
+            }
+
+            ("ability_eap", None) => {
+                let n_items = usize_req(step, "n_items", 0)?;
+                let disc_arg = f64_arg(step, "discrimination", 1, 1.0);
+                let diff_arg = f64_arg(step, "difficulty", 2, 0.0);
+                let n_quad = usize_arg(step, "n_quad", 3, 21);
+                let data = &pipeline.frame().data;
+                let items: Vec<crate::irt::ItemParams> = (0..n_items).map(|_| crate::irt::ItemParams {
+                    discrimination: disc_arg,
+                    difficulty: diff_arg,
+                }).collect();
+                let responses: Vec<u8> = (0..n_items).map(|j| {
+                    if j < pd { if data[j] >= 0.5 { 1 } else { 0 } } else { 0 }
+                }).collect();
+                let theta = crate::irt::ability_eap(&items, &responses, n_quad);
+                TbsStepOutput::Scalar { name: "ability_eap", value: theta }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // Graph algorithms
+            // Convention: data is n_edges × 3 (from, to, weight) or n_edges × 2 (from, to).
+            // Node count comes from the "n_nodes" arg.
+            // ══════════════════════════════════════════════════════════════
+
+            ("dijkstra", None) => {
+                let n_nodes = usize_req(step, "n_nodes", 0)?;
+                let source = usize_arg(step, "source", 1, 0);
+                let directed = bool_arg(step, "directed", 2, true);
+                let data = &pipeline.frame().data;
+                let mut g = crate::graph::Graph::new(n_nodes);
+                for i in 0..pn {
+                    let from = data[i * pd] as usize;
+                    let to   = data[i * pd + 1] as usize;
+                    let w    = if pd >= 3 { data[i * pd + 2] } else { 1.0 };
+                    if from < n_nodes && to < n_nodes {
+                        if directed { g.add_edge(from, to, w); } else { g.add_undirected(from, to, w); }
+                    }
+                }
+                let (dists, _) = crate::graph::dijkstra(&g, source);
+                TbsStepOutput::Vector { name: "dijkstra_distances", values: dists }
+            }
+
+            ("bellman_ford", None) => {
+                let n_nodes = usize_req(step, "n_nodes", 0)?;
+                let source = usize_arg(step, "source", 1, 0);
+                let directed = bool_arg(step, "directed", 2, true);
+                let data = &pipeline.frame().data;
+                let mut g = crate::graph::Graph::new(n_nodes);
+                for i in 0..pn {
+                    let from = data[i * pd] as usize;
+                    let to   = data[i * pd + 1] as usize;
+                    let w    = if pd >= 3 { data[i * pd + 2] } else { 1.0 };
+                    if from < n_nodes && to < n_nodes {
+                        if directed { g.add_edge(from, to, w); } else { g.add_undirected(from, to, w); }
+                    }
+                }
+                match crate::graph::bellman_ford(&g, source) {
+                    Some((dists, _)) => TbsStepOutput::Vector { name: "bellman_ford_distances", values: dists },
+                    None => return Err("bellman_ford: negative-weight cycle detected".into()),
+                }
+            }
+
+            ("floyd_warshall", None) => {
+                let n_nodes = usize_req(step, "n_nodes", 0)?;
+                let directed = bool_arg(step, "directed", 1, true);
+                let data = &pipeline.frame().data;
+                let mut g = crate::graph::Graph::new(n_nodes);
+                for i in 0..pn {
+                    let from = data[i * pd] as usize;
+                    let to   = data[i * pd + 1] as usize;
+                    let w    = if pd >= 3 { data[i * pd + 2] } else { 1.0 };
+                    if from < n_nodes && to < n_nodes {
+                        if directed { g.add_edge(from, to, w); } else { g.add_undirected(from, to, w); }
+                    }
+                }
+                let mat = crate::graph::floyd_warshall(&g);
+                let flat: Vec<f64> = mat.into_iter().flatten().collect();
+                TbsStepOutput::Matrix { name: "floyd_warshall", data: flat, rows: n_nodes, cols: n_nodes }
+            }
+
+            ("pagerank", None) => {
+                let n_nodes = usize_req(step, "n_nodes", 0)?;
+                let damping = f64_arg(step, "damping", 1, 0.85);
+                let max_iter = usize_arg(step, "max_iter", 2, 100);
+                let tol = f64_arg(step, "tol", 3, 1e-6);
+                let data = &pipeline.frame().data;
+                let mut g = crate::graph::Graph::new(n_nodes);
+                for i in 0..pn {
+                    let from = data[i * pd] as usize;
+                    let to   = data[i * pd + 1] as usize;
+                    let w    = if pd >= 3 { data[i * pd + 2] } else { 1.0 };
+                    if from < n_nodes && to < n_nodes {
+                        g.add_edge(from, to, w);
+                    }
+                }
+                let scores = crate::graph::pagerank(&g, damping, max_iter, tol);
+                TbsStepOutput::Vector { name: "pagerank", values: scores }
+            }
+
+            ("kruskal", None) | ("mst", None) => {
+                let n_nodes = usize_req(step, "n_nodes", 0)?;
+                let data = &pipeline.frame().data;
+                let mut g = crate::graph::Graph::new(n_nodes);
+                for i in 0..pn {
+                    let from = data[i * pd] as usize;
+                    let to   = data[i * pd + 1] as usize;
+                    let w    = if pd >= 3 { data[i * pd + 2] } else { 1.0 };
+                    if from < n_nodes && to < n_nodes {
+                        g.add_undirected(from, to, w);
+                    }
+                }
+                let mst = crate::graph::kruskal(&g);
+                TbsStepOutput::Scalar { name: "mst_total_weight", value: mst.total_weight }
+            }
+
+            ("connected_components", None) => {
+                let n_nodes = usize_req(step, "n_nodes", 0)?;
+                let data = &pipeline.frame().data;
+                let mut g = crate::graph::Graph::new(n_nodes);
+                for i in 0..pn {
+                    let from = data[i * pd] as usize;
+                    let to   = data[i * pd + 1] as usize;
+                    let w    = if pd >= 3 { data[i * pd + 2] } else { 1.0 };
+                    if from < n_nodes && to < n_nodes {
+                        g.add_undirected(from, to, w);
+                    }
+                }
+                let labels = crate::graph::connected_components(&g);
+                let max_comp = labels.iter().cloned().max().unwrap_or(0) + 1;
+                TbsStepOutput::Scalar { name: "n_components", value: max_comp as f64 }
+            }
+
+            ("bfs", None) => {
+                let n_nodes = usize_req(step, "n_nodes", 0)?;
+                let source = usize_arg(step, "source", 1, 0);
+                let directed = bool_arg(step, "directed", 2, false);
+                let data = &pipeline.frame().data;
+                let mut g = crate::graph::Graph::new(n_nodes);
+                for i in 0..pn {
+                    let from = data[i * pd] as usize;
+                    let to   = data[i * pd + 1] as usize;
+                    let w    = if pd >= 3 { data[i * pd + 2] } else { 1.0 };
+                    if from < n_nodes && to < n_nodes {
+                        if directed { g.add_edge(from, to, w); } else { g.add_undirected(from, to, w); }
+                    }
+                }
+                let (dists, _) = crate::graph::bfs(&g, source);
+                let dists_f64: Vec<f64> = dists.iter().map(|&d| if d < 0 { f64::INFINITY } else { d as f64 }).collect();
+                TbsStepOutput::Vector { name: "bfs_distances", values: dists_f64 }
+            }
+
+            ("dfs", None) => {
+                let n_nodes = usize_req(step, "n_nodes", 0)?;
+                let source = usize_arg(step, "source", 1, 0);
+                let directed = bool_arg(step, "directed", 2, true);
+                let data = &pipeline.frame().data;
+                let mut g = crate::graph::Graph::new(n_nodes);
+                for i in 0..pn {
+                    let from = data[i * pd] as usize;
+                    let to   = data[i * pd + 1] as usize;
+                    let w    = if pd >= 3 { data[i * pd + 2] } else { 1.0 };
+                    if from < n_nodes && to < n_nodes {
+                        if directed { g.add_edge(from, to, w); } else { g.add_undirected(from, to, w); }
+                    }
+                }
+                let order = crate::graph::dfs(&g, source);
+                let order_f64: Vec<f64> = order.iter().map(|&v| v as f64).collect();
+                TbsStepOutput::Vector { name: "dfs_order", values: order_f64 }
+            }
+
+            ("degree_centrality", None) => {
+                let n_nodes = usize_req(step, "n_nodes", 0)?;
+                let directed = bool_arg(step, "directed", 1, true);
+                let data = &pipeline.frame().data;
+                let mut g = crate::graph::Graph::new(n_nodes);
+                for i in 0..pn {
+                    let from = data[i * pd] as usize;
+                    let to   = data[i * pd + 1] as usize;
+                    let w    = if pd >= 3 { data[i * pd + 2] } else { 1.0 };
+                    if from < n_nodes && to < n_nodes {
+                        if directed { g.add_edge(from, to, w); } else { g.add_undirected(from, to, w); }
+                    }
+                }
+                let centrality = crate::graph::degree_centrality(&g);
+                TbsStepOutput::Vector { name: "degree_centrality", values: centrality }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // Interpolation
+            // Convention: data is n_points × 2 (x, y).
+            // Query point comes from "x_query" arg; for batch eval use "n_eval" + range.
+            // ══════════════════════════════════════════════════════════════
+
+            ("lagrange", None) => {
+                if pd < 2 { return Err("lagrange: need 2 columns (x, y)".into()); }
+                let x_query = f64_req(step, "x", 0)?;
+                let xs = extract_col(&pipeline.frame().data, pn, pd, 0);
+                let ys = extract_col(&pipeline.frame().data, pn, pd, 1);
+                let val = crate::interpolation::lagrange(&xs, &ys, x_query);
+                TbsStepOutput::Scalar { name: "lagrange", value: val }
+            }
+
+            ("newton_interp", None) | ("newton_divided_diff", None) => {
+                if pd < 2 { return Err("newton_interp: need 2 columns (x, y)".into()); }
+                let x_query = f64_req(step, "x", 0)?;
+                let xs = extract_col(&pipeline.frame().data, pn, pd, 0);
+                let ys = extract_col(&pipeline.frame().data, pn, pd, 1);
+                let coeffs = crate::interpolation::newton_divided_diff(&xs, &ys);
+                let val = crate::interpolation::newton_eval(&xs, &coeffs, x_query);
+                TbsStepOutput::Scalar { name: "newton_interp", value: val }
+            }
+
+            ("cubic_spline", None) | ("spline", None) => {
+                if pd < 2 { return Err("cubic_spline: need 2 columns (x, y)".into()); }
+                let x_query = f64_req(step, "x", 0)?;
+                let xs = extract_col(&pipeline.frame().data, pn, pd, 0);
+                let ys = extract_col(&pipeline.frame().data, pn, pd, 1);
+                let spline = crate::interpolation::natural_cubic_spline(&xs, &ys);
+                let val = spline.eval(x_query);
+                TbsStepOutput::Scalar { name: "cubic_spline", value: val }
+            }
+
+            ("akima", None) => {
+                if pd < 2 { return Err("akima: need 2 columns (x, y)".into()); }
+                let x_query = f64_req(step, "x", 0)?;
+                let xs = extract_col(&pipeline.frame().data, pn, pd, 0);
+                let ys = extract_col(&pipeline.frame().data, pn, pd, 1);
+                let spline = crate::interpolation::akima(&xs, &ys);
+                TbsStepOutput::Scalar { name: "akima", value: spline.eval(x_query) }
+            }
+
+            ("pchip", None) => {
+                if pd < 2 { return Err("pchip: need 2 columns (x, y)".into()); }
+                let x_query = f64_req(step, "x", 0)?;
+                let xs = extract_col(&pipeline.frame().data, pn, pd, 0);
+                let ys = extract_col(&pipeline.frame().data, pn, pd, 1);
+                let spline = crate::interpolation::pchip(&xs, &ys);
+                TbsStepOutput::Scalar { name: "pchip", value: spline.eval(x_query) }
+            }
+
+            ("rbf", None) | ("rbf_interp", None) => {
+                if pd < 2 { return Err("rbf: need 2 columns (x, y)".into()); }
+                let x_query = f64_req(step, "x", 0)?;
+                let kernel_str = step.get_arg("kernel", 1)
+                    .and_then(|v| if let crate::tbs_parser::TbsValue::Str(s) = v { Some(s.clone()) } else { None })
+                    .unwrap_or_else(|| "gaussian".to_string());
+                let epsilon = f64_arg(step, "epsilon", 2, 1.0);
+                let kernel = match kernel_str.as_str() {
+                    "multiquadric" => crate::interpolation::RbfKernel::Multiquadric(epsilon),
+                    "inverse_multiquadric" => crate::interpolation::RbfKernel::InverseMultiquadric(epsilon),
+                    "thin_plate" | "thin_plate_spline" => crate::interpolation::RbfKernel::ThinPlateSpline,
+                    _ => crate::interpolation::RbfKernel::Gaussian(epsilon),
+                };
+                let xs = extract_col(&pipeline.frame().data, pn, pd, 0);
+                let ys = extract_col(&pipeline.frame().data, pn, pd, 1);
+                let interp = crate::interpolation::rbf_interpolate(&xs, &ys, kernel);
+                TbsStepOutput::Scalar { name: "rbf", value: interp.eval(x_query) }
+            }
+
+            ("polyfit", None) => {
+                if pd < 2 { return Err("polyfit: need 2 columns (x, y)".into()); }
+                let deg = usize_arg(step, "deg", 0, 2);
+                let xs = extract_col(&pipeline.frame().data, pn, pd, 0);
+                let ys = extract_col(&pipeline.frame().data, pn, pd, 1);
+                let fit = crate::interpolation::polyfit(&xs, &ys, deg);
+                TbsStepOutput::Vector { name: "polyfit_coeffs", values: fit.coeffs }
+            }
+
+            ("lerp", None) => {
+                if pd < 2 { return Err("lerp: need 2 columns (x, y)".into()); }
+                let x_query = f64_req(step, "x", 0)?;
+                let xs = extract_col(&pipeline.frame().data, pn, pd, 0);
+                let ys = extract_col(&pipeline.frame().data, pn, pd, 1);
+                TbsStepOutput::Scalar { name: "lerp", value: crate::interpolation::lerp(&xs, &ys, x_query) }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // Linear algebra — explicit decompositions
+            // Convention: data is n × d; treat as a matrix.
+            // ══════════════════════════════════════════════════════════════
+
+            ("lu", None) | ("lu_decomp", None) => {
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                match crate::linear_algebra::lu(&mat) {
+                    Some(res) => {
+                        // Return combined LU matrix (L has implicit 1s on diagonal)
+                        TbsStepOutput::Matrix { name: "lu_decomp", data: res.lu.data, rows: res.lu.rows, cols: res.lu.cols }
+                    }
+                    None => return Err("lu: matrix is singular".into()),
+                }
+            }
+
+            ("qr", None) | ("qr_decomp", None) => {
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let res = crate::linear_algebra::qr(&mat);
+                // Return R matrix (upper triangular)
+                TbsStepOutput::Matrix { name: "qr_r", data: res.r.data, rows: res.r.rows, cols: res.r.cols }
+            }
+
+            ("svd", None) => {
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let res = crate::linear_algebra::svd(&mat);
+                TbsStepOutput::Vector { name: "singular_values", values: res.sigma }
+            }
+
+            ("det", None) => {
+                if pn != pd { return Err("det: matrix must be square".into()); }
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                TbsStepOutput::Scalar { name: "det", value: crate::linear_algebra::det(&mat) }
+            }
+
+            ("cond", None) => {
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                TbsStepOutput::Scalar { name: "cond", value: crate::linear_algebra::cond(&mat) }
+            }
+
+            ("pinv", None) => {
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let res = crate::linear_algebra::pinv(&mat);
+                TbsStepOutput::Matrix { name: "pinv", data: res.data, rows: res.rows, cols: res.cols }
+            }
+
+            ("solve_linear", None) => {
+                // Square n×n system; y must be provided as the RHS.
+                if pn != pd { return Err("solve_linear: coefficient matrix must be square".into()); }
+                let b = y.as_deref().ok_or("solve_linear: y (RHS vector) must be provided")?;
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                match crate::linear_algebra::solve(&mat, b) {
+                    Some(x) => TbsStepOutput::Vector { name: "solution", values: x },
+                    None => return Err("solve_linear: matrix is singular".into()),
+                }
+            }
+
+            ("sym_eigen", None) | ("eigendecomp", None) => {
+                if pn != pd { return Err("sym_eigen: matrix must be square symmetric".into()); }
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let (eigenvalues, _) = crate::linear_algebra::sym_eigen(&mat);
+                TbsStepOutput::Vector { name: "eigenvalues", values: eigenvalues }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // Multivariate tests: Hotelling, MANOVA, CCA, LDA, Mardia
+            // ══════════════════════════════════════════════════════════════
+
+            ("hotelling_t2", None) | ("hotelling_one_sample", None) => {
+                // mu0 defaults to zeros; pass as flat args: mu0_0, mu0_1, ...
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let mu0: Vec<f64> = (0..pd)
+                    .map(|j| f64_arg(step, "mu0", j, 0.0))
+                    .collect();
+                let res = crate::multivariate::hotelling_one_sample(&mat, &mu0);
+                TbsStepOutput::Vector {
+                    name: "hotelling_t2",
+                    values: vec![res.t2, res.f_statistic, res.df1, res.df2, res.p_value],
+                }
+            }
+
+            ("hotelling_two_sample", None) => {
+                // Split data at midpoint (first pn/2 rows vs second pn/2 rows).
+                // Or use group labels from a previous clustering step.
+                let labels = pipeline.frame().labels.as_ref()
+                    .ok_or("hotelling_two_sample: run a group_by or clustering step first")?;
+                let group0: Vec<usize> = labels.iter().enumerate()
+                    .filter(|(_, &l)| l == 0).map(|(i, _)| i).collect();
+                let group1: Vec<usize> = labels.iter().enumerate()
+                    .filter(|(_, &l)| l == 1).map(|(i, _)| i).collect();
+                let data = &pipeline.frame().data;
+                let extract_group = |indices: &[usize]| -> crate::linear_algebra::Mat {
+                    let mut d = Vec::with_capacity(indices.len() * pd);
+                    for &i in indices { d.extend_from_slice(&data[i * pd..(i + 1) * pd]); }
+                    crate::linear_algebra::Mat { rows: indices.len(), cols: pd, data: d }
+                };
+                let m1 = extract_group(&group0);
+                let m2 = extract_group(&group1);
+                let res = crate::multivariate::hotelling_two_sample(&m1, &m2);
+                TbsStepOutput::Vector {
+                    name: "hotelling_two_sample",
+                    values: vec![res.t2, res.f_statistic, res.df1, res.df2, res.p_value],
+                }
+            }
+
+            ("manova", None) => {
+                let labels = pipeline.frame().labels.as_ref()
+                    .ok_or("manova: run a group_by or clustering step first to produce group labels")?;
+                let groups: Vec<usize> = labels.iter().map(|&l| l.max(0) as usize).collect();
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let res = crate::multivariate::manova(&mat, &groups);
+                TbsStepOutput::Vector {
+                    name: "manova",
+                    values: vec![res.wilks_lambda, res.f_statistic, res.p_value],
+                }
+            }
+
+            ("lda", None) => {
+                let labels = pipeline.frame().labels.as_ref()
+                    .ok_or("lda: run a group_by or clustering step first to produce group labels")?;
+                let groups: Vec<usize> = labels.iter().map(|&l| l.max(0) as usize).collect();
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let res = crate::multivariate::lda(&mat, &groups);
+                // Return discriminant axis weights (p × d matrix, flattened)
+                let weights = res.axes.data.clone();
+                TbsStepOutput::Vector { name: "lda_weights", values: weights }
+            }
+
+            ("cca", None) => {
+                // Split data into X (first pd/2 cols) and Y (second pd/2 cols).
+                // Or use col_x_end arg to specify the split.
+                let split = usize_arg(step, "col_x_end", 0, pd / 2);
+                if split == 0 || split >= pd { return Err("cca: col_x_end must be between 1 and d-1".into()); }
+                let data = &pipeline.frame().data;
+                let mut x_data = Vec::with_capacity(pn * split);
+                let mut y_data = Vec::with_capacity(pn * (pd - split));
+                for i in 0..pn {
+                    x_data.extend_from_slice(&data[i * pd..i * pd + split]);
+                    y_data.extend_from_slice(&data[i * pd + split..i * pd + pd]);
+                }
+                let x_mat = crate::linear_algebra::Mat { rows: pn, cols: split, data: x_data };
+                let y_mat = crate::linear_algebra::Mat { rows: pn, cols: pd - split, data: y_data };
+                let res = crate::multivariate::cca(&x_mat, &y_mat);
+                TbsStepOutput::Vector { name: "cca_correlations", values: res.correlations }
+            }
+
+            ("mardia_normality", None) => {
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let res = crate::multivariate::mardia_normality(&mat);
+                TbsStepOutput::Vector {
+                    name: "mardia_normality",
+                    values: vec![res.skewness, res.skewness_p, res.kurtosis, res.kurtosis_p],
+                }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // Factor analysis (EFA, varimax, Cronbach's alpha, McDonald's omega)
+            // ══════════════════════════════════════════════════════════════
+
+            ("efa", None) | ("factor_analysis", None) => {
+                let n_factors = usize_arg(step, "n_factors", 0, 2);
+                let max_iter = usize_arg(step, "max_iter", 1, 100);
+                let corr = crate::factor_analysis::correlation_matrix(&pipeline.frame().data, pn, pd);
+                let res = crate::factor_analysis::principal_axis_factoring(&corr, n_factors, max_iter);
+                TbsStepOutput::Vector { name: "efa_communalities", values: res.communalities }
+            }
+
+            ("varimax", None) => {
+                let n_factors = usize_arg(step, "n_factors", 0, 2);
+                let max_iter = usize_arg(step, "max_iter", 1, 1000);
+                let corr = crate::factor_analysis::correlation_matrix(&pipeline.frame().data, pn, pd);
+                let fa = crate::factor_analysis::principal_axis_factoring(&corr, n_factors, max_iter);
+                let rotated = crate::factor_analysis::varimax(&fa.loadings, 1000);
+                TbsStepOutput::Matrix { name: "varimax_loadings", data: rotated.data, rows: rotated.rows, cols: rotated.cols }
+            }
+
+            ("cronbachs_alpha", None) | ("cronbach_alpha", None) => {
+                let val = crate::factor_analysis::cronbachs_alpha(&pipeline.frame().data, pn, pd);
+                TbsStepOutput::Scalar { name: "cronbachs_alpha", value: val }
+            }
+
+            ("mcdonalds_omega", None) | ("mcdonald_omega", None) => {
+                let n_factors = usize_arg(step, "n_factors", 0, 1);
+                let max_iter = usize_arg(step, "max_iter", 1, 100);
+                let corr = crate::factor_analysis::correlation_matrix(&pipeline.frame().data, pn, pd);
+                let fa = crate::factor_analysis::principal_axis_factoring(&corr, n_factors, max_iter);
+                let res = crate::factor_analysis::mcdonalds_omega(&fa.loadings);
+                TbsStepOutput::Scalar { name: "mcdonalds_omega", value: res.omega }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // Stochastic processes
+            // ══════════════════════════════════════════════════════════════
+
+            ("brownian_motion", None) => {
+                let t_end = f64_arg(step, "t_end", 0, 1.0);
+                let n_steps = usize_arg(step, "n_steps", 1, 1000);
+                let seed = usize_arg(step, "seed", 2, 42) as u64;
+                let (_, path) = crate::stochastic::brownian_motion(t_end, n_steps, seed);
+                TbsStepOutput::Vector { name: "brownian_motion", values: path }
+            }
+
+            ("geometric_brownian_motion", None) | ("gbm", None) => {
+                let s0 = f64_arg(step, "s0", 0, 1.0);
+                let mu = f64_arg(step, "mu", 1, 0.0);
+                let sigma = f64_arg(step, "sigma", 2, 0.1);
+                let t_end = f64_arg(step, "t_end", 3, 1.0);
+                let n_steps = usize_arg(step, "n_steps", 4, 252);
+                let seed = usize_arg(step, "seed", 5, 42) as u64;
+                let (_, prices) = crate::stochastic::geometric_brownian_motion(s0, mu, sigma, t_end, n_steps, seed);
+                TbsStepOutput::Vector { name: "gbm", values: prices }
+            }
+
+            ("ornstein_uhlenbeck", None) | ("ou", None) => {
+                let x0 = f64_arg(step, "x0", 0, 0.0);
+                let mu = f64_arg(step, "mu", 1, 0.0);
+                let theta = f64_arg(step, "theta", 2, 1.0);
+                let sigma = f64_arg(step, "sigma", 3, 0.5);
+                let t_end = f64_arg(step, "t_end", 4, 1.0);
+                let n_steps = usize_arg(step, "n_steps", 5, 1000);
+                let seed = usize_arg(step, "seed", 6, 42) as u64;
+                let path = crate::stochastic::ornstein_uhlenbeck(x0, mu, theta, sigma, t_end, n_steps, seed);
+                TbsStepOutput::Vector { name: "ornstein_uhlenbeck", values: path }
+            }
+
+            ("poisson_process", None) => {
+                let lambda = f64_arg(step, "lambda", 0, 1.0);
+                let t_end = f64_arg(step, "t_end", 1, 10.0);
+                let seed = usize_arg(step, "seed", 2, 42) as u64;
+                let events = crate::stochastic::poisson_process(lambda, t_end, seed);
+                TbsStepOutput::Scalar { name: "n_events", value: events.len() as f64 }
+            }
+
+            ("markov_chain", None) | ("stationary_distribution", None) => {
+                // Data is n_states × n_states transition matrix (row-major).
+                if pn != pd { return Err("markov_chain: transition matrix must be square".into()); }
+                let n_states = pn;
+                let stationary = crate::stochastic::stationary_distribution(&pipeline.frame().data, n_states);
+                TbsStepOutput::Vector { name: "stationary_distribution", values: stationary }
+            }
+
+            ("black_scholes", None) => {
+                let s = f64_req(step, "s", 0)?;
+                let k = f64_req(step, "k", 1)?;
+                let t = f64_req(step, "t", 2)?;
+                let r = f64_arg(step, "r", 3, 0.05);
+                let sigma = f64_arg(step, "sigma", 4, 0.2);
+                let call = bool_arg(step, "call", 5, true);
+                let (price, delta) = crate::stochastic::black_scholes(s, k, t, r, sigma, call);
+                TbsStepOutput::Vector { name: "black_scholes", values: vec![price, delta] }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // Series acceleration
+            // Convention: data column 0 is the sequence of terms.
+            // ══════════════════════════════════════════════════════════════
+
+            ("euler_transform", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                TbsStepOutput::Scalar { name: "euler_transform", value: crate::series_accel::euler_transform(&col) }
+            }
+
+            ("wynn_epsilon", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                // Convert to partial sums first
+                let sums = crate::series_accel::partial_sums(&col);
+                TbsStepOutput::Scalar { name: "wynn_epsilon", value: crate::series_accel::wynn_epsilon(&sums) }
+            }
+
+            ("aitken", None) | ("aitken_delta2", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let sums = crate::series_accel::partial_sums(&col);
+                let acc = crate::series_accel::aitken_delta2(&sums);
+                let val = acc.last().cloned().unwrap_or(f64::NAN);
+                TbsStepOutput::Scalar { name: "aitken", value: val }
+            }
+
+            ("series_accelerate", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                TbsStepOutput::Scalar { name: "series_accelerate", value: crate::series_accel::accelerate(&col) }
+            }
+
+            ("cesaro_sum", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let sums = crate::series_accel::partial_sums(&col);
+                TbsStepOutput::Scalar { name: "cesaro_sum", value: crate::series_accel::cesaro_sum(&sums) }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // Number theory
+            // Convention: scalar values passed as args, not data columns.
+            // ══════════════════════════════════════════════════════════════
+
+            ("is_prime", None) => {
+                let n = usize_req(step, "n", 0)? as u64;
+                TbsStepOutput::Scalar { name: "is_prime", value: if crate::number_theory::is_prime(n) { 1.0 } else { 0.0 } }
+            }
+
+            ("gcd", None) => {
+                let a = usize_req(step, "a", 0)? as u64;
+                let b = usize_req(step, "b", 1)? as u64;
+                TbsStepOutput::Scalar { name: "gcd", value: crate::number_theory::gcd(a, b) as f64 }
+            }
+
+            ("lcm", None) => {
+                let a = usize_req(step, "a", 0)? as u64;
+                let b = usize_req(step, "b", 1)? as u64;
+                TbsStepOutput::Scalar { name: "lcm", value: crate::number_theory::lcm(a, b) as f64 }
+            }
+
+            ("euler_totient", None) => {
+                let n = usize_req(step, "n", 0)? as u64;
+                TbsStepOutput::Scalar { name: "euler_totient", value: crate::number_theory::euler_totient(n) as f64 }
+            }
+
+            ("factorize", None) => {
+                let n = usize_req(step, "n", 0)? as u64;
+                let factors = crate::number_theory::factorize(n);
+                let flat: Vec<f64> = factors.iter().flat_map(|(p, e)| [*p as f64, *e as f64]).collect();
+                TbsStepOutput::Vector { name: "factorize", values: flat }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // Topological data analysis (TDA)
+            // Convention: data is n_points × d (point cloud); or n×n dist matrix.
+            // ══════════════════════════════════════════════════════════════
+
+            ("rips_h0", None) | ("persistent_homology_h0", None) => {
+                // Compute pairwise distance matrix from point cloud
+                let data = &pipeline.frame().data;
+                let mut dist = vec![0.0_f64; pn * pn];
+                for i in 0..pn {
+                    for j in 0..pn {
+                        let d2: f64 = (0..pd).map(|k| {
+                            let diff = data[i * pd + k] - data[j * pd + k];
+                            diff * diff
+                        }).sum();
+                        dist[i * pn + j] = d2.sqrt();
+                    }
+                }
+                let diag = crate::tda::rips_h0(&dist, pn);
+                let n_components = diag.pairs.len();
+                TbsStepOutput::Scalar { name: "h0_components", value: n_components as f64 }
+            }
+
+            ("persistence_entropy", None) => {
+                let data = &pipeline.frame().data;
+                let mut dist = vec![0.0_f64; pn * pn];
+                for i in 0..pn {
+                    for j in 0..pn {
+                        let d2: f64 = (0..pd).map(|k| {
+                            let diff = data[i * pd + k] - data[j * pd + k];
+                            diff * diff
+                        }).sum();
+                        dist[i * pn + j] = d2.sqrt();
+                    }
+                }
+                let max_edge = f64_arg(step, "max_edge", 0, f64::INFINITY);
+                let diag = crate::tda::rips_h1(&dist, pn, max_edge);
+                let ent = crate::tda::persistence_entropy(&diag.pairs);
+                TbsStepOutput::Scalar { name: "persistence_entropy", value: ent }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // Physics — scalar formulas (no data matrix needed)
+            // ══════════════════════════════════════════════════════════════
+
+            ("black_body", None) | ("stefan_boltzmann", None) => {
+                let emissivity = f64_arg(step, "emissivity", 0, 1.0);
+                let area = f64_arg(step, "area", 1, 1.0);
+                let temp = f64_req(step, "temperature", 2)?;
+                TbsStepOutput::Scalar {
+                    name: "stefan_boltzmann",
+                    value: crate::physics::stefan_boltzmann(emissivity, area, temp),
+                }
+            }
+
+            ("carnot_efficiency", None) => {
+                let t_hot = f64_req(step, "t_hot", 0)?;
+                let t_cold = f64_req(step, "t_cold", 1)?;
+                TbsStepOutput::Scalar { name: "carnot_efficiency", value: crate::physics::carnot_efficiency(t_hot, t_cold) }
+            }
+
+            ("ideal_gas_pressure", None) => {
+                let n_mol = f64_req(step, "n_mol", 0)?;
+                let temperature = f64_req(step, "temperature", 1)?;
+                let volume = f64_req(step, "volume", 2)?;
+                TbsStepOutput::Scalar { name: "ideal_gas_pressure", value: crate::physics::ideal_gas_pressure(n_mol, temperature, volume) }
+            }
+
+            ("sho", None) | ("simple_harmonic_oscillator", None) => {
+                let x0 = f64_arg(step, "x0", 0, 1.0);
+                let v0 = f64_arg(step, "v0", 1, 0.0);
+                let omega = f64_arg(step, "omega", 2, 1.0);
+                let t = f64_req(step, "t", 3)?;
+                let (x, v) = crate::physics::sho_exact(x0, v0, omega, t);
+                TbsStepOutput::Vector { name: "sho", values: vec![x, v] }
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // Haversine (spatial distance)
+            // ══════════════════════════════════════════════════════════════
+
+            ("haversine", None) => {
+                if pd < 4 {
+                    return Err("haversine: need 4 columns (lat1, lon1, lat2, lon2)".into());
+                }
+                let data = &pipeline.frame().data;
+                let mut distances = Vec::with_capacity(pn);
+                for i in 0..pn {
+                    let lat1 = data[i * pd];
+                    let lon1 = data[i * pd + 1];
+                    let lat2 = data[i * pd + 2];
+                    let lon2 = data[i * pd + 3];
+                    distances.push(crate::spatial::haversine(lat1, lon1, lat2, lon2));
+                }
+                TbsStepOutput::Vector { name: "haversine", values: distances }
+            }
+
+            // ══════════════════════════════════════════════════════════════
             // Pipeline configuration
             // ══════════════════════════════════════════════════════════════
 
@@ -2835,5 +3584,252 @@ mod tests {
         let result = execute(chain, data, 60, 2, None).unwrap();
         assert!(matches!(&result.outputs[0], TbsStepOutput::Anova(_) | TbsStepOutput::Test(_) | TbsStepOutput::Nonparametric(_)));
         assert!(result.advice[0].is_some());
+    }
+
+    // ── New module wiring tests ───────────────────────────────────────────
+
+    #[test]
+    fn execute_dijkstra_simple() {
+        // 3-node directed graph: 0→1 (1.0), 1→2 (2.0), 0→2 (10.0)
+        // Shortest from 0: [0, 1, 3]
+        let data = vec![
+            0.0, 1.0, 1.0,
+            1.0, 2.0, 2.0,
+            0.0, 2.0, 10.0,
+        ];
+        let chain = TbsChain::parse("dijkstra(n_nodes=3, source=0, directed=1)").unwrap();
+        let result = execute(chain, data, 3, 3, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Vector { values, .. } => {
+                assert!((values[0] - 0.0).abs() < 1e-9);
+                assert!((values[1] - 1.0).abs() < 1e-9);
+                assert!((values[2] - 3.0).abs() < 1e-9);
+            }
+            _ => panic!("expected Vector output"),
+        }
+    }
+
+    #[test]
+    fn execute_pagerank_two_nodes() {
+        // Two-node graph: 0→1, 1→0 — both should have equal PageRank
+        let data = vec![0.0, 1.0, 1.0, 1.0, 0.0, 1.0];
+        let chain = TbsChain::parse("pagerank(n_nodes=2)").unwrap();
+        let result = execute(chain, data, 2, 3, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Vector { values, .. } => {
+                assert_eq!(values.len(), 2);
+                assert!((values[0] - values[1]).abs() < 1e-3, "should be equal: {:?}", values);
+            }
+            _ => panic!("expected Vector output"),
+        }
+    }
+
+    #[test]
+    fn execute_lagrange_simple() {
+        // Points on y = x^2: (0,0), (1,1), (2,4)
+        // Lagrange at x=1.5 should be 2.25
+        let data = vec![0.0, 0.0, 1.0, 1.0, 2.0, 4.0];
+        let chain = TbsChain::parse("lagrange(x=1.5)").unwrap();
+        let result = execute(chain, data, 3, 2, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { value, .. } => {
+                assert!((value - 2.25).abs() < 1e-9, "got {value}");
+            }
+            _ => panic!("expected Scalar output"),
+        }
+    }
+
+    #[test]
+    fn execute_cubic_spline_simple() {
+        let data = vec![0.0, 0.0, 1.0, 1.0, 2.0, 4.0, 3.0, 9.0];
+        let chain = TbsChain::parse("cubic_spline(x=1.5)").unwrap();
+        let result = execute(chain, data, 4, 2, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { value, .. } => {
+                // Should be close to 2.25 (x^2 pattern)
+                assert!(*value > 1.5 && *value < 3.5, "got {value}");
+            }
+            _ => panic!("expected Scalar output"),
+        }
+    }
+
+    #[test]
+    fn execute_det_identity() {
+        // det(I_3) = 1
+        let data = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let chain = TbsChain::parse("det()").unwrap();
+        let result = execute(chain, data, 3, 3, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { value, .. } => {
+                assert!((value - 1.0).abs() < 1e-9, "got {value}");
+            }
+            _ => panic!("expected Scalar output"),
+        }
+    }
+
+    #[test]
+    fn execute_svd_rank() {
+        // 3x2 matrix, rank 2 → 2 nonzero singular values
+        let data = vec![1.0, 0.0, 0.0, 2.0, 1.0, 2.0];
+        let chain = TbsChain::parse("svd()").unwrap();
+        let result = execute(chain, data, 3, 2, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Vector { values, .. } => {
+                assert_eq!(values.len(), 2);
+                assert!(values[0] > 0.0 && values[1] > 0.0);
+            }
+            _ => panic!("expected Vector output"),
+        }
+    }
+
+    #[test]
+    fn execute_cronbachs_alpha_perfect() {
+        // 5 identical columns → Cronbach's alpha = 1.0
+        let mut data = Vec::new();
+        for i in 0..20 {
+            let v = i as f64;
+            for _ in 0..5 { data.push(v); }
+        }
+        let chain = TbsChain::parse("cronbachs_alpha()").unwrap();
+        let result = execute(chain, data, 20, 5, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { value, .. } => {
+                assert!(*value > 0.9, "expected alpha ≈ 1, got {value}");
+            }
+            _ => panic!("expected Scalar output"),
+        }
+    }
+
+    #[test]
+    fn execute_brownian_motion() {
+        let data = vec![0.0_f64; 0]; // no input data needed
+        let chain = TbsChain::parse("brownian_motion(t_end=1.0, n_steps=100, seed=42)").unwrap();
+        let result = execute(chain, data, 0, 1, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Vector { values, .. } => {
+                assert_eq!(values.len(), 101, "should have n_steps+1 points");
+            }
+            _ => panic!("expected Vector output"),
+        }
+    }
+
+    #[test]
+    fn execute_euler_transform_geometric() {
+        // Geometric series terms: 1, -1/2, 1/4, ... → sum = 2/3
+        let terms: Vec<f64> = (0..20).map(|k| (-0.5_f64).powi(k)).collect();
+        let mut data = Vec::new();
+        for v in &terms { data.push(*v); }
+        let chain = TbsChain::parse("euler_transform()").unwrap();
+        let result = execute(chain, data, terms.len(), 1, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { value, .. } => {
+                // 1/(1+0.5) = 2/3 ≈ 0.6667
+                assert!((value - 2.0/3.0).abs() < 0.01, "got {value}");
+            }
+            _ => panic!("expected Scalar output"),
+        }
+    }
+
+    #[test]
+    fn execute_is_prime() {
+        let data = vec![0.0_f64]; // placeholder
+        let chain = TbsChain::parse("is_prime(n=17)").unwrap();
+        let result = execute(chain, data, 1, 1, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { value, .. } => {
+                assert_eq!(*value, 1.0, "17 is prime");
+            }
+            _ => panic!("expected Scalar output"),
+        }
+    }
+
+    #[test]
+    fn execute_gcd_basic() {
+        let data = vec![0.0_f64];
+        let chain = TbsChain::parse("gcd(a=12, b=8)").unwrap();
+        let result = execute(chain, data, 1, 1, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { value, .. } => {
+                assert_eq!(*value, 4.0);
+            }
+            _ => panic!("expected Scalar output"),
+        }
+    }
+
+    #[test]
+    fn execute_markov_stationary() {
+        // 2-state symmetric Markov chain: [[0.5, 0.5], [0.5, 0.5]] → stationary = [0.5, 0.5]
+        let data = vec![0.5, 0.5, 0.5, 0.5];
+        let chain = TbsChain::parse("stationary_distribution()").unwrap();
+        let result = execute(chain, data, 2, 2, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Vector { values, .. } => {
+                assert_eq!(values.len(), 2);
+                assert!((values[0] - 0.5).abs() < 0.01, "got {:?}", values);
+            }
+            _ => panic!("expected Vector output"),
+        }
+    }
+
+    #[test]
+    fn execute_black_scholes_call() {
+        let data = vec![0.0_f64];
+        let chain = TbsChain::parse("black_scholes(s=100, k=100, t=1, r=0.05, sigma=0.2, call=1)").unwrap();
+        let result = execute(chain, data, 1, 1, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Vector { values, .. } => {
+                // ATM call with r=5%, σ=20%, T=1yr → price ≈ 10.4
+                assert!(values[0] > 8.0 && values[0] < 15.0, "price = {}", values[0]);
+                // Delta should be around 0.6 for ATM call
+                assert!(values[1] > 0.5 && values[1] < 0.8, "delta = {}", values[1]);
+            }
+            _ => panic!("expected Vector output"),
+        }
+    }
+
+    #[test]
+    fn execute_mardia_normality_bivariate_normal() {
+        // Generate bivariate normal data (approx) and check both p-values are > 0.05
+        let mut data = Vec::new();
+        let mut rng = crate::rng::Xoshiro256::new(999);
+        for _ in 0..100 {
+            let z1 = crate::rng::TamRng::next_f64(&mut rng) * 2.0 - 1.0;
+            let z2 = crate::rng::TamRng::next_f64(&mut rng) * 2.0 - 1.0;
+            data.push(z1);
+            data.push(z2);
+        }
+        let chain = TbsChain::parse("mardia_normality()").unwrap();
+        let result = execute(chain, data, 100, 2, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Vector { values, .. } => {
+                // values = [skewness, skewness_p, kurtosis, kurtosis_p]
+                assert_eq!(values.len(), 4);
+                // Both p-values should be > 0.05 for normal data
+                assert!(values[1] > 0.01, "skewness_p = {} (expected > 0.01)", values[1]);
+            }
+            _ => panic!("expected Vector output"),
+        }
+    }
+
+    #[test]
+    fn execute_mst_kruskal() {
+        // 4-node graph: star topology, node 0 in center
+        // Edges: 0-1 (1), 0-2 (2), 0-3 (3), 1-2 (10), 2-3 (10)
+        // MST = 0-1, 0-2, 0-3 = total weight 6
+        let data = vec![
+            0.0, 1.0, 1.0,
+            0.0, 2.0, 2.0,
+            0.0, 3.0, 3.0,
+            1.0, 2.0, 10.0,
+            2.0, 3.0, 10.0,
+        ];
+        let chain = TbsChain::parse("mst(n_nodes=4)").unwrap();
+        let result = execute(chain, data, 5, 3, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { value, .. } => {
+                assert!((value - 6.0).abs() < 1e-9, "got {value}");
+            }
+            _ => panic!("expected Scalar output"),
+        }
     }
 }

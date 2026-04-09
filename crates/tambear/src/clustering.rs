@@ -1191,4 +1191,70 @@ mod tests {
         let h = hopkins_statistic(&data, 100, 2, 10, 42);
         assert!(h < 0.5, "H={} should be < 0.5 for regular grid (anti-clustered)", h);
     }
+
+    // ── Hierarchical clustering ──────────────────────────────────────
+
+    #[test]
+    fn hierarchical_two_clusters_ward() {
+        // Two well-separated clusters in 2D
+        let data = vec![
+            0.0, 0.0,  0.1, 0.1,  0.0, 0.1,  0.1, 0.0, // cluster A near origin
+            10.0, 10.0, 10.1, 10.1, 10.0, 10.1, 10.1, 10.0, // cluster B
+        ];
+        let result = hierarchical_clustering(&data, 8, 2, 2, Linkage::Ward);
+        assert_eq!(result.k, 2);
+        assert_eq!(result.dendrogram.len(), 6); // n-k = 8-2 = 6 merges
+        // First 4 points should be in one cluster, last 4 in the other
+        let first_cluster = result.labels[0];
+        let second_cluster = result.labels[4];
+        assert_ne!(first_cluster, second_cluster, "Two well-separated groups should be in different clusters");
+        for i in 0..4 {
+            assert_eq!(result.labels[i], first_cluster, "First 4 points should share a cluster");
+        }
+        for i in 4..8 {
+            assert_eq!(result.labels[i], second_cluster, "Last 4 points should share a cluster");
+        }
+    }
+
+    #[test]
+    fn hierarchical_single_linkage_chain() {
+        // Chain of points: single linkage should group them as one cluster
+        let data = vec![0.0, 0.0,  1.0, 0.0,  2.0, 0.0,  3.0, 0.0,  4.0, 0.0];
+        let result = hierarchical_clustering(&data, 5, 2, 1, Linkage::Single);
+        assert_eq!(result.k, 1);
+        // All points should be in the same cluster
+        for i in 1..5 {
+            assert_eq!(result.labels[i], result.labels[0]);
+        }
+    }
+
+    #[test]
+    fn hierarchical_complete_linkage() {
+        // Simple 3-cluster test with complete linkage
+        let data = vec![
+            0.0, 0.0,  0.5, 0.5,      // cluster 1
+            5.0, 5.0,  5.5, 5.5,      // cluster 2
+            10.0, 0.0, 10.5, 0.5,     // cluster 3
+        ];
+        let result = hierarchical_clustering(&data, 6, 2, 3, Linkage::Complete);
+        assert_eq!(result.k, 3);
+        assert_eq!(result.labels[0], result.labels[1]);
+        assert_eq!(result.labels[2], result.labels[3]);
+        assert_eq!(result.labels[4], result.labels[5]);
+    }
+
+    #[test]
+    fn hierarchical_dendrogram_distances_monotone_ward() {
+        // Ward dendrogram distances should generally increase (merges become costlier)
+        let data = vec![
+            0.0, 0.0,  0.1, 0.0,
+            5.0, 0.0,  5.1, 0.0,
+            10.0, 0.0, 10.1, 0.0,
+        ];
+        let result = hierarchical_clustering(&data, 6, 2, 1, Linkage::Ward);
+        assert_eq!(result.dendrogram.len(), 5);
+        // Later merges should have larger distances than very first merge
+        assert!(result.dendrogram.last().unwrap().distance >
+                result.dendrogram[0].distance);
+    }
 }

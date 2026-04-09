@@ -373,7 +373,9 @@ fn welch_anova_single_group() {
         "Welch ANOVA with k=1 should return NaN, got {}", result.f_statistic);
 }
 
-/// Welch ANOVA with constant group (zero variance): weight explosion test.
+/// Welch ANOVA with constant group (zero variance): should return NaN.
+/// Weight would explode (w_j = n/0 = Inf), making F statistic meaningless.
+/// The correct behavior is to return NaN rather than a misleading finite value.
 #[test]
 fn welch_anova_constant_group() {
     let g1 = vec![5.0; 10]; // zero variance
@@ -384,8 +386,9 @@ fn welch_anova_constant_group() {
     assert!(result.is_ok(),
         "Welch ANOVA should not panic with constant group");
     let r = result.unwrap();
-    assert!(r.f_statistic.is_finite(),
-        "Welch ANOVA with constant group should produce finite F, got {}", r.f_statistic);
+    // Zero-variance group causes weight explosion; NaN is the documented correct result
+    assert!(r.f_statistic.is_nan(),
+        "Welch ANOVA with constant group should return NaN (weight explosion guarded), got {}", r.f_statistic);
 }
 
 /// Welch ANOVA with all constant groups: 0/0.

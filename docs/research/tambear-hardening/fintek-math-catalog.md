@@ -420,5 +420,1166 @@ The pathmaker's task #135 (bridge crate) should start with the GPU-friendly fami
 
 ---
 
+## Work Plan: Three-Category Classification
+
+Per the architectural clarification: **math stays in tambear; only compiled artifacts ship to fintek.** Every fintek rescue is simultaneously a tambear math entry being checked off.
+
+Each fintek trunk-rs leaf falls into exactly one of:
+
+- **Category A — READY TO COMPILE**: Tambear has a verified function that can be called with identical semantics. Pathmaker wires up the compile target; no new tambear math needed.
+- **Category B — TAMBEAR IMPLEMENTATION NEEDED**: The math is well-understood and standard, but tambear doesn't have it yet. File as a tambear task, implement using accumulate+gather where possible, then compile.
+- **Category C — FUNDAMENTALLY NEW MATH**: Requires novel tambear primitive or substantial research. File as a tambear task, derive from first principles, implement, then compile.
+
+### Category A — Ready to Compile (80 leaves)
+
+All DIRECT + COMPOSE + ADAPT entries from the family tables above. Tambear functions listed in the "Tambear mapping" column. Pathmaker's work is:
+1. Build the leaf-shaped wrapper around the tambear call
+2. Map leaf inputs (bin data) to tambear function signatures
+3. Extract the leaf's DO/V columns from tambear return structs
+4. Compile to fintek's output format
+
+**Sub-categories by implementation complexity** (pathmaker ordering):
+
+**A1 — Pure pointwise (11 leaves, fuse into one kernel class)**: returns, log_transform, sqrt_transform, reciprocal, notional, delta_value, delta_log, delta_percent, delta_direction, elapsed, cyclical.
+
+**A2 — Moment-based (6 leaves, one scatter pass each)**: distribution, shannon_entropy, normality, counts, variability, shape.
+
+**A3 — Spectral (9 leaves, share FFT)**: fft_spectral, welch, multitaper, lombscargle, cepstrum, hilbert, stft_leaf, spectral_entropy, fir_bandpass, energy_bands, periodicity.
+
+**A4 — Time series compositions (5 leaves)**: autocorrelation, ar_model, arma, arima, dependence.
+
+**A5 — Volatility compositions (7 leaves)**: garch, stochvol, vol_dynamics, vol_regime, roll_spread, jump_detection, signature_plot, realized_vol (minus TQ), tick_vol.
+
+**A6 — Stationarity (2 leaves)**: stationarity, struct_break.
+
+**A7 — Nonlinear dynamics (9 leaves)**: sample_entropy, permutation_entropy, hurst_rs, dfa, mfdfa, correlation_dim, lyapunov, embedding, poincare.
+
+**A8 — Dimension reduction (8 leaves)**: pca, ssa, rmt, grassmannian, spectral_embedding, diff_geometry, tick_compression, harmonic.
+
+**A9 — Cross-correlation (5 leaves)**: cross_correlation, tick_causality, msplit_temporal_coherence, coherence_matrix, transfer_analysis.
+
+**A10 — Topology (1 leaf)**: persistent_homology.
+
+**A11 — Bin-level microstructure (9 leaves)**: tick_alignment, tick_attractor, tick_complexity, tick_space, tick_scaling, tick_geometry (needs convex hull — actually B5), pith_attractor, shape, phase_transition.
+
+**A12 — Meta / cross-leaf (6 leaves, depend on A1-A11 being ready)**: scaling_triple, coboundary, cadence_gradient, viscosity, taylor_fold, seismic.
+
+**A13 — Miscellaneous compositions (7 leaves)**: ohlcv (depends on B1 FirstOp/LastOp), smoothers, ou_process, tick_ou, mutual_info, transfer_entropy (meta-style: depends on B14 transfer_entropy), coherence, sde.
+
+### Category B — Tambear Implementation Needed (28 leaves → 20 new tambear functions)
+
+Each gap below has a full tambear-side spec that the pathmaker or adversarial can implement directly. Specs include: algorithm name + paper, core formula, accumulate+gather decomposition, parameters with defaults, tambear module placement, and the fintek leaf(s) unlocked.
+
+Specs are in the next section ("Tambear-Side Specs for Category B Gaps").
+
+### Category C — Fundamentally New Math (0 leaves)
+
+**None.** All 30 gaps identified in fintek trunk-rs are well-understood standard algorithms from the literature. None require novel primitives. This is because fintek is a signal-engineering project, not a research project — every leaf corresponds to a published method.
+
+This means the rescue is a pure engineering exercise: implement 20 well-defined algorithms in tambear, wire up all 126 leaves, compile. No mathematical research required.
+
+---
+
+## Tambear-Side Specs for Category B Gaps
+
+Each spec is written so the pathmaker or adversarial can implement it without consulting papers directly. Papers are cited for cross-reference, but the spec contains the full formula and decomposition.
+
+### B1 — FirstOp, LastOp Reducers
+
+**Paper**: None (standard aggregation primitives)
+**Module**: `tambear/src/reduce_op.rs`
+**Fintek leaves unlocked**: ohlcv, counts (partial)
+
+**Purpose**: Add `First` and `Last` to the `ReduceOp` enum so that grouped accumulation can extract the first or last element per group.
+
+**accumulate+gather**: The combine function for `First` is non-commutative (identity on left, discard right). Same for `Last` (discard left, keep right). These are associative monoids with identity = None.
+
+```rust
+pub enum ReduceOp {
+    // ... existing variants ...
+    First,  // identity: None; combine: (a, b) → a if a.is_some() else b
+    Last,   // identity: None; combine: (a, b) → b if b.is_some() else a
+}
+```
+
+For tambear's accumulate framework: the state is `Option<f64>`. First takes the left if defined, right otherwise. Last takes the right if defined, left otherwise. Both are associative (trivially).
+
+**Parameters**: None.
+
+**Lines**: ~15 (enum variant + combine logic + dispatch).
+
+---
+
+### B2 — Burg AR Method
+
+**Paper**: Burg 1968, "A new analysis technique for time series data", Modern Spectrum Analysis, IEEE Press.
+**Module**: `tambear/src/time_series.rs`
+**Fintek leaves unlocked**: ar_burg
+
+**Purpose**: Estimate AR coefficients via forward/backward prediction error minimization. More stable than Yule-Walker for short series.
+
+**Algorithm**:
+```
+Input: x[0..n], max_order p
+Output: ar[0..p], variance, effective_order
+
+1. Initialize forward error ef = x, backward error eb = x.
+2. Initial variance = mean((x - mean(x))²).
+3. For k = 0..p:
+     a. num = Σ_{j=k+1..n} ef[j] * eb[j-1]
+     b. den = Σ_{j=k+1..n} (ef[j]² + eb[j-1]²)
+     c. reflection coefficient: rc = -2·num/den, clamped to (-0.9999, 0.9999)
+     d. Update AR coefficients via Levinson recursion:
+        new_ar[k] = rc
+        for j in 0..k:
+          new_ar[j] = old_ar[j] + rc * old_ar[k-1-j]
+     e. Update errors:
+        for j in k+1..n:
+          new_ef[j] = ef[j] + rc * eb[j-1]
+          new_eb[j] = eb[j-1] + rc * ef[j]
+     f. variance *= (1 - rc²)
+4. Return (ar, variance, p)
+```
+
+**accumulate+gather**: The inner sums for num and den are `accumulate(All, Add)` — pure parallel reduction. The Levinson update is SEQ but O(p) per iteration with p ≤ 12, so trivial CPU. The outer loop over k is inherently sequential.
+
+**Parameters**: `max_order: usize` (default min(12, n/4)).
+
+**Signature**:
+```rust
+pub struct BurgResult {
+    pub ar: Vec<f64>,          // length = effective_order
+    pub variance: f64,
+    pub effective_order: usize,
+    pub reflection_coeffs: Vec<f64>,  // useful for diagnostics
+}
+
+pub fn ar_burg(data: &[f64], max_order: usize) -> BurgResult;
+```
+
+**Lines**: ~50.
+
+---
+
+### B3 — Kalman Filter via Särkkä Matrix Prefix Scan
+
+**Paper**: Särkkä 2013, "Bayesian Filtering and Smoothing", Cambridge University Press. Särkkä & García-Fernández 2021, "Parallel Cubature Kalman Filter".
+**Module**: `tambear/src/time_series.rs` or new `tambear/src/state_space.rs`
+**Fintek leaves unlocked**: kalman, statespace
+**Task**: #101 (already tracked)
+
+**Purpose**: Linear Gaussian state-space filtering. Produces filtered means, covariances, innovation variances, and Kalman gains.
+
+**Algorithm (standard form)**:
+```
+State model: x_t = F·x_{t-1} + w_t, w_t ~ N(0, Q)
+Observation:  y_t = H·x_t + v_t, v_t ~ N(0, R)
+
+Predict:
+  x_pred = F · x_{t-1}
+  P_pred = F · P_{t-1} · F' + Q
+
+Update:
+  innovation: ν_t = y_t - H · x_pred
+  S_t = H · P_pred · H' + R
+  K_t = P_pred · H' · S_t⁻¹
+  x_t = x_pred + K_t · ν_t
+  P_t = (I - K_t · H) · P_pred
+```
+
+**accumulate+gather (Särkkä 5-tuple)**: Express each Kalman step as an associative binary operation on a 5-tuple state (A, b, C, η, J). The prefix scan of these tuples computes the entire filter in O(log n) parallel depth.
+
+The 5-tuple combine rule (Särkkä 2021, Eq. 21):
+```
+(A₁, b₁, C₁, η₁, J₁) ⊕ (A₂, b₂, C₂, η₂, J₂) = (A, b, C, η, J)
+where:
+  M = I + C₁ · J₂
+  A = A₂ · M⁻¹ · A₁
+  b = A₂ · M⁻¹ · (b₁ + C₁ · η₂) + b₂
+  C = A₂ · M⁻¹ · C₁ · A₂' + C₂
+  η = A₁' · (I - J₂ · M⁻¹ · C₁)' · η₂ + η₁
+  J = A₁' · J₂ · M⁻¹ · A₁ + J₁
+```
+
+This is the canonical Särkkä prefix scan element. Each element is a matrix whose combine is associative — exactly the pattern for `accumulate(Prefix, MatrixPrefixCombine)`.
+
+**Parameters**:
+- `f: &[f64]` — state transition matrix F (d×d, row-major)
+- `h: &[f64]` — observation matrix H (m×d)
+- `q: &[f64]` — process noise Q (d×d)
+- `r: &[f64]` — observation noise R (m×m)
+- `x0: &[f64]` — initial state mean
+- `p0: &[f64]` — initial state covariance
+- `observations: &[f64]` — sequence of y_t (n×m)
+- `n: usize`, `d: usize`, `m: usize` — dimensions
+
+**Signature**:
+```rust
+pub struct KalmanResult {
+    pub filtered_means: Vec<f64>,       // n × d
+    pub filtered_covariances: Vec<f64>, // n × d × d
+    pub innovations: Vec<f64>,           // n × m
+    pub innovation_variances: Vec<f64>,  // n × m × m
+    pub kalman_gains: Vec<f64>,          // n × d × m
+    pub log_likelihood: f64,
+}
+
+pub fn kalman_filter(
+    f: &[f64], h: &[f64], q: &[f64], r: &[f64],
+    x0: &[f64], p0: &[f64],
+    observations: &[f64],
+    n: usize, d: usize, m: usize,
+) -> KalmanResult;
+```
+
+**Lines**: ~100 (sequential form first, then prefix-scan form as Task #104's tridiagonal solver lands).
+
+---
+
+### B4 — HMM (Forward-Backward + Viterbi + Baum-Welch)
+
+**Paper**: Rabiner 1989, "A tutorial on hidden Markov models", Proceedings of the IEEE 77(2):257-286.
+**Module**: `tambear/src/hmm.rs` (new)
+**Fintek leaves unlocked**: hmm
+
+**Purpose**: Discrete HMM with K states. Three operations needed:
+1. Forward-backward: compute α_t(i) = P(o_1..o_t, x_t=i) and β_t(i)
+2. Viterbi: most likely state sequence
+3. Baum-Welch: EM for parameter learning
+
+**Algorithm**:
+
+Forward recurrence:
+```
+α_1(i) = π_i · b_i(o_1)
+α_{t+1}(j) = [Σ_i α_t(i) · a_ij] · b_j(o_{t+1})
+```
+
+Backward recurrence:
+```
+β_T(i) = 1
+β_t(i) = Σ_j a_ij · b_j(o_{t+1}) · β_{t+1}(j)
+```
+
+Viterbi (max instead of sum):
+```
+δ_1(i) = π_i · b_i(o_1)
+δ_{t+1}(j) = max_i [δ_t(i) · a_ij] · b_j(o_{t+1})
+ψ_{t+1}(j) = argmax_i [δ_t(i) · a_ij]
+```
+
+Baum-Welch E-step: γ_t(i) = α_t(i)·β_t(i) / Σ_j α_t(j)·β_t(j), ξ_t(i,j) ∝ α_t(i)·a_ij·b_j(o_{t+1})·β_{t+1}(j)
+Baum-Welch M-step: update π, A, B from γ, ξ.
+
+**Critical numerical note**: Use log-space throughout to avoid underflow. α_t(i) → log α_t(i), sum → log-sum-exp.
+
+**accumulate+gather**: Forward-backward is a matrix prefix scan in log space. The combine operation is `LogSumExpMerge` (max, sum of exp-differences). Viterbi uses `MaxMerge` instead. Both are associative → O(log n) parallel depth.
+
+**Parameters**:
+- `n_states: usize` — K
+- `n_observations: usize` — alphabet size (for discrete HMM)
+- `pi: &[f64]` — initial distribution (length K)
+- `a: &[f64]` — transition matrix (K × K, row-major)
+- `b: &[f64]` — emission matrix (K × n_observations)
+- `observations: &[usize]` — discrete observation sequence
+
+**Signature**:
+```rust
+pub struct HmmResult {
+    pub log_likelihood: f64,
+    pub filtered_probs: Vec<f64>,   // n × K (γ_t)
+    pub viterbi_path: Vec<usize>,    // length n
+    pub viterbi_log_prob: f64,
+}
+
+pub fn hmm_forward_backward(
+    pi: &[f64], a: &[f64], b: &[f64],
+    observations: &[usize], n_states: usize, n_obs_symbols: usize,
+) -> HmmResult;
+
+pub fn hmm_baum_welch(
+    pi: &mut [f64], a: &mut [f64], b: &mut [f64],
+    observations: &[usize], n_states: usize, n_obs_symbols: usize,
+    max_iter: usize, tol: f64,
+) -> BaumWelchResult;
+```
+
+**Lines**: ~120.
+
+---
+
+### B5 — Range Volatility Estimators (Parkinson, Garman-Klass, Rogers-Satchell, Yang-Zhang)
+
+**Papers**:
+- Parkinson 1980, "The Extreme Value Method for Estimating the Variance of the Rate of Return", JBus 53:61-65
+- Garman & Klass 1980, "On the Estimation of Security Price Volatilities from Historical Data", JBus 53:67-78
+- Rogers & Satchell 1991, "Estimating Variance From High, Low and Closing Prices", Ann. Appl. Prob. 1:504-512
+- Yang & Zhang 2000, "Drift-Independent Volatility Estimation Based on High, Low, Open, and Close Prices", JBus 73:477-491
+
+**Module**: `tambear/src/volatility.rs`
+**Fintek leaves unlocked**: range_vol
+
+**Purpose**: Estimate volatility from OHLC data. More efficient than close-to-close because it uses intraday extremes.
+
+**Formulas** (all per-period σ² estimators):
+
+Parkinson (uses H, L):
+```
+σ²_P = (1/(4·ln(2))) · (ln(H/L))²
+```
+
+Garman-Klass (uses O, H, L, C):
+```
+σ²_GK = 0.5·(ln(H/L))² - (2·ln(2) - 1)·(ln(C/O))²
+```
+
+Rogers-Satchell (uses O, H, L, C; drift-independent):
+```
+σ²_RS = ln(H/C)·ln(H/O) + ln(L/C)·ln(L/O)
+```
+
+Yang-Zhang (uses O, H, L, C from consecutive periods; drift-independent and minimum-variance):
+```
+σ²_YZ = σ²_overnight + k·σ²_open-to-close + (1-k)·σ²_RS
+where k = 0.34 / (1.34 + (n+1)/(n-1))
+```
+
+**accumulate+gather**: All four are `accumulate(ByKey=period, Mean)` over log-ratio expressions — pure Kingdom A. Each sub-window's σ² is a scatter, then averaged.
+
+**Parameters**:
+- `open: &[f64]`, `high: &[f64]`, `low: &[f64]`, `close: &[f64]` — length n
+- `window_size: usize` — subwindow over which to average
+
+**Signature**:
+```rust
+pub struct RangeVolResult {
+    pub parkinson: f64,
+    pub garman_klass: f64,
+    pub rogers_satchell: f64,
+    pub yang_zhang: f64,
+}
+
+pub fn range_volatility(
+    open: &[f64], high: &[f64], low: &[f64], close: &[f64],
+    window_size: Option<usize>,  // None = use full series
+) -> RangeVolResult;
+```
+
+**Lines**: ~40 (10 per estimator + dispatch).
+
+---
+
+### B6 — Hill Tail Index Estimator
+
+**Paper**: Hill 1975, "A simple general approach to inference about the tail of a distribution", Annals of Statistics 3(5):1163-1174.
+**Module**: `tambear/src/volatility.rs` or new `tambear/src/extremes.rs`
+**Fintek leaves unlocked**: heavy_tail
+
+**Purpose**: Estimate the tail index α of a Pareto-like distribution from the top-k order statistics. Lower α = heavier tail.
+
+**Formula**:
+```
+Sort |r_i| in descending order: X_(1) ≥ X_(2) ≥ ... ≥ X_(n)
+Hill estimator at threshold k:
+  α̂_k = [(1/k) · Σ_{i=1}^k ln(X_(i) / X_(k+1))]⁻¹
+Standard error:
+  se(α̂_k) = α̂_k / √k
+```
+
+**k selection**: The main trick. Two common choices:
+- Fixed: k = 0.1 · n (top 10%)
+- Optimal (Danielsson et al. 2001): minimize MSE via bootstrap — too expensive
+- Automatic (Drees et al. 2000): k = argmin over plot of α̂ vs k (Hill plot stability)
+
+For fintek: use fixed k = max(10, 0.1·n) as default, allow user override.
+
+**accumulate+gather**:
+1. Sort |r| descending: `accumulate(abs, All, SortDescending)` (gather via sort)
+2. Take top k+1 elements: gather
+3. Compute sum of logs: `accumulate(top_k, All, Add)` on ln(X_(i) / X_(k+1))
+4. Invert and divide.
+
+**Parameters**:
+- `data: &[f64]` — returns (we take absolute values internally)
+- `k: Option<usize>` — number of tail observations (default max(10, n/10))
+
+**Signature**:
+```rust
+pub struct HillResult {
+    pub alpha: f64,
+    pub se: f64,
+    pub k_used: usize,
+    pub tail_fraction: f64,
+}
+
+pub fn hill_tail_index(data: &[f64], k: Option<usize>) -> HillResult;
+```
+
+**Lines**: ~25.
+
+---
+
+### B7 — Morlet Continuous Wavelet Transform (CWT)
+
+**Paper**: Torrence & Compo 1998, "A Practical Guide to Wavelet Analysis", BAMS 79(1):61-78.
+**Module**: `tambear/src/signal_processing.rs`
+**Fintek leaves unlocked**: cwt_wavelet, scattering (dependency)
+
+**Purpose**: Time-frequency analysis via Morlet wavelet at multiple scales. Implemented efficiently via FFT.
+
+**Algorithm**:
+```
+1. FFT the signal: X[k] = FFT(x[n]), k = 0..N-1
+2. For each scale s_j = s_0 · 2^(j·δj):
+     a. Angular frequency ω_k for each k
+     b. Morlet wavelet in frequency domain:
+        Ψ̂(s·ω) = π^(-1/4) · H(ω) · exp(-(s·ω - ω_0)²/2)
+        where ω_0 = 6 (default central frequency for Morlet)
+        and H(ω) = 1 if ω > 0, 0 otherwise (one-sided)
+     c. Pointwise multiply: Y_j[k] = X[k] · conj(Ψ̂(s_j·ω_k)) · sqrt(2π·s_j/dt)
+     d. Inverse FFT: W_j[n] = IFFT(Y_j)
+3. Return W[j][n] — wavelet coefficients at scale j, time n
+```
+
+**Scale grid**: s_j = s_0 · 2^(j·δj), j = 0, 1, ..., J where:
+- s_0 = 2·dt (smallest resolvable scale)
+- δj = 0.125 or 0.25 (scale resolution)
+- J = log₂(N·dt / s_0) / δj (largest scale)
+
+**accumulate+gather**:
+- Step 1: FFT (existing primitive)
+- Step 2: Pointwise map per scale (embarrassingly parallel over scales AND frequencies)
+- Step 3: IFFT per scale (existing primitive)
+
+The per-scale computation is independent — all J scales can be computed in parallel. Total work: O(J·N·log N).
+
+**Parameters**:
+- `data: &[f64]`
+- `dt: f64` — sample interval
+- `s0: Option<f64>` — smallest scale (default 2·dt)
+- `dj: Option<f64>` — scale resolution (default 0.125)
+- `n_scales: Option<usize>` — override J (default automatic)
+- `omega_0: f64` — Morlet central frequency (default 6.0)
+
+**Signature**:
+```rust
+pub struct CwtResult {
+    pub coefficients: Vec<Complex>,  // J × N complex values
+    pub scales: Vec<f64>,             // length J
+    pub frequencies: Vec<f64>,        // length J (Fourier-equivalent)
+    pub n_scales: usize,
+    pub n_samples: usize,
+}
+
+pub fn morlet_cwt(
+    data: &[f64], dt: f64,
+    s0: Option<f64>, dj: Option<f64>, n_scales: Option<usize>,
+    omega_0: f64,
+) -> CwtResult;
+```
+
+**Lines**: ~60.
+
+---
+
+### B8 — VPIN (Volume-Synchronized Probability of Informed Trading)
+
+**Paper**: Easley, López de Prado, O'Hara 2012, "Flow Toxicity and Liquidity in a High-Frequency World", Review of Financial Studies 25(5):1457-1493.
+**Module**: `tambear/src/volatility.rs` or new `tambear/src/microstructure.rs`
+**Fintek leaves unlocked**: vpin_bvc
+
+**Purpose**: Estimate order flow toxicity using Bulk Volume Classification (BVC).
+
+**Algorithm**:
+```
+1. Compute price changes: Δp_i = p_i - p_{i-1}
+2. Normalize by rolling std: z_i = Δp_i / σ_window
+3. Classify each trade's volume as buy/sell via CDF:
+     V_buy_i = V_i · Φ(z_i)
+     V_sell_i = V_i · (1 - Φ(z_i))
+   where Φ is the standard normal CDF
+4. Aggregate into equal-volume buckets of size V_bucket:
+     For each bucket: sum V_buy, V_sell, total volume
+5. VPIN = mean(|V_buy - V_sell| / V_bucket) over the last n_buckets
+```
+
+**accumulate+gather**:
+- Price changes: `accumulate(Prefix, Diff)` — O(log n) prefix scan
+- Rolling std: windowed moments (need windowed primitive, or compute per-bucket)
+- Classification: pointwise map with normal_cdf
+- Bucket aggregation: `accumulate(ByKey=bucket_id, Add)` — pure scatter
+- VPIN: mean over last k buckets
+
+**Parameters**:
+- `prices: &[f64]`, `volumes: &[f64]` — tick data
+- `bucket_volume: f64` — volume per bucket
+- `window_size: usize` — rolling std window (for z normalization)
+- `n_buckets: usize` — number of buckets to average VPIN over
+
+**Signature**:
+```rust
+pub struct VpinResult {
+    pub vpin: f64,
+    pub n_buckets_used: usize,
+    pub bucket_imbalances: Vec<f64>,  // |V_buy - V_sell| / V_bucket per bucket
+    pub mean_bucket_volume: f64,
+}
+
+pub fn vpin_bvc(
+    prices: &[f64], volumes: &[f64],
+    bucket_volume: f64, window_size: usize, n_buckets: usize,
+) -> VpinResult;
+```
+
+**Lines**: ~60.
+
+---
+
+### B9 — Natural/Horizontal Visibility Graphs
+
+**Papers**:
+- Lacasa et al. 2008, "From time series to complex networks: The visibility graph", PNAS 105(13):4972-4975 (NVG)
+- Luque et al. 2009, "Horizontal visibility graphs: Exact results for random time series", Phys. Rev. E 80:046103 (HVG)
+
+**Module**: `tambear/src/graph.rs` or `tambear/src/time_series.rs`
+**Fintek leaves unlocked**: nvg, hvg
+
+**Purpose**: Convert a time series to a graph where each data point is a node, and edges connect points that can "see" each other geometrically. Extract graph metrics.
+
+**Algorithm (NVG)**:
+```
+Two points (t_i, y_i) and (t_j, y_j) with i < j are connected iff
+for every intermediate k with i < k < j:
+  y_k < y_i + (y_j - y_i) · (t_k - t_i) / (t_j - t_i)
+```
+(They can "see" each other over the convex hull above intermediate bars.)
+
+**Algorithm (HVG)**: Simpler variant — connection iff every intermediate y_k < min(y_i, y_j) (horizontal visibility).
+
+**Output metrics**:
+- Degree distribution: histogram of node degrees
+- Degree exponent γ: power-law fit via MLE (Clauset et al. 2009)
+- Mean degree
+- Degree entropy: Shannon entropy of normalized degree distribution
+- Clustering coefficient: mean local clustering
+
+**accumulate+gather**: NVG construction is O(n²) naive. Optimal O(n log n) algorithms exist (Lan et al. 2015). For initial implementation, go O(n²):
+- For each pair (i,j), check visibility: pure pairwise check (A+G on pairs).
+- Degree of node i = count of visible neighbors: `accumulate(ByKey=i, Add)`.
+
+HVG has linear-time O(n) algorithm via stack-based scan — more efficient.
+
+**Parameters**:
+- `data: &[f64]` — time series values (times assumed uniform)
+- `horizontal: bool` — true for HVG, false for NVG
+
+**Signature**:
+```rust
+pub struct VisibilityGraphResult {
+    pub n_nodes: usize,
+    pub n_edges: usize,
+    pub degrees: Vec<usize>,
+    pub degree_exponent: f64,    // power-law fit
+    pub mean_degree: f64,
+    pub degree_entropy: f64,
+    pub clustering_coefficient: f64,
+}
+
+pub fn visibility_graph(data: &[f64], horizontal: bool) -> VisibilityGraphResult;
+```
+
+**Lines**: ~80 (NVG O(n²) + HVG stack + metrics).
+
+---
+
+### B10 — Hawkes Process (Exponential Kernel MLE)
+
+**Paper**: Hawkes 1971, "Spectra of some self-exciting and mutually exciting point processes", Biometrika 58(1):83-90. Ogata 1981 for recursive likelihood.
+**Module**: `tambear/src/stochastic.rs`
+**Fintek leaves unlocked**: hawkes
+
+**Purpose**: Fit self-exciting point process with intensity λ(t) = μ + Σ_{t_i < t} α·exp(-β·(t - t_i)).
+
+**Algorithm (Ogata 1981 recursive log-likelihood)**:
+```
+Given event times t_1, ..., t_n on [0, T]:
+
+ℓ(μ, α, β) = Σ_i ln(λ(t_i)) - ∫_0^T λ(s) ds
+
+Intensity at event i (using recursion to avoid O(n²)):
+  A_1 = 0
+  A_i = exp(-β·(t_i - t_{i-1})) · (1 + A_{i-1})   for i >= 2
+  λ(t_i) = μ + α·A_i
+
+Integral:
+  ∫_0^T λ(s) ds = μ·T + (α/β) · Σ_i [1 - exp(-β·(T - t_i))]
+```
+
+**Fit**: Grid search over (α, β) then coordinate descent refinement. μ solved analytically from α, β.
+
+**accumulate+gather**: The recursion A_i depends on A_{i-1} — inherently sequential (SEQ). Can be expressed as a prefix scan with combine:
+```
+(A₁, δ₁) ⊕ (A₂, δ₂) = (exp(-β·δ₂)·(1 + A₁·exp(-β·δ₁... ∏ δ's)) + A₂, δ₁+δ₂)
+```
+Complicated but possible. For initial implementation, keep sequential (O(n) per likelihood evaluation, fast enough for grid search).
+
+**Parameters**:
+- `event_times: &[f64]` — sorted ascending
+- `t_end: f64` — observation window end
+- `threshold_percentile: f64` — (optional) percentile for event detection from returns
+
+**Signature**:
+```rust
+pub struct HawkesResult {
+    pub mu: f64,             // baseline intensity
+    pub alpha: f64,          // excitation strength
+    pub beta: f64,           // decay rate
+    pub branching_ratio: f64,  // α/β (stability: must be < 1)
+    pub log_likelihood: f64,
+}
+
+pub fn hawkes_fit(event_times: &[f64], t_end: f64, max_iter: usize) -> HawkesResult;
+```
+
+**Lines**: ~80.
+
+---
+
+### B11 — Dynamic Time Warping (DTW)
+
+**Paper**: Sakoe & Chiba 1978, "Dynamic programming algorithm optimization for spoken word recognition", IEEE Trans. ASSP 26(1):43-49.
+**Module**: `tambear/src/nonparametric.rs`
+**Fintek leaves unlocked**: dtw
+
+**Purpose**: Minimum-cost alignment between two sequences allowing local time stretching.
+
+**Algorithm**:
+```
+Input: x[0..n], y[0..m]
+DP matrix D[0..n, 0..m]:
+  D[0][0] = |x[0] - y[0]|
+  D[i][0] = D[i-1][0] + |x[i] - y[0]|
+  D[0][j] = D[0][j-1] + |x[0] - y[j]|
+  D[i][j] = |x[i] - y[j]| + min(D[i-1][j], D[i][j-1], D[i-1][j-1])
+Return D[n-1][m-1] — minimum alignment cost
+```
+
+**Variants**:
+- Sakoe-Chiba band (constraint |i-j| ≤ w) — reduces O(nm) to O(max(n,m)·w)
+- Itakura parallelogram — slope constraint
+- Multiple distance metrics (L1, L2, Lp)
+
+**accumulate+gather**: DTW is inherently sequential (anti-diagonal dependency). However, anti-diagonal parallelism exists: cells on the same anti-diagonal can be computed in parallel, then the next anti-diagonal, etc. O(n+m) parallel depth with O(nm) total work. This is a wavefront pattern.
+
+**Parameters**:
+- `x: &[f64]`, `y: &[f64]`
+- `window: Option<usize>` — Sakoe-Chiba band (None = unconstrained)
+- `metric: fn(f64, f64) -> f64` — local distance (default L1)
+
+**Signature**:
+```rust
+pub struct DtwResult {
+    pub distance: f64,
+    pub normalized_distance: f64,  // distance / path_length
+    pub path_length: usize,
+}
+
+pub fn dtw(x: &[f64], y: &[f64], window: Option<usize>) -> DtwResult;
+```
+
+**Lines**: ~30.
+
+---
+
+### B12 — Edit Distance (Levenshtein)
+
+**Paper**: Levenshtein 1966, "Binary codes capable of correcting deletions, insertions, and reversals", Soviet Physics Doklady 10(8):707-710.
+**Module**: `tambear/src/nonparametric.rs`
+**Fintek leaves unlocked**: edit_distance
+
+**Purpose**: Minimum number of insertions, deletions, and substitutions to transform one sequence into another.
+
+**Algorithm**: Same DP structure as DTW but on discrete symbols:
+```
+D[0][0] = 0
+D[i][0] = i, D[0][j] = j
+D[i][j] = min(D[i-1][j] + 1,                  // deletion
+              D[i][j-1] + 1,                   // insertion
+              D[i-1][j-1] + (x[i] != y[j]))   // substitution
+```
+
+**Symbolization**: For return series, bin into k symbols first (e.g., quartiles: {down, down_mild, up_mild, up}). Compute Levenshtein on symbol sequences.
+
+**accumulate+gather**: Same anti-diagonal parallelism as DTW.
+
+**Parameters**:
+- `x: &[usize]`, `y: &[usize]` — symbol sequences
+
+**Signature**:
+```rust
+pub struct EditDistanceResult {
+    pub distance: usize,
+    pub normalized_distance: f64,  // distance / max(n, m)
+}
+
+pub fn edit_distance(x: &[usize], y: &[usize]) -> EditDistanceResult;
+
+// Helper: symbolize continuous series by quantiles
+pub fn symbolize_by_quantiles(data: &[f64], n_symbols: usize) -> Vec<usize>;
+```
+
+**Lines**: ~30 + 10 for symbolization helper.
+
+---
+
+### B13 — Transfer Entropy (Schreiber 2000)
+
+**Paper**: Schreiber 2000, "Measuring Information Transfer", Phys. Rev. Lett. 85(2):461-464.
+**Module**: `tambear/src/information_theory.rs`
+**Fintek leaves unlocked**: transfer_entropy, transfer_entropy_bin
+
+**Purpose**: Information flow from X to Y beyond Y's own past. TE is asymmetric and detects causal influence at the information-theoretic level.
+
+**Formula**:
+```
+TE(X → Y) = Σ p(y_{t+1}, y_t, x_t) · log [p(y_{t+1} | y_t, x_t) / p(y_{t+1} | y_t)]
+```
+
+Equivalently, in terms of joint entropies:
+```
+TE(X → Y) = H(Y_{t+1}, Y_t) + H(X_t, Y_t) - H(Y_t) - H(Y_{t+1}, X_t, Y_t)
+```
+
+**Binning**: Discretize X and Y into q quantile bins (default q = 4). Then joint entropies reduce to histogram counts.
+
+**Algorithm**:
+1. Quantile-bin X and Y into q symbols each.
+2. Build 3D contingency tables: C_{i,j,k} = #{(x_t=i, y_t=j, y_{t+1}=k)}.
+3. Compute four joint entropies via `shannon_entropy_from_counts`.
+4. TE = H(Y_{t+1}, Y_t) + H(X_t, Y_t) - H(Y_t) - H(Y_{t+1}, X_t, Y_t).
+
+**accumulate+gather**: 
+- Binning: pointwise map (map_phi).
+- Contingency table: `accumulate(ByKey=(i,j,k), Add)` — 3D scatter.
+- Entropies: O(q³) CPU — trivial.
+
+**Bias correction (Miller-Madow)**: H_corrected = H + (R-1)/(2n), where R = number of occupied bins. Apply to each entropy.
+
+**Parameters**:
+- `x: &[f64]`, `y: &[f64]` — time series (same length)
+- `n_bins: usize` — quantile bins per variable (default 4)
+- `lag: usize` — prediction lag (default 1)
+- `bias_correct: bool` — Miller-Madow correction (default true)
+
+**Signature**:
+```rust
+pub struct TransferEntropyResult {
+    pub te_xy: f64,          // TE(X → Y)
+    pub te_yx: f64,          // TE(Y → X)
+    pub net_te: f64,         // te_xy - te_yx
+    pub significance_ratio: f64,  // vs shuffled baseline (optional)
+}
+
+pub fn transfer_entropy(
+    x: &[f64], y: &[f64],
+    n_bins: usize, lag: usize, bias_correct: bool,
+) -> TransferEntropyResult;
+```
+
+**Lines**: ~50.
+
+---
+
+### B14 — CUSUM + Binary Segmentation Changepoint
+
+**Papers**:
+- Page 1954, "Continuous inspection schemes", Biometrika 41:100-115 (CUSUM)
+- Vostrikova 1981, "Detecting 'disorder' in multidimensional random processes" (binary segmentation)
+
+**Module**: `tambear/src/time_series.rs`
+**Fintek leaves unlocked**: classical_cp
+
+**Purpose**: Detect structural breaks in mean (or other statistics) via cumulative sum tests.
+
+**CUSUM Algorithm**:
+```
+Given x[0..n]:
+  mean = mean(x)
+  S_0 = 0
+  S_i = S_{i-1} + (x_i - mean)
+  CUSUM_max = max |S_i|
+  break_location = argmax |S_i|
+```
+
+**Binary segmentation**: Recursively apply CUSUM to the segments before and after the detected break, until no significant break is found (threshold on CUSUM_max).
+
+**accumulate+gather**:
+- Mean: `accumulate(All, Mean)` — pure reduction.
+- S_i: `accumulate(Prefix, Add)` on (x_i - mean) — prefix scan.
+- max |S_i| and argmax: `accumulate(All, ArgMaxAbs)` — reduction.
+
+**Parameters**:
+- `data: &[f64]`
+- `threshold: f64` — minimum CUSUM for significance
+- `max_segments: usize` — maximum recursion depth
+
+**Signature**:
+```rust
+pub struct ChangepointResult {
+    pub n_changepoints: usize,
+    pub changepoints: Vec<usize>,     // locations sorted
+    pub max_cusum: f64,
+    pub segment_means: Vec<f64>,
+}
+
+pub fn cusum_binary_segmentation(
+    data: &[f64], threshold: f64, max_segments: usize,
+) -> ChangepointResult;
+```
+
+**Lines**: ~40.
+
+---
+
+### B15 — PELT Changepoint Detection
+
+**Paper**: Killick, Fearnhead & Eckley 2012, "Optimal detection of changepoints with a linear computational cost", JASA 107(500):1590-1598.
+**Module**: `tambear/src/time_series.rs`
+**Fintek leaves unlocked**: pelt
+
+**Purpose**: Exact changepoint detection via dynamic programming with pruning. O(n) amortized.
+
+**Algorithm**:
+```
+F(t) = min_{s < t} [F(s) + C(y_{s+1..t}) + β]
+```
+where C(segment) is the segment cost (negative log-likelihood for Gaussian: n·log(var)) and β is the BIC penalty.
+
+**Pruning**: If F(s) + C(y_{s+1..t}) > F(t) + K for some constant K, then s cannot be a changepoint for any future t. Remove it from the candidate set.
+
+**accumulate+gather**: The DP recursion is sequential. But each segment cost can be computed from running sums via `accumulate(Prefix, Sum)` for mean and `accumulate(Prefix, SumSq)` for variance. So C(y_{s+1..t}) reduces to O(1) per evaluation given prefix sums.
+
+**Parameters**:
+- `data: &[f64]`
+- `penalty: Option<f64>` — β (default BIC: 2·log(n)·σ²)
+- `min_segment_length: usize` — minimum segment size (default 1)
+
+**Signature**:
+```rust
+pub struct PeltResult {
+    pub n_changepoints: usize,
+    pub changepoints: Vec<usize>,
+    pub segment_costs: Vec<f64>,
+    pub total_cost: f64,
+}
+
+pub fn pelt_changepoint(
+    data: &[f64], penalty: Option<f64>, min_segment_length: usize,
+) -> PeltResult;
+```
+
+**Lines**: ~60.
+
+---
+
+### B16 — Bayesian Online Changepoint Detection (BOCPD)
+
+**Paper**: Adams & MacKay 2007, "Bayesian Online Changepoint Detection", arXiv:0710.3742.
+**Module**: `tambear/src/time_series.rs` or `tambear/src/bayesian.rs`
+**Fintek leaves unlocked**: bocpd
+
+**Purpose**: Online (sequential) changepoint detection. Tracks posterior over "run length" r_t — time since last changepoint.
+
+**Algorithm** (Gaussian predictive, constant hazard H = 1/λ):
+```
+Message passing:
+  P(r_t = r+1 | x_{1:t}) ∝ P(x_t | r_{t-1}=r) · P(r_{t-1}=r | x_{1:t-1}) · (1 - H)
+  P(r_t = 0 | x_{1:t}) ∝ Σ_r P(x_t | r_{t-1}=r) · P(r_{t-1}=r | x_{1:t-1}) · H
+
+Normalize: P(r_t | x_{1:t}) = above / Σ
+
+Gaussian predictive (conjugate Normal-Gamma):
+  Maintain (n_r, μ_r, κ_r, α_r, β_r) for each run length r
+  p(x | r) = t-distribution with updated params
+```
+
+**accumulate+gather**: Inherently sequential (online algorithm). Each time step: update all run-length hypotheses (A+G over r). Then advance.
+
+**Parameters**:
+- `data: &[f64]`
+- `hazard_rate: f64` — H (default 1/100 = expected run length of 100)
+- `prior_mu: f64`, `prior_kappa: f64`, `prior_alpha: f64`, `prior_beta: f64` — Normal-Gamma prior
+
+**Signature**:
+```rust
+pub struct BocpdResult {
+    pub run_length_distribution: Vec<Vec<f64>>,  // n × (n+1)
+    pub max_a_posteriori: Vec<usize>,  // most likely run length at each t
+    pub changepoint_probs: Vec<f64>,    // P(r_t = 0 | x_{1:t})
+}
+
+pub fn bocpd(
+    data: &[f64], hazard_rate: f64,
+    prior_mu: f64, prior_kappa: f64, prior_alpha: f64, prior_beta: f64,
+) -> BocpdResult;
+```
+
+**Lines**: ~80.
+
+---
+
+### B17 — Empirical Mode Decomposition (EMD)
+
+**Paper**: Huang et al. 1998, "The empirical mode decomposition and the Hilbert spectrum for nonlinear and non-stationary time series analysis", Proc. R. Soc. A 454:903-995.
+**Module**: `tambear/src/signal_processing.rs`
+**Fintek leaves unlocked**: emd
+
+**Purpose**: Decompose signal into intrinsic mode functions (IMFs) via iterative sifting. Each IMF captures one oscillatory mode.
+
+**Algorithm**:
+```
+1. Find all local maxima and minima.
+2. Interpolate max envelope (cubic spline on maxima) and min envelope.
+3. Mean envelope m = (max_env + min_env) / 2.
+4. Candidate IMF: h = x - m.
+5. Check IMF criterion: # extrema ≈ # zero crossings AND mean envelope ≈ 0.
+6. If yes, store h as IMF, subtract from x, repeat from step 1.
+7. If no, set x = h, repeat sifting from step 1.
+8. Stop when residual is monotonic.
+```
+
+**Difficulty**: Extrema detection is sequential. Spline interpolation per envelope. The sifting criterion is heuristic. Not a clean A+G algorithm.
+
+**accumulate+gather**: 
+- Extrema detection: can be parallelized as local comparisons (window size 3).
+- Spline interpolation: mostly sequential (tridiagonal solve). Use existing `interpolation::natural_cubic_spline`.
+- Sifting loop: inherently iterative (ITER).
+
+**Parameters**:
+- `data: &[f64]`
+- `max_imfs: usize` — maximum IMFs to extract (default 10)
+- `sift_tol: f64` — stopping criterion for sifting (default 0.2, Huang's recommendation)
+- `max_sift_iter: usize` — maximum sifting iterations per IMF (default 100)
+
+**Signature**:
+```rust
+pub struct EmdResult {
+    pub imfs: Vec<Vec<f64>>,   // list of IMFs, each length n
+    pub residual: Vec<f64>,     // trend (monotonic residual)
+    pub n_imfs: usize,
+}
+
+pub fn emd(
+    data: &[f64], max_imfs: usize, sift_tol: f64, max_sift_iter: usize,
+) -> EmdResult;
+```
+
+**Lines**: ~100 (extrema + spline + sifting loop + stopping criteria).
+
+---
+
+### B18 — FastICA
+
+**Paper**: Hyvärinen & Oja 1997, "A fast fixed-point algorithm for independent component analysis", Neural Computation 9(7):1483-1492.
+**Module**: `tambear/src/dim_reduction.rs`
+**Fintek leaves unlocked**: ica
+
+**Purpose**: Find linear transformation that makes output components maximally non-Gaussian (independent).
+
+**Algorithm**:
+```
+1. Center data: X = X - mean(X)
+2. Whiten via PCA: X_white = D^(-1/2) · V' · X, where V, D = eigendecomp of cov(X)
+3. For each component:
+     a. Initialize w randomly (unit norm)
+     b. Loop:
+        w_new = E[x · g(w'x)] - E[g'(w'x)] · w    (fixed-point update)
+        where g(u) = tanh(u) or u³ (contrast functions)
+        Orthogonalize against previously found components: w -= Σ_j (w'w_j) · w_j
+        Normalize: w /= ||w||
+        Check convergence: |1 - |w_new' · w_old|| < tol
+4. Return unmixing matrix W (stacked w's)
+```
+
+**accumulate+gather**: 
+- Whitening: SVD (existing).
+- Expectations E[x·g(w'x)] and E[g'(w'x)]: `accumulate(All, Mean)` over pointwise functions.
+- Orthogonalization: matrix-vector operations.
+
+Each iteration is A+G. Outer loop is ITER.
+
+**Parameters**:
+- `data: &[f64]` (n × d, row-major)
+- `n_components: usize`
+- `contrast: ContrastFunction` — enum { LogCosh, Cube, Gaussian }
+- `max_iter: usize` (default 200)
+- `tol: f64` (default 1e-4)
+
+**Signature**:
+```rust
+pub enum IcaContrast { LogCosh, Cube, Gaussian }
+
+pub struct IcaResult {
+    pub components: Vec<f64>,     // n_components × d (unmixing matrix)
+    pub sources: Vec<f64>,        // n × n_components (estimated independent sources)
+    pub mean: Vec<f64>,           // column means (for transform)
+    pub whitening: Vec<f64>,      // whitening matrix
+    pub iterations: Vec<usize>,   // iterations per component
+    pub negentropies: Vec<f64>,   // negentropy per component
+}
+
+pub fn fast_ica(
+    data: &[f64], n: usize, d: usize, n_components: usize,
+    contrast: IcaContrast, max_iter: usize, tol: f64,
+) -> IcaResult;
+```
+
+**Lines**: ~100.
+
+---
+
+### B19 — Wigner-Ville Distribution
+
+**Paper**: Wigner 1932, "On the quantum correction for thermodynamic equilibrium", Phys. Rev. 40:749. Ville 1948, "Théorie et applications de la notion de signal analytique".
+**Module**: `tambear/src/signal_processing.rs`
+**Fintek leaves unlocked**: wigner_ville
+
+**Purpose**: Quadratic time-frequency distribution. Higher resolution than spectrogram but has cross-term artifacts.
+
+**Discrete formula**:
+```
+W(t, f) = 2 · Re[Σ_τ x(t+τ) · x*(t-τ) · exp(-j·4π·f·τ)]
+```
+
+**Algorithm**:
+1. Compute analytic signal: z(t) = x(t) + j·H(x(t))  (Hilbert transform)
+2. For each time t, form r(τ) = z(t+τ) · z*(t-τ) for τ in a window.
+3. FFT r(τ) in τ to get W(t, f).
+4. Aggregate features: time-frequency concentration (Rényi entropy of |W|), instantaneous frequency variance, cross-term energy, marginal entropy.
+
+**accumulate+gather**:
+- Hilbert transform: existing primitive.
+- Pointwise products r(τ): map.
+- FFT: existing primitive.
+- Per time t independent: all t can be parallelized.
+
+**Parameters**:
+- `data: &[f64]`
+- `window_length: usize` — τ range (default min(n/4, 256))
+
+**Signature**:
+```rust
+pub struct WignerVilleResult {
+    pub distribution: Vec<f64>,  // n_time × n_freq
+    pub n_time: usize,
+    pub n_freq: usize,
+    pub time_freq_concentration: f64,  // Rényi entropy (lower = more concentrated)
+    pub instantaneous_freq_var: f64,
+    pub cross_term_energy: f64,        // energy in negative regions
+    pub marginal_entropy: f64,
+}
+
+pub fn wigner_ville(data: &[f64], window_length: usize) -> WignerVilleResult;
+```
+
+**Lines**: ~60.
+
+---
+
+### B20 — Savitzky-Golay Filter
+
+**Paper**: Savitzky & Golay 1964, "Smoothing and Differentiation of Data by Simplified Least Squares Procedures", Anal. Chem. 36(8):1627-1639.
+**Module**: `tambear/src/signal_processing.rs`
+**Fintek leaves unlocked**: savgol
+
+**Purpose**: Polynomial least-squares smoothing in a sliding window. Preserves higher moments (peaks, widths) better than moving average.
+
+**Algorithm**:
+```
+Pre-compute convolution coefficients h[k] by fitting polynomial of degree p
+to window of length w:
+  Let A be the Vandermonde-like matrix of window offsets [-m..m] with columns [1, k, k², ..., k^p]
+  h = (A' A)⁻¹ A' e₀
+  where e₀ picks the center value (for smoothing) or derivative value (for differentiation)
+
+Apply as convolution:
+  y[i] = Σ_{k=-m..m} h[k] · x[i+k]
+```
+
+**For derivatives**: Replace e₀ with e_d where d is the derivative order. The same matrix inverse gives coefficients for the d-th derivative.
+
+**accumulate+gather**:
+- Coefficient computation: one-time matrix solve (small, p+1 × p+1).
+- Convolution: `accumulate(ByKey=output_index, Add)` — pure scatter with stencil pattern.
+
+**Parameters**:
+- `data: &[f64]`
+- `window_length: usize` — must be odd (default 11)
+- `polyorder: usize` — polynomial degree (default 3)
+- `deriv: usize` — derivative order (default 0 = smoothing, 1 = first derivative, etc.)
+
+**Signature**:
+```rust
+pub struct SavGolResult {
+    pub smoothed: Vec<f64>,
+    pub derivatives: Option<Vec<f64>>,  // only if deriv > 0
+    pub coefficients: Vec<f64>,  // for reference
+}
+
+pub fn savitzky_golay(
+    data: &[f64], window_length: usize, polyorder: usize, deriv: usize,
+) -> SavGolResult;
+```
+
+**Lines**: ~50.
+
+---
+
+## Category B Summary
+
+**20 tambear implementations totaling ~1,260 lines** unlock 28 fintek trunk-rs leaves:
+
+| Spec | Name | Lines | Fintek leaves |
+|------|------|-------|---------------|
+| B1 | FirstOp/LastOp | 15 | ohlcv, counts |
+| B2 | Burg AR | 50 | ar_burg |
+| B3 | Kalman filter | 100 | kalman, statespace |
+| B4 | HMM | 120 | hmm |
+| B5 | Range volatility | 40 | range_vol |
+| B6 | Hill tail index | 25 | heavy_tail |
+| B7 | Morlet CWT | 60 | cwt_wavelet, scattering |
+| B8 | VPIN | 60 | vpin_bvc |
+| B9 | Visibility graphs | 80 | nvg, hvg |
+| B10 | Hawkes process | 80 | hawkes |
+| B11 | DTW | 30 | dtw |
+| B12 | Edit distance | 40 | edit_distance |
+| B13 | Transfer entropy | 50 | transfer_entropy, transfer_entropy_bin |
+| B14 | CUSUM + binseg | 40 | classical_cp |
+| B15 | PELT | 60 | pelt |
+| B16 | BOCPD | 80 | bocpd |
+| B17 | EMD | 100 | emd |
+| B18 | FastICA | 100 | ica |
+| B19 | Wigner-Ville | 60 | wigner_ville |
+| B20 | Savitzky-Golay | 50 | savgol |
+
+**Additional smaller gaps** (already noted in family tables, not detailed above — each <15 lines):
+- Miller-Madow bias correction for MI (5 lines, goes into information_theory.rs)
+- 1D Wasserstein-1 distance (15 lines, goes into nonparametric.rs)
+- Tripower quarticity for realized vol (15 lines, goes into volatility.rs)
+- Fisher information from histogram (25 lines, goes into information_theory.rs)
+- LZ76 complexity parser (30 lines, goes into complexity.rs)
+- Recurrence quantification analysis (50 lines, goes into complexity.rs — uses existing distance matrix)
+- Cross-PSD for coherence (20 lines, goes into signal_processing.rs — uses existing FFT)
+- Seismic MLEs (Gutenberg-Richter b, Omori p) (30 lines, new extremes.rs module)
+- 2D convex hull (30 lines, goes into graph.rs or new geometry.rs)
+- Logsig level-1/2 Levy area (40 lines, new rough_paths.rs or signal_processing.rs)
+- STL decomposition (60 lines, goes into time_series.rs)
+- SDE Nadaraya-Watson drift/diffusion (30 lines, goes into stochastic.rs — uses existing KDE)
+
+**Grand total**: ~1,640 lines of new tambear code. Unlocks all 30 GAP leaves plus dependencies. Pathmaker can work on these in priority order (B1 unblocks ohlcv which is Family 3 foundation; B3 + B4 unblock state-space).
+
+---
+
 _Document is the formal mapping specification for the tambear-fintek bridge (Task #135)._
+_Every fintek rescue is simultaneously a tambear math entry being checked off._
 _Updated as new tambear primitives land and fintek leaves are migrated._

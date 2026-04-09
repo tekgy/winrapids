@@ -1,0 +1,8 @@
+[package]
+name = "tambear-fintek"
+version = "0.1.0"
+edition = "2021"
+description = "Bridge crate: drop-in native compute backends for fintek leaves, built on tambear math primitives."
+
+[dependencies.tambear]
+path = "../tambear"

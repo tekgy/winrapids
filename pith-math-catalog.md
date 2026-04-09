@@ -815,7 +815,7 @@ Generated: 2026-04-08
 
 ## 15. Survival Analysis
 
-### 15.1 Kaplan-Meier Estimator
+### 26.1 Kaplan-Meier Estimator
 - **Non-parametric survival curve**: Ŝ(t) = ∏_{t_i ≤ t} (1 - d_i / n_i)
 - **d_i**: Number of events at time t_i
 - **n_i**: Number at risk (not yet censored or experienced event) just before t_i
@@ -823,7 +823,7 @@ Generated: 2026-04-08
 - **Used in**: Kaplan-Meier method step
 - **Log-rank test**: Compares two KM curves; H₀: curves are equal
 
-### 15.2 Cox Proportional Hazards
+### 26.2 Cox Proportional Hazards
 - **Model**: h(t|x) = h₀(t) exp(β'x) where h₀(t) is baseline hazard
 - **Proportional hazards assumption**: HR doesn't change over time
 - **Partial likelihood**: Estimate β without modeling h₀(t)
@@ -1190,17 +1190,16 @@ Generated: 2026-04-08
 
 ---
 
----
 
 ## 26. Document Analysis & Prose Intelligence
 
 The prose intelligence layer (`src/editor/analyze.ts`, `src/layout/tracks/`, `src/editor/citations/`) provides real-time linguistic analysis of documents. Seven overlay layers + five timeline tracks + spatial readability gauges form the document intelligence layer. All metrics compute per-line (Audience layer) or per-paragraph (tracks) to reveal document structure and quality.
 
-### 15.1 Readability Formulas (Audience Layer)
+### 26.1 Readability Formulas (Audience Layer)
 
 All formulas built via `text-readability` NPM module (wrapper around classical formulas) + custom syllable counting. Applied per-line; only outliers (±3 grades from document mean) are highlighted.
 
-#### 15.1.1 Flesch-Kincaid Grade Level
+#### 26.1.1 Flesch-Kincaid Grade Level
 - **Equation**: $\text{GradeLevel} = 0.39 \times \text{(words/sentence)} + 11.8 \times \text{(syllables/word)} - 15.59$
 - **Implementation**: `src/editor/analyze.ts:425-437`, wrapped via `text-readability.fleschKincaidGrade()`
 - **Range**: 0-18+ (0-6 = early elementary; 8-10 = general audience; 12+ = college/technical)
@@ -1208,60 +1207,60 @@ All formulas built via `text-readability` NPM module (wrapper around classical f
 - **Properties**: Balance of sentence complexity + word difficulty; penalizes short words and sentences (low grade)
 - **Note**: Original formula by Flesch (1948, re-weighted by Kincaid et al. 1975) — the standard US readability metric
 
-#### 15.1.2 Coleman-Liau Index
+#### 26.1.2 Coleman-Liau Index
 - **Equation**: $\text{CLI} = 0.0588 \times \text{L} - 0.296 \times \text{S} - 15.8$, where L = chars/100 words, S = sentences/100 words
 - **Implementation**: `src/editor/analyze.ts:433`, via `text-readability.colemanLiauIndex()`
 - **Range**: 0-18+
 - **Advantage**: Uses character count instead of syllables (more robust to mispronunciation)
 - **Comparison to FK**: Often similar; CLI avoids syllable ambiguity
 
-#### 15.1.3 Gunning Fog Index
+#### 26.1.3 Gunning Fog Index
 - **Equation**: $\text{FOG} = 0.4 \times \left(\text{words/sentence} + 100 \times \frac{\text{complex words}}{\text{words}}\right)$, where "complex" = 3+ syllables (excluding proper nouns, 3-syllable combinations)
 - **Implementation**: `src/editor/analyze.ts:434`, via `text-readability.gunningFog()`
 - **Range**: 0-18+
 - **Emphasis**: Counts difficult (polysyllabic) words explicitly; designed for business writing
 - **Interpretation**: Grade level (4 = fourth grade readable)
 
-#### 15.1.4 SMOG Index (Simple Measure of Gobbledygook)
+#### 26.1.4 SMOG Index (Simple Measure of Gobbledygook)
 - **Equation**: $\text{SMOG} = 1.0430 \times \sqrt{3 \times \text{(polysyllabic words)}} + 3.1291$
 - **Implementation**: `src/editor/analyze.ts:435`, via `text-readability.smogIndex()`
 - **Range**: 0-20
 - **Design**: Developed for healthcare writing; very conservative (tends to estimate higher grades than other formulas)
 - **Accuracy**: Claims 68% accuracy (±1.5 grades)
 
-#### 15.1.5 Automated Readability Index (ARI)
+#### 26.1.5 Automated Readability Index (ARI)
 - **Equation**: $\text{ARI} = 4.71 \times \text{(chars/words)} + 0.5 \times \text{(words/sentences)} - 21.43$
 - **Implementation**: `src/editor/analyze.ts:436`, via `text-readability.automatedReadabilityIndex()`
 - **Range**: 0-18+
 - **Advantage**: Character-based (no syllable counting); fast to compute
 - **History**: Originally designed for typewriter-era readability assessment (DuBay, 2004)
 
-#### 15.1.6 Dale-Chall Readability Score
+#### 26.1.6 Dale-Chall Readability Score
 - **Equation**: $\text{DC} = 0.1579 \times \text{(\% difficult words)} + 0.0496 \times \text{(words/sentence)}$; adjust if < 4.9 or > 9.9
 - **Implementation**: `src/editor/analyze.ts:437`, via `text-readability.daleChallReadabilityScore()`
 - **Range**: 0.9-10.0 (converted to grade level scale)
 - **Reference**: Uses Dale-Chall 3000-word list of common English words; marks 3000+ not-in-list as "difficult"
 - **Reliability**: Generally considered most reliable for K-12 range
 
-#### 15.1.7 Consensus Grade (Median of Six Formulas)
+#### 26.1.7 Consensus Grade (Median of Six Formulas)
 - **Equation**: $\text{Grade} = \text{median}(\text{FK, CLI, FOG, SMOG, ARI, DC})$
 - **Implementation**: `src/editor/analyze.ts:426`, via `text-readability.textMedian()`
 - **Rationale**: Different formulas emphasize different aspects; median is robust to outlier formulas and smooths variations
 - **Used in**: Primary display grade in Audience layer; stored per-line in `ReadabilityBreakdown`
 - **Cache**: Per-line breakdowns cached in `_audienceBreakdowns` map; rebuilt if text changes
 
-#### 15.1.8 Syllable Counting
+#### 26.1.8 Syllable Counting
 - **Source**: `syllable` NPM module (accurate phonetic counting)
 - **Fallback**: Simple heuristic: count vowel groups, subtract 1 if word ends in 'e', minimum 1
 - **Implementation**: `src/editor/analyze.ts:345-349` (calls syllable package); `src/editor/citations/paper-analysis.ts:113-120` (heuristic fallback)
 - **Used in**: FK, Gunning Fog, SMOG formulas
 - **Accuracy**: Package uses phonetic rules; heuristic suitable for bulk analysis when package unavailable
 
-### 15.2 Source & Claim Analysis Layer
+### 26.2 Source & Claim Analysis Layer
 
 Identifies cited claims vs. unsourced assertions; per-line inline highlighting.
 
-#### 15.2.1 Citation Pattern Detection
+#### 26.2.1 Citation Pattern Detection
 - **Regex patterns**: Six patterns detect academic citations
   1. `\.\s*\(\d+(?:,\s*\d+)*\)` — `(1)`, `(1, 2)` after sentence end (superscript-style brackets)
   2. `\)\s*\(\d+(?:,\s*\d+)*\)` — `)(\d+)` (parenthetical citation after clause)
@@ -1273,7 +1272,7 @@ Identifies cited claims vs. unsourced assertions; per-line inline highlighting.
 - **Matching**: Case-insensitive except author name (3+ chars, capitalized for pattern 6)
 - **Score**: Lines with citations marked as category "cited" (score 1.0)
 
-#### 15.2.2 Claim Pattern Detection
+#### 26.2.2 Claim Pattern Detection
 - **Regex patterns**: Nine patterns detect unsourced claim language
   1. `\bresults?\s+(demonstrate|show|indicate|suggest|reveal)\b`
   2. `\bevidence\s+(suggests?|indicates?|shows?)\b`
@@ -1288,7 +1287,7 @@ Identifies cited claims vs. unsourced assertions; per-line inline highlighting.
 - **Matching**: Case-insensitive word boundary matching
 - **Scoring**: Lines with claim markers but no citations marked as category "claim" (score 0.8); without citations, "unsourced claim"
 
-#### 15.2.3 Source Analysis per-Line Logic
+#### 26.2.3 Source Analysis per-Line Logic
 - **Algorithm**: `analyzeSource()` at `src/editor/analyze.ts:248-292`
 1. Split text by lines; skip headings and blank lines
 2. Find all citation + claim pattern matches per line with inline highlighting
@@ -1298,11 +1297,11 @@ Identifies cited claims vs. unsourced assertions; per-line inline highlighting.
    - `neutral`: Neither → score 0.2
 - **Highlights**: Inline decorations mark exact citation and claim phrases for click-to-source workflow
 
-### 15.3 Certainty & Hedging Layer
+### 26.3 Certainty & Hedging Layer
 
 Distinguishes between definitive (high confidence) vs. hedged (tentative) language; per-line inline highlighting.
 
-#### 15.3.1 Hedge Patterns (Tentative Language)
+#### 26.3.1 Hedge Patterns (Tentative Language)
 - **Patterns**: 12 markers of qualification/uncertainty
   1. `\bmay\b` — Modal auxiliary of permission/possibility
   2. `\bmight\b` — Counterfactual possibility
@@ -1321,7 +1320,7 @@ Distinguishes between definitive (high confidence) vs. hedged (tentative) langua
 - **Matching**: Case-insensitive; word-boundary respecting
 - **Score**: Lines with hedges scored 0.3 (tentative); count of hedge markers reported
 
-#### 15.3.2 Definitive Patterns (High Confidence Language)
+#### 26.3.2 Definitive Patterns (High Confidence Language)
 - **Patterns**: 8 markers of certainty/assertion
   1. `\bclearly\b` — Clarity assertion
   2. `\bdefinitely\b` — Absolute affirmation
@@ -1336,7 +1335,7 @@ Distinguishes between definitive (high confidence) vs. hedged (tentative) langua
 - **Matching**: Case-insensitive; full-word matching
 - **Score**: Lines with definitive markers scored 0.9; count reported
 
-#### 15.3.3 Certainty Analysis per-Line Logic
+#### 26.3.3 Certainty Analysis per-Line Logic
 - **Algorithm**: `analyzeCertainty()` at `src/editor/analyze.ts:294-339`
 1. Split by lines; skip headings and blank lines
 2. Find all hedge + definitive pattern matches with inline highlighting
@@ -1346,43 +1345,43 @@ Distinguishes between definitive (high confidence) vs. hedged (tentative) langua
    - `neutral`: Neither → score 0.5
 - **Detail**: Count of markers reported (e.g., "3 hedge markers", "2 definitive markers")
 
-### 15.4 Coherence & Semantic Continuity
+### 26.4 Coherence & Semantic Continuity
 
 **Status**: Dark code. Placeholder functions in `analyze.ts:177-186` (`analyzeFlow`, `analyzeArgument`) have `TAMBEAR: removed prose module` comments. Full implementations exist in archived prose modules; reintegration pending. Intended to track:
 - **Flow**: Sentence-to-sentence semantic drift; discourse connectors; paragraph-level cohesion
 - **Argument**: Claim density per paragraph; evidence density ratio; transition quality between claims and support
 
-### 15.5 Resonance & Internal Echo Detection
+### 26.5 Resonance & Internal Echo Detection
 
 **Status**: Dark code stub at `src/editor/analyze.ts:498-500`. Full implementation removed in TAMBEAR transition.
 
-#### 15.5.1 Intended Concept
+#### 26.5.1 Intended Concept
 - **Goal**: Detect word/phrase repetition patterns (dissonance) vs. rhetorical callbacks (harmony)
 - **Inputs**: Lexical frequency vectors per paragraph
 - **Outputs**: Harmony (strategic echo), dissonance (unintended repetition), silent (no echoes)
 - **Used in**: TAMBEAR timeline/craft signal (future expedition seed)
 - **Reference**: Memory file `metapca-writer-strategies.md` — future bridge via MetaPCA cross-commit analysis
 
-### 15.6 Citation Density Track (Temporal)
+### 26.6 Citation Density Track (Temporal)
 
 Per-commit line chart showing citation support density over versions; integrates with git history.
 
-#### 15.6.1 Citation Density Formula
+#### 26.6.1 Citation Density Formula
 - **Calculation**: (Number of lines with ≥1 citation) / (Total prose lines) × 100%
 - **Input**: Citation pattern matches from `analyzeSource()` per commit
 - **Visualization**: Line chart mapped to timeline history axis; color-coded (green = well-cited, yellow = moderate, orange = sparse, red = uncited)
 - **Used in**: Quality track composite (15% weight)
 
-### 15.7 Pacing Track (Spatial)
+### 26.7 Pacing Track (Spatial)
 
 Per-paragraph readability waveform mapped to character offset within current document.
 
-#### 15.7.1 Paragraph Segmentation
+#### 26.7.1 Paragraph Segmentation
 - **Delimiters**: Blank lines, headings (`^#+`), blockquotes (`^[>|]`)
 - **Implementation**: `src/layout/tracks/pacing-track.ts:162-226` (`_compute()` method)
 - **Output**: Array of `PacingDataPoint`: `{paraIdx, from, to, grade, sentenceCount, avgSentenceLen}`
 
-#### 15.7.2 Per-Paragraph Grade Aggregation
+#### 26.7.2 Per-Paragraph Grade Aggregation
 - **Algorithm**:
   1. Segment text into paragraphs by line delimiters
   2. For each line in paragraph, fetch cached `ReadabilityBreakdown` (median grade)
@@ -1392,50 +1391,50 @@ Per-paragraph readability waveform mapped to character offset within current doc
 - **Implementation**: `src/layout/tracks/pacing-track.ts:176-202`
 - **Grade Color**: Green (≤8), yellow (8-14), red (>14)
 
-#### 15.7.3 Spatial Visualization
+#### 26.7.3 Spatial Visualization
 - **Axis**: Horizontal (left to right) maps document character range (0 to text.length)
 - **Bar height**: FK grade (0-20 max, clipped); opacity gradient
 - **Median line**: Dashed line at document average grade
 - **HitTest**: Hover reveals paragraph grade, sentence/word stats, jump-to-paragraph link
 
-### 15.8 Quality Track (Temporal)
+### 26.8 Quality Track (Temporal)
 
 Per-commit composite score integrating six prose dimensions; line chart over version history.
 
-#### 15.8.1 Quality Composite Score Formula
+#### 26.8.1 Quality Composite Score Formula
 - **Dimensions**: Argument (claim+evidence), coherence, vocabulary diversity, register consistency, rhetoric, citation density
 - **Aggregation**: Weighted average or geometric mean of six normalized 0-1 scores
 - **Implementation**: `src/layout/tracks/quality-track.ts` display only; computation upstream (likely in step-runner.ts or export pipeline)
 - **Range**: 0-1 (0 = early draft, 1 = publication-ready)
 
-#### 15.8.2 Quality Assessment Mapping
+#### 26.8.2 Quality Assessment Mapping
 - **Score ≥ 0.7**: "strong" (green)
 - **Score 0.5-0.7**: "developing" (yellow)
 - **Score 0.3-0.5**: "needs work" (orange/peach)
 - **Score < 0.3**: "early draft" (red)
 - **Live badge**: Right-aligned "75% strong" (example) with git commit message on hover
 
-### 15.9 Document Language Detection
+### 26.9 Document Language Detection
 
 Wrapper around `franc` language detection; guards readability formulas (English-only).
 
-#### 15.9.1 Language Detection via Franc
+#### 26.9.1 Language Detection via Franc
 - **Source**: `franc` NPM module (n-gram based language identification)
 - **Input**: Full document text (franc requires ~100+ chars for accuracy)
 - **Output**: ISO 639-3 language code (e.g., `eng`, `fra`, `deu`)
 - **Implementation**: `src/editor/analyze.ts:370-376`
 - **Caching**: Result cached per text; regenerated on text change
 
-#### 15.9.2 Readability Guard Logic
+#### 26.9.2 Readability Guard Logic
 - **Rules**: Apply readability analysis only if detected language is English (`eng`), Scottish English (`sco`), or Undetermined (`und`)
 - **Non-English fallback**: Return neutral results (score 0) per line to avoid meaningless grades
 - **Implementation**: `src/editor/analyze.ts:393-401` (`analyzeAudience()` guard)
 
-### 15.10 Analysis Layer Registration System
+### 26.10 Analysis Layer Registration System
 
 Extensible layer architecture allowing runtime registration of new analysis layers.
 
-#### 15.10.1 Layer Configuration
+#### 26.10.1 Layer Configuration
 - **Interface**: `LayerConfig` specifies layer ID, label, symbol (emoji), description, category color map
 - **Example**:
   ```typescript
@@ -1451,24 +1450,24 @@ Extensible layer architecture allowing runtime registration of new analysis laye
   ```
 - **Implementation**: `src/editor/analyze.ts:45-52`, 81-174`
 
-#### 15.10.2 Layer Function Contract
+#### 26.10.2 Layer Function Contract
 - **Function type**: `LayerFn = (text: string) => Map<number, LayerResult>`
   - Input: Full document text
   - Output: Map of line index (0-based) → analysis result
   - `LayerResult`: score (0-1), category (string), detail (string), optional highlights array
 - **Per-line assumption**: Analysis operates on `\n`-split lines; line indices are map keys
 
-#### 15.10.3 Layer Registration & Retrieval
+#### 26.10.3 Layer Registration & Retrieval
 - **Registration**: `registerAnalysisLayer(config, fn, aiEnhancement?)` stores in module-private maps
 - **Retrieval**: `getRegisteredLayers()` returns configs in insertion order
 - **Initialization**: Built-in layers auto-registered in `initBuiltinLayers()` (called at startup)
 - **Extensibility**: New layers (e.g., AI-powered summary, syntax errors) can register via public API
 
-### 15.11 Paper Analysis (Citation Intelligence)
+### 26.11 Paper Analysis (Citation Intelligence)
 
 Separate module for analyzing research paper abstracts and metadata.
 
-#### 15.11.1 Topic Extraction via Bigram Frequency
+#### 26.11.1 Topic Extraction via Bigram Frequency
 - **Algorithm**:
   1. Tokenize text into lowercase words; filter by length ≥3
   2. Extract consecutive word pairs (bigrams), skip stopwords
@@ -1477,7 +1476,7 @@ Separate module for analyzing research paper abstracts and metadata.
 - **Implementation**: `src/editor/citations/paper-analysis.ts:44-69` (`extractTopics()`)
 - **Output**: Array of phrases (e.g., `["machine learning", "neural networks", ...]`)
 
-#### 15.11.2 Key Term Extraction via Frequency
+#### 26.11.2 Key Term Extraction via Frequency
 - **Algorithm**:
   1. Tokenize into lowercase words; filter by length > 3
   2. Skip stopwords (150-word list: common articles, verbs, connectors)
@@ -1486,7 +1485,7 @@ Separate module for analyzing research paper abstracts and metadata.
 - **Implementation**: `src/editor/citations/paper-analysis.ts:13-42` (`extractKeyTerms()`)
 - **Stopwords**: See embedded list (lines 22-30)
 
-#### 15.11.3 Sentiment Score (Paper Abstract)
+#### 26.11.3 Sentiment Score (Paper Abstract)
 - **Algorithm**:
   1. Count positive words (23-word list: "good", "excellent", "novel", ...)
   2. Count negative words (24-word list: "bad", "failure", "limited", ...)
@@ -1494,7 +1493,7 @@ Separate module for analyzing research paper abstracts and metadata.
 - **Implementation**: `src/editor/citations/paper-analysis.ts:71-96` (`computeSentiment()`)
 - **Interpretation**: >0 = positive framing; <0 = cautious/critical framing; 0 = balanced
 
-#### 15.11.4 Paper Readability (simplified FK)
+#### 26.11.4 Paper Readability (simplified FK)
 - **Algorithm**:
   1. Count sentences via `[.!?]+` split
   2. Count words via whitespace split
@@ -1504,13 +1503,13 @@ Separate module for analyzing research paper abstracts and metadata.
 - **Implementation**: `src/editor/citations/paper-analysis.ts:98-111` (`computeReadability()`)
 - **Used in**: `PaperRecord.pithAnalysis.readability` field
 
-#### 15.11.5 Paper Analysis API
+#### 26.11.5 Paper Analysis API
 - **`analyzeText(text)`**: Run all four analyses; return `PaperAnalysis` object
 - **`analyzePaper(key)`**: Fetch paper from corpus by key; analyze abstract or title; store result
 - **`analyzeAllPapers()`**: Batch analyze all papers lacking analysis; return count analyzed
 - **Implementation**: `src/editor/citations/paper-analysis.ts:122-163`
 
-### 15.12 Readability Formats & Interpretations
+### 26.12 Readability Formats & Interpretations
 
 Summary table for quick reference of grade-to-audience mapping:
 

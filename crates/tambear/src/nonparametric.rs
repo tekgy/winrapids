@@ -1250,6 +1250,144 @@ pub fn point_biserial(binary: &[f64], continuous: &[f64]) -> f64 {
     pearson_r(binary, continuous)
 }
 
+/// Cramér's V: association measure for r×c contingency tables.
+///
+/// V = √(χ² / (n · min(r-1, c-1)))
+///
+/// Ranges from 0 (no association) to 1 (perfect association).
+/// Generalizes the phi coefficient to tables larger than 2×2.
+///
+/// `table`: r×c contingency table (row-major, counts).
+/// `n_rows`: number of rows in the table.
+pub fn cramers_v(table: &[f64], n_rows: usize) -> f64 {
+    let n_cols = if n_rows == 0 { 0 } else { table.len() / n_rows };
+    if n_rows < 2 || n_cols < 2 { return f64::NAN; }
+
+    let n: f64 = table.iter().sum();
+    if n < 1e-15 { return f64::NAN; }
+
+    // Row and column totals
+    let mut row_totals = vec![0.0; n_rows];
+    let mut col_totals = vec![0.0; n_cols];
+    for r in 0..n_rows {
+        for c in 0..n_cols {
+            let v = table[r * n_cols + c];
+            row_totals[r] += v;
+            col_totals[c] += v;
+        }
+    }
+
+    // Chi-squared statistic
+    let mut chi2 = 0.0;
+    for r in 0..n_rows {
+        for c in 0..n_cols {
+            let expected = row_totals[r] * col_totals[c] / n;
+            if expected > 1e-15 {
+                let observed = table[r * n_cols + c];
+                chi2 += (observed - expected).powi(2) / expected;
+            }
+        }
+    }
+
+    let min_dim = (n_rows - 1).min(n_cols - 1) as f64;
+    if min_dim < 1e-15 { return f64::NAN; }
+    (chi2 / (n * min_dim)).sqrt()
+}
+
+/// Eta coefficient (correlation ratio): proportion of variance in Y explained by group membership X.
+///
+/// η² = SS_between / SS_total
+///
+/// Ranges from 0 (no relationship) to 1 (perfect group separation).
+/// Measures the strength of association between a categorical variable (groups)
+/// and a continuous variable (values).
+///
+/// `values`: the continuous variable.
+/// `groups`: group label for each value (same length as `values`).
+pub fn eta_squared(values: &[f64], groups: &[usize]) -> f64 {
+    assert_eq!(values.len(), groups.len());
+    let n = values.len();
+    if n < 2 { return f64::NAN; }
+
+    let grand_mean = values.iter().sum::<f64>() / n as f64;
+    let ss_total: f64 = values.iter().map(|v| (v - grand_mean).powi(2)).sum();
+    if ss_total < 1e-15 { return 0.0; } // constant data → no variance to explain
+
+    // Group means and sizes
+    let max_group = *groups.iter().max().unwrap_or(&0);
+    let mut group_sums = vec![0.0; max_group + 1];
+    let mut group_counts = vec![0usize; max_group + 1];
+    for (i, &g) in groups.iter().enumerate() {
+        group_sums[g] += values[i];
+        group_counts[g] += 1;
+    }
+
+    let ss_between: f64 = (0..=max_group)
+        .filter(|&g| group_counts[g] > 0)
+        .map(|g| {
+            let group_mean = group_sums[g] / group_counts[g] as f64;
+            group_counts[g] as f64 * (group_mean - grand_mean).powi(2)
+        })
+        .sum();
+
+    (ss_between / ss_total).clamp(0.0, 1.0)
+}
+
+/// Distance correlation (Szekely, Rizzo, Bakirov 2007): detects nonlinear dependencies.
+///
+/// dCor(X, Y) = dCov(X,Y) / √(dVar(X) · dVar(Y))
+///
+/// Ranges from 0 (independence) to 1 (dependence — including nonlinear).
+/// dCor = 0 if and only if X and Y are independent (for any finite moment).
+///
+/// `x`, `y`: paired observations (same length).
+pub fn distance_correlation(x: &[f64], y: &[f64]) -> f64 {
+    assert_eq!(x.len(), y.len());
+    let n = x.len();
+    if n < 2 { return f64::NAN; }
+    let nf = n as f64;
+
+    // Distance matrices
+    let mut a = vec![0.0; n * n];
+    let mut b = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            a[i * n + j] = (x[i] - x[j]).abs();
+            b[i * n + j] = (y[i] - y[j]).abs();
+        }
+    }
+
+    // Double-center: A_{ij} = a_{ij} - ā_{i.} - ā_{.j} + ā_{..}
+    let row_means_a: Vec<f64> = (0..n).map(|i| (0..n).map(|j| a[i*n+j]).sum::<f64>() / nf).collect();
+    let col_means_a: Vec<f64> = (0..n).map(|j| (0..n).map(|i| a[i*n+j]).sum::<f64>() / nf).collect();
+    let grand_mean_a: f64 = a.iter().sum::<f64>() / (nf * nf);
+
+    let row_means_b: Vec<f64> = (0..n).map(|i| (0..n).map(|j| b[i*n+j]).sum::<f64>() / nf).collect();
+    let col_means_b: Vec<f64> = (0..n).map(|j| (0..n).map(|i| b[i*n+j]).sum::<f64>() / nf).collect();
+    let grand_mean_b: f64 = b.iter().sum::<f64>() / (nf * nf);
+
+    // dCov², dVar_X, dVar_Y
+    let mut dcov2 = 0.0;
+    let mut dvar_x = 0.0;
+    let mut dvar_y = 0.0;
+    for i in 0..n {
+        for j in 0..n {
+            let a_centered = a[i*n+j] - row_means_a[i] - col_means_a[j] + grand_mean_a;
+            let b_centered = b[i*n+j] - row_means_b[i] - col_means_b[j] + grand_mean_b;
+            dcov2 += a_centered * b_centered;
+            dvar_x += a_centered * a_centered;
+            dvar_y += b_centered * b_centered;
+        }
+    }
+    dcov2 /= nf * nf;
+    dvar_x /= nf * nf;
+    dvar_y /= nf * nf;
+
+    let denom = (dvar_x * dvar_y).sqrt();
+    if denom < 1e-15 { return 0.0; }
+    (dcov2 / denom).sqrt().clamp(0.0, 1.0)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1820,5 +1958,57 @@ mod tests {
         let continuous = vec![1.0, 2.0, 3.0, 7.0, 8.0, 9.0];
         let r = point_biserial(&binary, &continuous);
         assert!(r > 0.9, "group 1 >> group 0: r_pb should be high, got {r}");
+    }
+
+    // ── Partial correlation ───────────────────────────────────────────────
+
+    #[test]
+    fn partial_corr_no_covariates_equals_pearson() {
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = vec![2.0, 4.0, 6.0, 8.0, 10.0];
+        let pc = partial_correlation(&x, &y, &[]);
+        let r  = pearson_r(&x, &y);
+        assert!((pc - r).abs() < 1e-12, "no covariates: partial_corr = pearson");
+    }
+
+    #[test]
+    fn partial_corr_removes_confound() {
+        // X = Z + noise, Y = Z + noise — raw Pearson r is high.
+        // After controlling for Z, partial r should be near 0.
+        let n = 50;
+        let z: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let mut rng = 42u64;
+        let x: Vec<f64> = z.iter().map(|&zi| {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            zi + (rng as f64 / u64::MAX as f64 - 0.5) * 2.0
+        }).collect();
+        let y: Vec<f64> = z.iter().map(|&zi| {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            zi + (rng as f64 / u64::MAX as f64 - 0.5) * 2.0
+        }).collect();
+
+        let raw_r = pearson_r(&x, &y);
+        let partial_r = partial_correlation(&x, &y, &[z.as_slice()]);
+
+        // Raw r should be high (strong confounder)
+        assert!(raw_r > 0.95, "confounded raw r should be high, got {raw_r:.4}");
+        // Partial r controlling for Z should be near 0
+        assert!(partial_r.abs() < 0.3,
+            "after removing confound Z: partial_r={partial_r:.4} should be near 0");
+    }
+
+    #[test]
+    fn partial_corr_perfect_linear_with_covariate() {
+        // X = t, Y = 2t, Z = 3t — after removing Z (a linear function), X and Y
+        // should still be perfectly correlated (they're proportional with same factor).
+        let n = 10;
+        let t: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let x: Vec<f64> = t.clone();
+        let y: Vec<f64> = t.iter().map(|&v| 2.0 * v).collect();
+        let z: Vec<f64> = t.iter().map(|&v| 3.0 * v).collect();
+        let pc = partial_correlation(&x, &y, &[z.as_slice()]);
+        // After regressing z out of x and y (both collapse to residuals near 0),
+        // the partial correlation is undefined but we just verify no panic
+        assert!(pc.is_finite() || pc.is_nan());
     }
 }

@@ -658,6 +658,70 @@ pub fn vif(x: &Mat) -> Vec<f64> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Mahalanobis distance for outlier detection
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Mahalanobis distance from each point to the sample mean, plus chi-squared p-values.
+///
+/// D²(xᵢ) = (xᵢ - x̄)ᵀ S⁻¹ (xᵢ - x̄)
+///
+/// where S is the sample covariance matrix. Under multivariate normality,
+/// D²(xᵢ) ~ χ²(p) approximately, enabling outlier detection via p-values.
+///
+/// Returns `(d2, p_values)`:
+/// - `d2[i]` = squared Mahalanobis distance for point i
+/// - `p_values[i]` = right-tail p-value from χ²(p): small p → likely outlier
+///
+/// Returns `None` if n ≤ p (under-determined covariance) or Cholesky fails
+/// (singular covariance matrix).
+pub fn mahalanobis_distances(x: &Mat) -> Option<(Vec<f64>, Vec<f64>)> {
+    let n = x.rows;
+    let p = x.cols;
+    if n <= p { return None; }
+
+    // Sample mean
+    let mut mean = vec![0.0_f64; p];
+    for i in 0..n {
+        for j in 0..p { mean[j] += x.data[i * p + j]; }
+    }
+    for j in 0..p { mean[j] /= n as f64; }
+
+    // Sample covariance S = (1/(n-1)) Σ (xᵢ-x̄)(xᵢ-x̄)ᵀ
+    let mut s_data = vec![0.0_f64; p * p];
+    for i in 0..n {
+        for r in 0..p {
+            for c in 0..p {
+                let dr = x.data[i * p + r] - mean[r];
+                let dc = x.data[i * p + c] - mean[c];
+                s_data[r * p + c] += dr * dc;
+            }
+        }
+    }
+    let scale = 1.0 / (n as f64 - 1.0);
+    for v in s_data.iter_mut() { *v *= scale; }
+    let s_mat = Mat { rows: p, cols: p, data: s_data };
+
+    // Cholesky factorization of S (fails if singular)
+    let l = cholesky(&s_mat)?;
+
+    // D²(xᵢ) = ‖L⁻¹(xᵢ - x̄)‖² = (xᵢ-x̄)ᵀ S⁻¹ (xᵢ-x̄)
+    let pf = p as f64;
+    let mut d2 = Vec::with_capacity(n);
+    let mut p_values = Vec::with_capacity(n);
+    for i in 0..n {
+        let diff: Vec<f64> = (0..p).map(|j| x.data[i * p + j] - mean[j]).collect();
+        let solved = cholesky_solve(&l, &diff);
+        let di2: f64 = solved.iter().map(|v| v * v).sum();
+        d2.push(di2);
+        // chi2 right-tail p-value
+        let pv = crate::special_functions::chi2_right_tail_p(di2, pf);
+        p_values.push(pv);
+    }
+
+    Some((d2, p_values))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

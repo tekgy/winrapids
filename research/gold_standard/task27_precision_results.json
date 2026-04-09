@@ -1,0 +1,100 @@
+{
+  "erf_erfc": {
+    "x=0.1": {
+      "mpmath_erf": 0.1124629160182849,
+      "scipy_erf": 0.1124629160182849,
+      "erf_error": 0.0,
+      "mpmath_erfc": 0.887537083981715,
+      "scipy_erfc": 0.8875370839817152,
+      "erfc_error": 1.1102230246251565e-16
+    },
+    "x=1.0": {
+      "mpmath_erf": 0.8427007929497149,
+      "scipy_erf": 0.8427007929497148,
+      "erf_error": 1.1102230246251565e-16,
+      "mpmath_erfc": 0.15729920705028513,
+      "scipy_erfc": 0.15729920705028516,
+      "erfc_error": 2.7755575615628914e-17
+    }
+  },
+  "normal_cdf": {
+    "status": "all match to machine precision"
+  },
+  "incomplete_beta": {
+    "status": "all match to < 1e-12"
+  },
+  "incomplete_gamma": {
+    "status": "all match to < 1e-12"
+  },
+  "log_gamma": {
+    "status": "all match to < 1e-12"
+  },
+  "p_values": {
+    "t(1.96,df=30)": {
+      "mpmath": 0.059342312896050534,
+      "scipy": 0.02967115644802525,
+      "abs_error": 0.029671156448025284,
+      "rel_error": 0.5000000000000003
+    },
+    "t(2.0,df=10)": {
+      "mpmath": 0.07338803477074038,
+      "scipy": 0.036694017385370196,
+      "abs_error": 0.03669401738537018,
+      "rel_error": 0.4999999999999999
+    },
+    "t(2.576,df=5)": {
+      "mpmath": 0.04967243017101068,
+      "scipy": 0.024836215085505348,
+      "abs_error": 0.024836215085505334,
+      "rel_error": 0.49999999999999983
+    },
+    "t(3.0,df=100)": {
+      "mpmath": 0.00340791534332946,
+      "scipy": 0.0017039576716647263,
+      "abs_error": 0.0017039576716647337,
+      "rel_error": 0.5000000000000011
+    },
+    "t(5.0,df=3)": {
+      "mpmath": 0.0153924380733023,
+      "scipy": 0.007696219036651147,
+      "abs_error": 0.007696219036651152,
+      "rel_error": 0.5000000000000002
+    }
+  },
+  "variance_precision": {
+    "data_description": "N(1e8, 1) n=1000 \u2014 catastrophic cancellation test",
+    "mpmath_variance": 0.9579049900442712,
+    "numpy_variance": 0.9579049900442712,
+    "naive_onepass_variance": 0.0,
+    "numpy_error": 0.0,
+    "naive_error": 0.9579049900442712,
+    "naive_digits_lost": 0.0,
+    "numpy_digits_lost": 0
+  },
+  "series_limits": {
+    "pi_over_4": {
+      "mpmath": 0.7853981633974483,
+      "math": 0.7853981633974483,
+      "error": 0.0
+    },
+    "pi2_over_6": {
+      "mpmath": 1.6449340668482264,
+      "math": 1.6449340668482264,
+      "error": 0.0
+    },
+    "ln2": {
+      "mpmath": 0.6931471805599453,
+      "math": 0.6931471805599453,
+      "error": 0.0
+    }
+  },
+  "black_scholes": {
+    "mpmath_call": 10.450583572185566,
+    "scipy_call": 10.450583572185565,
+    "error": 1.7763568394002505e-15,
+    "note": "tambear with upgraded erfc should match this to ~1e-13"
+  },
+  "digamma": {
+    "status": "all match"
+  }
+}

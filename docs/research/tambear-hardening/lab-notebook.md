@@ -313,6 +313,25 @@ This is a test-serves-reality moment. The test was designed to PROVE that EWMA i
 
 **Implication**: The pathmaker should update the test assertion. The bug it was detecting no longer exists.
 
+### Entry 7: 2026-04-08 -- Parameterization audit (standing directive)
+
+New standing directive: every parameter tunable, every intermediate shareable, every method respects using(), every pipeline documents sharing rules.
+
+**Audit of verified methods — hardcoded parameters that violate directive #1**:
+
+| Method | Location | Hardcoded | Should Be |
+|--------|----------|-----------|-----------|
+| Tukey HSD | hypothesis.rs:800 | `significant: p < 0.05` | `alpha` parameter, default 0.05 |
+| Cook's distance | hypothesis.rs:948 | `threshold = 4.0 / n` | `threshold` parameter, default `4.0/n` |
+| Robust M-est | robust.rs:268 | `k = 4.685` (bisquare) | `k` parameter per weight function |
+| MAD scale | robust.rs:149,267 | `1.4826` (normal consistency) | `consistency_factor` parameter |
+| EWMA | volatility.rs docstring | lambda "default 0.94" | Already a parameter (OK) |
+| Huber M-est | robust.rs:108 | `k = 1.345` implied | `k` parameter |
+
+**Methods that are already correctly parameterized**: Levene (center enum), Ljung-Box (n_lags, fitted_params), KPSS (trend, n_lags), ARCH-LM (n_lags), EWMA (lambda), DBSCAN (epsilon, min_samples), Welch ANOVA (returns p-value, no alpha).
+
+**Sharing opportunities (directive #2)**: Hat matrix diagonal (Cook's -> leverage -> DFFITS -> studentized residuals), per-predictor R^2 (VIF -> condition indices), auxiliary regression R^2 (Breusch-Pagan -> White's test), SS_between/SS_within (ANOVA -> Tukey HSD -> effect sizes), pairwise distances (silhouette -> DBSCAN -> KNN -> MDS). None currently registered in TamSession.
+
 ### Entry 5: 2026-04-08 -- Peer review vulnerability assessment
 
 **If submitting to Nature Computational Science, what would a reviewer attack?**
@@ -334,3 +353,51 @@ This is a test-serves-reality moment. The test was designed to PROVE that EWMA i
 - Priority 2: Add scipy oracle comparisons for all 12 new implementations
 - Priority 3: Implement exact Royston 1995 coefficients for Shapiro-Wilk
 - Priority 4: Validate studentized range CDF against R's ptukey for a test grid
+
+### Entry 8: 2026-04-08 -- Cluster validation and Hopkins verification
+
+**Checkpoint 3**: 1,533 lib passed (+15), 1 adversarial failure (EWMA test stale, task #100).
+
+New implementations verified:
+
+| Method | Location | Formula | Verdict |
+|--------|----------|---------|---------|
+| Silhouette | clustering.rs:533-590 | s_i=(b-a)/max(a,b), Rousseeuw 1987 | CORRECT |
+| Calinski-Harabasz | clustering.rs:494-512 | SS_B/(k-1) / SS_W/(n-k) | CORRECT |
+| Davies-Bouldin | clustering.rs:514-531 | (1/k) sum max (s_i+s_j)/d(c_i,c_j) | CORRECT |
+| Hopkins statistic | clustering.rs:606-654 | W/(W+U), squared NN distances | CORRECT |
+
+Notes:
+- Silhouette uses Euclidean distance (sqrt of squared). O(n^2) exact algorithm. Noise points excluded. Correct.
+- CH uses squared Euclidean for SS_B and SS_W. Consistent. Correct.
+- DB uses Euclidean (not squared) for both s_i and d(c_i,c_j). Correct per Davies & Bouldin 1979.
+- Hopkins uses squared distances for both W and U. Standard convention. Correct.
+- Hopkins samples random points uniformly in bounding box. Uses Xoshiro256 RNG (not LCG). Correct.
+
+**Parameterization compliance** (directive #1): All four return raw metrics, no hardcoded thresholds. The consumer decides interpretation. Fully compliant.
+
+**Running total of verified implementations**: ~170 algorithms across 35+ modules.
+
+### Entry 9: 2026-04-08 -- Gap analysis for recursive expansion
+
+Catalogued ~450 public functions across 26 math modules. Key gaps by family:
+
+**Correlation**: HAVE 6 types. MISSING: polychoric, polyserial, tetrachoric, biserial, eta-squared, ICC types 2/3, distance correlation, Hoeffding's D.
+
+**Regression**: HAVE OLS + logistic GD. MISSING: Poisson, negative binomial, quantile, LOESS, elastic net, LASSO path, WLS, GLS, MM-estimator, IRLS for GLMs.
+
+**Clustering**: HAVE DBSCAN + KMeans + validation. MISSING: hierarchical (Ward etc), spectral, OPTICS, HDBSCAN, GMM-EM, affinity propagation.
+
+**Time series**: HAVE AR + diagnostics. MISSING: MA, ARMA, ARIMA, SARIMA, VAR, Holt-Winters, STL, Granger causality, cointegration.
+
+**Volatility**: HAVE GARCH(1,1) + EWMA. MISSING: EGARCH, GJR-GARCH, TGARCH, DCC, stochastic volatility.
+
+**Optimization**: HAVE 8 methods. MISSING: CG variants, trust region, ADMM, proximal, CMA-ES, simulated annealing.
+
+**Distributions**: HAVE 12. MISSING: Weibull, Pareto, GEV, stable, negative binomial, hypergeometric, multivariate normal.
+
+**Survival**: HAVE KM + Cox + log-rank. MISSING: Weibull regression, AFT, competing risks, C-statistic.
+
+**Bayesian**: HAVE MH + conjugate. MISSING: NUTS/HMC, Gibbs, variational inference, Bayes factors.
+
+This is the map, not the territory. ~450 functions implemented, ~200+ gaps identified across 13 families.

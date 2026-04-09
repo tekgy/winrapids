@@ -1274,6 +1274,91 @@ pub fn point_biserial(binary: &[f64], continuous: &[f64]) -> f64 {
     pearson_r(binary, continuous)
 }
 
+/// Biserial correlation: assumes the binary variable is a dichotomized continuous variable.
+///
+/// r_b = (M_1 - M_0) / s_y * (p · q / φ(z))
+///
+/// where p = n_1/n, q = n_0/n, z = Φ⁻¹(q), φ is the standard normal density.
+/// This differs from point-biserial by the factor `pq / φ(z) > 1`, so |r_b| ≥ |r_pb|.
+///
+/// Used in educational testing (item-total correlation assuming latent ability).
+///
+/// `binary`: 0/1 values; `continuous`: paired scores (same length).
+pub fn biserial_correlation(binary: &[f64], continuous: &[f64]) -> f64 {
+    assert_eq!(binary.len(), continuous.len());
+    let n = binary.len();
+    if n < 2 { return f64::NAN; }
+
+    let (mut n1, mut n0) = (0.0, 0.0);
+    let (mut sum1, mut sum0) = (0.0, 0.0);
+    for i in 0..n {
+        if binary[i] > 0.5 { n1 += 1.0; sum1 += continuous[i]; }
+        else { n0 += 1.0; sum0 += continuous[i]; }
+    }
+    if n1 < 1.0 || n0 < 1.0 { return f64::NAN; }
+
+    let m1 = sum1 / n1;
+    let m0 = sum0 / n0;
+    let mean_y: f64 = continuous.iter().sum::<f64>() / n as f64;
+    let var_y: f64 = continuous.iter().map(|y| (y - mean_y).powi(2)).sum::<f64>() / n as f64;
+    let s_y = var_y.sqrt();
+    if s_y < 1e-15 { return f64::NAN; }
+
+    let p = n1 / n as f64;
+    let q = n0 / n as f64;
+    // z such that Φ(z) = q (lower tail); equivalently z = Φ⁻¹(q)
+    let z = crate::special_functions::normal_quantile(q);
+    // Standard normal density at z
+    let phi_z = (-0.5 * z * z).exp() / (std::f64::consts::TAU).sqrt();
+    if phi_z < 1e-300 { return f64::NAN; }
+
+    (m1 - m0) / s_y * (p * q / phi_z)
+}
+
+/// Rank-biserial correlation (Glass 1966): effect size from Mann-Whitney U.
+///
+/// r_rb = 1 - 2U / (n1 * n2)
+///
+/// Ranges [-1, 1]. Measures probability that a random observation from group 1
+/// exceeds one from group 2 (scaled). Non-parametric effect size for group comparisons.
+pub fn rank_biserial(x: &[f64], y: &[f64]) -> f64 {
+    let n1 = x.len() as f64;
+    let n2 = y.len() as f64;
+    if n1 < 1.0 || n2 < 1.0 { return f64::NAN; }
+
+    let mw = mann_whitney_u(x, y);
+    // U statistic: count pairs where x > y
+    // mann_whitney_u returns "statistic" as U (smaller of the two)
+    let u = mw.statistic;
+    1.0 - 2.0 * u / (n1 * n2)
+}
+
+/// Tetrachoric correlation: Pearson r for 2x2 binary table assuming latent
+/// bivariate normal with thresholds.
+///
+/// Uses Divgi's (1979) cosine approximation (sufficient for most applications):
+/// r ≈ cos(π / (1 + √(ad/bc)))
+///
+/// Table: [a, b, c, d] = [(0,0), (0,1), (1,0), (1,1)].
+/// For polychoric (more than 2 categories), a different estimator is needed.
+pub fn tetrachoric(table: &[f64; 4]) -> f64 {
+    let a = table[0];
+    let b = table[1];
+    let c = table[2];
+    let d = table[3];
+    let bc = b * c;
+    if bc < 1e-15 {
+        // Zero cell in off-diagonal: perfect association (or degenerate)
+        if a * d > bc { return 1.0; }
+        else if a * d < bc { return -1.0; }
+        else { return f64::NAN; }
+    }
+    let ad = a * d;
+    // Divgi's cosine approximation
+    let ratio = ad / bc;
+    (std::f64::consts::PI / (1.0 + ratio.sqrt())).cos()
+}
+
 /// Cramér's V: association measure for r×c contingency tables.
 ///
 /// V = √(χ² / (n · min(r-1, c-1)))

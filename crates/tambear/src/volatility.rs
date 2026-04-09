@@ -256,6 +256,160 @@ pub fn annualize_vol(daily_vol: f64, trading_days: f64) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Range volatility estimators (OHLC-based)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Parkinson (1980) range-based variance estimator.
+///
+/// σ²_P = (1/(4·ln 2)) · (ln(high/low))²
+///
+/// ~5x more efficient than close-to-close variance. Assumes no drift.
+/// Input: open, high, low, close for a single period.
+pub fn parkinson_variance(high: f64, low: f64) -> f64 {
+    if high <= 0.0 || low <= 0.0 || high < low { return f64::NAN; }
+    let lnhl = (high / low).ln();
+    lnhl * lnhl / (4.0 * 2.0_f64.ln())
+}
+
+/// Garman-Klass (1980) OHLC variance estimator.
+///
+/// σ²_GK = 0.5·(ln(H/L))² - (2·ln 2 - 1)·(ln(C/O))²
+///
+/// ~7.4x more efficient than close-to-close. Assumes no drift.
+pub fn garman_klass_variance(open: f64, high: f64, low: f64, close: f64) -> f64 {
+    if open <= 0.0 || high <= 0.0 || low <= 0.0 || close <= 0.0 { return f64::NAN; }
+    let lnhl = (high / low).ln();
+    let lnco = (close / open).ln();
+    0.5 * lnhl * lnhl - (2.0 * 2.0_f64.ln() - 1.0) * lnco * lnco
+}
+
+/// Rogers-Satchell (1991) drift-independent variance estimator.
+///
+/// σ²_RS = ln(H/C)·ln(H/O) + ln(L/C)·ln(L/O)
+///
+/// Unlike Parkinson and Garman-Klass, handles non-zero drift.
+pub fn rogers_satchell_variance(open: f64, high: f64, low: f64, close: f64) -> f64 {
+    if open <= 0.0 || high <= 0.0 || low <= 0.0 || close <= 0.0 { return f64::NAN; }
+    let lnho = (high / open).ln();
+    let lnhc = (high / close).ln();
+    let lnlo = (low / open).ln();
+    let lnlc = (low / close).ln();
+    lnhc * lnho + lnlc * lnlo
+}
+
+/// Yang-Zhang (2000) drift-independent variance estimator.
+///
+/// σ²_YZ = σ²_O + k·σ²_C + (1-k)·σ²_RS
+///
+/// where σ²_O is overnight variance (prev_close → open), σ²_C is close-to-close,
+/// and k is chosen to minimize estimator variance.
+///
+/// Most efficient OHLC estimator; requires prev_close for overnight returns.
+/// This function computes YZ across a series of bars (windows).
+///
+/// Returns the YZ variance estimate for the full sample.
+pub fn yang_zhang_variance(
+    opens: &[f64], highs: &[f64], lows: &[f64], closes: &[f64], prev_closes: &[f64],
+) -> f64 {
+    let n = opens.len();
+    if n < 2 || highs.len() != n || lows.len() != n || closes.len() != n || prev_closes.len() != n {
+        return f64::NAN;
+    }
+
+    // Overnight returns: ln(O_t / C_{t-1})
+    // Close-to-close returns: ln(C_t / C_{t-1})
+    let mut over_returns = Vec::with_capacity(n);
+    let mut cc_returns = Vec::with_capacity(n);
+    let mut rs_sum = 0.0;
+    for i in 0..n {
+        if prev_closes[i] <= 0.0 || opens[i] <= 0.0 || closes[i] <= 0.0 {
+            return f64::NAN;
+        }
+        over_returns.push((opens[i] / prev_closes[i]).ln());
+        cc_returns.push((closes[i] / prev_closes[i]).ln());
+        rs_sum += rogers_satchell_variance(opens[i], highs[i], lows[i], closes[i]);
+    }
+    let nf = n as f64;
+    let over_mean = over_returns.iter().sum::<f64>() / nf;
+    let cc_mean = cc_returns.iter().sum::<f64>() / nf;
+    let sigma2_o: f64 = over_returns.iter().map(|x| (x - over_mean).powi(2)).sum::<f64>() / (nf - 1.0);
+    let sigma2_c: f64 = cc_returns.iter().map(|x| (x - cc_mean).powi(2)).sum::<f64>() / (nf - 1.0);
+    let sigma2_rs = rs_sum / nf;
+
+    // Yang-Zhang k (optimal weighting): k = 0.34 / (1.34 + (n+1)/(n-1))
+    let k = 0.34 / (1.34 + (nf + 1.0) / (nf - 1.0));
+    sigma2_o + k * sigma2_c + (1.0 - k) * sigma2_rs
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Hill tail index estimator
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Hill (1975) tail index estimator.
+///
+/// For heavy-tailed data, fits a Pareto tail. Returns 1/α where α is
+/// the tail exponent. Larger → lighter tail.
+///
+/// `data`: sample (will be sorted internally).
+/// `k`: number of order statistics to use (tail depth). Typically 0.05n to 0.1n.
+///
+/// Formula: ξ̂ = (1/k) · Σ_{i=1}^k ln(X_{(n-i+1)} / X_{(n-k)})
+///
+/// where X_{(i)} are order statistics in ascending order.
+pub fn hill_estimator(data: &[f64], k: usize) -> f64 {
+    let n = data.len();
+    if n == 0 || k == 0 || k >= n { return f64::NAN; }
+    // Use absolute values for two-sided tails
+    let mut sorted: Vec<f64> = data.iter().map(|x| x.abs()).filter(|x| x.is_finite()).collect();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let ns = sorted.len();
+    if k >= ns { return f64::NAN; }
+    // The threshold is the (ns - k)-th order statistic (k values above it)
+    let threshold = sorted[ns - k - 1];
+    if threshold <= 0.0 { return f64::NAN; }
+    // Sum ln(X_i / threshold) for the top k values
+    let mut sum = 0.0_f64;
+    for i in 0..k {
+        let x = sorted[ns - 1 - i];
+        if x > 0.0 {
+            sum += (x / threshold).ln();
+        }
+    }
+    sum / k as f64 // xi_hat = 1 / alpha
+}
+
+/// Hill tail index (alpha) from the estimator.
+///
+/// Returns α = 1/ξ̂. For financial returns, α ∈ [2, 5] is common.
+/// α < 2 implies infinite variance.
+pub fn hill_tail_alpha(data: &[f64], k: usize) -> f64 {
+    let xi = hill_estimator(data, k);
+    if xi > 1e-15 { 1.0 / xi } else { f64::NAN }
+}
+
+/// Tripower Quarticity (TQ): fourth-moment analogue of bipower variation.
+///
+/// TQ = n · μ_{4/3}^{-3} · Σ |r_{t-2}|^{4/3} · |r_{t-1}|^{4/3} · |r_t|^{4/3}
+///
+/// where μ_{4/3} = 2^{2/3} · Γ(7/6) / Γ(1/2). Numerically, μ_{4/3} ≈ 0.8309,
+/// so μ_{4/3}^3 ≈ 0.5736 and 1/μ_{4/3}^3 ≈ 1.7434.
+///
+/// Used as the variance-of-BV in the Barndorff-Nielsen-Shephard jump test.
+pub fn tripower_quarticity(returns: &[f64]) -> f64 {
+    let n = returns.len();
+    if n < 3 { return f64::NAN; }
+    const MU_43_CUBED: f64 = 0.5736;
+    let mut sum = 0.0_f64;
+    for t in 2..n {
+        let a = returns[t - 2].abs().powf(4.0 / 3.0);
+        let b = returns[t - 1].abs().powf(4.0 / 3.0);
+        let c = returns[t].abs().powf(4.0 / 3.0);
+        sum += a * b * c;
+    }
+    (n as f64 / MU_43_CUBED) * sum
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Engle ARCH-LM test
 // ═══════════════════════════════════════════════════════════════════════════
 

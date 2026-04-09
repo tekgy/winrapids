@@ -1881,6 +1881,137 @@ pub fn concordance_correlation(x: &[f64], y: &[f64]) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Dynamic Time Warping (DTW)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Dynamic Time Warping distance between two sequences.
+///
+/// Classical DTW via dynamic programming. Returns the final warping-path cost.
+/// Time and space: O(n·m).
+///
+/// `x`, `y`: sequences (may have different lengths).
+/// Returns 0.0 for identical sequences, positive otherwise. NaN if either is empty.
+pub fn dtw(x: &[f64], y: &[f64]) -> f64 {
+    let n = x.len();
+    let m = y.len();
+    if n == 0 || m == 0 { return f64::NAN; }
+
+    // cost[i][j] = minimum total cost to align x[0..i] with y[0..j]
+    let mut cost = vec![f64::INFINITY; (n + 1) * (m + 1)];
+    cost[0] = 0.0;
+
+    for i in 1..=n {
+        for j in 1..=m {
+            let d = (x[i - 1] - y[j - 1]).abs();
+            let best = cost[(i - 1) * (m + 1) + (j - 1)]  // diagonal
+                .min(cost[(i - 1) * (m + 1) + j])         // up
+                .min(cost[i * (m + 1) + (j - 1)]);        // left
+            cost[i * (m + 1) + j] = d + best;
+        }
+    }
+
+    cost[n * (m + 1) + m]
+}
+
+/// DTW with a Sakoe-Chiba band constraint of width `window`.
+///
+/// Restricts the warping path to |i - j| ≤ window. Faster when n, m are large
+/// and the true alignment is near-diagonal.
+pub fn dtw_banded(x: &[f64], y: &[f64], window: usize) -> f64 {
+    let n = x.len();
+    let m = y.len();
+    if n == 0 || m == 0 { return f64::NAN; }
+    let w = window.max((n as i64 - m as i64).unsigned_abs() as usize);
+
+    let mut cost = vec![f64::INFINITY; (n + 1) * (m + 1)];
+    cost[0] = 0.0;
+
+    for i in 1..=n {
+        let j_min = (i.saturating_sub(w)).max(1);
+        let j_max = (i + w).min(m);
+        for j in j_min..=j_max {
+            let d = (x[i - 1] - y[j - 1]).abs();
+            let best = cost[(i - 1) * (m + 1) + (j - 1)]
+                .min(cost[(i - 1) * (m + 1) + j])
+                .min(cost[i * (m + 1) + (j - 1)]);
+            cost[i * (m + 1) + j] = d + best;
+        }
+    }
+    cost[n * (m + 1) + m]
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Edit distance (Levenshtein)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Levenshtein edit distance between two integer sequences.
+///
+/// Classical DP: O(n·m) time and O(min(n,m)) space.
+/// Returns the minimum number of single-element insertions, deletions,
+/// or substitutions to transform `a` into `b`.
+pub fn levenshtein(a: &[i64], b: &[i64]) -> usize {
+    let n = a.len();
+    let m = b.len();
+    if n == 0 { return m; }
+    if m == 0 { return n; }
+
+    // Space-optimized: only keep two rows
+    let mut prev = (0..=m).collect::<Vec<usize>>();
+    let mut curr = vec![0_usize; m + 1];
+
+    for i in 1..=n {
+        curr[0] = i;
+        for j in 1..=m {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1)           // deletion
+                .min(curr[j - 1] + 1)         // insertion
+                .min(prev[j - 1] + cost);     // substitution
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[m]
+}
+
+/// Symbolize a numeric sequence into discrete quantile bins.
+///
+/// Used by edit distance on time series: converts continuous returns into
+/// a string of quantile labels (e.g., 0..=4 for quintiles), then computes
+/// Levenshtein distance between the resulting symbol sequences.
+///
+/// `n_symbols`: number of quantile bins (3-10 typical).
+pub fn quantile_symbolize(data: &[f64], n_symbols: usize) -> Vec<i64> {
+    let n = data.len();
+    if n == 0 || n_symbols < 2 { return vec![0; n]; }
+    // Compute quantile thresholds
+    let mut sorted: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    if sorted.is_empty() { return vec![0; n]; }
+
+    let thresholds: Vec<f64> = (1..n_symbols)
+        .map(|k| quantile_sorted(&sorted, k as f64 / n_symbols as f64))
+        .collect();
+
+    data.iter().map(|&x| {
+        if x.is_nan() { return 0; }
+        let mut label = 0_i64;
+        for (i, &t) in thresholds.iter().enumerate() {
+            if x >= t { label = (i + 1) as i64; }
+        }
+        label
+    }).collect()
+}
+
+/// Edit distance on symbolized time series.
+///
+/// Convenience: symbolizes both sequences into `n_symbols` quantile bins,
+/// then computes the Levenshtein distance.
+pub fn edit_distance_on_series(x: &[f64], y: &[f64], n_symbols: usize) -> usize {
+    let sx = quantile_symbolize(x, n_symbols);
+    let sy = quantile_symbolize(y, n_symbols);
+    levenshtein(&sx, &sy)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

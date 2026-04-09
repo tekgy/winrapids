@@ -1580,6 +1580,807 @@ pub fn savitzky_golay(
 
 ---
 
+## Tambear-Side Specs — Batch C (Small Gaps)
+
+The C-series specs cover the ~12 smaller gaps (each <40 lines) that I mentioned in the catalog but didn't detail. Each is a thin addition to an existing module.
+
+### C1 — Miller-Madow Bias Correction for Mutual Information
+
+**Paper**: Miller 1955, "Note on the bias of information estimates", Information Theory in Psychology, 95-100. Madow correction: Paninski 2003, "Estimation of entropy and mutual information", Neural Computation 15(6):1191-1253.
+**Module**: `tambear/src/information_theory.rs`
+**Unlocks**: mutual_info, transfer_entropy (quality improvement)
+
+**Purpose**: Plug-in MI estimators have negative bias that decays as -(R-1)/(2n) where R is the number of occupied contingency cells. Miller-Madow correction subtracts this.
+
+**Formula**:
+```
+MI_corrected = MI_plugin + (R_x + R_y - R_xy - 1) / (2n)
+```
+where:
+- R_x = number of non-empty row marginals
+- R_y = number of non-empty column marginals
+- R_xy = number of non-empty joint cells
+- n = sample size
+
+**Signature**:
+```rust
+pub fn mutual_information_miller_madow(
+    contingency: &[f64], nx: usize, ny: usize,
+) -> f64;
+```
+
+**Lines**: ~10 on top of existing `mutual_information`.
+
+---
+
+### C2 — 1D Wasserstein-1 Distance
+
+**Paper**: Villani 2009, "Optimal Transport: Old and New", Springer. For 1D closed form: Kantorovich 1942.
+**Module**: `tambear/src/nonparametric.rs`
+**Unlocks**: dist_distance leaf
+
+**Purpose**: Earth Mover's Distance between two 1D distributions. In 1D, it has a closed form via sorted samples.
+
+**Formula**:
+```
+W₁(P, Q) = ∫ |F_P(x) - F_Q(x)| dx
+       = (1/n) · Σ_i |X_(i) - Y_(i)|    (for equal sample sizes, both sorted ascending)
+```
+
+For unequal sizes: interpolate empirical CDFs and integrate via trapezoidal rule.
+
+**Signature**:
+```rust
+pub fn wasserstein_1d(x: &[f64], y: &[f64]) -> f64;
+```
+
+**Algorithm**:
+```
+1. Sort copies of x and y ascending.
+2. If |x| == |y|: return mean(|X_(i) - Y_(i)|).
+3. Else: build empirical CDFs on the merged support, integrate |F_x - F_y|.
+```
+
+**accumulate+gather**: Sort (gather), then pointwise subtraction + mean (accumulate).
+
+**Lines**: ~15.
+
+---
+
+### C3 — Tripower and Quadpower Quarticity
+
+**Paper**: Barndorff-Nielsen & Shephard 2004, "Power and Bipower Variation with Stochastic Volatility and Jumps", J. Financial Econometrics 2(1):1-37.
+**Module**: `tambear/src/volatility.rs`
+**Unlocks**: realized_vol (TQ and QQ outputs)
+
+**Purpose**: Higher-order multipower variation used for standardizing the BNS jump test and estimating integrated quarticity.
+
+**Formulas**:
+```
+μ_p = E[|Z|^p] = 2^(p/2) · Γ((p+1)/2) / Γ(1/2)
+
+Tripower Quarticity:
+  TQ = N · μ_{4/3}^{-3} · Σ_{i=3..N} |r_i|^{4/3} · |r_{i-1}|^{4/3} · |r_{i-2}|^{4/3}
+
+Quadpower Quarticity:
+  QQ = N · μ_1^{-4} · Σ_{i=4..N} |r_i| · |r_{i-1}| · |r_{i-2}| · |r_{i-3}|
+```
+
+**Signature**:
+```rust
+pub fn tripower_quarticity(returns: &[f64]) -> f64;
+pub fn quadpower_quarticity(returns: &[f64]) -> f64;
+```
+
+**accumulate+gather**: `accumulate(Windowed(3), ProductOfAbs)` then sum. Pure Kingdom A.
+
+**Lines**: ~20.
+
+---
+
+### C4 — Fisher Information from Histogram
+
+**Paper**: Cover & Thomas 2006, "Elements of Information Theory", Chapter 17.
+**Module**: `tambear/src/information_theory.rs`
+**Unlocks**: fisher_info leaf
+
+**Purpose**: Non-parametric estimate of Fisher information: I(θ) = ∫ (f'(x))² / f(x) dx. Uses finite differences on histogram.
+
+**Formula** (histogram estimator):
+```
+Bin data into k bins with centers x_i and frequencies p_i.
+Let h = bin width.
+Finite difference: f'(x_i) ≈ (p_{i+1} - p_{i-1}) / (2h)
+Fisher info:
+  I ≈ Σ_i (f'(x_i))² / p_i · h
+    = Σ_i ((p_{i+1} - p_{i-1}) / (2h))² / p_i · h
+```
+
+**Fisher-Rao distance from Gaussian**: For a Gaussian with the same variance σ², I_gauss = 1/σ². The distance:
+```
+D_FR = 2 · |arctan(√(I_data·σ²)) - π/4|
+```
+
+**Signature**:
+```rust
+pub struct FisherInfoResult {
+    pub fisher_info: f64,
+    pub fisher_distance_gauss: f64,
+    pub gradient_norm: f64,  // mean |score| = mean |f'/f|
+}
+
+pub fn fisher_information_histogram(
+    data: &[f64], n_bins: usize,
+) -> FisherInfoResult;
+```
+
+**Lines**: ~30.
+
+---
+
+### C5 — Lempel-Ziv 76 Complexity
+
+**Paper**: Lempel & Ziv 1976, "On the Complexity of Finite Sequences", IEEE Trans. Information Theory 22(1):75-81.
+**Module**: `tambear/src/complexity.rs`
+**Unlocks**: lz_complexity leaf
+
+**Purpose**: Count the number of distinct phrases in the LZ76 parsing. Normalized LZ complexity measures algorithmic randomness of a symbolic sequence.
+
+**Algorithm**:
+```
+Input: binary (or k-ary) sequence s[0..n]
+Output: c(s) = number of distinct phrases in parsing
+
+i = 0
+c = 0
+while i < n:
+    // Find longest prefix of s[i..] that also occurs as substring of s[0..i+k]
+    // where k = length of the new prefix
+    k = 1
+    while i + k <= n:
+        if s[i..i+k] is NOT a substring of s[0..i+k-1]:
+            c += 1
+            i += k
+            break
+        k += 1
+    else:
+        c += 1
+        break
+```
+
+**Normalized LZ**: 
+```
+LZ_norm = c(s) · ln(n) / n     (theoretical upper bound)
+```
+
+**Symbolization** (for continuous returns): Binary — `1` if x > median, `0` otherwise. Or 4-ary quantile binning.
+
+**Signature**:
+```rust
+pub struct LzComplexityResult {
+    pub lz_complexity: usize,       // raw count c(s)
+    pub normalized_lz: f64,          // c·ln(n)/n
+    pub compression_ratio: f64,      // c·log₂(c)/n (bit savings)
+}
+
+pub fn lz76_complexity(symbols: &[u8]) -> LzComplexityResult;
+pub fn lz76_from_returns(data: &[f64], binary: bool) -> LzComplexityResult;
+```
+
+**accumulate+gather**: Inherently sequential. LZ76 is a state-dependent parser. O(n²) naive, O(n log n) with suffix trees, O(n) with suffix automaton. ~30 lines for the O(n²) version.
+
+**Lines**: ~30.
+
+---
+
+### C6 — Recurrence Quantification Analysis (RQA)
+
+**Paper**: Marwan et al. 2007, "Recurrence plots for the analysis of complex systems", Physics Reports 438(5-6):237-329.
+**Module**: `tambear/src/complexity.rs`
+**Unlocks**: rqa leaf
+
+**Purpose**: Quantify recurrence structure of a dynamical system via diagonal and vertical line statistics in the recurrence plot.
+
+**Algorithm**:
+```
+1. Phase-space reconstruction via delay embedding (m, tau) — reuse tambear embedding code.
+2. Distance matrix D[i,j] = ||x_i - x_j|| (reuse tambear distance matrix).
+3. Recurrence matrix R[i,j] = 1 if D[i,j] < epsilon, else 0.
+4. Extract line statistics:
+     - Recurrence rate: RR = (1/N²) · Σ R[i,j]
+     - Determinism: DET = sum of diagonal line lengths ≥ l_min / Σ R[i,j]
+     - Average diagonal length: mean diagonal line length ≥ l_min
+     - Laminarity: LAM = sum of vertical line lengths ≥ v_min / Σ R[i,j]
+     - Trapping time: mean vertical line length ≥ v_min
+     - Entropy of diagonal line distribution
+```
+
+**accumulate+gather**:
+- Distance matrix: existing TiledEngine (SHARE with sample_entropy, correlation_dim)
+- Threshold: pointwise map
+- Diagonal line lengths: scan diagonals of R — each diagonal is a reduction over runs (Kingdom B per diagonal, A+G across diagonals)
+
+**Parameters**:
+- `data: &[f64]`
+- `m: usize` — embedding dimension (default 3)
+- `tau: usize` — delay (default 1)
+- `epsilon: f64` — recurrence threshold (default 10% of max distance)
+- `l_min: usize` — minimum diagonal length (default 2)
+- `v_min: usize` — minimum vertical length (default 2)
+
+**Signature**:
+```rust
+pub struct RqaResult {
+    pub recurrence_rate: f64,
+    pub determinism: f64,
+    pub mean_diagonal_length: f64,
+    pub max_diagonal_length: usize,
+    pub diagonal_entropy: f64,
+    pub laminarity: f64,
+    pub trapping_time: f64,
+    pub max_vertical_length: usize,
+}
+
+pub fn rqa(
+    data: &[f64], m: usize, tau: usize,
+    epsilon: f64, l_min: usize, v_min: usize,
+) -> RqaResult;
+```
+
+**Lines**: ~50.
+
+---
+
+### C7 — Cross Power Spectral Density (for coherence)
+
+**Paper**: Welch 1967, "The use of fast Fourier transform for the estimation of power spectra", IEEE Trans. AE 15(2):70-73. Carter et al. 1973 for coherence.
+**Module**: `tambear/src/signal_processing.rs`
+**Unlocks**: coherence leaf
+
+**Purpose**: Cross-spectral density S_xy(f) = E[X(f)·Y*(f)]. Squared coherence C²_xy(f) = |S_xy(f)|² / (S_xx(f)·S_yy(f)).
+
+**Algorithm** (Welch-style):
+```
+1. Split x and y into K overlapping segments of length L.
+2. For each segment: window, FFT → X_k, Y_k.
+3. Compute:
+     S_xx(f) = (1/K) Σ_k |X_k(f)|²
+     S_yy(f) = (1/K) Σ_k |Y_k(f)|²
+     S_xy(f) = (1/K) Σ_k X_k(f) · conj(Y_k(f))
+4. Coherence: C²_xy(f) = |S_xy(f)|² / (S_xx(f) · S_yy(f))
+```
+
+**accumulate+gather**: Each segment is independent → A+G over segments. Within each segment: FFT + pointwise products. Cross-spectrum accumulation: `accumulate(ByKey=freq_bin, ComplexMean)`.
+
+**Signature**:
+```rust
+pub struct CrossSpectralResult {
+    pub frequencies: Vec<f64>,
+    pub s_xx: Vec<f64>,
+    pub s_yy: Vec<f64>,
+    pub s_xy_real: Vec<f64>,
+    pub s_xy_imag: Vec<f64>,
+    pub coherence_sq: Vec<f64>,
+    pub phase: Vec<f64>,        // phase of S_xy
+}
+
+pub fn cross_spectral_density(
+    x: &[f64], y: &[f64], segment_len: usize, overlap: usize, fs: f64,
+) -> CrossSpectralResult;
+```
+
+**Lines**: ~40 (reuses existing `welch` internals).
+
+---
+
+### C8 — Gutenberg-Richter and Omori Law MLEs
+
+**Papers**:
+- Gutenberg & Richter 1944, "Frequency of earthquakes in California", Bull. Seism. Soc. Am. 34(4):185-188
+- Aki 1965, "Maximum likelihood estimate of b in the formula log N = a - bM", Bull. ERI 43:237-239 (MLE for b-value)
+- Utsu 1961, "A statistical study on the occurrence of aftershocks", Geophys. Mag. 30:521-605 (Omori)
+
+**Module**: `tambear/src/volatility.rs` or new `tambear/src/extremes.rs`
+**Unlocks**: seismic leaf
+
+**Purpose**: Fit power-law magnitude-frequency distribution and Omori temporal decay for extreme events.
+
+**Formulas**:
+
+Gutenberg-Richter b-value (Aki MLE):
+```
+b̂ = log₁₀(e) / (M̄ - M_c)
+where M̄ = mean magnitude ≥ cutoff M_c
+```
+
+Omori law (aftershock decay):
+```
+n(t) = K / (t + c)^p
+
+Log-linearize and OLS: log(n(t)) = log(K) - p·log(t + c)
+(Or iterative MLE over (K, c, p).)
+```
+
+Bath's law ratio:
+```
+ΔM = M_main - M_largest_aftershock
+Typical ΔM ≈ 1.2
+```
+
+**Signature**:
+```rust
+pub struct SeismicResult {
+    pub gr_b_value: f64,
+    pub gr_a_value: f64,
+    pub omori_p: f64,
+    pub omori_k: f64,
+    pub bath_ratio: f64,
+    pub n_extreme: usize,
+}
+
+pub fn seismic_laws(
+    returns: &[f64],
+    magnitude_cutoff: Option<f64>,  // default: 3 × std
+) -> SeismicResult;
+```
+
+**Lines**: ~40.
+
+---
+
+### C9 — 2D Convex Hull (Graham Scan)
+
+**Paper**: Graham 1972, "An efficient algorithm for determining the convex hull of a finite planar set", Information Processing Letters 1(4):132-133.
+**Module**: `tambear/src/graph.rs` or new `tambear/src/geometry.rs`
+**Unlocks**: tick_geometry leaf
+
+**Purpose**: Compute convex hull of 2D points. Used for phase portrait area estimation.
+
+**Algorithm (Graham scan)**:
+```
+1. Find pivot p₀ = point with lowest y (break ties by lowest x).
+2. Sort remaining points by polar angle from p₀.
+3. Stack-based scan: for each point p:
+     while len(stack) >= 2 and cross(stack[-2], stack[-1], p) <= 0:
+         stack.pop()
+     stack.push(p)
+4. Return stack as hull vertices in CCW order.
+```
+
+**Cross product** (sign determines turn direction):
+```
+cross(O, A, B) = (A.x - O.x)(B.y - O.y) - (A.y - O.y)(B.x - O.x)
+```
+
+**Area of convex polygon** (shoelace formula):
+```
+Area = |Σ_i (x_i · y_{i+1} - x_{i+1} · y_i)| / 2
+```
+
+**accumulate+gather**: Sorting is gather. The scan is inherently sequential (Kingdom B). For n < 10^5, pure CPU is fast enough.
+
+**Signature**:
+```rust
+pub struct ConvexHullResult {
+    pub hull_indices: Vec<usize>,    // indices into input points in CCW order
+    pub area: f64,
+    pub perimeter: f64,
+}
+
+pub fn convex_hull_2d(points: &[(f64, f64)]) -> ConvexHullResult;
+```
+
+**Lines**: ~50.
+
+---
+
+### C10 — Log-Signature (Level-1 and Level-2 Lévy Area)
+
+**Papers**:
+- Chen 1958, "Integration of paths — a faithful representation of paths by noncommutative formal power series", Trans. AMS 89(2):395-407
+- Lyons 1998, "Differential equations driven by rough signals", Revista Matematica Iberoamericana 14(2):215-310
+
+**Module**: new `tambear/src/rough_paths.rs` or `tambear/src/signal_processing.rs`
+**Unlocks**: logsig leaf
+
+**Purpose**: Encode sequential structure of a multidimensional path via iterated integrals. Level-1 = increments, Level-2 = Lévy area.
+
+**Formulas** (for path (x, y) = price, volume):
+
+Level-1 increments:
+```
+I_x = x_N - x_0
+I_y = y_N - y_0
+```
+
+Level-2 iterated integrals:
+```
+I_xx = ∫_0^T (x_t - x_0) dx_t = 0.5 · (x_T - x_0)²   (for smooth paths)
+I_yy = 0.5 · (y_T - y_0)²
+I_xy = ∫_0^T (x_t - x_0) dy_t   (path-dependent, NOT just 0.5·(x_T - x_0)(y_T - y_0))
+I_yx = ∫_0^T (y_t - y_0) dx_t
+```
+
+Lévy area:
+```
+A(x, y) = 0.5 · (I_xy - I_yx)
+```
+(Signed area enclosed by the path and its chord.)
+
+**Discrete computation** (Riemann sum):
+```
+I_xy ≈ Σ_{i=0..N-1} (x_i - x_0) · (y_{i+1} - y_i)
+I_yx ≈ Σ_{i=0..N-1} (y_i - y_0) · (x_{i+1} - x_i)
+```
+
+**accumulate+gather**: Both iterated integrals are `accumulate(All, Add)` over pointwise products of centered paths and increments. Pure Kingdom A.
+
+**Signature**:
+```rust
+pub struct LogSigResult {
+    pub increment_x: f64,        // level-1
+    pub increment_y: f64,
+    pub iterated_xx: f64,         // level-2
+    pub iterated_yy: f64,
+    pub iterated_xy: f64,
+    pub iterated_yx: f64,
+    pub levy_area: f64,           // 0.5 · (I_xy - I_yx)
+    pub l2_norm: f64,             // sqrt(sum of squares)
+    pub depth2_energy_fraction: f64,  // level-2 energy / total energy
+}
+
+pub fn log_signature_2d(x: &[f64], y: &[f64]) -> LogSigResult;
+```
+
+**Lines**: ~40.
+
+---
+
+### C11 — STL Decomposition (Seasonal-Trend-LOESS)
+
+**Paper**: Cleveland et al. 1990, "STL: A Seasonal-Trend Decomposition Procedure Based on Loess", J. Official Statistics 6(1):3-73.
+**Module**: `tambear/src/time_series.rs`
+**Unlocks**: stl leaf
+
+**Purpose**: Decompose y_t = T_t + S_t + R_t where T = trend, S = seasonal, R = residual.
+
+**Algorithm** (simplified; full STL is iterative LOESS):
+```
+Outer loop (robust weights):
+  Inner loop:
+    1. Detrend: y_t - T_t
+    2. Seasonal subseries smoothing (LOESS on each period's values)
+    3. Low-pass filter on smoothed seasonal → extract smoothed trend component
+    4. Update trend: LOESS on (y_t - S_t)
+    5. Update seasonal: (y_t - T_t) minus low-pass
+  Update robustness weights based on residuals
+```
+
+**Simplified version** (for fintek's "STL-like"): Use moving averages instead of LOESS:
+```
+1. Compute trend: centered moving average with window = period (e.g., 24 for hourly data)
+2. Detrended = y - trend
+3. Seasonal: mean of detrended at each phase of period
+4. Residual: y - trend - seasonal
+5. Features:
+     trend_strength = 1 - var(residual)/var(y - seasonal)
+     seasonal_strength = 1 - var(residual)/var(y - trend)
+     residual_acf1 = lag-1 ACF of residual
+     trend_slope = OLS slope on trend
+```
+
+**accumulate+gather**: Moving average = `accumulate(Windowed, Mean)`. Phase-mean = `accumulate(ByKey=phase, Mean)`. Pure Kingdom A for the simplified version.
+
+**Signature**:
+```rust
+pub struct StlResult {
+    pub trend: Vec<f64>,
+    pub seasonal: Vec<f64>,
+    pub residual: Vec<f64>,
+    pub trend_strength: f64,
+    pub seasonal_strength: f64,
+    pub residual_acf1: f64,
+    pub trend_slope: f64,
+}
+
+pub fn stl_decompose(
+    data: &[f64], period: usize, use_loess: bool,
+) -> StlResult;
+```
+
+**Lines**: ~60 (simplified version) or ~150 (full LOESS).
+
+---
+
+### C12 — SDE Drift/Diffusion via Nadaraya-Watson
+
+**Paper**: Stanton 1997, "A nonparametric model of term structure dynamics and the market price of interest rate risk", J. Finance 52(5):1973-2002. Based on Nadaraya 1964 and Watson 1964 kernel regression.
+**Module**: `tambear/src/stochastic.rs`
+**Unlocks**: sde leaf
+
+**Purpose**: Non-parametric estimation of drift μ(x) and diffusion σ²(x) from observed increments of an SDE dx = μ(x)dt + σ(x)dW.
+
+**Formulas** (Stanton 1997, first-order approximations):
+```
+μ̂(x) = E[(x_{t+Δ} - x_t)/Δ | x_t = x]
+σ̂²(x) = E[(x_{t+Δ} - x_t)²/Δ | x_t = x]
+```
+
+**Nadaraya-Watson estimator** with bandwidth h:
+```
+μ̂(x) = Σ_i K((x - x_i)/h) · (Δx_i / Δt) / Σ_i K((x - x_i)/h)
+σ̂²(x) = Σ_i K((x - x_i)/h) · (Δx_i)²/Δt / Σ_i K((x - x_i)/h)
+```
+
+**Bandwidth** (Silverman's rule): h = 1.06 · σ_x · n^(-1/5).
+
+**Features extracted**:
+```
+drift_mean = mean(μ̂(x)) over state space
+drift_slope = OLS slope of μ̂(x) vs x (mean reversion if negative)
+diffusion_mean = mean(σ̂²(x))
+diffusion_slope = OLS slope of σ̂²(x) vs x (leverage if negative)
+drift_diffusion_corr = correlation(μ̂, σ̂²) (leverage-like)
+```
+
+**accumulate+gather**: Kernel regression at each query point is a weighted sum — `accumulate(ByKey=query_point, KernelWeightedMean)`. Each query point independent → A+G.
+
+**Signature**:
+```rust
+pub struct SdeResult {
+    pub drift_values: Vec<f64>,      // μ̂ at query points
+    pub diffusion_values: Vec<f64>,   // σ̂² at query points
+    pub query_points: Vec<f64>,
+    pub drift_mean: f64,
+    pub drift_slope: f64,
+    pub diffusion_mean: f64,
+    pub diffusion_slope: f64,
+    pub drift_diffusion_corr: f64,
+}
+
+pub fn nadaraya_watson_sde(
+    data: &[f64], dt: f64,
+    n_query: usize, bandwidth: Option<f64>,
+) -> SdeResult;
+```
+
+**Lines**: ~40.
+
+---
+
+## Phyla: Shared Math Kernels Across Leaf Groups
+
+A "phylum" is a group of fintek leaves that share the SAME core math kernel. Compiling ONE shader per phylum and parameterizing it covers multiple leaves at once. This is the highest-leverage compilation strategy.
+
+### Phylum Φ1 — FFT of Log-Returns (15+ leaves)
+
+**Kernel**: `fft(log_returns(prices))` — single rfft on a bin of log-transformed returns.
+
+**Consumers**:
+- fft_spectral (5 resolution variants: M8, M16, M32, M64, M128)
+- welch (segmented + averaged FFTs)
+- multitaper (FFT × tapers)
+- cepstrum (IFFT of log |FFT|²)
+- coherence (cross-FFT with a second series)
+- fir_bandpass (FFT → band energies)
+- energy_bands (same as fir_bandpass)
+- wiener (noise from PSD tail)
+- periodicity (peak of PSD)
+- cwt_wavelet (FFT × Morlet in frequency domain)
+- hilbert (FFT → zero negative freqs → IFFT)
+- spectral_entropy (Shannon on normalized PSD)
+- harmonic (SVD on Hankel, but FFT of |returns| is used for vol substrate)
+
+**Compile strategy**: ONE shader emits `rfft(log_returns)` with the bin's padding/windowing. Every downstream leaf takes the complex FFT buffer as input. Per-bin FFT is cached in TamSession.
+
+**Sharing tag**: `SpectralRepresentation { data_id: bin_id, n_points }`.
+
+**Expected savings**: 15× reduction in FFT calls (ignoring the 5 fft_spectral variants which use different sizes).
+
+---
+
+### Phylum Φ2 — Raw Moments / MomentStats (15+ leaves)
+
+**Kernel**: `moments_ungrouped(returns)` → `MomentStats { count, sum, min, max, m2, m3, m4 }`.
+
+**Consumers**:
+- distribution (mean, std, skew, kurt, realized_var)
+- normality (Jarque-Bera, Shapiro-Wilk on raw)
+- heavy_tail (needs tail statistics — partial consumer)
+- shape (gradient stats from returns)
+- variability (rolling CV of moments)
+- phase_transition (magnetization = mean sign)
+- seismic (n_extreme via std threshold)
+- tail_field (via quantile binning)
+- fisher_info (variance input)
+- tick_complexity (partial — uses moments of inter-arrival)
+- jump_test_bns (uses variance)
+- scaling_triple (reads DFA/R-S outputs but uses moments for validation)
+
+**Compile strategy**: ONE scatter-phi shader computes all 7 moment accumulators for each bin in a single pass. Every downstream leaf reads from the shared MomentStats.
+
+**Sharing tag**: `MomentStats { data_id: bin_id }` (already exists).
+
+**Expected savings**: 15× reduction in scatter passes.
+
+---
+
+### Phylum Φ3 — Phase-Space Distance Matrix (6 leaves)
+
+**Kernel**: Delay-embedded distance matrix D[i,j] = ‖(x_i, x_{i+τ}, ..., x_{i+(m-1)τ}) - (x_j, ...)‖.
+
+**Consumers**:
+- sample_entropy (Chebyshev distance, template matching)
+- correlation_dim (L2 distance, Grassberger-Procaccia)
+- lyapunov (Rosenstein nearest neighbors)
+- rqa (thresholded distance → recurrence matrix)
+- poincare (return map from distance structure)
+- embedding (FNN uses distance ratios at different m)
+
+**Compile strategy**: ONE tiled distance shader parameterized by (m, tau, metric). All 6 leaves share the same n×n distance matrix per bin when they use the same (m, tau).
+
+**Sharing tag**: `PhaseSpaceDistance { data_id: bin_id, m, tau, metric }` (new variant).
+
+**Expected savings**: 6× reduction in distance matrix computations.
+
+---
+
+### Phylum Φ4 — ACF / Autocorrelation (6 leaves)
+
+**Kernel**: `acf(returns, max_lag)` — autocorrelation up to lag k.
+
+**Consumers**:
+- autocorrelation (extracts 16 features from ACF + PACF)
+- ar_model (Yule-Walker uses ACF)
+- arma (Yule-Walker + residual ACF)
+- arima (after differencing)
+- dependence (Ljung-Box Q from ACF)
+- periodicity (peak of ACF)
+
+**Compile strategy**: ONE shader computes ACF via FFT (Wiener-Khinchin: FFT → |X|² → IFFT → ACF). This also shares with Φ1.
+
+**Sharing tag**: `AutocorrelationFunction { data_id: bin_id, max_lag }` (already proposed in sharing-rules.md).
+
+---
+
+### Phylum Φ5 — OLS on Log-Log (3 leaves)
+
+**Kernel**: OLS slope of log(F(s)) vs log(s) for varying scale s.
+
+**Consumers**:
+- dfa (log(F(s)) vs log(s), slope = α)
+- hurst_rs (log(R/S) vs log(n), slope = H)
+- mfdfa (multiple q values, each needs a slope)
+
+**Compile strategy**: ONE OLS-on-log-log shader parameterized by the inner F computation. The slope extraction is the same across leaves.
+
+**Sharing tag**: N/A (different F computations preclude direct sharing, but the OLS step is the same).
+
+---
+
+### Phylum Φ6 — GARCH σ² Recurrence (3 leaves)
+
+**Kernel**: σ²_t = ω + α·r²_{t-1} + β·σ²_{t-1} (Särkkä Op prefix scan).
+
+**Consumers**:
+- garch (full GARCH fit with parameter estimation)
+- vol_dynamics (rolling vol = √σ²)
+- stochvol (AR(1) on log(σ²))
+
+**Compile strategy**: Shared σ² series per bin. Tag `GarchVolatilitySeries { data_id, params }`.
+
+---
+
+### Phylum Φ7 — Sorted Returns / Order Statistics (5 leaves)
+
+**Kernel**: Sorted copy of returns (or |returns|) for order-statistic-based computation.
+
+**Consumers**:
+- heavy_tail (Hill estimator on top-k)
+- distribution (quantiles)
+- tail_field (quintile binning)
+- dist_distance (KS and Wasserstein need sorted samples)
+- shapiro_wilk (ordered samples in nonparametric.rs)
+
+**Compile strategy**: ONE sort shader per bin. Share sorted array via `SortedData { data_id, ascending }`.
+
+---
+
+### Phylum Φ8 — Delay Embedding (2 leaves)
+
+**Kernel**: Reshape time series into `n-(m-1)τ` vectors of length m.
+
+**Consumers**:
+- ssa (trajectory matrix for SSA)
+- pca (delay-embedded PCA)
+- harmonic (Hankel matrix SVD)
+- All Phase-Space consumers from Φ3
+
+**Compile strategy**: ONE reshape kernel parameterized by (m, tau). Shared pointer.
+
+---
+
+### Phylum Φ9 — Binning / Histogram (6 leaves)
+
+**Kernel**: Quantile-bin a series into k equal-mass bins.
+
+**Consumers**:
+- shannon_entropy (Shannon on bin counts)
+- mutual_info (joint histogram)
+- transfer_entropy (joint histogram)
+- tick_complexity (entropy of binned inter-arrivals)
+- tail_field (quintile of returns)
+- edit_distance (symbolization)
+
+**Compile strategy**: ONE quantile-binning shader. Share counts via `HistogramCounts { data_id, n_bins }`.
+
+---
+
+### Phylum Φ10 — Windowed Moments (4 leaves)
+
+**Kernel**: Rolling mean and variance over sliding window.
+
+**Consumers**:
+- vol_dynamics (rolling std for vol-of-vol)
+- vol_regime (short/long window variance ratio)
+- variability (rolling var and mean CVs)
+- vpin_bvc (rolling std for z-normalization)
+
+**Compile strategy**: ONE sliding-window moment shader. Uses tambear's `accumulate(Windowed, Mean)`.
+
+---
+
+### Phyla Summary
+
+| Phylum | Kernel | Leaves | Est. savings |
+|--------|--------|--------|--------------|
+| Φ1 | FFT of log-returns | 15 | 15× FFT calls |
+| Φ2 | MomentStats | 15 | 15× scatter passes |
+| Φ3 | Phase-space distance | 6 | 6× tiled distance |
+| Φ4 | ACF | 6 | 6× (shares with Φ1 via FFT) |
+| Φ5 | OLS log-log | 3 | 3× OLS fits |
+| Φ6 | GARCH σ² | 3 | 3× GARCH recurrence |
+| Φ7 | Sorted returns | 5 | 5× sort calls |
+| Φ8 | Delay embedding | 2+ | Shared memory |
+| Φ9 | Quantile binning | 6 | 6× histogram |
+| Φ10 | Windowed moments | 4 | 4× rolling passes |
+
+**Total coverage**: 65+ leaves (with overlap — many leaves consume multiple phyla). These 10 phyla cover the majority of Category A work.
+
+**Implication for pathmaker**: Instead of compiling 126 separate shaders, compile 10 phylum kernels + 80 thin consumer adapters. This is a ~5-10× reduction in shader count.
+
+**Sharing tag registry needed**:
+- `PhaseSpaceDistance { data_id, m, tau, metric }` — new
+- `HistogramCounts { data_id, n_bins }` — new
+- `SortedData { data_id, ascending }` — new
+- `GarchVolatilitySeries { data_id, omega, alpha, beta }` — new
+- `WindowedMoments { data_id, window_size }` — new
+
+Existing tags that support phyla:
+- `SpectralRepresentation { data_id, n_points }` — Φ1
+- `MomentStats { data_id }` — Φ2
+- `AutocorrelationFunction { data_id, max_lag }` — Φ4
+
+---
+
+## Final Summary
+
+**Specs written**: 20 detailed B-specs (B1-B20) + 12 detailed C-specs (C1-C12) = **32 tambear implementations specified**.
+
+**Total lines of tambear code needed**: ~2,000 lines to unlock all 30 GAP leaves + all small-gap quality improvements.
+
+**Phyla identified**: 10 shared-kernel groups covering 65+ of the 126 leaves.
+
+**Category A + B + C coverage**:
+- Category A (ready to compile): 80 leaves
+- Category B (with full spec, 20 functions): 28 leaves → 20 tambear functions
+- Category C (small gaps, with spec, 12 helpers): ~20 leaves improved/unlocked
+- Meta leaves (read other outputs): 6 leaves
+
+**Total**: 126 of 126 trunk-rs leaves have a path to compilation.
+
+---
+
 _Document is the formal mapping specification for the tambear-fintek bridge (Task #135)._
 _Every fintek rescue is simultaneously a tambear math entry being checked off._
 _Updated as new tambear primitives land and fintek leaves are migrated._

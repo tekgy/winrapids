@@ -96,6 +96,133 @@ pub fn ar_predict(data: &[f64], ar: &ArResult, horizon: usize) -> Vec<f64> {
     preds
 }
 
+/// Fit AR(p) via Burg's method (Burg 1968).
+///
+/// Unlike Yule-Walker (which uses sample autocorrelations), Burg recursively
+/// minimizes the sum of forward and backward prediction errors. This:
+/// - Guarantees stability (all roots inside the unit circle)
+/// - Produces less biased estimates for short series
+/// - Does not require windowing (no implicit data extension)
+///
+/// The Burg algorithm is the Levinson-Durbin recursion applied to the
+/// forward/backward reflection coefficient directly from data residuals,
+/// avoiding the autocorrelation estimate.
+///
+/// Reference: J.P. Burg, "A New Analysis Technique for Time Series Data" (1968).
+pub fn ar_burg_fit(data: &[f64], p: usize) -> ArResult {
+    let n = data.len();
+    if n < p + 2 || p == 0 {
+        return ArResult {
+            coefficients: vec![0.0; p],
+            sigma2: if n > 0 {
+                crate::descriptive::moments_ungrouped(data).variance(0)
+            } else { f64::NAN },
+            aic: f64::NAN,
+        };
+    }
+
+    // Center the data
+    let mean = crate::descriptive::moments_ungrouped(data).mean();
+    let x: Vec<f64> = data.iter().map(|v| v - mean).collect();
+
+    // f = forward prediction errors, b = backward prediction errors
+    let mut f = x.clone();
+    let mut b = x.clone();
+
+    // Initial variance estimate: sample variance
+    let mut sigma2 = x.iter().map(|v| v * v).sum::<f64>() / n as f64;
+    if sigma2 < 1e-300 {
+        return ArResult {
+            coefficients: vec![0.0; p],
+            sigma2: 0.0,
+            aic: f64::NAN,
+        };
+    }
+
+    // Final AR coefficients (accumulated via Levinson recursion)
+    let mut phi = vec![0.0; p];
+
+    for k in 0..p {
+        // Compute reflection coefficient from forward/backward errors at stage k.
+        // Indices: f[k+1..n] and b[k..n-1] (both have length n - k - 1)
+        let mut num = 0.0_f64;
+        let mut den = 0.0_f64;
+        for i in (k + 1)..n {
+            let fi = f[i];
+            let bi = b[i - 1];
+            num += fi * bi;
+            den += fi * fi + bi * bi;
+        }
+        if den < 1e-300 {
+            // No more signal to fit; remaining coefficients stay zero.
+            break;
+        }
+        let kappa = 2.0 * num / den;
+
+        // Levinson update on phi
+        let mut new_phi = vec![0.0; p];
+        for j in 0..k { new_phi[j] = phi[j] - kappa * phi[k - 1 - j]; }
+        new_phi[k] = kappa;
+        for j in 0..=k { phi[j] = new_phi[j]; }
+
+        // Update forward/backward error arrays for next stage
+        let mut new_f = f.clone();
+        let mut new_b = b.clone();
+        for i in (k + 1)..n {
+            new_f[i] = f[i] - kappa * b[i - 1];
+            new_b[i] = b[i - 1] - kappa * f[i];
+        }
+        f = new_f;
+        b = new_b;
+
+        // Update variance
+        sigma2 *= 1.0 - kappa * kappa;
+        if sigma2 < 1e-300 { sigma2 = 1e-300; break; }
+    }
+
+    // Log-likelihood and AIC (Gaussian innovations)
+    let nf = n as f64;
+    let ll = -0.5 * nf * (2.0 * std::f64::consts::PI * sigma2).ln() - nf / 2.0;
+    let aic = -2.0 * ll + 2.0 * (p + 1) as f64;
+
+    ArResult { coefficients: phi, sigma2, aic }
+}
+
+/// Burg AR power spectral density evaluated at a given normalized frequency.
+///
+/// For AR(p) model with coefficients φ and innovation variance σ²:
+/// PSD(f) = σ² / |1 - Σ φ_k exp(-i·2π·f·k)|²
+///
+/// `f`: normalized frequency in [0, 0.5] (0 = DC, 0.5 = Nyquist).
+pub fn ar_psd_at(ar: &ArResult, f: f64) -> f64 {
+    let omega = 2.0 * std::f64::consts::PI * f;
+    let mut re = 1.0_f64;
+    let mut im = 0.0_f64;
+    for (k, &phi_k) in ar.coefficients.iter().enumerate() {
+        let arg = omega * (k + 1) as f64;
+        re -= phi_k * arg.cos();
+        im += phi_k * arg.sin();
+    }
+    let denom_mag_sq = re * re + im * im;
+    if denom_mag_sq < 1e-300 { return f64::INFINITY; }
+    ar.sigma2 / denom_mag_sq
+}
+
+/// Evaluate Burg AR PSD over a uniform frequency grid [0, 0.5].
+///
+/// Returns (frequencies, psd_values) with `n_freqs` evenly-spaced points.
+pub fn ar_psd(ar: &ArResult, n_freqs: usize) -> (Vec<f64>, Vec<f64>) {
+    if n_freqs == 0 { return (vec![], vec![]); }
+    let mut freqs = Vec::with_capacity(n_freqs);
+    let mut psd = Vec::with_capacity(n_freqs);
+    for i in 0..n_freqs {
+        let f = 0.5 * i as f64 / (n_freqs - 1).max(1) as f64;
+        freqs.push(f);
+        psd.push(ar_psd_at(ar, f));
+    }
+    (freqs, psd)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Differencing (for ARIMA)
 // ═══════════════════════════════════════════════════════════════════════════

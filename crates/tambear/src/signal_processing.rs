@@ -838,6 +838,95 @@ pub fn real_cepstrum(data: &[f64]) -> Vec<f64> {
 
 /// Haar wavelet decomposition (one level).
 ///
+// ═══════════════════════════════════════════════════════════════════════════
+// Morlet Continuous Wavelet Transform (CWT)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Complex Morlet wavelet in the time domain.
+///
+/// ψ(t) = π^(-1/4) · exp(i·ω₀·t) · exp(-t²/2)
+///
+/// where ω₀ is the central angular frequency (typically 6 for good
+/// time-frequency localization). Returns (real, imag) components.
+pub fn morlet_wavelet(t: f64, omega0: f64) -> (f64, f64) {
+    // π^(-1/4)
+    let norm = 1.0 / std::f64::consts::PI.powf(0.25);
+    let env = (-0.5 * t * t).exp() * norm;
+    let phase = omega0 * t;
+    (env * phase.cos(), env * phase.sin())
+}
+
+/// Continuous Wavelet Transform (CWT) via time-domain convolution.
+///
+/// W(s, t) = (1/√s) · ∫ x(u) · ψ*((u - t)/s) du
+///
+/// Returns a matrix W[scale_index * n + time_index] of |W(s, t)|² (scalogram).
+///
+/// `data`: the signal.
+/// `scales`: wavelet scales to evaluate (larger = lower frequency).
+/// `omega0`: Morlet central frequency parameter (typically 6).
+///
+/// Returns a flat Vec with shape (scales.len() × data.len()).
+pub fn morlet_cwt(data: &[f64], scales: &[f64], omega0: f64) -> Vec<f64> {
+    let n = data.len();
+    let ns = scales.len();
+    if n == 0 || ns == 0 { return vec![]; }
+
+    let mut out = vec![0.0_f64; ns * n];
+    for (si, &s) in scales.iter().enumerate() {
+        if s <= 0.0 { continue; }
+        let inv_s = 1.0 / s;
+        let s_norm = 1.0 / s.sqrt(); // amplitude normalization
+        // Support radius: Morlet dies at ~4σ → s·4 in time units
+        let half_width = (s * 5.0) as isize;
+
+        for t in 0..n {
+            let mut acc_re = 0.0_f64;
+            let mut acc_im = 0.0_f64;
+            let u_start = ((t as isize) - half_width).max(0) as usize;
+            let u_end = ((t as isize) + half_width).min(n as isize - 1) as usize;
+            for u in u_start..=u_end {
+                let arg = (u as f64 - t as f64) * inv_s;
+                let (wr, wi) = morlet_wavelet(arg, omega0);
+                // Complex conjugate: ψ* has -wi
+                acc_re += data[u] * wr;
+                acc_im += data[u] * (-wi);
+            }
+            let re = acc_re * s_norm;
+            let im = acc_im * s_norm;
+            out[si * n + t] = re * re + im * im;
+        }
+    }
+    out
+}
+
+/// Convert a wavelet scale to its pseudo-frequency for Morlet.
+///
+/// For Morlet: f_pseudo = f_c / s, where f_c = ω₀ / (2π).
+pub fn morlet_scale_to_frequency(scale: f64, omega0: f64, fs: f64) -> f64 {
+    let fc = omega0 / (2.0 * std::f64::consts::PI);
+    fc * fs / scale
+}
+
+/// Build a logarithmically spaced set of scales covering a frequency range.
+///
+/// `f_min`, `f_max`: frequency range (Hz).
+/// `n_scales`: number of scales.
+/// `fs`: sampling frequency (Hz).
+/// `omega0`: Morlet parameter.
+pub fn morlet_log_scales(f_min: f64, f_max: f64, n_scales: usize, fs: f64, omega0: f64) -> Vec<f64> {
+    if n_scales == 0 || f_min <= 0.0 || f_max <= 0.0 || f_min >= f_max { return vec![]; }
+    let fc = omega0 / (2.0 * std::f64::consts::PI);
+    // s = fc · fs / f → log-linear in 1/s, which means log-linear in f
+    let log_min = f_min.ln();
+    let log_max = f_max.ln();
+    (0..n_scales).map(|i| {
+        let logf = log_max - (log_max - log_min) * (i as f64) / (n_scales - 1).max(1) as f64;
+        let f = logf.exp();
+        fc * fs / f
+    }).collect()
+}
+
 /// Returns (approximation_coefficients, detail_coefficients).
 /// Input length should be even; if odd, last sample is dropped.
 pub fn haar_dwt(data: &[f64]) -> (Vec<f64>, Vec<f64>) {

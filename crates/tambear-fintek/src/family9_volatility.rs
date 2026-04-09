@@ -131,6 +131,69 @@ pub fn roll_effective_spread(prices: &[f64]) -> f64 {
     roll_spread(prices)
 }
 
+/// Range volatility estimators from OHLC data.
+///
+/// Fintek's `range_vol.rs` emits all four (Parkinson/Garman-Klass/Rogers-Satchell/Yang-Zhang).
+#[derive(Debug, Clone)]
+pub struct RangeVolResult {
+    pub parkinson: f64,
+    pub garman_klass: f64,
+    pub rogers_satchell: f64,
+    pub yang_zhang: f64,
+}
+
+impl RangeVolResult {
+    pub fn nan() -> Self {
+        Self {
+            parkinson: f64::NAN, garman_klass: f64::NAN,
+            rogers_satchell: f64::NAN, yang_zhang: f64::NAN,
+        }
+    }
+}
+
+/// Compute all four range volatility estimators from an OHLC series.
+///
+/// Parkinson/GK/RS are averaged across bars; Yang-Zhang is computed jointly.
+pub fn range_volatility(
+    opens: &[f64], highs: &[f64], lows: &[f64], closes: &[f64], prev_closes: &[f64],
+) -> RangeVolResult {
+    let n = opens.len();
+    if n == 0 || highs.len() != n || lows.len() != n || closes.len() != n {
+        return RangeVolResult::nan();
+    }
+
+    let mut park_sum = 0.0_f64;
+    let mut gk_sum = 0.0_f64;
+    let mut rs_sum = 0.0_f64;
+    let mut count = 0_usize;
+    for i in 0..n {
+        let p = tambear::volatility::parkinson_variance(highs[i], lows[i]);
+        let gk = tambear::volatility::garman_klass_variance(opens[i], highs[i], lows[i], closes[i]);
+        let rs = tambear::volatility::rogers_satchell_variance(opens[i], highs[i], lows[i], closes[i]);
+        if p.is_finite() { park_sum += p; count += 1; }
+        if gk.is_finite() { gk_sum += gk; }
+        if rs.is_finite() { rs_sum += rs; }
+    }
+    let countf = count.max(1) as f64;
+    let yz = if prev_closes.len() == n {
+        tambear::volatility::yang_zhang_variance(opens, highs, lows, closes, prev_closes)
+    } else { f64::NAN };
+
+    RangeVolResult {
+        parkinson: park_sum / countf,
+        garman_klass: gk_sum / countf,
+        rogers_satchell: rs_sum / countf,
+        yang_zhang: yz,
+    }
+}
+
+/// Tripower quarticity (TQ) wrapper.
+///
+/// Used as the variance estimator for the BV in the BNS jump test.
+pub fn tripower_quarticity(returns: &[f64]) -> f64 {
+    tambear::volatility::tripower_quarticity(returns)
+}
+
 /// Signature plot: realized variance at multiple sampling frequencies.
 ///
 /// Returns (sampling_steps, rv_at_each_step). Used to detect microstructure noise.

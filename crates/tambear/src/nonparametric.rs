@@ -1537,6 +1537,48 @@ pub fn friedman_test(data: &[f64], n_subjects: usize, n_treatments: usize) -> No
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Concordance correlation coefficient (Lin 1989)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Lin's concordance correlation coefficient (CCC).
+///
+/// Measures agreement between two continuous variables, not just correlation.
+/// ρ_c = 2 ρ σ_x σ_y / (σ²_x + σ²_y + (μ_x - μ_y)²)
+///
+/// Ranges [-1, 1]. CCC = 1 only when both Pearson r = 1 AND the two variables
+/// have identical mean and variance (perfect agreement, not just correlation).
+///
+/// Useful for method comparison studies: does method B agree with gold standard A?
+pub fn concordance_correlation(x: &[f64], y: &[f64]) -> f64 {
+    assert_eq!(x.len(), y.len());
+    let n = x.len();
+    if n < 2 { return f64::NAN; }
+    let nf = n as f64;
+
+    let mx = x.iter().sum::<f64>() / nf;
+    let my = y.iter().sum::<f64>() / nf;
+
+    let mut sxx = 0.0;
+    let mut syy = 0.0;
+    let mut sxy = 0.0;
+    for i in 0..n {
+        let dx = x[i] - mx;
+        let dy = y[i] - my;
+        sxx += dx * dx;
+        syy += dy * dy;
+        sxy += dx * dy;
+    }
+    // Use population variances (divide by n, not n-1) per Lin 1989
+    let var_x = sxx / nf;
+    let var_y = syy / nf;
+    let cov_xy = sxy / nf;
+
+    let denom = var_x + var_y + (mx - my).powi(2);
+    if denom < 1e-15 { return f64::NAN; }
+    (2.0 * cov_xy / denom).clamp(-1.0, 1.0)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

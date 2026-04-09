@@ -593,6 +593,147 @@ pub fn cluster_validation(data: &[f64], labels: &[i32], n_dims: usize) -> Option
 }
 
 // ---------------------------------------------------------------------------
+// Hierarchical (agglomerative) clustering
+// ---------------------------------------------------------------------------
+
+/// Linkage method for hierarchical clustering.
+#[derive(Debug, Clone, Copy)]
+pub enum Linkage {
+    /// Minimum distance between any pair (tends to produce elongated clusters).
+    Single,
+    /// Maximum distance between any pair (tends to produce compact clusters).
+    Complete,
+    /// Mean distance between all pairs.
+    Average,
+    /// Minimize total within-cluster variance (Ward 1963).
+    Ward,
+}
+
+/// One merge step in the dendrogram.
+#[derive(Debug, Clone)]
+pub struct DendrogramStep {
+    /// Index of the first cluster merged.
+    pub cluster_a: usize,
+    /// Index of the second cluster merged.
+    pub cluster_b: usize,
+    /// Distance at which the merge occurred.
+    pub distance: f64,
+    /// Size of the merged cluster.
+    pub size: usize,
+}
+
+/// Result of hierarchical clustering.
+#[derive(Debug, Clone)]
+pub struct HierarchicalResult {
+    /// Merge history (n-1 steps for n observations).
+    pub dendrogram: Vec<DendrogramStep>,
+    /// Cluster labels when cut at k clusters.
+    pub labels: Vec<i32>,
+    /// Number of clusters requested.
+    pub k: usize,
+}
+
+/// Agglomerative hierarchical clustering.
+///
+/// `data`: n x d row-major matrix. `n_dims`: d. `k`: number of clusters to produce.
+/// `linkage`: merge criterion (Single, Complete, Average, Ward).
+///
+/// Uses O(n^2) distance matrix + Lance-Williams recurrence for O(n^2 log n) total.
+pub fn hierarchical_clustering(
+    data: &[f64], n: usize, n_dims: usize, k: usize, linkage: Linkage,
+) -> HierarchicalResult {
+    assert_eq!(data.len(), n * n_dims);
+    let k = k.max(1).min(n);
+
+    // Pairwise squared Euclidean distances
+    let mut dist = vec![f64::INFINITY; n * n];
+    for i in 0..n {
+        dist[i * n + i] = 0.0;
+        for j in (i + 1)..n {
+            let d: f64 = (0..n_dims).map(|dim| {
+                (data[i * n_dims + dim] - data[j * n_dims + dim]).powi(2)
+            }).sum();
+            // For Ward, store squared distance; for others, store Euclidean
+            let d = match linkage { Linkage::Ward => d, _ => d.sqrt() };
+            dist[i * n + j] = d;
+            dist[j * n + i] = d;
+        }
+    }
+
+    let mut sizes = vec![1usize; n];
+    let mut active = vec![true; n]; // which clusters are still active
+    let mut labels: Vec<usize> = (0..n).collect(); // each point starts as its own cluster
+    let mut dendrogram = Vec::with_capacity(n.saturating_sub(1));
+
+    for _step in 0..(n.saturating_sub(k)) {
+        // Find closest pair among active clusters
+        let mut best_d = f64::INFINITY;
+        let mut best_i = 0;
+        let mut best_j = 0;
+        for i in 0..n {
+            if !active[i] { continue; }
+            for j in (i + 1)..n {
+                if !active[j] { continue; }
+                if dist[i * n + j] < best_d {
+                    best_d = dist[i * n + j];
+                    best_i = i;
+                    best_j = j;
+                }
+            }
+        }
+        if best_d == f64::INFINITY { break; }
+
+        // Merge j into i
+        let ni = sizes[best_i] as f64;
+        let nj = sizes[best_j] as f64;
+
+        dendrogram.push(DendrogramStep {
+            cluster_a: best_i, cluster_b: best_j,
+            distance: best_d, size: sizes[best_i] + sizes[best_j],
+        });
+
+        // Update labels: everything in cluster best_j → best_i
+        for lbl in labels.iter_mut() {
+            if *lbl == best_j { *lbl = best_i; }
+        }
+
+        // Lance-Williams update: d(i∪j, m) for all active m
+        for m in 0..n {
+            if !active[m] || m == best_i || m == best_j { continue; }
+            let nm = sizes[m] as f64;
+            let di = dist[best_i * n + m];
+            let dj = dist[best_j * n + m];
+            let dij = dist[best_i * n + best_j];
+
+            let new_d = match linkage {
+                Linkage::Single => di.min(dj),
+                Linkage::Complete => di.max(dj),
+                Linkage::Average => (ni * di + nj * dj) / (ni + nj),
+                Linkage::Ward => {
+                    let total = ni + nj + nm;
+                    ((ni + nm) * di + (nj + nm) * dj - nm * dij) / total
+                }
+            };
+            dist[best_i * n + m] = new_d;
+            dist[m * n + best_i] = new_d;
+        }
+
+        sizes[best_i] += sizes[best_j];
+        active[best_j] = false;
+    }
+
+    // Compact labels to 0..k-1
+    let active_clusters: Vec<usize> = (0..n).filter(|&i| active[i]).collect();
+    let mut final_labels = vec![0i32; n];
+    for i in 0..n {
+        let cluster_idx = active_clusters.iter().position(|&c| labels[i] == c).unwrap_or(0);
+        final_labels[i] = cluster_idx as i32;
+    }
+
+    HierarchicalResult { dendrogram, labels: final_labels, k }
+}
+
+// ---------------------------------------------------------------------------
 // Hopkins statistic (Hopkins & Skellam 1954)
 // ---------------------------------------------------------------------------
 

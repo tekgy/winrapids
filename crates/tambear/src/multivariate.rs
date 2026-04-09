@@ -1349,4 +1349,96 @@ mod tests {
         assert!((mean_d2 - p as f64).abs() < p as f64,
             "mean D²={mean_d2:.2} should be near p={p}");
     }
+
+    // ── Ridge regression ─────────────────────────────────────────────────
+
+    #[test]
+    fn ridge_recovers_ols_at_zero_lambda() {
+        // With λ=0, ridge should match OLS on clean linear data y=2x+3
+        let n = 20;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let y: Vec<f64> = x_data.iter().map(|&xi| 2.0 * xi + 3.0).collect();
+        let x = Mat::from_vec(n, 1, x_data);
+
+        let result = ridge(&x, &y, 0.0);
+        close(result.beta[0], 2.0, 1e-6, "ridge coeff ≈ 2 (OLS)");
+        close(result.intercept, 3.0, 1e-4, "ridge intercept ≈ 3");
+        close(result.r2, 1.0, 1e-6, "R² = 1 for perfect linear fit");
+    }
+
+    #[test]
+    fn ridge_shrinks_toward_zero() {
+        // With large λ, ridge coefficients shrink toward zero
+        let n = 20;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let y: Vec<f64> = x_data.iter().map(|&xi| 5.0 * xi + 1.0).collect();
+        let x = Mat::from_vec(n, 1, x_data);
+
+        let result_small = ridge(&x, &y, 0.01);
+        let result_large = ridge(&x, &y, 1000.0);
+        assert!(result_large.beta[0].abs() < result_small.beta[0].abs(),
+            "larger λ should shrink: small={:.4}, large={:.4}",
+            result_small.beta[0], result_large.beta[0]);
+    }
+
+    // ── Lasso regression ─────────────────────────────────────────────────
+
+    #[test]
+    fn lasso_recovers_signal() {
+        let n = 30;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
+        let y: Vec<f64> = x_data.iter().map(|&xi| 3.0 * xi + 0.5).collect();
+        let x = Mat::from_vec(n, 1, x_data);
+
+        let result = lasso(&x, &y, 0.001, 1000, 1e-8);
+        assert!(result.beta[0] > 1.0,
+            "lasso coeff={:.4} should be substantial", result.beta[0]);
+        assert!(result.r2 > 0.8, "R²={:.4} should be high", result.r2);
+    }
+
+    #[test]
+    fn lasso_sparsity_large_lambda() {
+        // With large λ, Lasso should zero out the coefficient (constant y)
+        let n = 20;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
+        let y: Vec<f64> = (0..n).map(|_| 1.0).collect();
+        let x = Mat::from_vec(n, 1, x_data);
+
+        let result = lasso(&x, &y, 10.0, 1000, 1e-8);
+        assert!(result.beta[0].abs() < 0.01,
+            "lasso should zero coeff for constant y, got={:.6}", result.beta[0]);
+        assert_eq!(result.n_nonzero, 0, "n_nonzero should be 0");
+    }
+
+    // ── ElasticNet regression ─────────────────────────────────────────────
+
+    #[test]
+    fn elastic_net_alpha1_is_lasso() {
+        // alpha=1 → pure Lasso. Should match lasso().
+        let n = 30;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
+        let y: Vec<f64> = x_data.iter().map(|&xi| 2.0 * xi + 0.5).collect();
+        let x = Mat::from_vec(n, 1, x_data);
+
+        let lasso_r = lasso(&x, &y, 0.01, 2000, 1e-10);
+        let en_r = elastic_net(&x, &y, 0.01, 1.0, 2000, 1e-10);
+
+        close(en_r.beta[0], lasso_r.beta[0], 1e-4, "ElasticNet(α=1) should match Lasso");
+    }
+
+    #[test]
+    fn elastic_net_shrinks_with_regularization() {
+        // ElasticNet with strong regularization should produce smaller coefficients
+        let n = 30;
+        let x_data: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
+        let y: Vec<f64> = x_data.iter().map(|&xi| 5.0 * xi + 1.0).collect();
+        let x = Mat::from_vec(n, 1, x_data);
+
+        let strong = elastic_net(&x, &y, 1.0, 0.5, 1000, 1e-8);
+        let weak = elastic_net(&x, &y, 0.001, 0.5, 1000, 1e-8);
+
+        assert!(strong.beta[0].abs() < weak.beta[0].abs(),
+            "stronger regularization should shrink more: strong={:.4} weak={:.4}",
+            strong.beta[0], weak.beta[0]);
+    }
 }

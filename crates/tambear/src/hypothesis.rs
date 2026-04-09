@@ -1338,6 +1338,131 @@ pub fn fisher_exact(table: &[u64; 4]) -> FisherExactResult {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Jarque-Bera normality test (Jarque & Bera 1987)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Jarque-Bera normality test from pre-computed MomentStats.
+///
+/// JB = (n/6) [S² + K²/4] ~ χ²(2)
+///
+/// where S = skewness, K = excess kurtosis. The ultimate tambear method:
+/// O(1) from MomentStats (already accumulated).
+///
+/// `stats`: pre-computed moments (count, m2, m3, m4).
+pub fn jarque_bera(stats: &MomentStats) -> TestResult {
+    let n = stats.count;
+    if n < 3.0 {
+        return TestResult {
+            test_name: "Jarque-Bera", statistic: f64::NAN, p_value: f64::NAN,
+            df: 2.0, effect_size: f64::NAN, effect_size_name: "",
+        };
+    }
+    let s = stats.skewness(false);
+    let k = stats.kurtosis(true, false); // excess kurtosis (first arg = excess flag)
+    let jb = (n / 6.0) * (s * s + k * k / 4.0);
+    let p = chi2_right_tail_p(jb, 2.0);
+    TestResult {
+        test_name: "Jarque-Bera", statistic: jb, p_value: p,
+        df: 2.0, effect_size: f64::NAN, effect_size_name: "",
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// McNemar's test for paired nominal data
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// McNemar's test for paired dichotomous data (2x2 table of before/after).
+///
+/// Tests whether the row and column marginal frequencies are equal (symmetry).
+/// Table: [[a, b], [c, d]] where b and c are the discordant pairs.
+///
+/// χ² = (|b - c| - continuity)² / (b + c) ~ χ²(1)
+///
+/// `table`: [a, b, c, d]. `continuity`: if true, applies Yates correction (-0.5).
+pub fn mcnemar(table: &[f64; 4], continuity: bool) -> TestResult {
+    let b = table[1];
+    let c = table[2];
+    let bc = b + c;
+
+    if bc < 1e-15 {
+        return TestResult {
+            test_name: "McNemar", statistic: 0.0, p_value: 1.0,
+            df: 1.0, effect_size: f64::NAN, effect_size_name: "",
+        };
+    }
+
+    let correction = if continuity { 0.5 } else { 0.0 };
+    let diff = (b - c).abs() - correction;
+    let chi2 = if diff > 0.0 { diff * diff / bc } else { 0.0 };
+    let p = chi2_right_tail_p(chi2, 1.0);
+
+    TestResult {
+        test_name: "McNemar", statistic: chi2, p_value: p,
+        df: 1.0, effect_size: f64::NAN, effect_size_name: "",
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cochran's Q test for k related dichotomous samples
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Cochran's Q test: generalization of McNemar to k > 2 treatments.
+///
+/// Tests H₀: all k treatments have the same probability of success.
+/// Extension of Friedman for binary data.
+///
+/// Q = (k-1) [k Σ Cⱼ² - T²] / [kT - Σ Rᵢ²] ~ χ²(k-1)
+///
+/// `data`: n × k binary matrix (row-major, 0/1). n subjects, k treatments.
+pub fn cochran_q(data: &[f64], n_subjects: usize, n_treatments: usize) -> TestResult {
+    let n = n_subjects;
+    let k = n_treatments;
+
+    if k < 2 || n < 1 {
+        return TestResult {
+            test_name: "Cochran's Q", statistic: f64::NAN, p_value: f64::NAN,
+            df: 0.0, effect_size: f64::NAN, effect_size_name: "",
+        };
+    }
+
+    // Column totals Cj (number of successes per treatment)
+    let mut col_totals = vec![0.0; k];
+    // Row totals Ri (number of successes per subject)
+    let mut row_totals = vec![0.0; n];
+    let mut grand_total = 0.0;
+
+    for i in 0..n {
+        for j in 0..k {
+            let v = data[i * k + j];
+            col_totals[j] += v;
+            row_totals[i] += v;
+            grand_total += v;
+        }
+    }
+
+    let kf = k as f64;
+    let sum_cj2: f64 = col_totals.iter().map(|c| c * c).sum();
+    let sum_ri2: f64 = row_totals.iter().map(|r| r * r).sum();
+
+    let denom = kf * grand_total - sum_ri2;
+    if denom.abs() < 1e-15 {
+        return TestResult {
+            test_name: "Cochran's Q", statistic: 0.0, p_value: 1.0,
+            df: kf - 1.0, effect_size: f64::NAN, effect_size_name: "",
+        };
+    }
+
+    let q = (kf - 1.0) * (kf * sum_cj2 - grand_total * grand_total) / denom;
+    let df = kf - 1.0;
+    let p = chi2_right_tail_p(q, df);
+
+    TestResult {
+        test_name: "Cochran's Q", statistic: q, p_value: p,
+        df, effect_size: f64::NAN, effect_size_name: "",
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

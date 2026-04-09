@@ -1410,6 +1410,51 @@ pub fn execute(
                 TbsStepOutput::Adf(result)
             }
 
+            // ── Time series auto-detection ────────────────────────────────
+            ("time_series", None) | ("ts_analyze", None) => {
+                let c = usize_arg(step, "col", 0, 0);
+                let n_lags = usize_arg(step, "n_lags", 1, 5);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+
+                let adf = crate::time_series::adf_test(&col, n_lags);
+                let kpss = crate::time_series::kpss_test(&col, false, None);
+                let adf_rejects = adf.statistic < adf.critical_5pct;
+                let kpss_rejects = kpss.statistic > kpss.critical_5pct;
+
+                let stationarity = if adf_rejects && !kpss_rejects { "stationary" }
+                    else if !adf_rejects && kpss_rejects { "non-stationary" }
+                    else if adf_rejects && kpss_rejects { "trend-stationary" }
+                    else { "inconclusive" };
+
+                let max_lag = (col.len() / 4).min(20).max(1);
+                let acf_vals = crate::time_series::acf(&col, max_lag);
+                let sig = 2.0 / (col.len() as f64).sqrt();
+                let sig_acf: usize = (1..acf_vals.len()).filter(|&k| acf_vals[k].abs() > sig).count();
+
+                let arch_lags = 5.min(col.len() / 10).max(1);
+                let arch = crate::volatility::arch_lm_test(&col, arch_lags);
+                let arch_p = arch.as_ref().map_or(1.0, |a| a.p_value);
+                let has_arch = arch_p < 0.05;
+
+                let rec = if !adf_rejects && kpss_rejects {
+                    if has_arch { "difference + ARIMA-GARCH" } else { "difference + ARIMA" }
+                } else if has_arch { "AR + GARCH" }
+                  else if sig_acf == 0 { "white noise" }
+                  else { "AR/ARMA model" };
+
+                let adv = TbsStepAdvice::accepted("time_series_analysis",
+                    format!("{stationarity}; {rec}"))
+                    .with_diagnostic("ADF", adf.statistic,
+                        if adf_rejects { "stationary" } else { "unit root" })
+                    .with_diagnostic("KPSS", kpss.statistic,
+                        if kpss_rejects { "non-stationary" } else { "stationary" })
+                    .with_diagnostic("ARCH-LM", arch_p,
+                        if has_arch { "ARCH effects" } else { "no ARCH" });
+
+                step_advice = Some(adv);
+                TbsStepOutput::Adf(adf)
+            }
+
             // ══════════════════════════════════════════════════════════════
             // Signal processing
             // ══════════════════════════════════════════════════════════════
@@ -1828,6 +1873,114 @@ pub fn execute(
                 let c = col_arg(step, 0);
                 let col = extract_col(&pipeline.frame().data, pn, pd, c);
                 TbsStepOutput::Scalar { name: "realized_volatility", value: crate::volatility::realized_volatility(&col) }
+            }
+
+            // ── Volatility auto-detection ──────────────────────────────────
+            // ARCH-LM → GARCH fit → near-IGARCH warning → standardized residuals
+            ("volatility_analyze", None) | ("vol_analyze", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+
+                // ARCH-LM test
+                let arch_lags = 5.min(col.len() / 10).max(1);
+                let arch = crate::volatility::arch_lm_test(&col, arch_lags);
+                let arch_p = arch.as_ref().map_or(1.0, |a| a.p_value);
+                let has_arch = arch_p < 0.05;
+
+                if has_arch {
+                    // Fit GARCH(1,1)
+                    let garch = crate::volatility::garch11_fit(&col, 200);
+                    let rec = if garch.near_igarch {
+                        "GARCH(1,1) near-integrated (α+β > 0.99): consider IGARCH or long-memory model"
+                    } else {
+                        "GARCH(1,1) fitted successfully"
+                    };
+                    let adv = TbsStepAdvice::accepted("garch11", rec.to_string())
+                        .with_diagnostic("ARCH-LM", arch_p, "ARCH effects present")
+                        .with_diagnostic("alpha+beta", garch.alpha + garch.beta,
+                            if garch.near_igarch { "near-integrated" } else { "stationary" });
+                    step_advice = Some(adv);
+                    TbsStepOutput::Vector {
+                        name: "garch_params",
+                        values: vec![garch.omega, garch.alpha, garch.beta],
+                    }
+                } else {
+                    let adv = TbsStepAdvice::accepted("constant_volatility",
+                        "no ARCH effects detected; constant volatility (EWMA/rolling std) sufficient")
+                        .with_diagnostic("ARCH-LM", arch_p, "no ARCH effects");
+                    step_advice = Some(adv);
+                    // Return EWMA as the simpler alternative
+                    let values = crate::volatility::ewma_variance(&col, 0.94);
+                    TbsStepOutput::Vector { name: "ewma_variance", values }
+                }
+            }
+
+            // ── Survival auto-detection ──────────────────────────────────────
+            // KM → Cox PH → Schoenfeld PH check
+            ("survival_analyze", None) | ("surv_analyze", None) => {
+                // Expects y = [time1, event1, time2, event2, ...]
+                let y_ref = y.as_deref()
+                    .ok_or("survival_analyze: target data (y) required as [time, event, ...]")?;
+                let n_obs = y_ref.len() / 2;
+                let times: Vec<f64> = (0..n_obs).map(|i| y_ref[i * 2]).collect();
+                let events: Vec<bool> = (0..n_obs).map(|i| y_ref[i * 2 + 1] > 0.5).collect();
+                let n_events = events.iter().filter(|&&e| e).count();
+
+                let has_covariates = pd > 0;
+
+                let rec = if !has_covariates {
+                    "Kaplan-Meier (no covariates)"
+                } else if n_events < pd * 10 {
+                    "Cox PH (but events-per-variable < 10: consider penalized Cox)"
+                } else {
+                    "Cox PH"
+                };
+
+                let adv = TbsStepAdvice::accepted("survival_analysis",
+                    format!("{rec}; {n_events} events, {n_obs} observations"))
+                    .with_diagnostic("events_per_variable",
+                        if pd > 0 { n_events as f64 / pd as f64 } else { f64::INFINITY },
+                        if n_events >= pd * 10 { "adequate" } else { "low (< 10 EPV)" });
+
+                step_advice = Some(adv);
+
+                if has_covariates {
+                    let result = crate::survival::cox_ph(
+                        &pipeline.frame().data, &times, &events, pn, pd, 50);
+                    TbsStepOutput::Vector { name: "cox_coefficients", values: result.beta }
+                } else {
+                    let km = crate::survival::kaplan_meier(&times, &events);
+                    let surv_vals: Vec<f64> = km.iter().map(|s| s.survival).collect();
+                    TbsStepOutput::Vector { name: "km_survival", values: surv_vals }
+                }
+            }
+
+            // ── Bayesian auto-detection ──────────────────────────────────────
+            ("bayesian_analyze", None) | ("bayes_analyze", None) => {
+                // For now: fit Bayesian linear regression (conjugate) and check convergence
+                let y_ref = y.as_deref()
+                    .ok_or("bayesian_analyze: target data (y) required")?;
+
+                let rec = if pn < 30 {
+                    "Bayesian conjugate regression (small n benefits from prior regularization)"
+                } else {
+                    "Bayesian conjugate regression (conjugate prior for fast posterior)"
+                };
+
+                let adv = TbsStepAdvice::accepted("bayesian_linear",
+                    format!("{rec}; n={pn}, p={pd}"))
+                    .with_diagnostic("n/p_ratio", pn as f64 / pd.max(1) as f64,
+                        if pn > pd * 5 { "adequate" } else { "low (prior important)" });
+                step_advice = Some(adv);
+
+                // Fit conjugate Bayesian linear regression with vague prior
+                let prior_mean = vec![0.0; pd];
+                let mut prior_prec = vec![0.0; pd * pd];
+                for j in 0..pd { prior_prec[j * pd + j] = 0.01; }
+                let result = crate::bayesian::bayesian_linear_regression(
+                    &pipeline.frame().data, y_ref, pn, pd,
+                    &prior_mean, &prior_prec, 1.0, 1.0);
+                TbsStepOutput::Vector { name: "bayes_coefficients", values: result.beta_mean }
             }
 
             // ══════════════════════════════════════════════════════════════

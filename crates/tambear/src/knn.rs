@@ -98,6 +98,15 @@ pub fn knn_from_distance(dist: &DistanceMatrix, k: usize) -> KnnResult {
     for i in 0..n {
         let row = dist.row(i);
 
+        // If any off-diagonal distance in row i is NaN, the k-neighborhood of point i
+        // is undefined — we cannot claim any specific set of k nearest neighbors.
+        // Return an empty neighbor list to propagate the undefined signal explicitly.
+        let has_nan = (0..n).filter(|&j| j != i).any(|j| row[j].is_nan());
+        if has_nan {
+            neighbors.push(vec![]);
+            continue;
+        }
+
         // Partial sort: maintain a max-heap of size k (implemented as sorted vec
         // for simplicity — k is typically small, 5-50)
         let mut best: Vec<(usize, f64)> = Vec::with_capacity(k + 1);
@@ -105,7 +114,6 @@ pub fn knn_from_distance(dist: &DistanceMatrix, k: usize) -> KnnResult {
         for j in 0..n {
             if i == j { continue; } // skip self
             let d = row[j];
-            if d.is_nan() { continue; } // skip NaN distances
 
             if best.len() < k {
                 best.push((j, d));

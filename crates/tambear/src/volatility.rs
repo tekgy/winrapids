@@ -4,14 +4,22 @@
 //!
 //! ## Architecture
 //!
-//! GARCH filter = affine prefix scan (Kingdom A), NOT Kingdom B.
-//! σ²_t = ω + α·r²_{t-1} + β·σ²_{t-1} is the affine map f_t(x) = β·x + (ω + α·r²_{t-1}).
-//! The coefficient b_t = ω + α·r²_{t-1} depends on the DATA r_{t-1}, not the current state σ²_t.
-//! Affine maps compose: (f_s ∘ f_t)(x) = (a_s·a_t)·x + (a_s·b_t + b_s). Semigroup law holds.
-//! This is a companion-matrix prefix scan — same structure as any linear recurrence.
-//! The outer parameter optimization (ω, α, β search) is Kingdom C.
+//! Kingdom classification for volatility models:
 //!
-//! Prior label "Kingdom B" was wrong. The filter is Kingdom A; only the MLE loop is Kingdom C.
+//! Kingdom A (affine prefix scan) -- b_t depends on DATA only, not on previous state.
+//!   GARCH(1,1) filter: sigma2_t = omega + alpha*r2_{t-1} + beta*sigma2_{t-1}
+//!   GJR-GARCH(1,1) filter: same but b_t = omega + (alpha + gamma*1[r<0])*r2_{t-1}
+//!   TGARCH(1,1) filter: sigma_t = omega + alpha_pos*rpos + alpha_neg*rneg + beta*sigma_{t-1}
+//!   EWMA variance: sigma2_t = lambda*sigma2_{t-1} + (1-lambda)*r2_{t-1}
+//!   All delegate to crate::signal_processing::affine_prefix_scan.
+//!   The outer parameter optimization loop is Kingdom C.
+//!
+//! Kingdom B (genuine sequential) -- b_t depends on previous STATE.
+//!   EGARCH(1,1): g(z) uses z_{t-1} = r_{t-1}/sigma_{t-1} where sigma_{t-1} = exp(ln_sigma2_{t-1}/2).
+//!   The normalization makes b_t state-dependent. Finitely-closed semigroup law fails.
+//!   No filter/fit split possible for EGARCH.
+//!
+//! Prior label "Kingdom B" for GARCH was wrong. GARCH, GJR, TGARCH filters are Kingdom A.
 //!
 //! Realized measures = accumulation over intraday returns (Kingdom A).
 //! Microstructure = simple accumulate from trade/quote data.
@@ -40,9 +48,44 @@ pub struct GarchResult {
     pub near_igarch: bool,
 }
 
+/// GARCH(1,1) variance filter: compute conditional variances given parameters.
+///
+/// Recursion: `σ²_t = ω + α·r²_{t-1} + β·σ²_{t-1}` (affine in σ²_{t-1}).
+///
+/// **Kingdom A** via affine semigroup prefix scan over the standard semiring:
+/// `a_t = β` (constant), `b_t = ω + α·r²_{t-1}` (data-determined).
+/// Delegates to `crate::signal_processing::affine_prefix_scan`.
+///
+/// `sigma2_init`: backcast initialization for σ²_0 (typically unconditional variance
+/// `ω / (1 - α - β)`, or sample variance as a robust fallback).
+pub fn garch11_filter(returns: &[f64], omega: f64, alpha: f64, beta: f64, sigma2_init: f64) -> Vec<f64> {
+    let n = returns.len();
+    if n == 0 { return vec![]; }
+    let s0 = sigma2_init.max(1e-15);
+    if n == 1 { return vec![s0]; }
+    // Affine maps: a_t = β, b_t = ω + α·r²_{t-1}
+    let a: Vec<f64> = vec![beta; n - 1];
+    let b: Vec<f64> = returns[..n - 1].iter().map(|&r| omega + alpha * r * r).collect();
+    let scan = crate::signal_processing::affine_prefix_scan(&a, &b, s0);
+    let mut sigma2 = vec![s0];
+    sigma2.extend(scan.into_iter().map(|v| v.max(1e-15)));
+    sigma2
+}
+
+/// Log-likelihood of a GARCH(1,1) model given conditional variances.
+///
+/// `ll = -½ Σ_t [ln(2π) + ln(σ²_t) + r²_t / σ²_t]`
+pub fn garch11_log_likelihood(returns: &[f64], sigma2: &[f64]) -> f64 {
+    assert_eq!(returns.len(), sigma2.len());
+    returns.iter().zip(sigma2).map(|(&r, &s)| {
+        -0.5 * (std::f64::consts::TAU.ln() + s.ln() + r * r / s)
+    }).sum()
+}
+
 /// Fit GARCH(1,1) model via MLE on return series.
 /// `returns`: mean-adjusted return series.
-/// Optimizes via coordinate descent on (ω, α, β) with constraints.
+/// Optimizes via L-BFGS on unconstrained reparameterization. Kingdom C outer
+/// loop (optimizer) over Kingdom A inner (garch11_filter).
 pub fn garch11_fit(returns: &[f64], max_iter: usize) -> GarchResult {
     let n = returns.len();
     assert!(n >= 10);
@@ -59,15 +102,8 @@ pub fn garch11_fit(returns: &[f64], max_iter: usize) -> GarchResult {
     let mut beta = 0.8;
 
     let garch_ll = |omega: f64, alpha: f64, beta: f64| -> (f64, Vec<f64>) {
-        let mut sigma2 = vec![0.0; n];
-        sigma2[0] = uncond_var.max(1e-15); // backcast initialization (floored)
-        for t in 1..n {
-            sigma2[t] = omega + alpha * returns[t - 1].powi(2) + beta * sigma2[t - 1];
-            sigma2[t] = sigma2[t].max(1e-15); // floor
-        }
-        let ll: f64 = (0..n).map(|t| {
-            -0.5 * (std::f64::consts::TAU.ln() + sigma2[t].ln() + returns[t].powi(2) / sigma2[t])
-        }).sum();
+        let sigma2 = garch11_filter(returns, omega, alpha, beta, uncond_var);
+        let ll = garch11_log_likelihood(returns, &sigma2);
         (ll, sigma2)
     };
 
@@ -188,6 +224,16 @@ impl EgarchResult {
 /// EGARCH captures leverage: stock returns exhibit negative correlation between
 /// past returns and current volatility. γ < 0 models this asymmetry.
 ///
+/// **Kingdom B** — NOT Kingdom A. The recursion
+/// `ln σ²_t = ω + β·ln σ²_{t-1} + α·g(z_{t-1})`
+/// appears affine but g(z_{t-1}) = |z_{t-1}| - E[|z|] + γ·z_{t-1}
+/// where `z_{t-1} = r_{t-1}/σ_{t-1} = r_{t-1}/exp(ln σ²_{t-1}/2)`.
+/// The coefficient `b_t` depends nonlinearly on the PREVIOUS STATE `ln σ²_{t-1}`,
+/// not just on data. Unlike GARCH(1,1) (where `b_t = ω + α·r²_{t-1}` is
+/// purely data-determined), EGARCH's normalization by the current volatility
+/// makes `b_t` state-dependent. Finitely-closed semigroup law fails.
+/// No `egarch11_filter` extract possible; the fit is both Kingdom B throughout.
+///
 /// Returns are assumed mean-zero (mean-adjusted before calling).
 pub fn egarch11_fit(returns: &[f64], max_iter: usize) -> EgarchResult {
     let n = returns.len();
@@ -306,6 +352,37 @@ impl GjrGarchResult {
     }
 }
 
+/// GJR-GARCH(1,1) variance filter: compute conditional variances given parameters.
+///
+/// Recursion: `σ²_t = ω + α·r²_{t-1} + γ·r²_{t-1}·𝟙[r_{t-1}<0] + β·σ²_{t-1}`
+///
+/// **Kingdom A** via affine semigroup prefix scan:
+/// `a_t = β` (constant), `b_t = ω + (α + γ·𝟙[r_{t-1}<0])·r²_{t-1}` (data-determined).
+/// Delegates to `crate::signal_processing::affine_prefix_scan`.
+pub fn gjr_garch11_filter(
+    returns: &[f64],
+    omega: f64,
+    alpha: f64,
+    gamma: f64,
+    beta: f64,
+    sigma2_init: f64,
+) -> Vec<f64> {
+    let n = returns.len();
+    if n == 0 { return vec![]; }
+    let s0 = sigma2_init.max(1e-15);
+    if n == 1 { return vec![s0]; }
+    // b_t = ω + (α + γ·𝟙[r_{t-1}<0])·r²_{t-1}  — purely data-determined
+    let a: Vec<f64> = vec![beta; n - 1];
+    let b: Vec<f64> = returns[..n - 1].iter().map(|&r| {
+        let indicator = if r < 0.0 { 1.0 } else { 0.0 };
+        omega + (alpha + gamma * indicator) * r * r
+    }).collect();
+    let scan = crate::signal_processing::affine_prefix_scan(&a, &b, s0);
+    let mut sigma2 = vec![s0];
+    sigma2.extend(scan.into_iter().map(|v| v.max(1e-15)));
+    sigma2
+}
+
 /// Fit GJR-GARCH(1,1) on a return series.
 ///
 /// GJR-GARCH is widely preferred over symmetric GARCH for equity returns
@@ -318,18 +395,8 @@ pub fn gjr_garch11_fit(returns: &[f64], max_iter: usize) -> GjrGarchResult {
     let uncond_var = moments.variance(0).max(1e-15);
 
     let gjr_ll = |omega: f64, alpha: f64, gamma: f64, beta: f64| -> (f64, Vec<f64>) {
-        let mut sigma2 = vec![0.0_f64; n];
-        sigma2[0] = uncond_var.max(1e-15);
-        for t in 1..n {
-            let r_prev = returns[t - 1];
-            let indicator = if r_prev < 0.0 { 1.0 } else { 0.0 };
-            sigma2[t] = omega + alpha * r_prev.powi(2) + gamma * r_prev.powi(2) * indicator
-                + beta * sigma2[t - 1];
-            sigma2[t] = sigma2[t].max(1e-15);
-        }
-        let ll: f64 = (0..n).map(|t| {
-            -0.5 * (std::f64::consts::TAU.ln() + sigma2[t].ln() + returns[t].powi(2) / sigma2[t])
-        }).sum();
+        let sigma2 = gjr_garch11_filter(returns, omega, alpha, gamma, beta, uncond_var);
+        let ll = garch11_log_likelihood(returns, &sigma2);
         (ll, sigma2)
     };
 
@@ -441,6 +508,39 @@ impl TgarchResult {
     }
 }
 
+/// TGARCH(1,1) sigma filter: compute conditional standard deviations given parameters.
+///
+/// Recursion: `σ_t = ω + α⁺·r⁺_{t-1} + α⁻·r⁻_{t-1} + β·σ_{t-1}`
+/// where `r⁺ = max(r, 0)`, `r⁻ = max(-r, 0)`.
+///
+/// **Kingdom A** via affine semigroup prefix scan:
+/// `a_t = β` (constant), `b_t = ω + α⁺·r⁺_{t-1} + α⁻·r⁻_{t-1}` (data-determined).
+/// Delegates to `crate::signal_processing::affine_prefix_scan`.
+pub fn tgarch11_filter(
+    returns: &[f64],
+    omega: f64,
+    alpha_pos: f64,
+    alpha_neg: f64,
+    beta: f64,
+    sigma_init: f64,
+) -> Vec<f64> {
+    let n = returns.len();
+    if n == 0 { return vec![]; }
+    let s0 = sigma_init.max(1e-15);
+    if n == 1 { return vec![s0]; }
+    // b_t = ω + α⁺·r⁺_{t-1} + α⁻·r⁻_{t-1}  — purely data-determined
+    let a: Vec<f64> = vec![beta; n - 1];
+    let b: Vec<f64> = returns[..n - 1].iter().map(|&r| {
+        let rpos = r.max(0.0);
+        let rneg = (-r).max(0.0);
+        omega + alpha_pos * rpos + alpha_neg * rneg
+    }).collect();
+    let scan = crate::signal_processing::affine_prefix_scan(&a, &b, s0);
+    let mut sigma = vec![s0];
+    sigma.extend(scan.into_iter().map(|v| v.max(1e-15)));
+    sigma
+}
+
 /// Fit TGARCH(1,1) on a return series.
 ///
 /// Stationarity condition (Nelson 1990): E[ln(α⁺·ε⁺ + α⁻·ε⁻ + β)²] < 0,
@@ -458,18 +558,10 @@ pub fn tgarch11_fit(returns: &[f64], max_iter: usize) -> TgarchResult {
     const E_ABS_Z: f64 = 0.7978845608028654; // sqrt(2/π)
 
     let tgarch_ll = |omega: f64, alpha_pos: f64, alpha_neg: f64, beta: f64| -> (f64, Vec<f64>) {
-        let mut sigma = vec![0.0_f64; n];
-        sigma[0] = uncond_sigma.max(1e-15);
-        for t in 1..n {
-            let r = returns[t - 1];
-            let rpos = r.max(0.0);
-            let rneg = (-r).max(0.0);
-            sigma[t] = omega + alpha_pos * rpos + alpha_neg * rneg + beta * sigma[t - 1];
-            sigma[t] = sigma[t].max(1e-15);
-        }
-        let ll: f64 = (0..n).map(|t| {
-            let s2 = sigma[t].powi(2);
-            -0.5 * (std::f64::consts::TAU.ln() + s2.ln() + returns[t].powi(2) / s2)
+        let sigma = tgarch11_filter(returns, omega, alpha_pos, alpha_neg, beta, uncond_sigma);
+        let ll: f64 = sigma.iter().zip(returns).map(|(&s, &r)| {
+            let s2 = s * s;
+            -0.5 * (std::f64::consts::TAU.ln() + s2.ln() + r * r / s2)
         }).sum();
         (ll, sigma)
     };
@@ -1096,6 +1188,172 @@ mod tests {
 
     fn close(a: f64, b: f64, tol: f64, label: &str) {
         assert!((a - b).abs() < tol, "{label}: {a} vs {b} (diff={})", (a - b).abs());
+    }
+
+    // ── garch11_filter (Kingdom A primitive) ─────────────────────────────
+
+    #[test]
+    fn garch11_filter_constant_returns() {
+        // With zero returns: σ²_t = ω + β·σ²_{t-1} converges to ω/(1-β)
+        let omega = 0.01;
+        let alpha = 0.1;
+        let beta = 0.8;
+        let sigma2_init = omega / (1.0 - alpha - beta); // unconditional variance
+        let returns = vec![0.0; 50];
+        let sigma2 = garch11_filter(&returns, omega, alpha, beta, sigma2_init);
+        assert_eq!(sigma2.len(), 50);
+        // σ²_0 = sigma2_init; with zero returns the recursion is σ²_t = ω + β·σ²_{t-1}
+        // which is a geometric approach to ω/(1-β), not ω/(1-α-β)
+        // All values must be positive (floor ensures this)
+        assert!(sigma2.iter().all(|&v| v > 0.0), "all variances must be positive");
+    }
+
+    #[test]
+    fn garch11_filter_matches_sequential() {
+        // Verify that the affine_prefix_scan-based filter produces identical
+        // results to the reference sequential recursion.
+        let omega = 0.001;
+        let alpha = 0.09;
+        let beta = 0.85;
+        let returns: Vec<f64> = (0..20).map(|i| ((i as f64) * 0.3).sin() * 0.02).collect();
+        let sigma2_init = omega / (1.0 - alpha - beta);
+
+        let sigma2_new = garch11_filter(&returns, omega, alpha, beta, sigma2_init);
+
+        // Sequential reference
+        let mut sigma2_ref = vec![sigma2_init.max(1e-15)];
+        for t in 1..returns.len() {
+            let s = omega + alpha * returns[t-1].powi(2) + beta * sigma2_ref[t-1];
+            sigma2_ref.push(s.max(1e-15));
+        }
+
+        for (i, (&got, &expected)) in sigma2_new.iter().zip(sigma2_ref.iter()).enumerate() {
+            assert!((got - expected).abs() < 1e-12,
+                "garch11_filter[{i}]: got {got} expected {expected}");
+        }
+    }
+
+    #[test]
+    fn garch11_filter_used_by_garch11_fit() {
+        // Sanity check: garch11_fit's variances field should match what garch11_filter
+        // produces given the fitted parameters.
+        let returns: Vec<f64> = (0..100).map(|i| ((i as f64) * 0.7).sin() * 0.015).collect();
+        let res = garch11_fit(&returns, 50);
+        let sigma2_init = crate::descriptive::moments_ungrouped(&returns).variance(0).max(1e-15);
+        let filter_sigma2 = garch11_filter(&returns, res.omega, res.alpha, res.beta, sigma2_init);
+        // Should match to numerical precision
+        for (i, (&a, &b)) in res.variances.iter().zip(filter_sigma2.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-10,
+                "variances[{i}]: fit={a} vs filter={b}");
+        }
+    }
+
+    // ── gjr_garch11_filter (Kingdom A primitive) ─────────────────────────
+
+    #[test]
+    fn gjr_garch11_filter_matches_sequential() {
+        let omega: f64 = 0.001;
+        let alpha: f64 = 0.05;
+        let gamma: f64 = 0.08; // leverage
+        let beta: f64 = 0.85;
+        let returns: Vec<f64> = (0..20).map(|i| ((i as f64) * 0.4).sin() * 0.02).collect();
+        let sigma2_init = omega / (1.0 - alpha - gamma * 0.5 - beta).max(1e-6);
+
+        let sigma2_new = gjr_garch11_filter(&returns, omega, alpha, gamma, beta, sigma2_init);
+
+        // Sequential reference
+        let mut sigma2_ref = vec![sigma2_init.max(1e-15)];
+        for t in 1..returns.len() {
+            let r_prev = returns[t - 1];
+            let indicator = if r_prev < 0.0 { 1.0 } else { 0.0 };
+            let s = omega + alpha * r_prev.powi(2) + gamma * r_prev.powi(2) * indicator
+                + beta * sigma2_ref[t - 1];
+            sigma2_ref.push(s.max(1e-15));
+        }
+
+        for (i, (&got, &expected)) in sigma2_new.iter().zip(sigma2_ref.iter()).enumerate() {
+            assert!((got - expected).abs() < 1e-12,
+                "gjr_garch11_filter[{i}]: got {got} expected {expected}");
+        }
+    }
+
+    #[test]
+    fn gjr_garch11_filter_symmetric_equals_garch() {
+        // When γ = 0 (no leverage), GJR-GARCH = GARCH(1,1).
+        let omega = 0.001;
+        let alpha = 0.09;
+        let beta = 0.85;
+        let returns: Vec<f64> = (0..15).map(|i| ((i as f64) * 0.5).sin() * 0.01).collect();
+        let sigma2_init = omega / (1.0 - alpha - beta);
+
+        let sigma2_gjr = gjr_garch11_filter(&returns, omega, alpha, 0.0, beta, sigma2_init);
+        let sigma2_garch = garch11_filter(&returns, omega, alpha, beta, sigma2_init);
+
+        for (i, (&a, &b)) in sigma2_gjr.iter().zip(sigma2_garch.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-12,
+                "gjr_garch11_filter[{i}] with γ=0 should match garch11_filter");
+        }
+    }
+
+    // ── tgarch11_filter (Kingdom A primitive) ───────────────────────────
+
+    #[test]
+    fn tgarch11_filter_matches_sequential() {
+        let omega: f64 = 0.005;
+        let alpha_pos: f64 = 0.04;
+        let alpha_neg: f64 = 0.10; // leverage: negative shocks hit harder
+        let beta: f64 = 0.85;
+        let returns: Vec<f64> = (0..20).map(|i| ((i as f64) * 0.4).sin() * 0.02).collect();
+        let uncond_sigma = (omega / (1.0 - (alpha_pos + alpha_neg) * 0.7979 - beta).max(1e-6)).sqrt();
+
+        let sigma_new = tgarch11_filter(&returns, omega, alpha_pos, alpha_neg, beta, uncond_sigma);
+
+        // Sequential reference
+        let mut sigma_ref = vec![uncond_sigma.max(1e-15)];
+        for t in 1..returns.len() {
+            let r = returns[t - 1];
+            let rpos = r.max(0.0);
+            let rneg = (-r).max(0.0);
+            let s = omega + alpha_pos * rpos + alpha_neg * rneg + beta * sigma_ref[t - 1];
+            sigma_ref.push(s.max(1e-15));
+        }
+
+        for (i, (&got, &expected)) in sigma_new.iter().zip(sigma_ref.iter()).enumerate() {
+            assert!((got - expected).abs() < 1e-12,
+                "tgarch11_filter[{i}]: got {got} expected {expected}");
+        }
+    }
+
+    #[test]
+    fn tgarch11_filter_symmetric_equals_ema_like_recursion() {
+        // When alpha_pos == alpha_neg, the filter treats + and - returns equally.
+        // For zero returns, σ converges to ω/(1-β).
+        let omega = 0.005;
+        let alpha = 0.05;
+        let beta = 0.90;
+        let returns = vec![0.0_f64; 50];
+        let sigma_init = omega / (1.0 - beta);
+
+        let sigma = tgarch11_filter(&returns, omega, alpha, alpha, beta, sigma_init);
+        assert_eq!(sigma.len(), 50);
+        // With zero returns, recursion: σ_t = ω + β·σ_{t-1} → converges to ω/(1-β)
+        close(sigma[49], omega / (1.0 - beta), 1e-8, "TGARCH zero-returns convergence");
+    }
+
+    #[test]
+    fn tgarch11_filter_used_by_tgarch11_fit() {
+        // Sanity check: tgarch11_fit's sigma field should match what tgarch11_filter
+        // produces given the fitted parameters.
+        let returns: Vec<f64> = (0..100).map(|i| ((i as f64) * 0.7).sin() * 0.015).collect();
+        let res = tgarch11_fit(&returns, 50);
+        let uncond_sigma = crate::descriptive::moments_ungrouped(&returns).variance(0).max(1e-15).sqrt();
+        let filter_sigma = tgarch11_filter(
+            &returns, res.omega, res.alpha_pos, res.alpha_neg, res.beta, uncond_sigma
+        );
+        for (i, (&a, &b)) in res.sigma.iter().zip(filter_sigma.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-10,
+                "sigma[{i}]: fit={a} vs filter={b}");
+        }
     }
 
     #[test]

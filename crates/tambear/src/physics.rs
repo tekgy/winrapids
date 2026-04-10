@@ -1171,6 +1171,308 @@ pub fn relativistic_doppler(f0: f64, velocity: f64, receding: bool) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// SECTION 7 — Symplectic Integrators
+//
+// Symplectic integrators preserve the symplectic structure (phase space volume)
+// of Hamiltonian systems. For H = T(p) + V(q):
+//   T = p²/(2m) → force = -∂V/∂q
+//
+// Kingdom A: each full-step is a composition of drift+kick maps, each of which
+// is a linear map on (q, p). The composed map is symplectic by construction.
+// Energy error is bounded (no secular drift), unlike Runge-Kutta.
+//
+// References:
+//   Leapfrog: Störmer-Verlet, 2nd order, 2 force evaluations per step
+//   Forest-Ruth: 4th order, 4 force evaluations per step (Ruth 1983)
+//   Yoshida 6th: 6th order, 8 force evaluations per step (Yoshida 1990)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Leapfrog (Störmer-Verlet) step for Hamiltonian H = T(p) + V(q).
+/// 2nd order, symplectic. One force evaluation per step.
+/// `force(q)` = -dV/dq = acceleration × mass.
+/// Returns (q_new, p_new).
+pub fn leapfrog_step(q: f64, p: f64, mass: f64, dt: f64, force: impl Fn(f64) -> f64) -> (f64, f64) {
+    // Kick-Drift-Kick (velocity Verlet)
+    let p_half = p + 0.5 * dt * force(q);
+    let q_new = q + dt * p_half / mass;
+    let p_new = p_half + 0.5 * dt * force(q_new);
+    (q_new, p_new)
+}
+
+/// Leapfrog integration of a 1D Hamiltonian system for n steps.
+/// Returns (positions, momenta).
+pub fn leapfrog_path(
+    q0: f64,
+    p0: f64,
+    mass: f64,
+    dt: f64,
+    n_steps: usize,
+    force: impl Fn(f64) -> f64,
+) -> (Vec<f64>, Vec<f64>) {
+    let mut qs = Vec::with_capacity(n_steps + 1);
+    let mut ps = Vec::with_capacity(n_steps + 1);
+    qs.push(q0);
+    ps.push(p0);
+    let mut q = q0;
+    let mut p = p0;
+    for _ in 0..n_steps {
+        let (q_new, p_new) = leapfrog_step(q, p, mass, dt, &force);
+        q = q_new;
+        p = p_new;
+        qs.push(q);
+        ps.push(p);
+    }
+    (qs, ps)
+}
+
+// Forest-Ruth 4th order coefficients (Ruth 1983, Forest & Ruth 1990):
+//   θ = 1/(2 - 2^(1/3))
+const FOREST_RUTH_THETA: f64 = 1.3512071919596576_f64; // 1/(2 - 2^(1/3))
+// c = [θ/2, (1-θ)/2, (1-θ)/2, θ/2], d = [θ, 1-2θ, θ]
+
+/// Forest-Ruth 4th order symplectic step.
+/// 4 force evaluations, 4th order accuracy.
+/// Optimal for medium-precision Hamiltonian systems.
+pub fn forest_ruth_step(q: f64, p: f64, mass: f64, dt: f64, force: impl Fn(f64) -> f64) -> (f64, f64) {
+    let th = FOREST_RUTH_THETA;
+    // Stage 1
+    let q1 = q + (th * 0.5 * dt) * p / mass;
+    let p1 = p + th * dt * force(q1);
+    // Stage 2
+    let q2 = q1 + ((1.0 - th) * 0.5 * dt) * p1 / mass;
+    let p2 = p1 + (1.0 - 2.0 * th) * dt * force(q2);
+    // Stage 3 (mirror of stages 1-2)
+    let q3 = q2 + ((1.0 - th) * 0.5 * dt) * p2 / mass;
+    let p3 = p2 + th * dt * force(q3);
+    // Stage 4
+    let q4 = q3 + (th * 0.5 * dt) * p3 / mass;
+    (q4, p3)
+}
+
+/// Forest-Ruth integration of a 1D system for n steps. Returns (positions, momenta).
+pub fn forest_ruth_path(
+    q0: f64,
+    p0: f64,
+    mass: f64,
+    dt: f64,
+    n_steps: usize,
+    force: impl Fn(f64) -> f64,
+) -> (Vec<f64>, Vec<f64>) {
+    let mut qs = Vec::with_capacity(n_steps + 1);
+    let mut ps = Vec::with_capacity(n_steps + 1);
+    qs.push(q0);
+    ps.push(p0);
+    let mut q = q0;
+    let mut p = p0;
+    for _ in 0..n_steps {
+        let (q_new, p_new) = forest_ruth_step(q, p, mass, dt, &force);
+        q = q_new;
+        p = p_new;
+        qs.push(q);
+        ps.push(p);
+    }
+    (qs, ps)
+}
+
+// Yoshida 6th order coefficients are inlined into yoshida6_step as a local array.
+
+/// Yoshida 6th order symplectic integrator step (triple-jump construction).
+/// Composes three Forest-Ruth (4th order) sub-steps with Yoshida (1990) scaling.
+/// Genuine 6th order: energy error O(dt^6) per step, bounded (not secular) over time.
+///
+/// Construction: Ψ₆(h) = Φ₄(w₁h) ∘ Φ₄(w₀h) ∘ Φ₄(w₁h)
+/// where Φ₄ is Forest-Ruth (4th order) and:
+///   w₁ = 1 / (2 - 2^(1/5)) (the 6th-order triple-jump coefficient)
+///   w₀ = 1 - 2w₁
+///
+/// Reference: Yoshida (1990) "Construction of higher order symplectic integrators",
+/// Phys. Lett. A 150(5-7), p.262-268.
+pub fn yoshida6_step(q: f64, p: f64, mass: f64, dt: f64, force: impl Fn(f64) -> f64) -> (f64, f64) {
+    // Triple-jump from 4th-order base (Forest-Ruth) to 6th order.
+    // w₁ = 1/(2 - 2^(1/5)), w₀ = 1 - 2*w₁
+    let w1 = 1.0_f64 / (2.0 - (2.0_f64).powf(1.0 / 5.0));
+    let w0 = 1.0 - 2.0 * w1;
+    let (q1, p1) = forest_ruth_step(q, p, mass, w1 * dt, &force);
+    let (q2, p2) = forest_ruth_step(q1, p1, mass, w0 * dt, &force);
+    forest_ruth_step(q2, p2, mass, w1 * dt, &force)
+}
+
+/// Yoshida 6th order integration of a 1D system for n steps. Returns (positions, momenta).
+pub fn yoshida6_path(
+    q0: f64,
+    p0: f64,
+    mass: f64,
+    dt: f64,
+    n_steps: usize,
+    force: impl Fn(f64) -> f64,
+) -> (Vec<f64>, Vec<f64>) {
+    let mut qs = Vec::with_capacity(n_steps + 1);
+    let mut ps = Vec::with_capacity(n_steps + 1);
+    qs.push(q0);
+    ps.push(p0);
+    let mut q = q0;
+    let mut p = p0;
+    for _ in 0..n_steps {
+        let (q_new, p_new) = yoshida6_step(q, p, mass, dt, &force);
+        q = q_new;
+        p = p_new;
+        qs.push(q);
+        ps.push(p);
+    }
+    (qs, ps)
+}
+
+/// Hamiltonian for 1D harmonic oscillator: H = p²/(2m) + ½mω²q².
+pub fn harmonic_hamiltonian(q: f64, p: f64, mass: f64, omega: f64) -> f64 {
+    p * p / (2.0 * mass) + 0.5 * mass * omega * omega * q * q
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION 8 — Ray Optics (ABCD Matrix Formalism)
+//
+// Kingdom A: ray propagation through optical systems = matrix-vector multiply.
+// The ABCD (or ray transfer) matrix represents any paraxial optical element.
+// Composition of elements = matrix multiplication (associative, Kingdom A).
+//
+// Reference: Saleh & Teich "Fundamentals of Photonics" Ch. 1-2
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Ray state: (height y, angle u) in the paraxial approximation.
+/// y = distance from optical axis; u = angle with optical axis (radians).
+#[derive(Clone, Copy, Debug)]
+pub struct Ray {
+    pub y: f64,  // height (m)
+    pub u: f64,  // angle (rad)
+}
+
+/// ABCD (ray transfer) matrix: [[A, B], [C, D]].
+/// Maps ray (y, u) → (A*y + B*u, C*y + D*u).
+/// det(M) = 1 for lossless systems.
+#[derive(Clone, Copy, Debug)]
+pub struct AbcdMatrix {
+    pub a: f64,
+    pub b: f64,
+    pub c: f64,
+    pub d: f64,
+}
+
+impl AbcdMatrix {
+    /// Identity (free propagation zero distance).
+    pub fn identity() -> Self {
+        AbcdMatrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0 }
+    }
+
+    /// Propagate ray through this matrix.
+    pub fn apply(&self, ray: Ray) -> Ray {
+        Ray {
+            y: self.a * ray.y + self.b * ray.u,
+            u: self.c * ray.y + self.d * ray.u,
+        }
+    }
+
+    /// Compose two ABCD matrices: M = self · other (apply other first, then self).
+    pub fn compose(&self, other: &AbcdMatrix) -> AbcdMatrix {
+        AbcdMatrix {
+            a: self.a * other.a + self.b * other.c,
+            b: self.a * other.b + self.b * other.d,
+            c: self.c * other.a + self.d * other.c,
+            d: self.c * other.b + self.d * other.d,
+        }
+    }
+
+    /// Determinant (should be 1.0 for lossless systems).
+    pub fn det(&self) -> f64 {
+        self.a * self.d - self.b * self.c
+    }
+}
+
+/// Free-space propagation ABCD matrix over distance d in medium n.
+/// M = [[1, d/n], [0, 1]].
+pub fn abcd_free_space(distance: f64, refractive_index: f64) -> AbcdMatrix {
+    AbcdMatrix { a: 1.0, b: distance / refractive_index, c: 0.0, d: 1.0 }
+}
+
+/// Thin lens ABCD matrix with focal length f.
+/// M = [[1, 0], [-1/f, 1]].
+pub fn abcd_thin_lens(focal_length: f64) -> AbcdMatrix {
+    AbcdMatrix { a: 1.0, b: 0.0, c: -1.0 / focal_length, d: 1.0 }
+}
+
+/// Flat refracting surface ABCD matrix (interface between n1 and n2).
+/// M = [[1, 0], [0, n1/n2]].
+pub fn abcd_flat_interface(n1: f64, n2: f64) -> AbcdMatrix {
+    AbcdMatrix { a: 1.0, b: 0.0, c: 0.0, d: n1 / n2 }
+}
+
+/// Curved refracting surface with radius R (center of curvature to the right).
+/// M = [[1, 0], [(n1-n2)/(R*n2), n1/n2]].
+pub fn abcd_curved_interface(n1: f64, n2: f64, radius: f64) -> AbcdMatrix {
+    AbcdMatrix {
+        a: 1.0,
+        b: 0.0,
+        c: (n1 - n2) / (radius * n2),
+        d: n1 / n2,
+    }
+}
+
+/// Flat mirror ABCD matrix (reflection, same as identity for angle convention).
+/// M = [[1, 0], [0, 1]].
+pub fn abcd_flat_mirror() -> AbcdMatrix {
+    AbcdMatrix::identity()
+}
+
+/// Curved mirror ABCD matrix with radius of curvature R (concave: R > 0).
+/// Equivalent to thin lens with f = R/2.
+/// M = [[1, 0], [-2/R, 1]].
+pub fn abcd_curved_mirror(radius: f64) -> AbcdMatrix {
+    AbcdMatrix { a: 1.0, b: 0.0, c: -2.0 / radius, d: 1.0 }
+}
+
+/// Propagate a ray through a sequence of ABCD elements.
+/// Kingdom A: all matrix multiplications are associative.
+pub fn abcd_system(ray: Ray, elements: &[AbcdMatrix]) -> Ray {
+    let system = elements.iter().fold(AbcdMatrix::identity(), |acc, m| m.compose(&acc));
+    system.apply(ray)
+}
+
+/// Gaussian beam q-parameter propagation through ABCD matrix.
+/// q_out = (A*q + B) / (C*q + D) (complex Möbius transform).
+/// q = z + i*z_R where z_R = π*w0²/λ is the Rayleigh range.
+/// Returns (q_out_real, q_out_imag).
+pub fn gaussian_beam_q(q_real: f64, q_imag: f64, m: &AbcdMatrix) -> (f64, f64) {
+    // (A*q + B) / (C*q + D), q complex
+    let num_re = m.a * q_real + m.b;
+    let num_im = m.a * q_imag;
+    let den_re = m.c * q_real + m.d;
+    let den_im = m.c * q_imag;
+    // (num_re + i*num_im) / (den_re + i*den_im)
+    let den_sq = den_re * den_re + den_im * den_im;
+    let out_re = (num_re * den_re + num_im * den_im) / den_sq;
+    let out_im = (num_im * den_re - num_re * den_im) / den_sq;
+    (out_re, out_im)
+}
+
+/// Gaussian beam spot size w(z) from complex q-parameter.
+/// w² = -λ / (π * Im(1/q)).
+/// 1/q = (q_re - i*q_im) / (q_re² + q_im²).
+/// Im(1/q) = -q_im / (q_re² + q_im²).
+pub fn gaussian_beam_spot(q_real: f64, q_imag: f64, wavelength: f64) -> f64 {
+    let q_sq = q_real * q_real + q_imag * q_imag;
+    let inv_q_imag = -q_imag / q_sq; // Im(1/q)
+    // w² = -lambda / (pi * inv_q_imag) = lambda / (pi * |inv_q_imag|)
+    let w_sq = wavelength / (std::f64::consts::PI * inv_q_imag.abs());
+    w_sq.sqrt()
+}
+
+/// Gaussian beam waist (minimum spot) and Rayleigh range from q-parameter at focus.
+/// At focus: q = i*z_R, so q_real=0, q_imag=z_R.
+/// w0 = sqrt(lambda * z_R / pi).
+pub fn gaussian_beam_params(rayleigh_range: f64, wavelength: f64) -> (f64, f64) {
+    let w0 = (wavelength * rayleigh_range / std::f64::consts::PI).sqrt();
+    (w0, rayleigh_range)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1604,5 +1906,143 @@ mod tests {
         assert!(evals[2] < evals[3], "E_2={} < E_3={}", evals[2], evals[3]);
         // All eigenvalues should be positive (V ≥ 0, kinetic ≥ 0)
         assert!(evals[0] >= 0.0, "Ground state energy ≥ 0: E_0={}", evals[0]);
+    }
+
+    // ── Section 7: Symplectic Integrators ───────────────────────────────
+
+    #[test]
+    fn leapfrog_sho_energy_conservation() {
+        // Harmonic oscillator: H = p^2/(2m) + 0.5*m*omega^2*q^2
+        // Leapfrog conserves a modified Hamiltonian — long-time drift should be <0.01%
+        let (q0, p0, mass, omega, dt) = (1.0_f64, 0.0_f64, 1.0_f64, 2.0_f64, 0.01_f64);
+        let e0 = harmonic_hamiltonian(q0, p0, mass, omega);
+        let (qs, ps) = leapfrog_path(q0, p0, mass, dt, 10000, |q| -mass * omega * omega * q);
+        let e_end = harmonic_hamiltonian(*qs.last().unwrap(), *ps.last().unwrap(), mass, omega);
+        close_rel(e_end, e0, 1e-4, "Leapfrog SHO energy conserved (10000 steps)");
+    }
+
+    #[test]
+    fn leapfrog_sho_period() {
+        // After T = 2pi/omega steps, q should return to q0.
+        let (q0, p0, mass, omega) = (1.0_f64, 0.0_f64, 1.0_f64, 2.0_f64);
+        let period = TAU / omega;
+        let dt = 0.001;
+        let n_steps = (period / dt).round() as usize;
+        let (qs, _) = leapfrog_path(q0, p0, mass, dt, n_steps, |q| -mass * omega * omega * q);
+        close(qs.last().unwrap().clone(), q0, 0.01, "Leapfrog SHO period return");
+    }
+
+    #[test]
+    fn forest_ruth_better_energy_than_leapfrog() {
+        // Forest-Ruth (4th order) should have smaller energy error than leapfrog (2nd order)
+        // for the same dt, over the same number of steps.
+        let (q0, p0, mass, omega, dt) = (1.0_f64, 0.0_f64, 1.0_f64, 2.0_f64, 0.1_f64);
+        let force = |q: f64| -mass * omega * omega * q;
+        let e0 = harmonic_hamiltonian(q0, p0, mass, omega);
+        let (qs_lf, ps_lf) = leapfrog_path(q0, p0, mass, dt, 100, &force);
+        let (qs_fr, ps_fr) = forest_ruth_path(q0, p0, mass, dt, 100, &force);
+        let err_lf = (harmonic_hamiltonian(*qs_lf.last().unwrap(), *ps_lf.last().unwrap(), mass, omega) - e0).abs() / e0.abs();
+        let err_fr = (harmonic_hamiltonian(*qs_fr.last().unwrap(), *ps_fr.last().unwrap(), mass, omega) - e0).abs() / e0.abs();
+        assert!(err_fr < err_lf, "Forest-Ruth err={err_fr:.2e} should beat leapfrog err={err_lf:.2e}");
+    }
+
+    #[test]
+    fn yoshida6_energy_conservation_tight() {
+        // Yoshida 6th order: energy oscillations should be bounded and small.
+        // With dt=0.1 over 1000 steps (T=100): 6th-order error bound ≈ O(dt^6) per step.
+        // dt^6 = 1e-6; over 1000 steps cumulative drift bounded by symplecticity at ~1e-5.
+        // This beats leapfrog (O(dt^2) ≈ 1e-2) and Forest-Ruth (O(dt^4) ≈ 1e-4) dramatically.
+        let (q0, p0, mass, omega, dt) = (1.0_f64, 0.0_f64, 1.0_f64, 2.0_f64, 0.1_f64);
+        let e0 = harmonic_hamiltonian(q0, p0, mass, omega);
+        let (qs, ps) = yoshida6_path(q0, p0, mass, dt, 1000, |q| -mass * omega * omega * q);
+        let e_end = harmonic_hamiltonian(*qs.last().unwrap(), *ps.last().unwrap(), mass, omega);
+        let rel_err = (e_end - e0).abs() / e0.abs();
+        // 1e-5 is a tight bound relative to leapfrog (~1e-2) and Forest-Ruth (~1e-4)
+        assert!(rel_err < 1e-5, "Yoshida6 energy err={rel_err:.2e} should be < 1e-5");
+    }
+
+    #[test]
+    fn symplectic_integrators_ordering() {
+        // 6th order should beat 4th, which should beat 2nd, for same dt.
+        // Compare energy error after 100 steps with dt=0.2.
+        let (q0, p0, mass, omega, dt) = (1.0_f64, 0.0_f64, 1.0_f64, 2.0_f64, 0.2_f64);
+        let force = |q: f64| -mass * omega * omega * q;
+        let e0 = harmonic_hamiltonian(q0, p0, mass, omega);
+        let (qs_lf, ps_lf) = leapfrog_path(q0, p0, mass, dt, 100, &force);
+        let (qs_fr, ps_fr) = forest_ruth_path(q0, p0, mass, dt, 100, &force);
+        let (qs_y6, ps_y6) = yoshida6_path(q0, p0, mass, dt, 100, &force);
+        let e_lf = harmonic_hamiltonian(*qs_lf.last().unwrap(), *ps_lf.last().unwrap(), mass, omega);
+        let e_fr = harmonic_hamiltonian(*qs_fr.last().unwrap(), *ps_fr.last().unwrap(), mass, omega);
+        let e_y6 = harmonic_hamiltonian(*qs_y6.last().unwrap(), *ps_y6.last().unwrap(), mass, omega);
+        let err_lf = (e_lf - e0).abs();
+        let err_fr = (e_fr - e0).abs();
+        let err_y6 = (e_y6 - e0).abs();
+        assert!(err_y6 < err_fr, "Yoshida6 err={err_y6:.2e} should beat Forest-Ruth err={err_fr:.2e}");
+        assert!(err_fr < err_lf || err_fr < 1e-10, "Forest-Ruth err={err_fr:.2e} should beat leapfrog err={err_lf:.2e} (or both tiny)");
+    }
+
+    // ── Section 8: Ray Optics ABCD Matrices ─────────────────────────────
+
+    #[test]
+    fn abcd_thin_lens_focusing() {
+        // Ray at height y=1, angle u=0 through thin lens f=0.5:
+        // After lens: u_new = -y/f = -2. After propagating distance f to focal plane: y=0.
+        let f = 0.5_f64;
+        let ray = Ray { y: 1.0, u: 0.0 };
+        let lens = abcd_thin_lens(f);
+        let propagate = abcd_free_space(f, 1.0);
+        let system = propagate.compose(&lens);
+        let ray_out = system.apply(ray);
+        close(ray_out.y, 0.0, 1e-10, "Thin lens focuses at f");
+    }
+
+    #[test]
+    fn abcd_free_space_propagation() {
+        // Parallel ray (u=0) propagates without bending.
+        let ray = Ray { y: 1.0, u: 0.0 };
+        let m = abcd_free_space(2.0, 1.0);
+        let out = m.apply(ray);
+        close(out.y, 1.0, 1e-10, "Free space doesn't change parallel ray height");
+        close(out.u, 0.0, 1e-10, "Free space doesn't change angle");
+    }
+
+    #[test]
+    fn abcd_system_determinant_unity() {
+        // Composition of lossless elements should have det=1.
+        let m = abcd_thin_lens(0.1).compose(&abcd_free_space(0.2, 1.0)).compose(&abcd_thin_lens(0.3));
+        close(m.det(), 1.0, 1e-10, "Composed ABCD det=1");
+    }
+
+    #[test]
+    fn abcd_curved_mirror_focal_length() {
+        // Curved mirror with R: equivalent to thin lens f=R/2.
+        // Ray at y=1, u=0: after mirror u=-2/R; after propagation R/2: y=0.
+        let r = 0.4_f64;
+        let ray = Ray { y: 1.0, u: 0.0 };
+        let mirror = abcd_curved_mirror(r);
+        let prop = abcd_free_space(r / 2.0, 1.0);
+        let system = prop.compose(&mirror);
+        let out = system.apply(ray);
+        close(out.y, 0.0, 1e-10, "Curved mirror focuses at R/2");
+    }
+
+    #[test]
+    fn gaussian_beam_q_free_space() {
+        // Gaussian beam propagating distance d: q_out = q_in + d.
+        let (q_re, q_im) = (0.0_f64, 0.1_f64); // at focus: q = i*z_R
+        let d = 0.05_f64;
+        let m = abcd_free_space(d, 1.0);
+        let (q_re_out, q_im_out) = gaussian_beam_q(q_re, q_im, &m);
+        close(q_re_out, q_re + d, 1e-10, "Gaussian beam q propagates: real part += d");
+        close(q_im_out, q_im, 1e-10, "Gaussian beam q propagates: imag unchanged");
+    }
+
+    #[test]
+    fn gaussian_beam_spot_at_focus() {
+        // At focus q = i*z_R (q_real=0): spot size = sqrt(lambda*z_R/pi).
+        let (z_r, lambda) = (0.1_f64, 1064e-9_f64); // typical 1064nm Nd:YAG, 0.1m Rayleigh range
+        let (w0, _) = gaussian_beam_params(z_r, lambda);
+        let spot = gaussian_beam_spot(0.0, z_r, lambda);
+        close_rel(spot, w0, 1e-10, "Gaussian beam spot at focus = w0");
     }
 }

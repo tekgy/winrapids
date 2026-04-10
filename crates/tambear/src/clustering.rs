@@ -364,18 +364,29 @@ pub fn clustering_from_distance(
     min_samples: usize,
 ) -> ClusterResult {
     // ── Step 2: Density (CPU, O(n²)) ─────────────────────────────────────
-    let mut density = vec![0usize; n];
+    // NaN in D(i,j) means the distance is undefined — not that i and j are
+    // non-neighbors. We track finite neighbor count separately from NaN count.
+    // A point is core if `finite_density + nan_count >= min_samples`: the NaN
+    // entries could have been within epsilon, so we don't exclude them.
+    let mut density = vec![0usize; n];     // finite neighbors within epsilon
+    let mut nan_nbr = vec![0usize; n];     // NaN-distance neighbors (undefined)
     for i in 0..n {
         let row = &dist[i * n..(i + 1) * n];
         for j in 0..n {
-            if row[j] <= epsilon_threshold {
+            if row[j].is_nan() {
+                // NaN is a distance from i to j. Both are affected.
+                // Count from i's perspective; symmetric update handled for j below.
+                nan_nbr[i] += 1;
+            } else if row[j] <= epsilon_threshold {
                 density[i] += 1;
             }
         }
     }
 
     // ── Step 3: Core identification ───────────────────────────────────────
-    let is_core: Vec<bool> = density.iter().map(|&c| c >= min_samples).collect();
+    // Conservative policy: if NaN distances exist and could bring point over
+    // min_samples, the point is possibly core (not definitely noise).
+    let is_core: Vec<bool> = (0..n).map(|i| density[i] + nan_nbr[i] >= min_samples).collect();
     let n_core = is_core.iter().filter(|&&c| c).count();
 
     // ── Step 4a: Union-find over core-core connections ────────────────────
@@ -384,7 +395,8 @@ pub fn clustering_from_distance(
         if !is_core[i] { continue; }
         let row_i = &dist[i * n..(i + 1) * n];
         for j in (i + 1)..n {
-            if is_core[j] && row_i[j] <= epsilon_threshold {
+            // NaN distance: skip union (undefined whether within epsilon).
+            if is_core[j] && !row_i[j].is_nan() && row_i[j] <= epsilon_threshold {
                 let ri = uf_find(&mut parent, i);
                 let rj = uf_find(&mut parent, j);
                 if ri != rj { parent[ri] = rj; }
@@ -416,7 +428,8 @@ pub fn clustering_from_distance(
         if is_core[i] { continue; }
         let row_i = &dist[i * n..(i + 1) * n];
         for j in 0..n {
-            if is_core[j] && row_i[j] <= epsilon_threshold {
+            // NaN distance: skip (undefined whether within epsilon).
+            if is_core[j] && !row_i[j].is_nan() && row_i[j] <= epsilon_threshold {
                 labels[i] = labels[j];
                 break;
             }
@@ -681,7 +694,8 @@ pub fn davies_bouldin_score(
 /// - `data`, `labels`, `n_dims`: raw inputs (centroids are not needed — silhouette
 ///   uses pairwise distances to actual points, not centroid approximations)
 ///
-/// **Primitive**: exists independently. Kingdom B (pairwise O(n²) inner loop).
+/// **Primitive**: exists independently. Kingdom A (pairwise accumulate over n² edges — all
+/// `sq_dist(i,j)` pairs are independent; O(n²) is cost, not a structural dependency).
 pub fn silhouette_score(data: &[f64], labels: &[i32], n_dims: usize) -> f64 {
     let n = labels.len();
     assert_eq!(data.len(), n * n_dims);

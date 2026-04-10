@@ -600,6 +600,163 @@ pub fn largest_lyapunov(data: &[f64], m: usize, tau: usize, dt: f64) -> f64 {
     ols_slope(&steps[..use_n], &log_divs[..use_n])
 }
 
+/// Session-aware `correlation_dimension`: shares the delay embedding via TamSession.
+///
+/// Identical to `correlation_dimension` but registers (or retrieves) the Takens
+/// embedding under `IntermediateTag::DelayEmbedding { data_id, dim: m, tau }`.
+///
+/// When `largest_lyapunov_session` is called on the same data with the same (m, tau),
+/// it reuses the already-registered embedding — no recomputation.
+///
+/// # Arguments
+/// * `data` — time series
+/// * `m` — embedding dimension
+/// * `tau` — delay
+/// * `session` — shared TamSession (mutable borrow; first caller registers, rest reuse)
+pub fn correlation_dimension_session(
+    data: &[f64],
+    m: usize,
+    tau: usize,
+    session: &mut crate::intermediates::TamSession,
+) -> f64 {
+    use crate::intermediates::{DataId, IntermediateTag};
+    use std::sync::Arc;
+
+    if data.iter().any(|v| !v.is_finite()) { return f64::NAN; }
+
+    let data_id = DataId::from_f64(data);
+    let tag = IntermediateTag::DelayEmbedding { data_id, dim: m, tau };
+
+    // Try to reuse an already-registered embedding
+    let vectors: Arc<Vec<Vec<f64>>> = if let Some(cached) = session.get::<Vec<Vec<f64>>>(&tag) {
+        cached
+    } else {
+        let embedded = crate::time_series::delay_embed(data, m, tau);
+        let arc = Arc::new(embedded);
+        session.register(tag, Arc::clone(&arc));
+        arc
+    };
+
+    let n_vectors = vectors.len();
+    if n_vectors < 10 { return f64::NAN; }
+
+    let flat: Vec<f64> = vectors.iter().flat_map(|v| v.iter().copied()).collect();
+
+    let mut distances = Vec::with_capacity(n_vectors * (n_vectors - 1) / 2);
+    for i in 0..n_vectors {
+        for j in (i + 1)..n_vectors {
+            let d: f64 = (0..m).map(|k| (flat[i * m + k] - flat[j * m + k]).abs())
+                .fold(f64::NEG_INFINITY, crate::numerical::nan_max);
+            distances.push(d);
+        }
+    }
+    distances.sort_by(|a, b| a.total_cmp(b));
+
+    if distances.is_empty() { return f64::NAN; }
+
+    let r_min = distances[distances.len() / 10].max(1e-10);
+    let r_max = distances[distances.len() * 9 / 10];
+    if r_min >= r_max { return f64::NAN; }
+
+    let n_r = 20;
+    let mut log_rs = Vec::new();
+    let mut log_crs = Vec::new();
+    let n_pairs = distances.len() as f64;
+
+    for i in 0..n_r {
+        let log_r = r_min.ln() + (r_max.ln() - r_min.ln()) * i as f64 / (n_r - 1) as f64;
+        let r = log_r.exp();
+        let count = distances.partition_point(|&d| d < r);
+        let cr = count as f64 / n_pairs;
+        if cr > 0.0 {
+            log_rs.push(r.ln());
+            log_crs.push(cr.ln());
+        }
+    }
+
+    if log_rs.len() < 3 { return f64::NAN; }
+    ols_slope(&log_rs, &log_crs)
+}
+
+/// Session-aware `largest_lyapunov`: shares the delay embedding via TamSession.
+///
+/// Identical to `largest_lyapunov` but registers (or retrieves) the Takens
+/// embedding under `IntermediateTag::DelayEmbedding { data_id, dim: m, tau }`.
+///
+/// When `correlation_dimension_session` is called on the same data with the same
+/// (m, tau), only one embedding is computed regardless of call order.
+pub fn largest_lyapunov_session(
+    data: &[f64],
+    m: usize,
+    tau: usize,
+    dt: f64,
+    session: &mut crate::intermediates::TamSession,
+) -> f64 {
+    use crate::intermediates::{DataId, IntermediateTag};
+    use std::sync::Arc;
+
+    let data_id = DataId::from_f64(data);
+    let tag = IntermediateTag::DelayEmbedding { data_id, dim: m, tau };
+
+    let vectors: Arc<Vec<Vec<f64>>> = if let Some(cached) = session.get::<Vec<Vec<f64>>>(&tag) {
+        cached
+    } else {
+        let embedded = crate::time_series::delay_embed(data, m, tau);
+        let arc = Arc::new(embedded);
+        session.register(tag, Arc::clone(&arc));
+        arc
+    };
+
+    let n_vectors = vectors.len();
+    if n_vectors < 20 { return f64::NAN; }
+
+    let mean_period = estimate_mean_period(data);
+    let min_temporal_sep = mean_period.max(tau);
+    let max_diverge = n_vectors / 4;
+    let mut divergences = vec![0.0; max_diverge];
+    let mut counts = vec![0usize; max_diverge];
+
+    for i in 0..n_vectors - max_diverge {
+        let mut min_dist = f64::INFINITY;
+        let mut nn_idx = 0;
+
+        for j in 0..n_vectors - max_diverge {
+            if (i as i64 - j as i64).unsigned_abs() as usize <= min_temporal_sep { continue; }
+            let d: f64 = (0..m).map(|k| (vectors[i][k] - vectors[j][k]).powi(2)).sum::<f64>().sqrt();
+            if d < min_dist && d > 0.0 {
+                min_dist = d;
+                nn_idx = j;
+            }
+        }
+
+        if min_dist == f64::INFINITY { continue; }
+
+        for dn in 0..max_diverge {
+            if i + dn >= n_vectors || nn_idx + dn >= n_vectors { break; }
+            let d: f64 = (0..m).map(|k| (vectors[i + dn][k] - vectors[nn_idx + dn][k]).powi(2))
+                .sum::<f64>().sqrt();
+            if d > 0.0 {
+                divergences[dn] += d.ln();
+                counts[dn] += 1;
+            }
+        }
+    }
+
+    let mut log_divs = Vec::new();
+    let mut steps = Vec::new();
+    for dn in 0..max_diverge {
+        if counts[dn] > 0 {
+            log_divs.push(divergences[dn] / counts[dn] as f64);
+            steps.push(dn as f64 * dt);
+        }
+    }
+
+    if log_divs.len() < 3 { return f64::NAN; }
+
+    let use_n = (log_divs.len() / 3).max(3);
+    ols_slope(&steps[..use_n], &log_divs[..use_n])
+}
+
 /// Estimate mean period of data via zero-crossing count.
 ///
 /// Returns the estimated mean period in samples: 2·(n-1)/crossings.
@@ -876,6 +1033,8 @@ pub fn rqa(data: &[f64], m: usize, tau: usize, epsilon: f64, lmin: usize) -> Rqa
     if m == 0 || tau == 0 || n < (m - 1) * tau + 2 || !epsilon.is_finite() || epsilon <= 0.0 {
         return RqaResult::nan();
     }
+    // NaN in any data point → recurrence structure undefined → propagate NaN.
+    if data.iter().any(|v| v.is_nan()) { return RqaResult::nan(); }
     let lmin = lmin.max(2);
 
     // Delay-embedded vectors: x_i = (data[i], data[i+tau], ..., data[i+(m-1)*tau])
@@ -1443,6 +1602,8 @@ pub fn mfdfa(data: &[f64], q_values: &[f64], min_seg: usize, max_seg: usize) -> 
 
     let n = data.len();
     if n < 2 * min_seg || min_seg < 2 { return nan_result(q_values); }
+    // NaN in any data point → profile is NaN → all h(q) undefined → propagate.
+    if data.iter().any(|v| v.is_nan()) { return nan_result(q_values); }
 
     // Cumulative profile: Y[i] = Σ_{k<i} (x[k] - mean)
     let mean_x = data.iter().sum::<f64>() / n as f64;
@@ -1935,5 +2096,44 @@ mod tests_new_complexity {
         if r.is_finite() {
             assert!(r >= 0.0 && r <= 1.0, "hankel r-stat in [0,1], got {r}");
         }
+    }
+
+    #[test]
+    fn session_variants_agree_with_standalone() {
+        // Session-aware functions must produce bit-identical results to standalone.
+        let data: Vec<f64> = (0..120).map(|i| (i as f64 * 0.3).sin()).collect();
+        let m = 3;
+        let tau = 1;
+
+        let cd_standalone = correlation_dimension(&data, m, tau);
+        let ll_standalone = largest_lyapunov(&data, m, tau, 1.0);
+
+        let mut session = crate::intermediates::TamSession::new();
+        let cd_session = correlation_dimension_session(&data, m, tau, &mut session);
+        let ll_session = largest_lyapunov_session(&data, m, tau, 1.0, &mut session);
+
+        // Both session calls share the same embedding — session should have exactly 1 entry.
+        assert_eq!(session.len(), 1, "only one DelayEmbedding should be registered");
+
+        if cd_standalone.is_finite() {
+            assert!((cd_standalone - cd_session).abs() < 1e-12,
+                "correlation_dimension mismatch: standalone={cd_standalone} session={cd_session}");
+        }
+        if ll_standalone.is_finite() {
+            assert!((ll_standalone - ll_session).abs() < 1e-12,
+                "largest_lyapunov mismatch: standalone={ll_standalone} session={ll_session}");
+        }
+    }
+
+    #[test]
+    fn session_reuse_across_different_params_registers_separately() {
+        // Different (dim, tau) pairs must NOT share embeddings.
+        let data: Vec<f64> = (0..120).map(|i| (i as f64 * 0.3).sin()).collect();
+
+        let mut session = crate::intermediates::TamSession::new();
+        let _cd1 = correlation_dimension_session(&data, 3, 1, &mut session);
+        let _cd2 = correlation_dimension_session(&data, 4, 2, &mut session);
+
+        assert_eq!(session.len(), 2, "different (dim,tau) must register separate embeddings");
     }
 }

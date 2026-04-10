@@ -471,11 +471,16 @@ count in `--lib` runs.
 
 6. **Rigor gauntlet 8 original bugs** (0e9d42b): The 8 failures from f2655fd were fixed.
 
-7. **`renyi_entropy` alpha=Inf NaN-eating** (OPEN — observer-found, not yet committed):
+7. **Wave 18 NaN-eating sweep** (adversarial, 2026-04-10): 5 additional production sites fixed —
+   `stochastic.rs:367,414` (ctmc_transition_matrix, ctmc_stationary), `nonparametric.rs:3243,3402-3403`
+   (bath_law, sde_estimate), `physics.rs:1054` (cfl_timestep), `linear_algebra.rs:1575` (mat_norm1).
+   All verified in working tree. Session total: **39 confirmed bugs across 18 adversarial waves.**
+
+8. **`renyi_entropy` alpha=Inf NaN-eating** (OPEN — observer-found, not yet committed):
    `information_theory.rs:108` — `fold(0.0f64, f64::max)` in the `alpha == f64::INFINITY`
    branch silently eats NaN in `probs`. Should be `fold(f64::NEG_INFINITY, nan_max)`.
-   Slipped through the wave sweeps because it's an early-return special case, not in the
-   main sum path. Reported to adversarial and math-researcher.
+   Missed by all 18 waves (early-return special case, not in main sum path).
+   Reported to adversarial wave 18 message — acknowledged, not yet fixed.
 
 ---
 
@@ -706,12 +711,11 @@ Seeded with actual measurements from the test corpus. Key numbers:
 | Tier | Definition | Count (estimated) |
 |------|-----------|-------------------|
 | Theorem-oracle (green) | mpmath/SymPy at 50+ digits | ~10 primitives (6 workup files + algebraic theorems) |
-| Parity-oracle (yellow) | scipy/numpy peer comparison | ~80-120 (gold_standard_parity.rs: **471 tests**) |
+| Parity-oracle (yellow) | scipy/numpy peer comparison | ~150-200 (gold_standard_parity.rs: **826 tests** — updated from 471) |
 | Contract (orange) | NaN/boundary guards | ~150-200 (adversarial waves 1-19) |
 | Behavior/none (red/black) | finite output or no external tests | ~50-100+ |
 
-**Critical discovery**: `gold_standard_parity.rs` has 471 test functions — a much larger
-parity-oracle layer than previously accounted for. The yellow zone is substantial, not thin.
+**Corrected discovery**: `gold_standard_parity.rs` has **826 test functions** (earlier reading of 471 was stale — file grew during waves 16-23). The yellow zone is substantial.
 
 **The Padé-class bug argument**: scipy parity tests might miss Padé coefficient errors because
 scipy also uses Padé — both implementations agree on a wrong answer. Only theorem-oracle tests
@@ -720,6 +724,33 @@ scipy also uses Padé — both implementations agree on a wrong answer. Only the
 **Seed document**: `campsites/verification/20260410171433-oracle-coverage-map/observer/insights/seed.md`
 Contains: four-tier taxonomy, current state with real numbers, Padé argument, connection to
 sharing phyla map (shared intermediates propagate their verification tier to consumers).
+
+**Workup structure (verified by reading files):**
+
+7 workup files exist: erfc, pearson_r, incomplete_beta, inversion_count, kendall_tau, normal_cdf, pinv.
+These are single-primitive verification records, NOT coverage maps. Each covers one primitive
+exhaustively with: mpmath 50dp oracles for 8-12 input points, algebraic invariants, boundary/edge
+cases, documented bug history with ULP measurements. They are the template for green-tier status.
+
+Coverage gaps within the existing workups:
+- `workup_erfc.rs`: deep tail [5,27] has 1 point (x=5) at 1e-12 tolerance, not ULP-verified
+- `workup_pearson_r.rs`: [-1,1] range tested via 50 random trials with bounds check but no mpmath oracle
+- CF convergence boundaries (how many iterations near algorithmic branch points?) not systematically probed
+
+**hyp2f1/hyp1f1 confirmed absent (verified 2026-04-10):**
+
+`hyp2f1` and `hyp1f1` do not exist anywhere in tambear source. Word "hypergeometric" appears
+only in comments (discrete distribution in hypothesis.rs, Pochhammer symbol docs in number_theory.rs).
+
+The dependency chain scipy-gap-scan raised (hyp2f1 → incomplete_beta_inv → non-central dists)
+is not the current structure: `regularized_incomplete_beta` (`special_functions.rs:291`) uses
+Lentz continued fraction, no hypergeometric calls. Algorithm: symmetry reduction + Lentz CF with
+standard incomplete beta CF coefficients.
+
+The gap is real but not currently poisoning existing primitives. It poisons: non-central F
+distributions that use ₂F₁ series, Appell functions, Lauricella functions, some NSWC inverse
+algorithms. Priority: implement hyp2f1/hyp1f1 with theorem-oracle coverage before adding the
+~80 missing continuous distributions that may require them.
 
 ---
 
@@ -794,4 +825,116 @@ reclassify automatically.
 3. `mod_pow` Kingdom B mislabeling (`number_theory.rs:153`) — documented, unfixed
 4. `Op::TropicalMinPlus` gap in `accumulate.rs:121` — documented, not yet implemented
 
-*Last updated: 2026-04-10 by observer (PELT tropical semiring verification added)*
+---
+
+### Navigator Routing — New Landscape Verification (2026-04-10)
+
+Navigator routed 16 campsites. Observer-verified architecture items:
+
+**`op-identity-method` — spec complete, verified.**
+
+`campsites/industrialization/architecture/20260410164316-op-identity-method/math-researcher/notebooks/identity-degenerate-spec.md`
+
+Two methods required on every scannable Op:
+- `identity()` → neutral element of the monoid (used for Blelloch tree padding)
+- `degenerate()` → out-of-band signal for invalid/empty input (NOT used for padding)
+
+Conflating them produced 7 bugs in waves 13-17. Spec covers all 12 current Op variants with
+correct identity/degenerate values. Implementation: add to Op enum, update all scan engines.
+
+**`using-two-scopes` — resolved, three-tier model verified.**
+
+`campsites/industrialization/architecture/20260410164514-using-two-scopes/math-researcher/20260410164514-creation.md`
+
+Three-tier priority chain (highest wins):
+1. Step-level `using()` — consumed per step, drains
+2. Session-level `session.defaults(...)` — new `session_defaults: UsingBag` field in TamSession, does NOT drain
+3. Coded defaults — `unwrap_or(0.05)`
+
+Implementation requires `session_defaults` field addition to TamSession and `set_defaults()`
+handler in tbs_executor. Design question is closed — pathmaker can implement.
+
+**`nan-propagating-minmax` — all 4 wave 18 targets already fixed (verified).**
+
+Scout audit listed 4 true bugs; all 4 verified fixed in current working tree:
+- `neural.rs:242,251` (softmax, log_softmax) → `nan_max` confirmed at those lines
+- `signal_processing.rs:2320-2323` (ICA stats) → `nan_max`/`nan_min` confirmed
+- `irt.rs:277` (EAP log-sum-exp) → `nan_max` confirmed
+- `numerical.rs:1172-1173` (ARMA amplitude) → in `#[test]` block, safe — not a production bug
+
+**`pinv-relative-rcond` — already closed. Bug #2 in this notebook (commit ff13e63).**
+
+**`renyi_entropy:108` — still open.**
+
+The only remaining live production NaN-eating fold. Not in scout's audit, not in wave 18.
+Reported but not yet fixed.
+
+---
+
+### Oracle Coverage Map — Tensor Structure (2026-04-10)
+
+r-gap-scan added the second axis to the coverage map: claim type. The full map is a
+3-axis tensor: **(primitive, claim type, input region)**.
+
+**Three claim types:**
+- Type 1 (formula correctness): theorem assertions — symmetry, special cases, limits. Mathematical necessity.
+- Type 2 (numerical precision): oracle at mpmath 50dp. Catches coefficient errors.
+- Type 3 (robustness): adversarial inputs — NaN, singular, zero variance, ties.
+
+**Priority by fan-out × gap:**
+
+`covariance_matrix` is the highest-leverage workup not yet written:
+- Fan-out: 8 consumers (pca, lda, cca, manova, mahalanobis, ridge, vif, factor_analysis)
+- Type 1 coverage: **BLACK** — no symmetry test, no shift invariance, no PSD check, no scale covariance
+- Type 2 coverage: **BLACK** — not in workup files, not in gold_standard_parity.rs
+- Type 3 coverage: **ORANGE** — tested indirectly through downstream Hotelling/MANOVA tests
+
+One `workup_covariance_matrix.rs` with 4 Type 1 theorem tests + mpmath oracle propagates
+green-tier confidence to 8 downstream methods simultaneously.
+
+**`gold_standard_parity.rs` corrected count**: 826 tests (not 471 — grew during waves 16-23).
+Updated in table above.
+
+**Tensor document**: `campsites/verification/20260410171433-oracle-coverage-map/observer/insights/tensor-structure.md`
+Contains: full fan-out table from intermediates.rs, per-intermediate tensor cell analysis,
+priority ordering, r-gap-scan insight recorded.
+
+---
+
+### Adversarial Campsite Proposals — Observer Assessment (2026-04-10)
+
+Four proposals from adversarial following wave 18 completion. Observer assessment against
+the oracle coverage tensor:
+
+**1. `adversarial-validity-semantics`** — HIGH PRIORITY.
+Three implicit policies (Propagate/Ignore/Error) are inconsistent across the codebase.
+Making them an explicit design axis is the leaf-function companion to the `op-identity-method`
+campsite (which resolved scan engines). Currently: some functions propagate NaN, some ignore it,
+some return a sentinel. No declaration, no enforcement. Fixing this closes the gap that allowed
+the `renyi_entropy:108` bug to slip through all 18 waves — it was an "early-return special case"
+with implicit Ignore policy instead of Propagate.
+
+**2. `adversarial-singularity-class`** — CONFIRMED REAL PATTERN.
+Tridiagonal zero-pivot returning identity, matrix_exp singular-Q returning eye — both observed
+in waves 13-14 but no systematic workup. Same topology as NaN-eating: silent "valid-looking"
+result from a degenerate input. The `degenerate()` method from op-identity-method spec is the
+right frame: singularity should produce `op.degenerate()`, not `op.identity()`.
+
+**3. `adversarial-catastrophic-cancellation`** — REAL GAP, LOWER URGENCY.
+Welford is the only tested cancellation-resistant path. `pearson_r` has a large-shift stability
+test (`x=[1e10+i]`), but this is isolated. Raw sum/mean in non-Welford code (e.g. direct
+running totals in some spectral primitives) are Type 3 black. Worth sweeping but lower
+immediate impact than validity-semantics.
+
+**4. `adversarial-special-function-poles`** — HIGH VALUE.
+`gamma` at negative integers, `digamma` at 0, `beta` at 0/1. None tested adversarially.
+The `erfc` workup found 2 boundary regressions during oracle construction — poles are the
+same class. The workup template (probe near the dangerous boundary with oracle values)
+applies directly. scipy-gap-scan's interest in special functions makes this doubly relevant.
+
+**Observer note**: Waves 1-18 covered Type 3 (robustness) well but unevenly — concentrated on
+NaN-eating folds. Proposals 1 and 4 address the two most visible remaining Type 3 gaps.
+Proposal 2 connects to the op-identity-method architectural fix. Proposal 3 is the systematic
+version of an already-solved single-primitive problem.
+
+*Last updated: 2026-04-10 by observer (wave 18 final verification + adversarial proposals assessed)*

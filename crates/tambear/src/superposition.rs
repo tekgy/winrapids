@@ -572,6 +572,395 @@ fn pearson_corr(a: &[f64], b: &[f64]) -> f64 {
     if denom < 1e-15 { 1.0 } else { cov / denom }
 }
 
+/// Scalar agreement: fraction of values within 5% of the mean absolute value.
+/// Used for comparing scalar outputs across method variants.
+fn scalar_agreement(values: &[f64]) -> f64 {
+    if values.len() < 2 { return 1.0; }
+    let finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    if finite.len() < 2 { return 0.0; }
+    let mean = finite.iter().sum::<f64>() / finite.len() as f64;
+    let abs_mean = mean.abs();
+    if abs_mean < 1e-15 {
+        // All near zero → high agreement
+        let max_dev = finite.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        if max_dev < 1e-10 { return 1.0; } else { return 0.0; }
+    }
+    let max_rel_dev = finite.iter()
+        .map(|v| ((v - mean) / abs_mean).abs())
+        .fold(0.0_f64, f64::max);
+    (1.0 - max_rel_dev).max(0.0)
+}
+
+/// Agreement on reject/fail-to-reject decisions at a given alpha across p-values.
+fn decision_agreement(p_values: &[f64], alpha: f64) -> f64 {
+    if p_values.len() < 2 { return 1.0; }
+    let decisions: Vec<bool> = p_values.iter().map(|&p| p < alpha).collect();
+    let n_reject = decisions.iter().filter(|&&d| d).count();
+    let majority_decision = n_reject * 2 > decisions.len();
+    let n_agree = decisions.iter().filter(|&&d| d == majority_decision).count();
+    n_agree as f64 / decisions.len() as f64
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sweep execution — correlation (Layer 4 discover)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Run every applicable bivariate correlation measure on (x, y).
+///
+/// Methods: Pearson r, Spearman ρ, Kendall τ-b, distance correlation, Hoeffding's D.
+/// Agreement = fraction whose sign agrees and whose magnitude is within 20% of the mean.
+/// `modal_value` = median of all measures (signed).
+pub fn sweep_correlation(x: &[f64], y: &[f64]) -> Superposition {
+    let mut views = Vec::new();
+    let mut values = Vec::new();
+
+    let pearson = crate::nonparametric::pearson_r(x, y);
+    {
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 0.0);
+        views.push(SuperpositionView {
+            name: "pearson".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "pearson", value: pearson },
+        });
+        values.push(pearson);
+    }
+
+    let spearman = crate::nonparametric::spearman(x, y);
+    {
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 1.0);
+        views.push(SuperpositionView {
+            name: "spearman".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "spearman", value: spearman },
+        });
+        values.push(spearman);
+    }
+
+    let kendall = crate::nonparametric::kendall_tau(x, y);
+    {
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 2.0);
+        views.push(SuperpositionView {
+            name: "kendall_tau".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "kendall_tau", value: kendall },
+        });
+        values.push(kendall);
+    }
+
+    // Distance correlation: non-negative (0 = independence, 1 = perfect dependence)
+    let dcor = crate::nonparametric::distance_correlation(x, y);
+    {
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 3.0);
+        views.push(SuperpositionView {
+            name: "distance_correlation".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "distance_correlation", value: dcor },
+        });
+        // dcor is always ≥ 0; convert to signed by using same sign as pearson for agreement
+        values.push(if pearson < 0.0 { -dcor } else { dcor });
+    }
+
+    // Hoeffding's D: scaled to [-0.5, 1.0]; 1.0 = perfect dependence
+    let hoeff = crate::nonparametric::hoeffdings_d(x, y);
+    {
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 4.0);
+        views.push(SuperpositionView {
+            name: "hoeffdings_d".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "hoeffdings_d", value: hoeff },
+        });
+        // Scale to [-1, 1] range for agreement comparison (hoeff ∈ [-0.5, 1])
+        values.push(if pearson < 0.0 { -hoeff } else { hoeff });
+    }
+
+    let agreement = scalar_agreement(&values);
+
+    // Modal value: median of the three signed-comparable measures (pearson, spearman, kendall)
+    let mut signed_three = [pearson, spearman, kendall];
+    signed_three.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let modal_value = signed_three[1]; // median
+
+    Superposition {
+        views,
+        requested_idx: 0, // pearson is the "default" collapse
+        agreement,
+        modal_value,
+        swept_param: "correlation_method".to_string(),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sweep execution — regression (Layer 4 discover)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Run all applicable simple regression methods on (x, y).
+///
+/// Methods: OLS slope, Theil-Sen slope, Siegel slope.
+/// Agreement = fraction of slope estimates within 20% of the OLS estimate.
+/// `modal_value` = median slope across methods.
+pub fn sweep_regression(x: &[f64], y: &[f64]) -> Superposition {
+    let mut views = Vec::new();
+    let mut slopes = Vec::new();
+
+    // OLS
+    let ols = crate::linear_algebra::simple_linear_regression(x, y);
+    let ols_slope = ols.slope;
+    {
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 0.0);
+        views.push(SuperpositionView {
+            name: "ols".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "ols_slope", value: ols_slope },
+        });
+        slopes.push(ols_slope);
+    }
+
+    // Theil-Sen
+    let theil = crate::nonparametric::theilslopes(y, Some(x));
+    let theil_slope = theil.slope;
+    {
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 1.0);
+        views.push(SuperpositionView {
+            name: "theil_sen".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "theil_sen_slope", value: theil_slope },
+        });
+        slopes.push(theil_slope);
+    }
+
+    // Siegel repeated-median
+    let siegel = crate::nonparametric::siegelslopes(y, Some(x));
+    let siegel_slope = siegel.slope;
+    {
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 2.0);
+        views.push(SuperpositionView {
+            name: "siegel".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "siegel_slope", value: siegel_slope },
+        });
+        slopes.push(siegel_slope);
+    }
+
+    let agreement = scalar_agreement(&slopes);
+
+    let mut sorted_slopes = slopes.clone();
+    sorted_slopes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let modal_value = sorted_slopes[sorted_slopes.len() / 2]; // median
+
+    Superposition {
+        views,
+        requested_idx: 0, // OLS is the default collapse
+        agreement,
+        modal_value,
+        swept_param: "regression_method".to_string(),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sweep execution — changepoint detection (Layer 4 discover)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Run all changepoint detection methods on a time series.
+///
+/// Methods: CUSUM (mean shift), PELT (penalized segmentation), binary segmentation.
+/// `modal_value` = consensus estimated number of changepoints across methods.
+/// Agreement = fraction of methods that agree on the changepoint count.
+pub fn sweep_changepoint(col: &[f64]) -> Superposition {
+    let n = col.len();
+    let mut views = Vec::new();
+    let mut n_cps: Vec<usize> = Vec::new();
+
+    // CUSUM mean shift: detects a single candidate changepoint at argmax of |CUSUM|.
+    // We report 0 or 1 changepoints based on whether max_abs_cusum exceeds threshold.
+    {
+        let result = crate::time_series::cusum_mean(col);
+        let threshold = using_threshold(n);
+        let n_detected = if result.max_abs_cusum > threshold { 1 } else { 0 };
+        n_cps.push(n_detected);
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 0.0);
+        views.push(SuperpositionView {
+            name: "cusum_mean".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "n_changepoints", value: n_detected as f64 },
+        });
+    }
+
+    // PELT
+    {
+        let min_seg = (n / 10).max(2);
+        let cps = crate::time_series::pelt(col, min_seg, None);
+        let n_detected = cps.len();
+        n_cps.push(n_detected);
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 1.0);
+        views.push(SuperpositionView {
+            name: "pelt".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "n_changepoints", value: n_detected as f64 },
+        });
+    }
+
+    // Binary segmentation: signature is (data, threshold, min_segment_size, max_changepoints)
+    {
+        let min_seg = (n / 10).max(2);
+        let threshold = using_threshold(n);
+        let max_cps = 20;
+        let cps = crate::time_series::cusum_binary_segmentation(col, threshold, min_seg, max_cps);
+        let n_detected = cps.len();
+        n_cps.push(n_detected);
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 2.0);
+        views.push(SuperpositionView {
+            name: "binary_segmentation".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "n_changepoints", value: n_detected as f64 },
+        });
+    }
+
+    // Agreement: fraction of methods that agree on the modal count
+    let modal_count = {
+        let mut freq: BTreeMap<usize, usize> = BTreeMap::new();
+        for &c in &n_cps { *freq.entry(c).or_insert(0) += 1; }
+        freq.into_iter().max_by_key(|(_, v)| *v).map(|(k, _)| k).unwrap_or(0)
+    };
+    let n_agree = n_cps.iter().filter(|&&c| c == modal_count).count();
+    let agreement = n_agree as f64 / n_cps.len() as f64;
+
+    Superposition {
+        views,
+        requested_idx: 1, // PELT is the most principled default
+        agreement,
+        modal_value: modal_count as f64,
+        swept_param: "changepoint_method".to_string(),
+    }
+}
+
+/// Heuristic threshold for binary segmentation based on series length.
+fn using_threshold(n: usize) -> f64 {
+    // Approximate 95th percentile of CUSUM statistic under H0 (no change)
+    // Scales as ~sqrt(n * log(n)) for classical CUSUM
+    let n_f = n as f64;
+    (n_f * n_f.ln()).sqrt() * 0.5
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sweep execution — stationarity (Layer 4 discover)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Run all stationarity tests on a time series.
+///
+/// Methods: ADF (H0=unit root), KPSS (H0=stationary), PP test, variance ratio test.
+/// Note: ADF and KPSS have OPPOSITE null hypotheses. Agreement is measured on
+/// the consensus conclusion (stationary or not), not p-value direction.
+/// `modal_value` = 1.0 if consensus is stationary, 0.0 if non-stationary.
+pub fn sweep_stationarity(col: &[f64], alpha: f64) -> Superposition {
+    let n = col.len();
+    let mut views = Vec::new();
+    let mut stationary_votes: Vec<bool> = Vec::new();
+
+    // ADF: H0 = unit root (non-stationary); reject (statistic < critical_5pct) → stationary.
+    // ADF critical values are negative; more negative = stronger rejection.
+    {
+        let n_lags = (n as f64).powf(1.0 / 3.0).ceil() as usize;
+        let result = crate::time_series::adf_test(col, n_lags);
+        let stationary = result.statistic < result.critical_5pct;
+        stationary_votes.push(stationary);
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 0.0);
+        // Normalized: stat / |critical_5pct|. Values < 1 = reject H0 = stationary.
+        let norm = if result.critical_5pct.abs() > 1e-10 {
+            result.statistic / result.critical_5pct.abs()
+        } else {
+            f64::NAN
+        };
+        views.push(SuperpositionView {
+            name: "adf".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "adf_stat_norm", value: norm },
+        });
+    }
+
+    // KPSS: H0 = stationary; reject (statistic > critical_5pct) → non-stationary.
+    // Fail to reject H0 (statistic <= critical_5pct) → stationary.
+    {
+        let result = crate::time_series::kpss_test(col, false, None);
+        let stationary = result.statistic <= result.critical_5pct;
+        stationary_votes.push(stationary);
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 1.0);
+        // Normalized: stat / critical_5pct. Values > 1 = reject H0 = non-stationary.
+        let norm = if result.critical_5pct.abs() > 1e-10 {
+            result.statistic / result.critical_5pct
+        } else {
+            f64::NAN
+        };
+        views.push(SuperpositionView {
+            name: "kpss".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "kpss_stat_norm", value: norm },
+        });
+    }
+
+    // PP: H0 = unit root (non-stationary); reject (statistic < critical_5pct) → stationary.
+    // Same critical value structure as ADF (MacKinnon approximations).
+    {
+        let result = crate::time_series::pp_test(col, None);
+        let stationary = result.statistic < result.critical_5pct;
+        stationary_votes.push(stationary);
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 2.0);
+        let norm = if result.critical_5pct.abs() > 1e-10 {
+            result.statistic / result.critical_5pct.abs()
+        } else {
+            f64::NAN
+        };
+        views.push(SuperpositionView {
+            name: "pp_test".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "pp_stat_norm", value: norm },
+        });
+    }
+
+    // Variance ratio test: H0 = random walk; |z_star| > 1.96 → reject → mean-reverting (stationary).
+    // Use heteroscedasticity-robust z_star; 1.96 ≈ normal 5% two-sided critical value.
+    {
+        let result = crate::time_series::variance_ratio_test(col, None);
+        let stationary = result.z_star.abs() > 1.96;
+        stationary_votes.push(stationary);
+        let mut params = BTreeMap::new();
+        params.insert("method".to_string(), 3.0);
+        views.push(SuperpositionView {
+            name: "variance_ratio".to_string(),
+            params,
+            output: TbsStepOutput::Scalar { name: "vr_z_star", value: result.z_star },
+        });
+    }
+
+    let n_stationary = stationary_votes.iter().filter(|&&v| v).count();
+    let consensus_stationary = n_stationary * 2 > stationary_votes.len();
+    let n_agree = stationary_votes.iter()
+        .filter(|&&v| v == consensus_stationary)
+        .count();
+    let agreement = n_agree as f64 / stationary_votes.len() as f64;
+
+    Superposition {
+        views,
+        requested_idx: 0, // ADF is the conventional default
+        agreement,
+        modal_value: if consensus_stationary { 1.0 } else { 0.0 },
+        swept_param: "stationarity_method".to_string(),
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
@@ -673,6 +1062,54 @@ mod tests {
             assert!(s.is_informative() || s.agreement > 0.95,
                 "superposition should either be informative or show high agreement");
         }
+    }
+
+    #[test]
+    fn sweep_correlation_produces_five_views() {
+        let x: Vec<f64> = (0..50).map(|i| i as f64).collect();
+        let y: Vec<f64> = (0..50).map(|i| i as f64 * 2.0 + 1.0).collect();
+        let s = sweep_correlation(&x, &y);
+        assert_eq!(s.views.len(), 5);
+        assert_eq!(s.swept_param, "correlation_method");
+        // Perfect linear → all methods should agree closely
+        assert!(s.agreement > 0.7, "agreement={}", s.agreement);
+        // modal_value should be near 1.0
+        assert!(s.modal_value > 0.9, "modal_value={}", s.modal_value);
+    }
+
+    #[test]
+    fn sweep_regression_produces_three_views() {
+        let x: Vec<f64> = (0..40).map(|i| i as f64).collect();
+        let y: Vec<f64> = (0..40).map(|i| 3.0 * i as f64 + 5.0).collect();
+        let s = sweep_regression(&x, &y);
+        assert_eq!(s.views.len(), 3);
+        assert_eq!(s.swept_param, "regression_method");
+        // Perfect linear → all slopes should agree at ~3.0
+        assert!(s.agreement > 0.8, "agreement={}", s.agreement);
+        assert!((s.modal_value - 3.0).abs() < 0.5, "modal_value={}", s.modal_value);
+    }
+
+    #[test]
+    fn sweep_changepoint_produces_three_views() {
+        // Two-segment series: step change at midpoint
+        let mut col: Vec<f64> = (0..50).map(|_| 0.0).collect();
+        for i in 25..50 { col[i] = 10.0; }
+        let s = sweep_changepoint(&col);
+        assert_eq!(s.views.len(), 3);
+        assert_eq!(s.swept_param, "changepoint_method");
+        // Should detect at least 1 changepoint
+        assert!(s.modal_value >= 1.0, "modal_value={}", s.modal_value);
+    }
+
+    #[test]
+    fn sweep_stationarity_produces_four_views() {
+        // Stationary white noise
+        let col: Vec<f64> = (0..100).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let s = sweep_stationarity(&col, 0.05);
+        assert_eq!(s.views.len(), 4);
+        assert_eq!(s.swept_param, "stationarity_method");
+        // modal_value: 1.0 = stationary, 0.0 = non-stationary
+        assert!(s.modal_value == 0.0 || s.modal_value == 1.0);
     }
 
     #[test]

@@ -477,6 +477,133 @@ pub enum IntermediateTag {
     /// Consumed by: any step in the same pipeline that requires the label
     /// vector — silhouette scoring, group-stats extraction, etc.
     Centroids { data_id: DataId, k: usize },
+
+    // -----------------------------------------------------------------------
+    // Tier 1: High ROI — multiple heavy consumers, O(n log n) or worse
+    // -----------------------------------------------------------------------
+
+    /// Sorted copy of a 1D data array. O(n log n) to produce, O(1) to reuse.
+    ///
+    /// Produced by: any normality test, quantile computation, rank computation, KDE, KS test.
+    /// Consumed by: shapiro_wilk, dagostino_pearson, ks_test_normal, quantile (all q values),
+    ///              rank (Spearman + Kendall both need sorted order), inversion_count, KDE.
+    SortedArray { data_id: DataId },
+
+    /// FFT of a 1D array at a specific window size. O(n log n) to produce.
+    ///
+    /// Produced by: periodogram, welch, stft, spectrogram.
+    /// Consumed by: spectral entropy, spectral centroid, spectral rolloff, spectral flux,
+    ///              every fintek Family 6 leaf (all recompute the FFT on the same bin).
+    ///
+    /// `n_fft`: window size — FFTs at different window sizes are distinct and cannot be shared.
+    FFTOutput { data_id: DataId, n_fft: usize },
+
+    /// Full d×d covariance matrix, tagged by ddof for Bessel correction.
+    ///
+    /// WIRING STATUS: tag declared, TamSession wiring NOT YET IMPLEMENTED.
+    /// pca() currently computes via SVD on the centered matrix directly (no covariance
+    /// registration). The producers/consumers below describe the intended wiring once
+    /// a standalone `covariance_matrix` primitive is extracted and registered.
+    ///
+    /// Intended producers: pca, factor_analysis, manova, lda (once wired).
+    /// Intended consumers: pca, factor_analysis, lda, cca, manova, mahalanobis_distances, ridge, vif.
+    ///
+    /// `ddof`: 0 = population, 1 = sample (Bessel-corrected). Different ddof values cached separately.
+    CovarianceMatrix { data_id: DataId, ddof: u8 },
+
+    /// Gram matrix X'X for a design matrix X. O(n × d²) to produce.
+    ///
+    /// Produced by: OLS (builds gram before QR factorization), ridge, ridge cross-validation.
+    /// Consumed by: OLS, ridge, any method needing X'X without re-scanning rows.
+    GramMatrix { data_id: DataId },
+
+    // -----------------------------------------------------------------------
+    // Tier 2: Significant ROI — medium cost, 3-5 consumers
+    // -----------------------------------------------------------------------
+
+    /// Eigendecomposition of a symmetric matrix: (eigenvalues, eigenvectors).
+    ///
+    /// Produced by: pca (sym_eigen on covariance), spectral_clustering (sym_eigen on
+    ///              graph Laplacian), factor_analysis, manova (Wilks' lambda via eigvals).
+    ///
+    /// `matrix_id`: DataId of the matrix decomposed (not the original input data).
+    EigenDecomposition { matrix_id: DataId },
+
+    /// QR factorization of a design matrix X. O(n × d²) to produce.
+    ///
+    /// Produced by: lstsq (OLS via QR), regression diagnostics (leverage, Cook's D).
+    /// Consumed by: OLS, diagnostics, VIF computation.
+    QRFactorization { data_id: DataId },
+
+    /// Takens delay embedding: 1D array → (n - (m-1)τ) × m matrix. O(n × m) to produce.
+    ///
+    /// Produced by: correlation_dimension, largest_lyapunov, family24::ccm, family15::delay_embed.
+    /// Consumed by: any complexity or chaos measure using phase-space reconstruction.
+    ///
+    /// `dim`, `tau`: embedding parameters — different (dim, tau) pairs are incompatible.
+    DelayEmbedding { data_id: DataId, dim: usize, tau: usize },
+
+    /// Symbolized (ordinal/quantile-discretized) series. O(n log n) to produce.
+    ///
+    /// Produced by: permutation_entropy, LZ complexity, transfer entropy, CCM.
+    /// Consumed by: all of the above and any information-theory measure that discretizes.
+    SymbolizedSeries { data_id: DataId, n_symbols: usize },
+
+    // -----------------------------------------------------------------------
+    // Tier 3: Moderate ROI — 2-3 consumers, medium cost
+    // -----------------------------------------------------------------------
+
+    /// Autocorrelation function vector up to max_lag. O(n × max_lag) to produce.
+    ///
+    /// Produced by: acf, ar_fit, box_pierce, breusch_godfrey.
+    /// Consumed by: PACF (Levinson-Durbin from ACF), ar_fit, data_quality acf metrics.
+    ACFVector { data_id: DataId, max_lag: usize },
+
+    /// Rank vector for a 1D array. O(n log n) to produce (sort + fractional rank).
+    ///
+    /// Produced by: rank(), spearman, kendall.
+    /// Consumed by: Spearman + Kendall share rank computation on the same data.
+    Ranks { data_id: DataId },
+
+    /// Log-returns series: ln(p[i+1] / p[i]). O(n) to produce.
+    ///
+    /// Produced by: volatility (GARCH preprocessing), ARCH-LM test, most fintek families.
+    /// Consumed by: GARCH, ARCH-LM, DFA on returns, autocorrelation of squared returns.
+    LogReturns { data_id: DataId },
+
+    // -----------------------------------------------------------------------
+    // Tier 4: Low individual ROI, high aggregate (normality test caching)
+    // -----------------------------------------------------------------------
+
+    /// Result of a normality test (Shapiro-Wilk, D'Agostino-Pearson, etc.).
+    ///
+    /// Produced by: shapiro_wilk, dagostino_pearson, any auto-detect path.
+    /// Consumed by: the tbs_executor, which runs normality tests on every auto-detect path.
+    /// Caching eliminates 3-4 redundant O(n log n) normality tests per pipeline run.
+    NormalityTest { data_id: DataId, method: NormalityMethod },
+
+    /// Top-k principal components (scores and loadings). O(n × d² + d³) to produce.
+    ///
+    /// Produced by: pca.
+    /// Consumed by: spectral_clustering (PCA init), UMAP initialization, t-SNE init.
+    PrincipalComponents { data_id: DataId, n_components: usize },
+}
+
+/// Which normality test method a `NormalityTest` intermediate represents.
+///
+/// Different methods test different aspects of normality and cannot be substituted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NormalityMethod {
+    /// Shapiro-Wilk test. Best for small samples (n < 50).
+    ShapiroWilk,
+    /// D'Agostino-Pearson omnibus test. Better for larger samples.
+    DAgostinoPearson,
+    /// Kolmogorov-Smirnov test against normal distribution.
+    KolmogorovSmirnov,
+    /// Lilliefors test (KS with estimated parameters).
+    Lilliefors,
+    /// Anderson-Darling test. Sensitive to tail deviations.
+    AndersonDarling,
 }
 
 /// Which streaming sketch family a `Sketch` intermediate represents.

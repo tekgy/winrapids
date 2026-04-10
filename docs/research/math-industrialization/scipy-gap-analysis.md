@@ -845,7 +845,7 @@ All four are missing. These are moderate complexity — use trigonometric moment
 | Function | Module | Complexity | Key Primitives |
 |---|---|---|---|
 | `erfinv` | special_functions | Moderate | series inversion of erf |
-| `betaincinv` | special_functions | Moderate | Newton on regularized_incomplete_beta |
+| `betaincinv` | special_functions | Moderate | Newton on regularized_incomplete_beta — note: t/F quantiles currently use Brent-on-CDF instead; betaincinv would improve precision at extreme tails |
 | `gammaincinv` | special_functions | Moderate | Newton on regularized_gamma_p |
 | General `ks_1samp(cdf)` | nonparametric | Moderate | ecdf + any CDF function |
 | `pdist` / `cdist` | spatial/multivariate | Moderate | accumulate over pairs |
@@ -914,3 +914,77 @@ All four are missing. These are moderate complexity — use trigonometric moment
 | **TOTAL** | **~893** | **~172** | **~42** | **~679** |
 
 Tambear has approximately 19% of the scipy API (by function count), with another 5% partially covered. ~76% is missing — almost all of it is buildable from tambear's existing primitives with no new dependencies.
+
+---
+
+## Kingdom Classification Notes
+
+### Tier 0 missing functions are Kingdom A sharing-cluster gaps
+
+The Tier 0 functions (erfinv, betaincinv, gammaincinv, hyp2f1) are all Kingdom A — deterministic functions of input data producing content-addressable outputs. Their absence means the TamSession sharing clusters they would populate are currently empty.
+
+**Verified dependency structure (not the original narrative):**
+
+- `regularized_incomplete_beta` uses Lentz's continued fraction algorithm, not `hyp2f1`. It is algorithmically self-contained and has its own workup file. `hyp2f1` absence does NOT currently degrade it.
+- `t_quantile` / `f_quantile` / `chi2_quantile` use Brent's method inverting the CDF directly — not `betaincinv`. These work today; `betaincinv` would improve precision at extreme tail probabilities (p < 1e-6) but isn't blocking functionality.
+- `hyp2f1` is a forward-looking gap: it blocks non-central distributions, Appell functions, and NSWC-style `betaincinv` for small-x boundary cases — none of which are currently implemented. It poisons future work, not current work.
+
+The correct priority framing: implement `hyp2f1` with oracle coverage **before** the 80 missing continuous distributions land, so distribution implementations can use ₂F₁ paths from the start rather than workaround paths that require refactoring later. The dependency DAG is prospective, not current.
+
+### Parameter-controlled kingdom: the boundary-size criterion
+
+Some algorithms in the MISSING catalog are Kingdom A or Kingdom B depending on parameterization:
+
+- **DTW (dynamic time warping)**: Fixed-length template → Kingdom A (boundary state = one score column, fixed width). Variable-length template → Kingdom B (boundary state grows with segment length, not cacheable).
+- **Smith-Waterman**: Fixed query sequence → Kingdom A (DP row is fixed width). Variable query → Kingdom B.
+- **Viterbi**: Fixed HMM state count → Kingdom A (one state vector of fixed size). Growing hidden states → Kingdom B.
+
+The design principle: **if a parameter controls the size of boundary state, it also controls the kingdom**. Fixing it to a constant is a kingdom commitment. When implementing these algorithms, choose whether to support variable-length parameters BEFORE writing the code — that choice determines whether TamSession can cache the result at all.
+
+### The two-test taxonomy
+
+Before classifying any recurrence as Kingdom B:
+
+1. Can the state update be written as an affine function of the previous state (companion matrix)? → Kingdom A
+2. If nonlinear: does the map SELECTION depend on the current state, or just the map parameters? Parameters-only → might still be Kingdom A (check if composition closes). Selection-depends-on-state → Kingdom B.
+
+Key lemma: **linear functions of state are always affine recurrences**. If an innovation or residual propagates linearly through the companion matrix, it does not break Kingdom A structure — the companion matrix absorbs it. This matters for ARMA specifically.
+
+### Kingdom A — commonly misclassified as Kingdom B
+
+- **ARMA(p,q)**: Both AR and MA terms are Kingdom A. The MA innovations ε_{t-j} propagate linearly through the companion matrix. The augmented companion state [y_t, ..., y_{t-p+1}, ε_t, ..., ε_{t-q+1}]ᵀ is fixed-size and affine. Composition closes. **ARMA is Kingdom A, not B.**
+- **GARCH(1,1)**: Affine 2×2 companion over state [σ²_t, 1]ᵀ. Kingdom A.
+- **EMA / EWMA**: Degenerate 1×1 companion. Kingdom A.
+- **HMM forward algorithm / Viterbi (fixed state count)**: Prefix scan over fixed-size state vector. Kingdom A.
+- **Regime-switching (fixed discrete states, joint state space)**: Joint forward algorithm over (x_t, z_t) is Kingdom A over the joint state space. Expensive (large companion), but still a prefix scan — not Kingdom B.
+
+### Genuinely Kingdom B (not by implementation choice)
+
+- **TAR (Threshold AR)**: The canonical Kingdom B example. Map selection (which branch to apply) depends on whether x_{t-d} ≥ threshold — a state-determined choice. Fails test 1 (not affine) and test 2 (selection is state-dependent). Genuinely sequential.
+- **BOCPD**: Run-length posterior tracks all possible changepoint times back to t=0. Grows unboundedly. No fixed-size summary preserves the object — a fixed-size approximation computes something categorically different.
+- **EGARCH**: Log-variance equation contains |ε_{t-1}|/σ_{t-1} — nonlinear, state-divided-by-state. Map is implicitly state-dependent. Kingdom B.
+- **Nonlinear RNNs (tanh/LSTM/GRU)**: Composition does not close finitely under nonlinear activation. Kingdom B.
+
+Note: **IIR filter APPLICATION** (lfilter/sosfilt with known coefficients) is Kingdom A — the delay buffer is fixed size (filter order), the map is the denominator polynomial (fixed constants), affine recurrence closes. Only filter DESIGN (choosing coefficients to meet a frequency spec) is iterative/Kingdom C.
+
+The canonical pair: **GARCH = Kingdom A** (2×2 affine companion), **TAR = Kingdom B** (state-determined map selection).
+
+### Kingdom D — operation category wrong, not just state structure
+
+**SMC (Sequential Monte Carlo / particle filters)**: Kingdom D. The resampling step is not a semigroup homomorphism — it selects particles based on their weights, destroying sufficient statistics. No exact combine operation exists. This is distinct from Kingdom B: it's not that the state grows (Kingdom B mode 2) or that map selection is state-dependent (Kingdom B mode 1) — it's that the operation itself cannot be expressed as accumulate+gather at any level. TAM cannot schedule it as a prefix scan because no such scan exists; it must run as a sequential operation with explicit orchestration.
+
+This matters for the gap analysis: SMC appears under scipy's stats/filters section as MISSING. Implementing it requires honest Kingdom D declaration — TAM treats it differently from Kingdom A/B/C work.
+
+### Kingdom A approximations to Kingdom B operations
+
+t-digest and GK quantile summaries approximate true order statistics (which require a full sort = Kingdom A) with bounded error. These are legitimate design choices for streaming contexts, but must declare their approximation quality (error bound ε, sketch size parameter) via V columns — analogous to NanPolicy. They should not present themselves as exact quantiles.
+
+### Architectural flag: Semiring<T> before Op enum extension
+
+HMM forward, soft-Viterbi, Viterbi, and softmax are all prefix scans over different semirings:
+- HMM forward: (log-sum-exp, +) semiring
+- Viterbi: (max, +) tropical semiring  
+- PELT changepoint: (min, +) tropical semiring
+- Softmax: (log-sum-exp, identity) semiring
+
+Before any of these are implemented, the `Op` enum needs a `Semiring<T>` trait with instances rather than separate enum variants per semiring. Adding `Op::TropicalMinPlus`, `Op::LogSumExp` as separate variants is the wrong shape — these are instances of one parameterized concept, not distinct operations. The right interface: `prefix_scan(grouping, expr, semiring)` where `semiring` is a trait object or enum wrapping (combine, identity) pairs. This must happen BEFORE pathmaker extends the Op enum, or the refactor cost compounds.

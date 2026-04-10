@@ -14,6 +14,7 @@
 
 use crate::linear_algebra::{
     Mat, mat_mul, mat_add, mat_scale, cholesky, cholesky_solve, sym_eigen, svd, qr_solve,
+    forward_solve, back_solve_transpose,
 };
 use crate::special_functions::{f_right_tail_p, chi2_right_tail_p, normal_two_tail_p};
 
@@ -86,10 +87,28 @@ pub fn col_means(x: &Mat) -> Vec<f64> {
     m
 }
 
-/// Within-group and between-group SSCP matrices for MANOVA/LDA.
-/// `groups[i]` = group label (0-indexed) for observation i.
-/// Returns (W, H, group_means, group_counts, grand_mean).
-fn sscp_matrices(x: &Mat, groups: &[usize]) -> (Mat, Mat, Vec<Vec<f64>>, Vec<usize>, Vec<f64>) {
+/// Within-group and between-group SSCP (sum-of-squares-and-cross-products) matrices.
+///
+/// Used by MANOVA, LDA, and any multivariate method that needs the decomposition
+/// of total variation into within-group and between-group components.
+///
+/// # Parameters
+/// - `x`: n×p data matrix (n observations, p variables)
+/// - `groups`: group label (0-indexed) for each observation
+///
+/// # Returns
+/// `(W, H, group_means, group_counts, grand_mean)` where:
+/// - `W`: p×p within-group SSCP matrix
+/// - `H`: p×p between-group SSCP matrix
+/// - `group_means`: k×p matrix of per-group column means
+/// - `group_counts`: number of observations per group
+/// - `grand_mean`: p-vector of overall column means
+///
+/// # Consumers
+/// MANOVA (Wilks, Pillai, Hotelling, Roy statistics), LDA (W⁻¹H eigendecomposition).
+///
+/// Kingdom A: single accumulate pass over rows.
+pub fn sscp_matrices(x: &Mat, groups: &[usize]) -> (Mat, Mat, Vec<Vec<f64>>, Vec<usize>, Vec<f64>) {
     let n = x.rows;
     let p = x.cols;
     let k = *groups.iter().max().unwrap_or(&0) + 1;
@@ -314,19 +333,6 @@ pub fn manova(x: &Mat, groups: &[usize]) -> ManovaResult {
     }
 }
 
-/// Forward substitution: solve L·x = b where L is lower-triangular.
-fn forward_solve(l: &Mat, b: &[f64]) -> Vec<f64> {
-    let n = l.rows;
-    let mut x = b.to_vec();
-    for i in 0..n {
-        for j in 0..i {
-            x[i] -= l.get(i, j) * x[j];
-        }
-        x[i] /= l.get(i, i);
-    }
-    x
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Linear Discriminant Analysis (LDA)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -423,18 +429,7 @@ pub fn lda(x: &Mat, groups: &[usize]) -> LdaResult {
     }
 }
 
-/// Back-substitution for L^T x = b (solves with transpose of lower-triangular).
-fn back_solve_transpose(l: &Mat, b: &[f64]) -> Vec<f64> {
-    let n = l.rows;
-    let mut x = b.to_vec();
-    for i in (0..n).rev() {
-        for j in (i + 1)..n {
-            x[i] -= l.get(j, i) * x[j]; // L^T[i,j] = L[j,i]
-        }
-        x[i] /= l.get(i, i);
-    }
-    x
-}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Canonical Correlation Analysis (CCA)

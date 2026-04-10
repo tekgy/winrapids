@@ -234,8 +234,26 @@ fn kt_merge_count(arr: &mut [f64], tmp: &mut [f64], lo: usize, hi: usize) -> i64
     inv
 }
 
-/// Pearson correlation on already-ranked data (used by Spearman).
-fn pearson_on_ranks(rx: &[f64], ry: &[f64]) -> f64 {
+/// Pearson correlation computed on pre-ranked data.
+///
+/// This is the core computational step inside Spearman's ρ: given ranks
+/// (or any pre-transformed values) for two series, compute the product-moment
+/// correlation. Exposed as a standalone primitive so callers can reuse ranks
+/// from other computations without re-ranking.
+///
+/// # Parameters
+/// - `rx`: ranks (or pre-transformed values) for the first variable (length n)
+/// - `ry`: ranks (or pre-transformed values) for the second variable (length n)
+///
+/// # Returns
+/// Pearson r ∈ [−1, 1], or NaN if n < 2 or if either series has zero variance.
+///
+/// # Consumers
+/// `spearman` (internally: rank both series → call this), partial Spearman,
+/// any pipeline that needs rank-correlation as a sub-step.
+///
+/// Kingdom A: single-pass over paired arrays, O(n).
+pub fn pearson_on_ranks(rx: &[f64], ry: &[f64]) -> f64 {
     let n = rx.len() as f64;
     if n < 2.0 { return f64::NAN; }
     let mx: f64 = rx.iter().sum::<f64>() / n;
@@ -970,10 +988,28 @@ pub fn ks_test_two_sample(x: &[f64], y: &[f64]) -> NonparametricResult {
     }
 }
 
-/// Kolmogorov distribution p-value approximation.
+/// Kolmogorov–Smirnov p-value from the asymptotic Kolmogorov distribution.
 ///
-/// Uses the asymptotic formula: P(D > d) ≈ 2 Σ (-1)^(k-1) exp(-2k²(√n·d)²)
-fn ks_p_value(d: f64, n: usize) -> f64 {
+/// Computes P(D_n > d) where D_n is the KS statistic under H₀, using the
+/// asymptotic series:
+///
+///   P(D > d) ≈ 2 Σₖ₌₁^∞ (-1)^(k-1) · exp(-2k²·(√n·d)²)
+///
+/// This is the two-sided p-value for both one-sample and two-sample KS tests.
+/// Accurate for √n·d > 0.5; use exact small-sample tables for smaller values.
+///
+/// # Parameters
+/// - `d`: observed KS statistic (maximum absolute difference between CDFs)
+/// - `n`: effective sample size. For one-sample: actual n. For two-sample
+///   with sizes n₁ and n₂: use the effective size from the test (e.g., n₁·n₂/(n₁+n₂)).
+///
+/// # Returns
+/// Two-sided p-value ∈ [0, 1]. Returns 1.0 if d ≤ 0, 0.0 if d ≥ 1.
+///
+/// # Consumers
+/// `ks_test_normal`, `ks_test_two_sample`, any custom KS-style test, any
+/// method that needs to convert a sup-norm distance to a p-value.
+pub fn ks_p_value(d: f64, n: usize) -> f64 {
     if d <= 0.0 { return 1.0; }
     if d >= 1.0 { return 0.0; }
 
@@ -1396,7 +1432,24 @@ fn quantile_sorted(sorted: &[f64], q: f64) -> f64 {
     sorted[lo] * (1.0 - frac) + sorted[hi] * frac
 }
 
-fn kernel_eval(kernel: KernelType, u: f64) -> f64 {
+/// Evaluate a kernel function at standardised distance `u = (x - xᵢ) / h`.
+///
+/// Returns the kernel weight K(u) before bandwidth normalisation.
+/// The full KDE contribution of point xᵢ at evaluation point x is
+/// `kernel_eval(kernel, (x - xi) / h) / (n * h)`.
+///
+/// # Parameters
+/// - `kernel`: which kernel to use (`KernelType::Gaussian` or `KernelType::Epanechnikov`)
+/// - `u`: standardised distance `(x - xᵢ) / h`
+///
+/// # Returns
+/// The kernel weight K(u). For Gaussian: φ(u) (standard normal PDF).
+/// For Epanechnikov: 0.75·(1 − u²) for |u| ≤ 1, else 0.
+///
+/// # Consumers
+/// `kde` (direct evaluation), `kde_fft` (grid convolution), any custom
+/// kernel smoother, Nadaraya-Watson regression, kernel density classification.
+pub fn kernel_eval(kernel: KernelType, u: f64) -> f64 {
     match kernel {
         KernelType::Gaussian => {
             (-0.5 * u * u).exp() / (2.0 * std::f64::consts::PI).sqrt()

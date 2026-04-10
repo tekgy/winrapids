@@ -406,16 +406,48 @@ fn clustering_from_distance(
 }
 
 // ---------------------------------------------------------------------------
-// Union-find helpers
+// Union-find — public primitives
 // ---------------------------------------------------------------------------
 
+/// Allocate a fresh union-find structure for `n` elements.
+///
+/// Each element starts in its own component: `parent[i] == i`.
+/// Pass the returned `Vec<usize>` to `uf_find` and `uf_union`.
+///
+/// Kingdom A: O(n) initialisation.
+pub fn uf_new(n: usize) -> Vec<usize> {
+    (0..n).collect()
+}
+
 /// Iterative path-halving find — no recursion, O(α(n)) amortized.
-fn uf_find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+///
+/// Returns the root (representative) of the component containing `x`.
+/// Mutates `parent` in-place to flatten the path (path-halving variant).
+///
+/// # Consumers
+/// DBSCAN (core-point merging), Kruskal MST, connected-components,
+/// any algorithm that needs online component merging.
+pub fn uf_find(parent: &mut Vec<usize>, mut x: usize) -> usize {
     while parent[x] != x {
         parent[x] = parent[parent[x]]; // path halving
         x = parent[x];
     }
     x
+}
+
+/// Union the components containing `a` and `b`.
+///
+/// After this call, `uf_find(parent, a) == uf_find(parent, b)`.
+/// Uses union-by-index (roots point to the smaller root index) for
+/// deterministic output; caller may use `parent[ra] = rb` directly
+/// for union-by-arrival when determinism is not required.
+pub fn uf_union(parent: &mut Vec<usize>, a: usize, b: usize) {
+    let ra = uf_find(parent, a);
+    let rb = uf_find(parent, b);
+    if ra != rb {
+        // smaller root wins → deterministic component IDs
+        if ra < rb { parent[rb] = ra; } else { parent[ra] = rb; }
+    }
 }
 
 // ---------------------------------------------------------------------------

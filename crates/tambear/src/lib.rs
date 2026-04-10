@@ -130,7 +130,7 @@ pub use filter_jit::{
 };
 pub use gather_op::GatherOp;
 pub use accumulate::{AccumulateEngine, Grouping, Expr, Op, AccResult};
-pub use clustering::{ClusteringEngine, ClusterResult};
+pub use clustering::{ClusteringEngine, ClusterResult, uf_new, uf_find, uf_union};
 pub use intermediates::{DistanceMatrix, Metric, SufficientStatistics, IntermediateTag, TamSession, DataId};
 pub use reduce_op::ReduceOp;
 #[cfg(feature = "legacy-cudarc")]
@@ -202,16 +202,16 @@ pub use hypothesis::{
     BayesFactorResult, bayes_factor_t_one_sample, bayes_factor_correlation,
 };
 pub use nonparametric::{
-    rank, spearman, kendall_tau,
+    rank, spearman, pearson_on_ranks, kendall_tau,
     NonparametricResult,
     mann_whitney_u, wilcoxon_signed_rank, kruskal_wallis,
-    ks_test_normal, ks_test_normal_standardized, ks_test_two_sample,
+    ks_test_normal, ks_test_normal_standardized, ks_test_two_sample, ks_p_value,
     shapiro_wilk, dagostino_pearson, jarque_bera, anderson_darling, friedman_test,
     DunnComparison, dunn_test,
     partial_correlation, PartialCorrelationResult, partial_correlation_full,
     bootstrap_percentile, BootstrapResult,
     permutation_test_mean_diff,
-    kde, kde_fft, silverman_bandwidth, KernelType,
+    kde, kde_fft, silverman_bandwidth, KernelType, kernel_eval,
     runs_test, runs_test_numeric, sign_test,
     level_spacing_r_stat,
     GutenbergRichterResult, gutenberg_richter_fit,
@@ -244,6 +244,7 @@ pub use linear_algebra::{
     tridiagonal_scan_element, tridiagonal_scan_compose,
     // Global primitives (flat catalog)
     SimpleRegressionResult, simple_linear_regression, ols_slope,
+    forward_solve, back_solve_transpose,
 };
 pub use graph::{
     Edge, Graph, MstResult,
@@ -281,6 +282,18 @@ pub mod bigfloat;
 pub mod copa;
 pub mod interpolation;
 pub mod multivariate;
+pub use multivariate::{
+    // Primitives (flat catalog)
+    covariance_matrix, col_means, sscp_matrices,
+    // Multivariate tests
+    HotellingResult, hotelling_one_sample, hotelling_two_sample,
+    ManovaResult, manova,
+    LdaResult, lda,
+    CcaResult, cca,
+    MardiaNormalityResult, mardia_normality,
+    vif, mahalanobis_distances,
+    RegularizedResult, ridge, lasso, elastic_net,
+};
 pub mod causal;
 pub mod spectral;
 pub mod mixed_effects;

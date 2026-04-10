@@ -414,6 +414,64 @@ pub fn cholesky_solve(l: &Mat, b: &[f64]) -> Vec<f64> {
     x
 }
 
+/// Forward substitution: solve L·x = b where L is lower-triangular.
+///
+/// Assumes L is non-singular (no zero diagonal entries). The solution
+/// is computed in-place left-to-right in O(n²) operations.
+///
+/// # Parameters
+/// - `l`: n×n lower-triangular matrix (only the lower triangle is read)
+/// - `b`: right-hand side vector (length n)
+///
+/// # Returns
+/// Solution vector x such that L·x = b.
+///
+/// # Consumers
+/// Cholesky solve (forward pass), LDA, CCA, Mahalanobis distance,
+/// any triangular system arising from QR, LU, or Cholesky decompositions.
+///
+/// Kingdom A: sequential row scan — O(n²), no parallelism without restructuring.
+pub fn forward_solve(l: &Mat, b: &[f64]) -> Vec<f64> {
+    let n = l.rows;
+    let mut x = b.to_vec();
+    for i in 0..n {
+        for j in 0..i {
+            x[i] -= l.get(i, j) * x[j];
+        }
+        x[i] /= l.get(i, i);
+    }
+    x
+}
+
+/// Back-substitution for Lᵀ·x = b (solves the transpose of lower-triangular L).
+///
+/// Equivalent to solving U·x = b where U = Lᵀ is upper-triangular.
+/// Computes right-to-left in O(n²) operations.
+///
+/// # Parameters
+/// - `l`: n×n lower-triangular matrix (read as its transpose)
+/// - `b`: right-hand side vector (length n)
+///
+/// # Returns
+/// Solution vector x such that Lᵀ·x = b.
+///
+/// # Consumers
+/// Cholesky solve (backward pass), CCA, multivariate regression,
+/// any solve that needs the transpose triangular system.
+///
+/// Kingdom A: sequential row scan (reversed) — O(n²).
+pub fn back_solve_transpose(l: &Mat, b: &[f64]) -> Vec<f64> {
+    let n = l.rows;
+    let mut x = b.to_vec();
+    for i in (0..n).rev() {
+        for j in (i + 1)..n {
+            x[i] -= l.get(j, i) * x[j]; // Lᵀ[i,j] = L[j,i]
+        }
+        x[i] /= l.get(i, i);
+    }
+    x
+}
+
 // ─── QR Factorization ──────────────────────────────────────────────
 
 /// QR factorization result.

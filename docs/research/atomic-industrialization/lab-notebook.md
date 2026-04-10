@@ -184,14 +184,41 @@ which exists — but the GPU path may fail at runtime on CPU-only machines.)
 
 ---
 
-## Campsite State (All Campsites)
+## Campsite State
 
-All 36 campsites are status: **open**. None have been marked active or done this session.
+Session start: 36 campsites, all open.
+After team-lead seeding: **41 campsites** (CLI count). 10 active, 31 open.
 
-**My assigned campsite**: `ideas/tools/20260410144251-gemma-local-model` — open, unworked.
-This campsite is about local Gemma model tooling. No work has been done on it this session.
-Observing rather than implementing is the right call here — it's an ideas campsite, not
-a blocking dependency.
+**My campsite**: `ideas/tools/20260410144251-gemma-local-model` — active (claimed by me),
+observing. No implementation work — correct for an ideas/observer campsite.
+
+### New theory campsites (4 — PUBLISHABLE per team-lead)
+
+Independently read and assessed:
+
+1. **theory/classification-bijection**: Algorithm classes = sharing clusters = spring equilibria.
+   Three convergent derivations. Potentially publishable if formally verified.
+
+2. **theory/k7-scheduling-bound**: CovMatrix induces K₇ clique (treewidth=6, tight).
+   Concrete memory lower bound. Grows with catalog. Publishable as a scheduling theory result.
+
+3. **theory/holographic-error-correction**: `.discover()` = holographic error-correction.
+   view_agreement as code distance. Claimed testable now.
+
+4. **theory/five-atomic-groupings**: 5 atoms → 15 products → 4 predicted gaps.
+   Compositional scheduling follows automatically.
+
+### Op identity bug — independently verified
+
+**Campsite**: `industrialization/architecture/op-identity-method` (active, math-researcher)
+
+**Finding**: `winrapids-scan/src/launch.rs:142` pads input with `0.0` before GPU upload.
+CUDA kernel (`engine.rs:80`) checks bounds and uses `make_identity()` for padding positions.
+The zero-padding is never read by the kernel — correctness by coincidence, not design.
+
+**Severity reassessment**: Design smell / latent bug, not a live bug. The CUDA bounds-check
+prevents wrong results. The fix (Op::identity() on the Rust side, pad with proper identity)
+makes correctness structural. Valid campsite, severity is "medium" not "critical".
 
 ---
 

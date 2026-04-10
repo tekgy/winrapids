@@ -26,6 +26,7 @@
 
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::cmp::Ordering;
+use crate::numerical::{nan_max};
 
 /// Weighted directed edge.
 #[derive(Debug, Clone, Copy)]
@@ -775,7 +776,7 @@ pub fn graph_laplacian(adj: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, f64) {
     for a in 0..n {
         degrees[a] = (0..n).map(|b| adj[a * n + b]).sum();
     }
-    let max_deg = degrees.iter().copied().fold(0.0_f64, f64::max);
+    let max_deg = degrees.iter().copied().fold(f64::NEG_INFINITY, nan_max);
     let mut lap = vec![0.0_f64; n * n];
     for a in 0..n {
         for b in 0..n {

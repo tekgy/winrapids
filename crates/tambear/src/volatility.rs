@@ -4,7 +4,15 @@
 //!
 //! ## Architecture
 //!
-//! GARCH = sequential variance recursion (Kingdom B) + MLE (Kingdom C).
+//! GARCH filter = affine prefix scan (Kingdom A), NOT Kingdom B.
+//! σ²_t = ω + α·r²_{t-1} + β·σ²_{t-1} is the affine map f_t(x) = β·x + (ω + α·r²_{t-1}).
+//! The coefficient b_t = ω + α·r²_{t-1} depends on the DATA r_{t-1}, not the current state σ²_t.
+//! Affine maps compose: (f_s ∘ f_t)(x) = (a_s·a_t)·x + (a_s·b_t + b_s). Semigroup law holds.
+//! This is a companion-matrix prefix scan — same structure as any linear recurrence.
+//! The outer parameter optimization (ω, α, β search) is Kingdom C.
+//!
+//! Prior label "Kingdom B" was wrong. The filter is Kingdom A; only the MLE loop is Kingdom C.
+//!
 //! Realized measures = accumulation over intraday returns (Kingdom A).
 //! Microstructure = simple accumulate from trade/quote data.
 

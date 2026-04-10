@@ -1572,7 +1572,7 @@ pub fn matrix_exp(a: &Mat) -> Mat {
 fn mat_norm1(a: &Mat) -> f64 {
     (0..a.cols)
         .map(|j| (0..a.rows).map(|i| a.get(i, j).abs()).sum::<f64>())
-        .fold(0.0_f64, f64::max)
+        .fold(f64::NEG_INFINITY, crate::numerical::nan_max)
 }
 
 /// Matrix logarithm via inverse scaling and squaring with Padé approximation.

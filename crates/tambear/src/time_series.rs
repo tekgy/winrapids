@@ -1818,6 +1818,119 @@ pub fn box_pierce(data: &[f64], n_lags: usize, fitted_params: usize) -> LjungBox
     LjungBoxResult { statistic: q, p_value: p, n_lags, df }
 }
 
+/// Breusch-Godfrey LM test for serial correlation in regression residuals.
+///
+/// More general than Durbin-Watson: tests for autocorrelation at lags 1..p
+/// simultaneously. Under H₀ (no serial correlation), the LM statistic
+/// n·R² ~ χ²(p).
+///
+/// `residuals`: OLS residuals. `regressors`: the original X matrix (row-major,
+/// n rows × k cols). `p`: number of lags to test.
+///
+/// Returns (lm_statistic, p_value, df).
+pub fn breusch_godfrey(residuals: &[f64], regressors: &[f64], k: usize, p: usize) -> (f64, f64, usize) {
+    let n = residuals.len();
+    if n <= k + p || p == 0 {
+        return (f64::NAN, f64::NAN, p);
+    }
+    // Auxiliary regression: e_t = X_t·β + Σ_{j=1}^p γ_j·e_{t-j} + u_t
+    // LM stat = n · R² of this regression
+    let n_aux_cols = k + p;
+    let nobs = n - p;
+    let mut x_aug = vec![0.0; nobs * n_aux_cols];
+    let mut y_aux = vec![0.0; nobs];
+
+    for t in p..n {
+        let row = t - p;
+        y_aux[row] = residuals[t];
+        // Original regressors
+        for j in 0..k {
+            x_aug[row * n_aux_cols + j] = regressors[t * k + j];
+        }
+        // Lagged residuals
+        for j in 0..p {
+            x_aug[row * n_aux_cols + k + j] = residuals[t - 1 - j];
+        }
+    }
+
+    // OLS on auxiliary regression to get R²
+    let mean_y = y_aux.iter().sum::<f64>() / nobs as f64;
+    let ss_tot: f64 = y_aux.iter().map(|y| (y - mean_y).powi(2)).sum();
+    if ss_tot < 1e-30 {
+        return (0.0, 1.0, p);
+    }
+
+    // Solve via normal equations
+    let nc = n_aux_cols;
+    let mut xtx = vec![0.0; nc * nc];
+    let mut xty = vec![0.0; nc];
+    for i in 0..nobs {
+        for j in 0..nc {
+            xty[j] += x_aug[i * nc + j] * y_aux[i];
+            for l in 0..nc {
+                xtx[j * nc + l] += x_aug[i * nc + j] * x_aug[i * nc + l];
+            }
+        }
+    }
+    let a = crate::linear_algebra::Mat::from_vec(nc, nc, xtx);
+    let beta = match crate::linear_algebra::cholesky(&a) {
+        Some(l) => crate::linear_algebra::cholesky_solve(&l, &xty),
+        None => return (f64::NAN, f64::NAN, p),
+    };
+
+    let mut ss_res = 0.0_f64;
+    for i in 0..nobs {
+        let fitted: f64 = (0..nc).map(|j| x_aug[i * nc + j] * beta[j]).sum();
+        ss_res += (y_aux[i] - fitted).powi(2);
+    }
+    let r2 = 1.0 - ss_res / ss_tot;
+    let lm = nobs as f64 * r2;
+    let pval = 1.0 - crate::special_functions::chi2_cdf(lm, p as f64);
+    (lm, pval, p)
+}
+
+/// Turning point test for randomness (nonparametric).
+///
+/// A turning point is an index t where x_{t-1} < x_t > x_{t+1} (peak) or
+/// x_{t-1} > x_t < x_{t+1} (trough). Under IID, the expected number of
+/// turning points is 2(n-2)/3 with variance (16n-29)/90.
+///
+/// Returns (n_turning_points, z_statistic). Z > 0 means more turning points
+/// than expected (oscillatory); Z < 0 means fewer (trendy/smooth).
+pub fn turning_point_test(data: &[f64]) -> (usize, f64) {
+    let n = data.len();
+    if n < 3 { return (0, f64::NAN); }
+    let mut tp = 0_usize;
+    for i in 1..n - 1 {
+        if (data[i] > data[i - 1] && data[i] > data[i + 1])
+            || (data[i] < data[i - 1] && data[i] < data[i + 1]) {
+            tp += 1;
+        }
+    }
+    let expected = 2.0 * (n - 2) as f64 / 3.0;
+    let variance = (16 * n - 29) as f64 / 90.0;
+    let z = if variance > 0.0 { (tp as f64 - expected) / variance.sqrt() } else { 0.0 };
+    (tp, z)
+}
+
+/// Rank-based von Neumann ratio.
+///
+/// Replaces raw values with their ranks, then computes the VN ratio on ranks.
+/// Distribution-free — invariant to marginal distribution. Under IID,
+/// the expected value is still ~2.
+pub fn rank_von_neumann_ratio(data: &[f64]) -> f64 {
+    let n = data.len();
+    if n < 3 { return f64::NAN; }
+    // Compute ranks
+    let mut indexed: Vec<(usize, f64)> = data.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+    indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut ranks = vec![0.0_f64; n];
+    for (rank, &(orig_idx, _)) in indexed.iter().enumerate() {
+        ranks[orig_idx] = (rank + 1) as f64;
+    }
+    von_neumann_ratio(&ranks)
+}
+
 /// Spectral flatness (Wiener entropy) of a PSD.
 ///
 /// SF = exp(mean(ln(S))) / mean(S) = geometric_mean(S) / arithmetic_mean(S).
@@ -2002,6 +2115,109 @@ pub fn spectral_q_factor(freqs: &[f64], psd: &[f64]) -> f64 {
     let peak_freq = freqs[peak_idx];
     if peak_freq <= 0.0 { return f64::NAN; }
     peak_freq / fwhm
+}
+
+/// Spectral flux: L2 norm of the frame-to-frame PSD change.
+///
+/// Given two consecutive PSD frames, SF = ||S_2 - S_1||_2.
+/// Measures how rapidly the spectral content is changing. Used in onset
+/// detection (audio) and regime-change detection (financial).
+///
+/// Returns a vector of length `frames.len() - 1`.
+pub fn spectral_flux(frames: &[Vec<f64>]) -> Vec<f64> {
+    if frames.len() < 2 { return vec![]; }
+    frames.windows(2).map(|pair| {
+        let (a, b) = (&pair[0], &pair[1]);
+        let n = a.len().min(b.len());
+        (0..n).map(|i| (b[i] - a[i]).powi(2)).sum::<f64>().sqrt()
+    }).collect()
+}
+
+/// Spectral decrease: weighted sum of spectral differences.
+///
+/// SD = (1 / Σ S_k) · Σ_{k=2}^{N} (S_k - S_1) / (k - 1)
+///
+/// Alternative to spectral slope; emphasizes the rate of decrease in the
+/// low-frequency region. Common in MPEG-7 audio descriptors.
+pub fn spectral_decrease(psd: &[f64]) -> f64 {
+    if psd.len() < 2 { return f64::NAN; }
+    let total: f64 = psd[1..].iter().sum();
+    if total < 1e-300 { return f64::NAN; }
+    let s1 = psd[0];
+    let num: f64 = (1..psd.len()).map(|k| (psd[k] - s1) / k as f64).sum();
+    num / total
+}
+
+/// Spectral contrast per subband.
+///
+/// For each of `n_bands` equal-width subbands of the PSD, compute
+/// `peak - valley` (in dB if PSD is in linear power: 10·log10(peak/valley)).
+/// Returns a vector of length `n_bands`.
+///
+/// High contrast in a band → clear spectral structure there.
+/// Low contrast → flat/noisy in that band.
+pub fn spectral_contrast(freqs: &[f64], psd: &[f64], n_bands: usize) -> Vec<f64> {
+    if freqs.len() != psd.len() || psd.is_empty() || n_bands == 0 { return vec![]; }
+    let n = psd.len();
+    let band_size = (n + n_bands - 1) / n_bands;
+    let mut contrasts = Vec::with_capacity(n_bands);
+    for b in 0..n_bands {
+        let start = b * band_size;
+        let end = ((b + 1) * band_size).min(n);
+        if start >= end { contrasts.push(f64::NAN); continue; }
+        let slice = &psd[start..end];
+        let peak = slice.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let valley = slice.iter().cloned().fold(f64::INFINITY, f64::min);
+        if valley > 1e-300 {
+            contrasts.push(10.0 * (peak / valley).log10());
+        } else {
+            contrasts.push(f64::NAN);
+        }
+    }
+    contrasts
+}
+
+/// Dominant frequency: the frequency at which the PSD is maximized.
+///
+/// Trivial but used so often that it deserves its own function for composability.
+pub fn dominant_frequency(freqs: &[f64], psd: &[f64]) -> f64 {
+    if freqs.len() != psd.len() || psd.is_empty() { return f64::NAN; }
+    let idx = psd.iter().enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    freqs[idx]
+}
+
+/// Dominant frequency power: the PSD value at the dominant frequency.
+pub fn dominant_frequency_power(psd: &[f64]) -> f64 {
+    if psd.is_empty() { return f64::NAN; }
+    psd.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+}
+
+/// Peak-to-average power ratio (PAPR / crest factor squared).
+///
+/// PAPR = max(S) / mean(S). Same as spectral_crest but the name is standard
+/// in communications/radar. Included as an alias for discoverability.
+pub fn peak_to_average_power_ratio(psd: &[f64]) -> f64 {
+    spectral_crest(psd)
+}
+
+/// Number of spectral peaks above a threshold.
+///
+/// A peak is a local maximum where psd[i] > threshold_ratio * max(psd).
+/// Returns the count. Useful as a complexity measure of the spectrum.
+pub fn spectral_peak_count(psd: &[f64], threshold_ratio: f64) -> usize {
+    if psd.len() < 3 { return 0; }
+    let max_val = psd.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let threshold = threshold_ratio * max_val;
+    let mut count = 0;
+    for i in 1..psd.len() - 1 {
+        if psd[i] > psd[i - 1] && psd[i] > psd[i + 1] && psd[i] >= threshold {
+            count += 1;
+        }
+    }
+    count
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

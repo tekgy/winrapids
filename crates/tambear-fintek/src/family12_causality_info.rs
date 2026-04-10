@@ -732,3 +732,162 @@ mod tests {
         assert!(rss < 1e-10, "perfect fit → RSS≈0, got {}", rss);
     }
 }
+
+// ── Transfer entropy (binned, returns ↔ volume) ──────────────────────────────
+
+/// Transfer entropy (bin) result matching fintek's `transfer_entropy_bin.rs` (K02P13C03R02).
+///
+/// Measures directed information flow between return and volume series
+/// using histogram-based estimation with 8 bins per variable.
+#[derive(Debug, Clone)]
+pub struct TransferEntropyBinResult {
+    pub te_xy: f64,            // TE returns→volume
+    pub te_yx: f64,            // TE volume→returns
+    pub net_te: f64,           // te_xy - te_yx
+    pub significance_ratio: f64, // max(te_xy, te_yx) / shuffled baseline
+}
+
+impl TransferEntropyBinResult {
+    pub fn nan() -> Self {
+        Self { te_xy: f64::NAN, te_yx: f64::NAN,
+               net_te: f64::NAN, significance_ratio: f64::NAN }
+    }
+}
+
+const TE_N_BINS: usize = 8;
+const TE_MIN_N: usize = 30;
+
+/// Compute transfer entropy between two symbolized series.
+///
+/// TE(X→Y) = Σ p(y_{t+1}, y_t, x_t) · log[ p(y_{t+1}|y_t,x_t) / p(y_{t+1}|y_t) ]
+fn te_histogram(x: &[usize], y: &[usize], n: usize) -> f64 {
+    let nb = TE_N_BINS;
+    let mut joint3  = vec![0u32; nb * nb * nb]; // y_{t+1}, y_t, x_t
+    let mut joint_yx = vec![0u32; nb * nb];     // y_t, x_t
+    let mut joint_yy = vec![0u32; nb * nb];     // y_{t+1}, y_t
+    let mut marg_y   = vec![0u32; nb];           // y_t
+
+    for t in 0..(n - 1) {
+        let yt  = y[t];
+        let yt1 = y[t + 1];
+        let xt  = x[t];
+        joint3[yt1 * nb * nb + yt * nb + xt] += 1;
+        joint_yx[yt * nb + xt] += 1;
+        joint_yy[yt1 * nb + yt] += 1;
+        marg_y[yt] += 1;
+    }
+
+    let n_f = (n - 1) as f64;
+    let mut te = 0.0f64;
+    for yt1 in 0..nb {
+        for yt in 0..nb {
+            for xt in 0..nb {
+                let c3 = joint3[yt1 * nb * nb + yt * nb + xt];
+                if c3 == 0 { continue; }
+                let c_yx = joint_yx[yt * nb + xt];
+                let c_yy = joint_yy[yt1 * nb + yt];
+                let c_y  = marg_y[yt];
+                if c_yx == 0 || c_yy == 0 || c_y == 0 { continue; }
+                let p3 = c3 as f64 / n_f;
+                let log_term = ((c3 as f64 * c_y as f64) / (c_yx as f64 * c_yy as f64)).ln();
+                te += p3 * log_term;
+            }
+        }
+    }
+    te.max(0.0)
+}
+
+/// Quantize a float series to `TE_N_BINS` uniform histogram bins.
+fn quantize(data: &[f64]) -> Vec<usize> {
+    let min_v = data.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_v = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let range = (max_v - min_v).max(1e-30);
+    data.iter().map(|&v| {
+        let b = ((v - min_v) / range * TE_N_BINS as f64).floor() as usize;
+        b.min(TE_N_BINS - 1)
+    }).collect()
+}
+
+/// Transfer entropy (returns ↔ volume) per bin.
+///
+/// `returns`: log-return series for the bin.
+/// `vol_changes`: log-volume-change series for the bin (same length as returns).
+///
+/// Both series are quantized to 8 uniform histogram bins.
+/// A shuffled baseline estimates the significance of the max TE.
+/// Returns NaN if `n < 30`.
+pub fn transfer_entropy_bin(returns: &[f64], vol_changes: &[f64]) -> TransferEntropyBinResult {
+    let n = returns.len().min(vol_changes.len());
+    if n < TE_MIN_N { return TransferEntropyBinResult::nan(); }
+
+    let bx = quantize(&returns[..n]);
+    let by = quantize(&vol_changes[..n]);
+
+    let te_xy = te_histogram(&bx, &by, n);
+    let te_yx = te_histogram(&by, &bx, n);
+
+    // Shuffled baseline: Fisher-Yates with deterministic seed
+    let mut shuffled = bx.clone();
+    let mut seed = 42u64;
+    for k in (1..shuffled.len()).rev() {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let j = (seed >> 33) as usize % (k + 1);
+        shuffled.swap(k, j);
+    }
+    let te_shuffled = te_histogram(&shuffled, &by, n);
+
+    let significance_ratio = if te_shuffled > 1e-30 {
+        te_xy.max(te_yx) / te_shuffled
+    } else {
+        te_xy.max(te_yx)
+    };
+
+    TransferEntropyBinResult {
+        te_xy,
+        te_yx,
+        net_te: te_xy - te_yx,
+        significance_ratio,
+    }
+}
+
+#[cfg(test)]
+mod tests_te_bin {
+    use super::*;
+
+    #[test]
+    fn te_bin_too_short() {
+        let r = transfer_entropy_bin(&[0.1; 10], &[0.1; 10]);
+        assert!(r.te_xy.is_nan());
+    }
+
+    #[test]
+    fn te_bin_independent_series() {
+        // Fully independent returns and volume → both TE values should be small
+        let n = 100;
+        let mut rng = tambear::rng::Xoshiro256::new(42);
+        let returns: Vec<f64> = (0..n).map(|_| tambear::rng::sample_normal(&mut rng, 0.0, 0.01)).collect();
+        let vol: Vec<f64> = (0..n).map(|_| tambear::rng::sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let r = transfer_entropy_bin(&returns, &vol);
+        assert!(r.te_xy.is_finite() && r.te_xy >= 0.0,
+            "TE(X→Y) must be non-negative, got {}", r.te_xy);
+        assert!(r.te_yx.is_finite() && r.te_yx >= 0.0,
+            "TE(Y→X) must be non-negative, got {}", r.te_yx);
+        assert!(r.significance_ratio.is_finite(), "significance_ratio should be finite");
+        assert!(r.net_te.is_finite());
+    }
+
+    #[test]
+    fn te_bin_coupled_series() {
+        // vol_t+1 = returns_t + noise → volume should have higher TE from returns
+        let n = 200;
+        let mut rng = tambear::rng::Xoshiro256::new(7);
+        let returns: Vec<f64> = (0..n).map(|_| tambear::rng::sample_normal(&mut rng, 0.0, 0.01)).collect();
+        let mut vol = vec![0.0f64; n];
+        for i in 1..n {
+            vol[i] = 0.8 * returns[i-1] + tambear::rng::sample_normal(&mut rng, 0.0, 0.001);
+        }
+        let r = transfer_entropy_bin(&returns, &vol);
+        // TE(returns→vol) should be detectable; both should be non-negative
+        assert!(r.te_xy >= 0.0 && r.te_yx >= 0.0);
+    }
+}

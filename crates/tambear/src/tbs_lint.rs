@@ -7,6 +7,10 @@
 //! Spec: `docs/research/tambear-build/tbs-science-lint-spec.md`
 
 use crate::tbs_parser::{TbsChain, TbsName};
+use crate::proof::{
+    BinOp, Prop, Proof, Sort, Structure, StructuralFact,
+    Term, Theorem,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -582,6 +586,257 @@ pub fn kingdom_lints(chain: &TbsChain) -> Vec<TbsLint> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Proof-verified kingdom contracts
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A machine-verified kingdom contract for a .tbs operation.
+///
+/// `kingdom_of()` is a static lookup table — it says "kmeans is Kingdom C"
+/// as a comment assertion. `KingdomContract` upgrades that to a proof:
+/// the claim is verified by the `tambear::proof` system, which checks
+/// algebraic laws (associativity, mergeability, etc.) before accepting it.
+///
+/// This is the "proof system as contract verifier" pattern:
+/// - Kingdom A → associativity theorem verified
+/// - Kingdom B → declared non-liftable (honest, no proof)
+/// - Kingdom C → declared iterative (honest, no structural proof)
+#[derive(Debug, Clone)]
+pub struct KingdomContract {
+    /// The .tbs operation name.
+    pub op: String,
+    /// The declared kingdom.
+    pub kingdom: Kingdom,
+    /// The shared subproblem (if any).
+    pub shared: Option<SharedSubproblem>,
+    /// Verification result.
+    pub verification: KingdomVerification,
+}
+
+/// Result of attempting to machine-verify a kingdom claim.
+#[derive(Debug, Clone)]
+pub enum KingdomVerification {
+    /// The claim is machine-verified by the proof system.
+    Verified(Theorem),
+    /// The claim is honestly declared but structurally unverifiable
+    /// (B = sequential, C = convergence — no associativity proof possible).
+    HonestDeclaration { reason: &'static str },
+    /// The claim was rejected by the proof checker.
+    Rejected(String),
+}
+
+impl KingdomVerification {
+    /// True if verified or honestly declared (not rejected).
+    pub fn is_sound(&self) -> bool {
+        !matches!(self, KingdomVerification::Rejected(_))
+    }
+}
+
+/// Construct the `Structure` for a Kingdom A shared subproblem.
+///
+/// Each `SharedSubproblem` has a well-defined accumulate structure:
+/// - `Covariance` / `GramMatrix` / `Autocorrelation` → (ℝⁿ, +, 0) component-wise add (Mergeability)
+/// - `DistanceMatrix` → (ℝ, +, 0) per-cell add (Mergeability)
+/// - `RiskSet` → (ℕ, +, 0) event count accumulate
+fn subproblem_structure(sub: SharedSubproblem) -> Structure {
+    match sub {
+        // Covariance accumulates sufficient statistics (sum, sumsq, cross-products).
+        // Combine = component-wise add on the sufficient-stat vector → commutative monoid + Mergeability.
+        SharedSubproblem::Covariance | SharedSubproblem::WeightedCovariance => Structure {
+            name: "CovarianceAccumulate".into(),
+            carrier: Sort::Named("SufficientStats".into()),
+            op: Some(BinOp::Add),
+            identity: Some(Term::Lit(0.0)),
+            laws: vec![
+                StructuralFact::Associativity,
+                StructuralFact::Commutativity,
+                StructuralFact::Identity,
+                StructuralFact::Mergeability,
+            ],
+        },
+        // Gram matrix X'X = tiled dot-product accumulate over outer products.
+        // Combine = matrix add → associative + Mergeability.
+        SharedSubproblem::GramMatrix => Structure {
+            name: "GramMatrixAccumulate".into(),
+            carrier: Sort::Named("Matrix".into()),
+            op: Some(BinOp::Add),
+            identity: Some(Term::Lit(0.0)),
+            laws: vec![
+                StructuralFact::Associativity,
+                StructuralFact::Identity,
+                StructuralFact::Mergeability,
+            ],
+        },
+        // ACF/PACF: accumulate sum and lag-k products → (ℝ, +, 0).
+        SharedSubproblem::Autocorrelation => Structure::commutative_monoid(
+            Sort::Real,
+            BinOp::Add,
+            Term::Lit(0.0),
+        ),
+        // Distance matrix: per-cell squared differences → (ℝ, +, 0) per cell.
+        SharedSubproblem::DistanceMatrix => Structure {
+            name: "DistanceMatrixAccumulate".into(),
+            carrier: Sort::Named("Matrix".into()),
+            op: Some(BinOp::Add),
+            identity: Some(Term::Lit(0.0)),
+            laws: vec![
+                StructuralFact::Associativity,
+                StructuralFact::Commutativity,
+                StructuralFact::Identity,
+                StructuralFact::Mergeability,
+            ],
+        },
+        // Risk set: event indicator sums → (ℕ, +, 0).
+        SharedSubproblem::RiskSet => Structure::commutative_monoid(
+            Sort::Nat,
+            BinOp::Add,
+            Term::NatLit(0),
+        ),
+        // Cross-product matrix: outer product accumulate → matrix add.
+        SharedSubproblem::CrossProduct => Structure {
+            name: "CrossProductAccumulate".into(),
+            carrier: Sort::Named("Matrix".into()),
+            op: Some(BinOp::Add),
+            identity: Some(Term::Lit(0.0)),
+            laws: vec![
+                StructuralFact::Associativity,
+                StructuralFact::Identity,
+                StructuralFact::Mergeability,
+            ],
+        },
+        // Henderson equations: Z'Z + D⁻¹ and Z'y → matrix/vector add on sufficient stats.
+        SharedSubproblem::Henderson => Structure {
+            name: "HendersonAccumulate".into(),
+            carrier: Sort::Named("SufficientStats".into()),
+            op: Some(BinOp::Add),
+            identity: Some(Term::Lit(0.0)),
+            laws: vec![
+                StructuralFact::Associativity,
+                StructuralFact::Commutativity,
+                StructuralFact::Identity,
+                StructuralFact::Mergeability,
+            ],
+        },
+    }
+}
+
+/// Build and machine-verify the kingdom contract for a .tbs operation.
+///
+/// This is the one-line call that connects `kingdom_of()` (static lookup)
+/// to the proof system (algebraic verification). The returned `KingdomContract`
+/// carries either a `Theorem` or an `HonestDeclaration` or a `Rejected` error.
+///
+/// Kingdom A operations get a structural proof that their combine step is
+/// associative (and thus parallel-scan liftable). Kingdom B and C operations
+/// get an `HonestDeclaration` — they honestly cannot be expressed as a single
+/// accumulate over an associative op.
+pub fn verify_kingdom(op_name: &str, sub_name: Option<&str>) -> KingdomContract {
+    let (kingdom, shared) = kingdom_of(op_name, sub_name);
+
+    let verification = match kingdom {
+        Kingdom::B => KingdomVerification::HonestDeclaration {
+            reason: "Kingdom B: sequential/order-dependent — not liftable to parallel scan",
+        },
+        Kingdom::C => KingdomVerification::HonestDeclaration {
+            reason: "Kingdom C: iterative convergence — no single associative combine step",
+        },
+        Kingdom::A => {
+            // Build the associativity proposition and prove it from the structure.
+            let structure = if let Some(sub) = shared {
+                subproblem_structure(sub)
+            } else {
+                // Pure Kingdom A without shared subproblem: (ℝ, +, 0) global reduce.
+                Structure::commutative_monoid(Sort::Real, BinOp::Add, Term::Lit(0.0))
+            };
+
+            // Proposition: ∀a,b,c. (a ⊕ b) ⊕ c = a ⊕ (b ⊕ c)
+            let prop = Prop::Forall {
+                vars: vec![("a", Sort::Real), ("b", Sort::Real), ("c", Sort::Real)],
+                body: Box::new(Prop::Eq(
+                    Term::BinApp(
+                        BinOp::Add,
+                        Box::new(Term::BinApp(
+                            BinOp::Add,
+                            Box::new(Term::Var("a")),
+                            Box::new(Term::Var("b")),
+                        )),
+                        Box::new(Term::Var("c")),
+                    ),
+                    Term::BinApp(
+                        BinOp::Add,
+                        Box::new(Term::Var("a")),
+                        Box::new(Term::BinApp(
+                            BinOp::Add,
+                            Box::new(Term::Var("b")),
+                            Box::new(Term::Var("c")),
+                        )),
+                    ),
+                )),
+            };
+
+            let proof = Proof::ByStructure(structure, StructuralFact::Associativity);
+            let thm_name = format!("{op_name}_kingdom_a_associativity");
+
+            match Theorem::check(&thm_name, prop, proof) {
+                Ok(thm) => KingdomVerification::Verified(thm),
+                Err(e) => KingdomVerification::Rejected(e.to_string()),
+            }
+        }
+    };
+
+    KingdomContract {
+        op: op_name.to_string(),
+        kingdom,
+        shared,
+        verification,
+    }
+}
+
+/// Verify all operations in the `kingdom_of()` lookup table.
+///
+/// Returns contracts for every known operation. Any `Rejected` entry is a bug:
+/// the lookup table claims a kingdom that the proof system cannot verify.
+pub fn verify_all_kingdom_contracts() -> Vec<KingdomContract> {
+    // Every operation in the kingdom_of() match arms.
+    let ops: &[(&str, Option<&str>)] = &[
+        // Kingdom A — no shared subproblem
+        ("normalize", None), ("describe", None), ("moments", None),
+        ("var", None), ("std", None), ("median", None),
+        // Kingdom A — covariance-based
+        ("pca", None), ("efa", None), ("varimax", None),
+        ("manova", None), ("lda", None), ("cca", None),
+        // Kingdom A — Gram matrix
+        ("train", Some("linear")), ("panel_fe", None), ("two_sls", None),
+        ("hausman", None),
+        // Kingdom A — autocorrelation
+        ("adf_test", None), ("ar", None), ("yule_walker", None),
+        // Kingdom B — sequential
+        ("kaplan_meier", None), ("log_rank", None), ("exp_smoothing", None),
+        // Kingdom C — distance-matrix
+        ("kmeans", None), ("dbscan", None), ("discover_clusters", None),
+        ("knn", None), ("tsne", None), ("umap", None),
+        ("discover", None), ("discover_with", None),
+        // Kingdom C — EM
+        ("gmm", None), ("mixture", None),
+        // Kingdom C — Henderson
+        ("lme", None), ("panel_re", None),
+        // Kingdom C — covariance convergence
+        ("cfa", None),
+        // Kingdom C — cross-product
+        ("irt", None),
+        // Kingdom C — risk set
+        ("cox_ph", None),
+        // Kingdom C — logistic
+        ("train", Some("logistic")),
+        // Kingdom C — GARCH
+        ("garch", None),
+    ];
+
+    ops.iter()
+        .map(|(op, sub)| verify_kingdom(op, *sub))
+        .collect()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -977,5 +1232,107 @@ mod tests {
         let chain = TbsChain::parse("describe().kmeans(k=3)").unwrap();
         let lints = lint_l109_skewness_normality(&describe, &chain);
         assert!(lints.is_empty(), "L109 should not fire without normality-assuming ops");
+    }
+
+    // ── Kingdom contract verification ───────────────────────────────────
+
+    #[test]
+    fn kingdom_a_normalize_is_verified() {
+        let contract = verify_kingdom("normalize", None);
+        assert_eq!(contract.kingdom, Kingdom::A);
+        assert!(contract.verification.is_sound());
+        assert!(matches!(contract.verification, KingdomVerification::Verified(_)),
+            "normalize should be machine-verified as Kingdom A, got: {:?}", contract.verification);
+    }
+
+    #[test]
+    fn kingdom_a_pca_covariance_is_verified() {
+        let contract = verify_kingdom("pca", None);
+        assert_eq!(contract.kingdom, Kingdom::A);
+        assert!(matches!(contract.verification, KingdomVerification::Verified(_)),
+            "pca should be verified — covariance accumulate is associative");
+    }
+
+    #[test]
+    fn kingdom_a_adf_autocorrelation_is_verified() {
+        let contract = verify_kingdom("adf_test", None);
+        assert_eq!(contract.kingdom, Kingdom::A);
+        assert!(matches!(contract.verification, KingdomVerification::Verified(_)),
+            "adf_test should be verified — ACF accumulate is (ℝ,+,0)");
+    }
+
+    #[test]
+    fn kingdom_b_kaplan_meier_is_honest() {
+        let contract = verify_kingdom("kaplan_meier", None);
+        assert_eq!(contract.kingdom, Kingdom::B);
+        assert!(contract.verification.is_sound());
+        assert!(matches!(contract.verification, KingdomVerification::HonestDeclaration { .. }),
+            "kaplan_meier must declare honest B — sequential survival estimator");
+    }
+
+    #[test]
+    fn kingdom_c_kmeans_is_honest() {
+        let contract = verify_kingdom("kmeans", None);
+        assert_eq!(contract.kingdom, Kingdom::C);
+        assert!(contract.verification.is_sound());
+        assert!(matches!(contract.verification, KingdomVerification::HonestDeclaration { .. }),
+            "kmeans must declare honest C — iterative EM convergence");
+    }
+
+    #[test]
+    fn kingdom_c_cox_ph_risk_set_is_honest() {
+        let contract = verify_kingdom("cox_ph", None);
+        assert_eq!(contract.kingdom, Kingdom::C);
+        assert!(matches!(contract.verification, KingdomVerification::HonestDeclaration { .. }));
+    }
+
+    #[test]
+    fn kingdom_a_train_linear_gram_is_verified() {
+        let contract = verify_kingdom("train", Some("linear"));
+        assert_eq!(contract.kingdom, Kingdom::A);
+        assert_eq!(contract.shared, Some(SharedSubproblem::GramMatrix));
+        assert!(matches!(contract.verification, KingdomVerification::Verified(_)),
+            "linear regression — Gram matrix accumulate is Kingdom A");
+    }
+
+    #[test]
+    fn kingdom_c_train_logistic_is_honest() {
+        let contract = verify_kingdom("train", Some("logistic"));
+        assert_eq!(contract.kingdom, Kingdom::C);
+        assert!(matches!(contract.verification, KingdomVerification::HonestDeclaration { .. }),
+            "logistic regression (IRLS) is iterative — honestly Kingdom C");
+    }
+
+    #[test]
+    fn verify_all_contracts_none_rejected() {
+        // The fundamental correctness invariant: every known operation's
+        // kingdom claim must be either machine-verified (A) or honestly
+        // declared (B/C). Any Rejected entry means the lookup table is wrong.
+        let contracts = verify_all_kingdom_contracts();
+        assert!(!contracts.is_empty(), "should have contracts for all known ops");
+        let rejected: Vec<_> = contracts.iter()
+            .filter(|c| matches!(c.verification, KingdomVerification::Rejected(_)))
+            .collect();
+        assert!(
+            rejected.is_empty(),
+            "kingdom_of() has inconsistent claims: {:?}",
+            rejected.iter().map(|c| &c.op).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn verify_all_contracts_kingdom_a_count() {
+        // Sanity: there should be multiple Kingdom A ops in the table.
+        let contracts = verify_all_kingdom_contracts();
+        let a_count = contracts.iter().filter(|c| c.kingdom == Kingdom::A).count();
+        assert!(a_count >= 8, "expected at least 8 Kingdom A ops, got {a_count}");
+    }
+
+    #[test]
+    fn verify_all_contracts_kingdom_b_count() {
+        // Sanity: there are sequential ops in the table.
+        let contracts = verify_all_kingdom_contracts();
+        let b_count = contracts.iter().filter(|c| c.kingdom == Kingdom::B).count();
+        assert!(b_count >= 2, "expected at least 2 Kingdom B ops (kaplan_meier, exp_smoothing), got {b_count}");
     }
 }

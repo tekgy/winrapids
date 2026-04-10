@@ -1719,6 +1719,94 @@ pub fn execute(
                 }
             }
 
+            // f-divergence family
+            ("hellinger", None) | ("hellinger_distance", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (p, q) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "hellinger_distance", value: crate::information_theory::hellinger_distance(&p, &q) }
+            }
+
+            ("total_variation", None) | ("tv_distance", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (p, q) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "total_variation_distance", value: crate::information_theory::total_variation_distance(&p, &q) }
+            }
+
+            ("chi_squared_divergence", None) | ("chi2_divergence", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (p, q) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "chi_squared_divergence", value: crate::information_theory::chi_squared_divergence(&p, &q) }
+            }
+
+            ("renyi_divergence", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let alpha = f64_arg(step, "alpha", 1, 1.0);
+                let (p, q) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "renyi_divergence", value: crate::information_theory::renyi_divergence(&p, &q, alpha) }
+            }
+
+            ("bhattacharyya", None) | ("bhattacharyya_distance", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (p, q) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "bhattacharyya_distance", value: crate::information_theory::bhattacharyya_distance(&p, &q) }
+            }
+
+            // Sample-based divergences
+            ("wasserstein_1d", None) | ("wasserstein", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (x, y) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "wasserstein_1d", value: crate::information_theory::wasserstein_1d(&x, &y) }
+            }
+
+            ("mmd_rbf", None) | ("mmd", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let bandwidth = f64_arg(step, "bandwidth", 1, f64::NAN);
+                let bw_opt = if bandwidth.is_nan() { None } else { Some(bandwidth) };
+                let (x, y) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "mmd_rbf", value: crate::information_theory::mmd_rbf(&x, &y, bw_opt) }
+            }
+
+            ("energy_distance", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (x, y) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "energy_distance", value: crate::information_theory::energy_distance(&x, &y) }
+            }
+
+            // Joint entropy: build joint histogram from two columns, compute H(X,Y)
+            ("joint_entropy", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let n_bins = usize_arg(step, "n_bins", 1, 10);
+                let (x, y) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                let n = x.len().min(y.len());
+                let min_x = x.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let min_y = y.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max_y = y.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let range_x = (max_x - min_x).max(1e-15);
+                let range_y = (max_y - min_y).max(1e-15);
+                // Build flat joint count table (n_bins × n_bins)
+                let mut counts = vec![0u64; n_bins * n_bins];
+                for i in 0..n {
+                    let bx = ((x[i] - min_x) / range_x * (n_bins as f64 - 1.0)).round() as usize;
+                    let by = ((y[i] - min_y) / range_y * (n_bins as f64 - 1.0)).round() as usize;
+                    let bx = bx.min(n_bins - 1);
+                    let by = by.min(n_bins - 1);
+                    counts[bx * n_bins + by] += 1;
+                }
+                let total = n as f64;
+                let joint_probs: Vec<f64> = counts.iter().map(|&c| c as f64 / total).collect();
+                TbsStepOutput::Scalar { name: "joint_entropy", value: crate::information_theory::joint_entropy(&joint_probs, n_bins, n_bins) }
+            }
+
             // ══════════════════════════════════════════════════════════════
             // Complexity measures
             // ══════════════════════════════════════════════════════════════

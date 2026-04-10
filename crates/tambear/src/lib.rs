@@ -692,3 +692,36 @@ pub use series_accel::{
 pub use train::naive_bayes::{
     GaussianNB, gaussian_nb_fit, gaussian_nb_predict, gaussian_nb_predict_proba,
 };
+
+// Dimensionality reduction
+pub use dim_reduction::{
+    PcaResult, pca,
+    MdsResult, classical_mds,
+    TsneResult, tsne,
+    NmfResult, nmf,
+};
+
+// Factor analysis and reliability
+pub use factor_analysis::{
+    FaResult, principal_axis_factoring, varimax,
+    cronbachs_alpha,
+    OmegaResult, mcdonalds_omega,
+    scree_elbow, kaiser_criterion,
+    KmoBartlettResult, kmo_bartlett,
+};
+
+// Spectral clustering
+pub use spectral_clustering::{
+    SpectralClusterParams, SpectralClusterResult,
+    AffinityKind, LaplacianKind,
+    spectral_cluster, spectral_embedding,
+    build_affinity, build_laplacian,
+};
+
+// Topological Data Analysis
+pub use tda::{
+    PersistencePair, PersistenceDiagram,
+    rips_h0, rips_h1,
+    bottleneck_distance, wasserstein_distance,
+    persistence_statistics, persistence_entropy, betti_curve,
+};

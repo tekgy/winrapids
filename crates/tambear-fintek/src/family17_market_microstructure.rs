@@ -7,7 +7,7 @@
 //! No dependency on fintek's Leaf trait or ExecutionContext.
 
 use tambear::time_series::rolling_variance_prefix;
-use tambear::special_functions::erfc;
+use tambear::special_functions::normal_cdf;
 
 // ── OU process ───────────────────────────────────────────────────────────────
 
@@ -394,12 +394,6 @@ impl VpinResult {
     }
 }
 
-/// Standard normal CDF Φ(x) using higher-precision tambear erfc primitive.
-fn standard_normal_cdf(x: f64) -> f64 {
-    // Φ(x) = 1 - erfc(x/√2)/2
-    1.0 - erfc(x / std::f64::consts::SQRT_2) * 0.5
-}
-
 /// VPIN via Bulk Volume Classification.
 ///
 /// `prices`: tick-level prices.
@@ -431,7 +425,7 @@ pub fn vpin_bvc(prices: &[f64], sizes: &[f64]) -> VpinResult {
 
     let bucket_vol = total_vol / N_BUCKETS as f64;
 
-    let buy_frac: Vec<f64> = dp.iter().map(|&d| standard_normal_cdf(d / std_dp)).collect();
+    let buy_frac: Vec<f64> = dp.iter().map(|&d| normal_cdf(d / std_dp)).collect();
 
     // Fill equal-volume buckets
     let mut bucket_imbalances = Vec::new();

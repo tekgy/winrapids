@@ -1039,7 +1039,8 @@ pub fn chi_squared_divergence(p: &[f64], q: &[f64]) -> f64 {
 /// Returns +∞ when P is not absolutely continuous w.r.t. Q and α > 0.
 pub fn renyi_divergence(p: &[f64], q: &[f64], alpha: f64) -> f64 {
     assert_eq!(p.len(), q.len(), "renyi_divergence: p and q must have same length");
-    assert!(alpha >= 0.0, "Rényi divergence order α must be ≥ 0, got {alpha}");
+    if alpha.is_nan() { return f64::NAN; }
+    if alpha < 0.0 { return f64::NAN; }  // invalid order
 
     if (alpha - 1.0).abs() < 1e-12 {
         return kl_divergence(p, q);
@@ -1270,20 +1271,31 @@ pub fn mmd_rbf(x: &[f64], y: &[f64], bandwidth: Option<f64>) -> f64 {
 
     let rbf = |a: f64, b: f64| (-(a - b).powi(2) / (2.0 * sigma2)).exp();
 
-    // Exx = (1/n(n-1)) Σᵢ≠ⱼ k(xᵢ, xⱼ)
+    // U-statistic estimator for all three terms (exclude diagonal i=j throughout).
+    // This ensures MMD²(X, X) = 0 exactly when x and y are the same sample.
+    //
+    // Exx = (1/n(n-1)) Σᵢ≠ⱼ k(xᵢ, xⱼ)  [U-stat]
     let exx: f64 = (0..n).flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
         .map(|(i, j)| 2.0 * rbf(x[i], x[j]))
         .sum::<f64>() / (n * (n - 1)) as f64;
 
-    // Eyy = (1/m(m-1)) Σᵢ≠ⱼ k(yᵢ, yⱼ)
+    // Eyy = (1/m(m-1)) Σᵢ≠ⱼ k(yᵢ, yⱼ)  [U-stat]
     let eyy: f64 = (0..m).flat_map(|i| ((i + 1)..m).map(move |j| (i, j)))
         .map(|(i, j)| 2.0 * rbf(y[i], y[j]))
         .sum::<f64>() / (m * (m - 1)) as f64;
 
-    // Exy = (1/nm) Σᵢ Σⱼ k(xᵢ, yⱼ)
-    let exy: f64 = (0..n).flat_map(|i| (0..m).map(move |j| (i, j)))
-        .map(|(i, j)| rbf(x[i], y[j]))
-        .sum::<f64>() / (n * m) as f64;
+    // Exy = (1/(n(n-1))) Σᵢ≠ⱼ k(xᵢ, yⱼ)  [U-stat: exclude i=j]
+    // Note: only valid when n=m. For n≠m fall back to V-stat scaled correctly.
+    let exy: f64 = if n == m {
+        (0..n).flat_map(|i| (0..n).filter(move |&j| j != i).map(move |j| (i, j)))
+            .map(|(i, j)| rbf(x[i], y[j]))
+            .sum::<f64>() / (n * (n - 1)) as f64
+    } else {
+        // V-statistic for cross term when sizes differ (no natural diagonal to exclude)
+        (0..n).flat_map(|i| (0..m).map(move |j| (i, j)))
+            .map(|(i, j)| rbf(x[i], y[j]))
+            .sum::<f64>() / (n * m) as f64
+    };
 
     exx - 2.0 * exy + eyy
 }

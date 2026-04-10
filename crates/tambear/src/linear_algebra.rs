@@ -1476,37 +1476,59 @@ pub fn matrix_exp(a: &Mat) -> Mat {
     // A_scaled = A / 2^s
     let a_scaled = mat_scale(scale, a);
 
-    // Padé [6/6] approximant: P(A)/Q(A) ≈ e^A for small A
-    // Coefficients from Higham (2005), Table 10.2
+    // Padé [13/13] approximant: P(A)/Q(A) ≈ e^A for small A
+    // Coefficients from Higham (2005) §10.3, Table 10.4 — achieves full double precision.
+    // This is the same order used by MATLAB expm and SciPy linalg.expm.
+    // Padé [13/13] coefficients from Higham (2005) Table 10.4, normalized by b_0=64764752532480000.
+    // b = [64764752532480000, 32382376266240000, 7771770303897600, 1187353796428800,
+    //      129060195264000, 10559470521600, 670442572800, 33522128640,
+    //      1323241920, 40840800, 960960, 16380, 182, 1]
     let c = [
-        1.0,
-        0.5,
-        0.12,
-        1.833333333333333e-2,
-        1.992753623188406e-3,
-        1.630434782608696e-4,
-        1.035196687370100e-5,
+        1.000000000000000e+00,
+        5.000000000000000e-01,
+        1.200000000000000e-01,
+        1.833333333333333e-02,
+        1.992753623188406e-03,
+        1.630434782608696e-04,
+        1.035196687370600e-05,
+        5.175983436853002e-07,
+        2.043151356652501e-08,
+        6.306022705717595e-10,
+        1.483770048404140e-11,
+        2.529153491597966e-13,
+        2.810170546219962e-15,
+        1.544049750670309e-17,
     ];
     let eye = Mat::eye(n);
     let a2 = mat_mul(&a_scaled, &a_scaled);  // A²
     let a4 = mat_mul(&a2, &a2);              // A⁴
     let a6 = mat_mul(&a4, &a2);              // A⁶
+    let a8 = mat_mul(&a6, &a2);              // A⁸
+    let a10 = mat_mul(&a8, &a2);             // A¹⁰
+    let a12 = mat_mul(&a10, &a2);            // A¹²
 
-    // U = A(c₅A⁴ + c₃A² + c₁I)
-    // V = c₆A⁶ + c₄A⁴ + c₂A² + c₀I
-    let u_inner = mat_add(
-        &mat_add(&mat_scale(c[5], &a4), &mat_scale(c[3], &a2)),
-        &mat_scale(c[1], &eye),
-    );
+    // U = A(c₁₃A¹² + c₁₁A¹⁰ + c₉A⁸ + c₇A⁶ + c₅A⁴ + c₃A² + c₁I)
+    let u_inner = {
+        let t1 = mat_scale(c[13], &a12);
+        let t2 = mat_add(&t1, &mat_scale(c[11], &a10));
+        let t3 = mat_add(&t2, &mat_scale(c[9], &a8));
+        let t4 = mat_add(&t3, &mat_scale(c[7], &a6));
+        let t5 = mat_add(&t4, &mat_scale(c[5], &a4));
+        let t6 = mat_add(&t5, &mat_scale(c[3], &a2));
+        mat_add(&t6, &mat_scale(c[1], &eye))
+    };
     let u = mat_mul(&a_scaled, &u_inner);
 
-    let v = mat_add(
-        &mat_add(
-            &mat_add(&mat_scale(c[6], &a6), &mat_scale(c[4], &a4)),
-            &mat_scale(c[2], &a2),
-        ),
-        &mat_scale(c[0], &eye),
-    );
+    // V = c₁₂A¹² + c₁₀A¹⁰ + c₈A⁸ + c₆A⁶ + c₄A⁴ + c₂A² + c₀I
+    let v = {
+        let t1 = mat_scale(c[12], &a12);
+        let t2 = mat_add(&t1, &mat_scale(c[10], &a10));
+        let t3 = mat_add(&t2, &mat_scale(c[8], &a8));
+        let t4 = mat_add(&t3, &mat_scale(c[6], &a6));
+        let t5 = mat_add(&t4, &mat_scale(c[4], &a4));
+        let t6 = mat_add(&t5, &mat_scale(c[2], &a2));
+        mat_add(&t6, &mat_scale(c[0], &eye))
+    };
 
     // e^A ≈ (V + U)(V - U)⁻¹ = solve((V-U), (V+U))
     let p = mat_add(&v, &u);   // numerator

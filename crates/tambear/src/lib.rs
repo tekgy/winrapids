@@ -173,6 +173,13 @@ pub use information_theory::{
     joint_entropy, pointwise_mutual_information,
     // Sample-based divergences
     wasserstein_1d, mmd_rbf, energy_distance,
+    // Histogram building blocks
+    histogram, joint_histogram,
+    // Transfer entropy
+    transfer_entropy,
+    // Text/vector similarity
+    TfidfResult, tfidf,
+    cosine_similarity, cosine_similarity_matrix,
 };
 pub use descriptive::{
     DescriptiveEngine, DescriptiveResult, MomentStats, GroupedMomentStats,
@@ -262,6 +269,15 @@ pub use nonparametric::{
     shapiro_wilk_coefficients,
     // Missing flavors (added 2026-04-10)
     hoeffdings_d, blomqvist_beta,
+    // Correlation primitives (flat catalog)
+    phi_coefficient, point_biserial, biserial_correlation, rank_biserial,
+    tetrachoric, cramers_v, eta_squared, distance_correlation, concordance_correlation,
+    // Histogram / ECDF
+    BinRule, Histogram, histogram_auto,
+    scott_bandwidth, sturges_bins, scott_bins, freedman_diaconis_bins, doane_bins,
+    Ecdf, ecdf, ecdf_confidence_band,
+    // Sequence similarity
+    dtw, dtw_banded, levenshtein, quantile_symbolize, edit_distance_on_series,
 };
 pub use complexity::{
     sample_entropy, approx_entropy, permutation_entropy, normalized_permutation_entropy,

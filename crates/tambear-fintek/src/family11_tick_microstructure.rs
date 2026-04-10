@@ -18,6 +18,7 @@
 //! - tick_compression (K02P25C01)   — real_effective_rank, shuffled_effective_rank, compression_ratio, n_active_features
 
 use tambear::data_quality::lag1_autocorrelation;
+use tambear::simple_linear_regression;
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
@@ -328,28 +329,10 @@ pub fn tick_scaling(timestamps_ns: &[u64]) -> TickScalingResult {
             p.ln()
         }).collect();
 
-        // OLS: log_p = a + b * log_x  → b = scaling_exponent (negative for power law)
-        let lx_mean: f64 = log_x.iter().sum::<f64>() / n_tail as f64;
-        let lp_mean: f64 = log_p.iter().sum::<f64>() / n_tail as f64;
-        let mut sxx = 0.0f64; let mut sxy = 0.0f64;
-        for i in 0..n_tail {
-            let dx = log_x[i] - lx_mean;
-            sxx += dx * dx;
-            sxy += dx * (log_p[i] - lp_mean);
-        }
-        let slope = if sxx > 1e-30 { sxy / sxx } else { f64::NAN };
-
-        // R²
-        let r2 = if slope.is_finite() && sxx > 1e-30 {
-            let ss_tot: f64 = log_p.iter().map(|&p| (p - lp_mean).powi(2)).sum();
-            let intercept = lp_mean - slope * lx_mean;
-            let ss_res: f64 = log_x.iter().zip(log_p.iter())
-                .map(|(&x, &p)| (p - (intercept + slope * x)).powi(2)).sum();
-            if ss_tot > 1e-30 { (1.0 - ss_res / ss_tot).clamp(0.0, 1.0) } else { 0.0 }
-        } else { f64::NAN };
-
-        // α is the negative slope of the log-log CCDF
-        (-slope, r2)
+        // OLS: log_p = a + b * log_x  → α is the negative slope of the log-log CCDF
+        let reg = simple_linear_regression(&log_x, &log_p);
+        let r2 = if reg.r_squared.is_finite() { reg.r_squared.clamp(0.0, 1.0) } else { f64::NAN };
+        (-reg.slope, r2)
     } else { (f64::NAN, f64::NAN) };
 
     // Burstiness: B = (σ - μ) / (σ + μ)

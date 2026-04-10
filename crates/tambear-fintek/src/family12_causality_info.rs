@@ -10,6 +10,8 @@
 //! - cross_correlation (K02P07C02R01) — CCF features: max_xcorr, lag, zero-lag, asymmetry, lead_lag_ratio
 
 use tambear::special_functions::erfc;
+use tambear::ols_normal_equations;
+use tambear::nonparametric::pearson_r;
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
@@ -49,45 +51,20 @@ fn f_survival(x: f64, df1: usize, df2: usize) -> f64 {
 }
 
 /// OLS residual sum of squares: regress `y` on design matrix `x` (row-major,
-/// `nobs` rows × `ncols` columns). Solves via Gauss-Jordan on the normal equations.
-/// Returns ∞ if the system is rank-deficient.
+/// `nobs` rows × `ncols` columns). Returns ∞ if rank-deficient.
 fn ols_rss(y: &[f64], x: &[f64], nobs: usize, ncols: usize) -> f64 {
-    let mut xtx = vec![0.0f64; ncols * ncols];
-    let mut xty = vec![0.0f64; ncols];
-    for r in 0..nobs {
-        for j in 0..ncols {
-            xty[j] += x[r * ncols + j] * y[r];
-            for k in j..ncols {
-                let v = x[r * ncols + j] * x[r * ncols + k];
-                xtx[j * ncols + k] += v;
-                if j != k { xtx[k * ncols + j] += v; }
+    match ols_normal_equations(x, y, nobs, ncols) {
+        None => f64::INFINITY,
+        Some(beta) => {
+            let mut rss = 0.0f64;
+            for r in 0..nobs {
+                let pred: f64 = (0..ncols).map(|j| x[r * ncols + j] * beta[j]).sum();
+                let e = y[r] - pred;
+                rss += e * e;
             }
+            rss
         }
     }
-    // Gauss-Jordan on augmented matrix [X^T X | X^T y]
-    let mut aug = vec![0.0f64; ncols * (ncols + 1)];
-    for r in 0..ncols {
-        for c in 0..ncols { aug[r * (ncols + 1) + c] = xtx[r * ncols + c]; }
-        aug[r * (ncols + 1) + ncols] = xty[r];
-    }
-    for col in 0..ncols {
-        let pivot = aug[col * (ncols + 1) + col];
-        if pivot.abs() < 1e-30 { return f64::INFINITY; }
-        for j in 0..=ncols { aug[col * (ncols + 1) + j] /= pivot; }
-        for row in 0..ncols {
-            if row == col { continue; }
-            let f = aug[row * (ncols + 1) + col];
-            for j in 0..=ncols { aug[row * (ncols + 1) + j] -= f * aug[col * (ncols + 1) + j]; }
-        }
-    }
-    let beta: Vec<f64> = (0..ncols).map(|r| aug[r * (ncols + 1) + ncols]).collect();
-    let mut rss = 0.0f64;
-    for r in 0..nobs {
-        let pred: f64 = (0..ncols).map(|j| x[r * ncols + j] * beta[j]).sum();
-        let e = y[r] - pred;
-        rss += e * e;
-    }
-    rss
 }
 
 // ── family 12a: granger (K02P17C01R01) ─────────────────────────────────────
@@ -282,16 +259,8 @@ pub fn mutual_info(x: &[f64], y: &[f64]) -> MutualInfoResult {
     let mi_corrected = (mi - mm_correction).max(0.0);
 
     // Gaussian MI: -0.5 * ln(1 - r²)
-    let mean_x: f64 = x[..n].iter().sum::<f64>() / n as f64;
-    let mean_y: f64 = y[..n].iter().sum::<f64>() / n as f64;
-    let mut cov = 0.0f64; let mut var_x = 0.0f64; let mut var_y = 0.0f64;
-    for t in 0..n {
-        let dx = x[t] - mean_x; let dy = y[t] - mean_y;
-        cov += dx * dy; var_x += dx * dx; var_y += dy * dy;
-    }
-    let r = if var_x > 1e-30 && var_y > 1e-30 {
-        cov / (var_x * var_y).sqrt()
-    } else { 0.0 };
+    let r = pearson_r(&x[..n], &y[..n]);
+    let r = if r.is_finite() { r } else { 0.0 };
     let mi_gauss = if r.abs() < 1.0 - 1e-12 { -0.5 * (1.0 - r * r).ln() } else { 0.0 };
 
     let mi_normalized = {

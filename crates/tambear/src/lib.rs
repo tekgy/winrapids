@@ -221,6 +221,7 @@ pub use nonparametric::{
     BathResult, bath_law,
     SdeResult, sde_estimate,
     inversion_count, inversion_count_mergesort,
+    pearson_r,
     // Primitives (flat catalog)
     shapiro_wilk_coefficients,
 };

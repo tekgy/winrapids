@@ -4,6 +4,8 @@
 //! - `phase_transition` (K02P18C01R04F01) — SOC/Ising-style criticality via rolling magnetization
 //! - `mfdfa`            (K02P18C01R05F01) — Multifractal Detrended Fluctuation Analysis
 
+use tambear::{ols_slope, simple_linear_regression};
+
 // ── Phase transition ───────────────────────────────────────────────────────────
 
 const PT_WINDOW: usize = 20;
@@ -103,12 +105,7 @@ pub fn phase_transition(returns: &[f64]) -> PhaseTransitionResult {
 
         if log_w.len() >= 2 {
             // OLS: log_m = slope * log_w + intercept → slope is the critical exponent
-            let m_len = log_w.len() as f64;
-            let mean_lw = log_w.iter().sum::<f64>() / m_len;
-            let mean_lm = log_m.iter().sum::<f64>() / m_len;
-            let sxx: f64 = log_w.iter().map(|&x| (x - mean_lw) * (x - mean_lw)).sum();
-            let sxy: f64 = log_w.iter().zip(log_m.iter()).map(|(&x, &y)| (x - mean_lw) * (y - mean_lm)).sum();
-            if sxx > 1e-30 { sxy / sxx } else { f64::NAN }
+            ols_slope(&log_w, &log_m)
         } else {
             f64::NAN
         }
@@ -266,31 +263,18 @@ pub fn mfdfa(returns: &[f64]) -> MfdfaResult {
     let mut se_values = [f64::NAN; 6];
 
     for q_idx in 0..n_q {
-        let mut pairs: Vec<(f64, f64)> = log_s.iter().zip(log_fq[q_idx].iter())
+        let (xs, ys): (Vec<f64>, Vec<f64>) = log_s.iter().zip(log_fq[q_idx].iter())
             .filter(|(_, &lf)| lf.is_finite())
             .map(|(&ls, &lf)| (ls, lf))
-            .collect();
+            .unzip();
 
-        if pairs.len() < 2 { continue; }
+        if xs.len() < 2 { continue; }
 
-        let pm = pairs.len() as f64;
-        let mean_ls = pairs.iter().map(|(x, _)| x).sum::<f64>() / pm;
-        let mean_lf = pairs.iter().map(|(_, y)| y).sum::<f64>() / pm;
-        let sxx: f64 = pairs.iter().map(|(x, _)| (x - mean_ls) * (x - mean_ls)).sum();
-        let sxy: f64 = pairs.iter().map(|(x, y)| (x - mean_ls) * (y - mean_lf)).sum();
-
-        if sxx < 1e-30 { continue; }
-        let slope = sxy / sxx;
-        h_values[q_idx] = slope;
-
-        // Standard error of slope
-        let intercept = mean_lf - slope * mean_ls;
-        let ssr: f64 = pairs.iter().map(|(x, y)| {
-            let pred = slope * x + intercept;
-            (y - pred) * (y - pred)
-        }).sum();
-        let se = if pm > 2.0 { (ssr / ((pm - 2.0) * sxx)).sqrt() } else { f64::NAN };
-        se_values[q_idx] = se;
+        let reg = simple_linear_regression(&xs, &ys);
+        if reg.slope.is_finite() {
+            h_values[q_idx] = reg.slope;
+            se_values[q_idx] = reg.se_slope;
+        }
     }
 
     let [h_neg2, h_neg1, h_05, h_1, h_15, h_2] = h_values;

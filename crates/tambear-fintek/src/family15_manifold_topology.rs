@@ -69,30 +69,6 @@ fn smallest_eigenvalues(mat_flat: &[f64], n: usize, k: usize) -> Vec<f64> {
     vals.into_iter().take(k).map(|v| v.max(0.0)).collect()
 }
 
-/// Symmetric covariance matrix from (n × d) row-major delay-embedded matrix.
-fn delay_covariance(mat: &[f64], n: usize, d: usize) -> Vec<f64> {
-    let mut means = vec![0.0f64; d];
-    for t in 0..n { for dim in 0..d { means[dim] += mat[t * d + dim]; } }
-    for dim in 0..d { means[dim] /= n as f64; }
-
-    let mut cov = vec![0.0f64; d * d];
-    for t in 0..n {
-        for r in 0..d {
-            let dr = mat[t * d + r] - means[r];
-            for c in r..d {
-                let dc = mat[t * d + c] - means[c];
-                cov[r * d + c] += dr * dc;
-            }
-        }
-    }
-    let denom = (n - 1).max(1) as f64;
-    for r in 0..d { for c in r..d {
-        cov[r * d + c] /= denom;
-        cov[c * d + r] = cov[r * d + c];
-    }}
-    cov
-}
-
 // ── spectral_embedding (K02P15C2R1) ──────────────────────────────────────────
 
 /// Graph Laplacian features from kNN graph of delay-embedded returns.
@@ -367,8 +343,8 @@ pub fn rmt(returns: &[f64]) -> RmtResult {
     let (mat, n_emb) = delay_embed(returns, d, 1, max_pts);
     if n_emb < d + 2 { return RmtResult::nan(); }
 
-    let cov = delay_covariance(&mat, n_emb, d);
-    let cov_m = tambear::linear_algebra::Mat::from_vec(d, d, cov);
+    let mat_m = tambear::linear_algebra::Mat::from_vec(n_emb, d, mat);
+    let cov_m = tambear::multivariate::covariance_matrix(&mat_m, Some(1));
     let (mut eigs, _) = tambear::linear_algebra::sym_eigen(&cov_m);
     eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 

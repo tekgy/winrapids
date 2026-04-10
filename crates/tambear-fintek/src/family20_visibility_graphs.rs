@@ -9,6 +9,8 @@
 //! dynamical complexity: random series produce exponential degree distributions,
 //! chaotic series produce power-law distributions.
 
+use tambear::ols_slope;
+
 // ── Natural Visibility Graph ───────────────────────────────────────────────────
 
 const NVG_MAX_PTS: usize = 500;
@@ -110,7 +112,7 @@ fn compute_nvg_stats(x: &[f64], degree: &[u32], n: usize) -> NvgResult {
             log_pk.push((c as f64 / n_f).ln());
         }
     }
-    let gamma = power_law_exponent(&log_k, &log_pk);
+    let gamma = { let s = ols_slope(&log_k, &log_pk); if s.is_finite() { -s } else { 0.0 } };
 
     // Clustering coefficient (sample up to 200 nodes)
     let sample = n.min(200);
@@ -225,7 +227,7 @@ pub fn hvg(x: &[f64]) -> HvgResult {
             log_pk.push((c as f64 / n_f).ln());
         }
     }
-    let gamma = power_law_exponent(&log_k, &log_pk);
+    let gamma = { let s = ols_slope(&log_k, &log_pk); if s.is_finite() { -s } else { 0.0 } };
 
     // Clustering coefficient (sample up to 200 nodes)
     let sample = n.min(200);
@@ -287,21 +289,6 @@ pub fn hvg(x: &[f64]) -> HvgResult {
 
     HvgResult { degree_exponent: gamma, mean_degree, degree_entropy: entropy,
                 clustering_coefficient: cc, irreversibility: kl }
-}
-
-// ── Shared utility ─────────────────────────────────────────────────────────────
-
-/// OLS log-log regression for power-law exponent. Returns negated slope.
-fn power_law_exponent(log_k: &[f64], log_pk: &[f64]) -> f64 {
-    let np = log_k.len();
-    if np < 3 { return 0.0; }
-    let npf = np as f64;
-    let sx: f64 = log_k.iter().sum();
-    let sy: f64 = log_pk.iter().sum();
-    let sxx: f64 = log_k.iter().map(|x| x * x).sum();
-    let sxy: f64 = log_k.iter().zip(log_pk.iter()).map(|(x, y)| x * y).sum();
-    let denom = npf * sxx - sx * sx;
-    if denom.abs() > 1e-30 { -(npf * sxy - sx * sy) / denom } else { 0.0 }
 }
 
 #[cfg(test)]

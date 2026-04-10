@@ -70,7 +70,11 @@ pub fn approx_entropy(data: &[f64], m: usize, r: f64) -> f64 {
 }
 
 /// Count template matches of length m within tolerance r (no self-matches).
-fn count_matches(data: &[f64], m: usize, r: f64) -> usize {
+///
+/// Core counting atom for SampEn, cross-SampEn, XApEn, FuzzyEn.
+/// Uses Chebyshev (L∞) distance. Excludes self-matches (i ≠ j pairs, upper triangle).
+/// Returns the number of matching pairs.
+pub fn count_matches(data: &[f64], m: usize, r: f64) -> usize {
     let n = data.len();
     let n_templates = n - m; // +1 but we start at 0
     let mut count = 0;
@@ -91,8 +95,11 @@ fn count_matches(data: &[f64], m: usize, r: f64) -> usize {
     count
 }
 
-/// φ function for ApEn (with self-matches).
-fn phi_func(data: &[f64], m: usize, r: f64) -> f64 {
+/// ApEn φ function (with self-matches, normalized log sum).
+///
+/// φ^m(r) = (1/N') · Σᵢ ln(Cᵢ^m(r)) where N' = n - m + 1.
+/// Used by ApEn and its variants. Includes self-pairs (i = j) unlike `count_matches`.
+pub fn phi_func(data: &[f64], m: usize, r: f64) -> f64 {
     let n = data.len();
     let n_templates = n - m + 1;
     if n_templates == 0 { return 0.0; }
@@ -162,8 +169,12 @@ pub fn normalized_permutation_entropy(data: &[f64], m: usize, tau: usize) -> f64
     pe / max_entropy
 }
 
-/// Map an ordinal pattern to a unique index (Lehmer code).
-fn pattern_to_index(pattern: &[f64], m: usize) -> usize {
+/// Map an ordinal pattern to a unique index via Lehmer code (factoradic encoding).
+///
+/// Given a length-m pattern of distinct values, returns an index in [0, m!).
+/// Used by permutation entropy, ordinal pattern analysis, symbolic dynamics.
+/// Equal values are broken by position (stable ordinal ranking).
+pub fn pattern_to_index(pattern: &[f64], m: usize) -> usize {
     let mut index = 0;
     for i in 0..m {
         let mut count = 0;
@@ -175,7 +186,11 @@ fn pattern_to_index(pattern: &[f64], m: usize) -> usize {
     index
 }
 
-fn factorial(n: usize) -> usize {
+/// Integer factorial n! for small n (panics on overflow for n > 20).
+///
+/// Used by permutation entropy normalization, combinatorics, binomial coefficients.
+/// For large n, use `log_gamma(n+1)` from special_functions for log-factorial.
+pub fn factorial(n: usize) -> usize {
     (1..=n).product()
 }
 
@@ -322,7 +337,14 @@ pub fn dfa(data: &[f64], min_box: usize, max_box: usize) -> f64 {
 
 /// Linear fit (intercept, slope) for a segment indexed 0..n.
 /// Centered formulation avoids catastrophic cancellation.
-fn linear_fit_segment(segment: &[f64]) -> (f64, f64) {
+/// Fit a linear trend to a segment using implicit integer x ∈ {0, 1, ..., n-1}.
+///
+/// Returns (intercept, slope) using centered OLS: numerically stable because
+/// the centering eliminates the cross-term. Used by DFA (detrended fluctuation),
+/// windowed linear detrending, and any method needing a fast segment trend fit.
+///
+/// Equivalent to `ols_slope` with explicit `x = [0..n]` but avoids the allocation.
+pub fn linear_fit_segment(segment: &[f64]) -> (f64, f64) {
     let n = segment.len() as f64;
     let mean_x = (n - 1.0) / 2.0;
     let mean_y: f64 = segment.iter().sum::<f64>() / n;
@@ -449,20 +471,19 @@ pub fn lempel_ziv_complexity(data: &[f64]) -> f64 {
 ///
 /// Embedding: m-dimensional vectors with time delay τ.
 pub fn correlation_dimension(data: &[f64], m: usize, tau: usize) -> f64 {
-    let n = data.len();
-    let n_vectors = n - (m - 1) * tau;
+    // Use canonical delay_embed primitive — Takens' theorem embedding
+    let vectors = crate::time_series::delay_embed(data, m, tau);
+    let n_vectors = vectors.len();
     if n_vectors < 10 { return f64::NAN; }
 
-    // Create embedded vectors
-    let vectors: Vec<Vec<f64>> = (0..n_vectors)
-        .map(|i| (0..m).map(|k| data[i + k * tau]).collect())
-        .collect();
+    // Flatten to row-major for pairwise L∞ distance computation
+    let flat: Vec<f64> = vectors.iter().flat_map(|v| v.iter().copied()).collect();
 
-    // Compute pairwise distances (L∞ norm)
-    let mut distances = Vec::new();
+    // Compute pairwise L∞ distances (correlation dimension uses L∞ norm)
+    let mut distances = Vec::with_capacity(n_vectors * (n_vectors - 1) / 2);
     for i in 0..n_vectors {
         for j in (i + 1)..n_vectors {
-            let d: f64 = (0..m).map(|k| (vectors[i][k] - vectors[j][k]).abs())
+            let d: f64 = (0..m).map(|k| (flat[i * m + k] - flat[j * m + k]).abs())
                 .fold(0.0, f64::max);
             distances.push(d);
         }
@@ -515,17 +536,13 @@ pub fn correlation_dimension(data: &[f64], m: usize, tau: usize) -> f64 {
 /// 3. Track divergence: d(i, Δn) = ||x(i+Δn) - x(nn(i)+Δn)||
 /// 4. λ₁ ≈ (1/Δt) × mean(log(d(i, Δn)))
 pub fn largest_lyapunov(data: &[f64], m: usize, tau: usize, dt: f64) -> f64 {
-    let n = data.len();
-    let n_vectors = n - (m - 1) * tau;
+    // Use canonical delay_embed primitive — Takens' theorem embedding
+    let vectors = crate::time_series::delay_embed(data, m, tau);
+    let n_vectors = vectors.len();
     if n_vectors < 20 { return f64::NAN; }
 
     let mean_period = estimate_mean_period(data);
     let min_temporal_sep = mean_period.max(tau);
-
-    // Create embedded vectors
-    let vectors: Vec<Vec<f64>> = (0..n_vectors)
-        .map(|i| (0..m).map(|k| data[i + k * tau]).collect())
-        .collect();
 
     // For each point, find nearest neighbor (excluding temporal neighbors)
     let max_diverge = n_vectors / 4;
@@ -576,8 +593,13 @@ pub fn largest_lyapunov(data: &[f64], m: usize, tau: usize, dt: f64) -> f64 {
     ols_slope(&steps[..use_n], &log_divs[..use_n])
 }
 
-/// Estimate mean period of data via zero-crossings.
-fn estimate_mean_period(data: &[f64]) -> usize {
+/// Estimate mean period of data via zero-crossing count.
+///
+/// Returns the estimated mean period in samples: 2·(n-1)/crossings.
+/// Used by Rosenstein Lyapunov (minimum temporal separation),
+/// AMI-based embedding delay selection, and any period estimation task.
+/// Returns 1 if fewer than 2 zero-crossings are found.
+pub fn estimate_mean_period(data: &[f64]) -> usize {
     let mean: f64 = data.iter().sum::<f64>() / data.len() as f64;
     let mut crossings = 0;
     for i in 1..data.len() {

@@ -97,7 +97,7 @@ fn tukey_two_groups() {
     ];
     let ms_error = 2.5; // typical within-group MS
     let df_error = 8.0;
-    let result = tukey_hsd(&stats, ms_error, df_error);
+    let result = tukey_hsd(&stats, ms_error, df_error, None);
     assert_eq!(result.len(), 1, "Two groups → 1 comparison");
     assert!(result[0].q_statistic > 0.0, "q should be positive");
     assert!(result[0].p_value.is_finite(), "p should be finite");
@@ -111,7 +111,7 @@ fn tukey_identical_groups() {
         tambear::descriptive::moments_ungrouped(&[5.0, 5.0, 5.0, 5.0, 5.0]),
         tambear::descriptive::moments_ungrouped(&[5.0, 5.0, 5.0, 5.0, 5.0]),
     ];
-    let result = tukey_hsd(&stats, 0.001, 12.0);
+    let result = tukey_hsd(&stats, 0.001, 12.0, None);
     for c in &result {
         assert!((c.mean_diff).abs() < 1e-10,
             "Tukey identical groups: mean_diff should be 0, got {}", c.mean_diff);
@@ -125,7 +125,7 @@ fn tukey_significant_at_custom_alpha() {
         tambear::descriptive::moments_ungrouped(&[1.0, 2.0, 3.0, 4.0, 5.0]),
         tambear::descriptive::moments_ungrouped(&[3.0, 4.0, 5.0, 6.0, 7.0]),
     ];
-    let result = tukey_hsd(&stats, 2.5, 8.0);
+    let result = tukey_hsd(&stats, 2.5, 8.0, None);
     let c = &result[0];
     // The `significant` field uses hardcoded 0.05.
     // The `significant_at` method should allow custom alpha.
@@ -143,7 +143,7 @@ fn tukey_zero_mse() {
         tambear::descriptive::moments_ungrouped(&[1.0, 2.0, 3.0]),
         tambear::descriptive::moments_ungrouped(&[4.0, 5.0, 6.0]),
     ];
-    let result = tukey_hsd(&stats, 0.0, 4.0);
+    let result = tukey_hsd(&stats, 0.0, 4.0, None);
     assert_eq!(result.len(), 1);
     // ms_error=0 → se=0 → q=Inf
     assert!(result[0].q_statistic.is_infinite(),
@@ -381,7 +381,7 @@ fn param_audit_tukey_significant_at() {
         tambear::descriptive::moments_ungrouped(&[1.0, 2.0, 3.0]),
         tambear::descriptive::moments_ungrouped(&[10.0, 11.0, 12.0]),
     ];
-    let result = tukey_hsd(&stats, 1.0, 4.0);
+    let result = tukey_hsd(&stats, 1.0, 4.0, None);
     let c = &result[0];
     // Verify significant_at is available and works independently of hardcoded field
     let sig_005 = c.significant_at(0.05);

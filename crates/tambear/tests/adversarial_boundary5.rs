@@ -85,7 +85,7 @@ fn fit_2pl_all_incorrect() {
 #[test]
 fn fit_2pl_single_person() {
     let responses = vec![1u8, 0, 1]; // 1 person, 3 items
-    let items = fit_2pl(&responses, 1, 3, 20);
+    let items = fit_2pl(&responses, 1, 3, 20, None);
     assert_eq!(items.len(), 3);
     assert!(items.iter().all(|item| item.discrimination.is_finite() && item.difficulty.is_finite()),
         "fit_2pl should produce finite params with single person");

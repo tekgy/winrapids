@@ -44,7 +44,7 @@ mod tukey_hsd_parity {
             .iter().map(|g| moments_ungrouped(g)).collect();
 
         // ms_error = 2.5, df_error = 12 (from one-way ANOVA)
-        let results = tukey_hsd(&stats, 2.5, 12.0);
+        let results = tukey_hsd(&stats, 2.5, 12.0, None);
         assert_eq!(results.len(), 3, "3 groups → 3 pairwise comparisons");
 
         // Find A-B comparison (groups 0-1)
@@ -67,7 +67,7 @@ mod tukey_hsd_parity {
         let stats: Vec<_> = [&g1[..], &g2[..]]
             .iter().map(|g| moments_ungrouped(g)).collect();
 
-        let results = tukey_hsd(&stats, 1.0, 4.0);
+        let results = tukey_hsd(&stats, 1.0, 4.0, None);
         assert_eq!(results.len(), 1);
         // mean1=20, mean2=25, diff=-5 (or 5 depending on sign convention)
         assert_close("tukey_diff", results[0].mean_diff.abs(), 5.0, 1e-10);
@@ -80,7 +80,7 @@ mod tukey_hsd_parity {
         let stats: Vec<_> = [&g1[..], &g2[..]]
             .iter().map(|g| moments_ungrouped(g)).collect();
 
-        let results = tukey_hsd(&stats, 2.5, 8.0);
+        let results = tukey_hsd(&stats, 2.5, 8.0, None);
         assert_eq!(results.len(), 1);
         assert_close("tukey_eq_diff", results[0].mean_diff, 0.0, 1e-10);
         assert_close("tukey_eq_q", results[0].q_statistic, 0.0, 1e-10);

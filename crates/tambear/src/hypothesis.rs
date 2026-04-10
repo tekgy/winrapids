@@ -1275,7 +1275,11 @@ pub struct MediationResult {
 }
 
 /// Simple 1-predictor OLS: returns (intercept, slope, residuals, se_slope).
-fn ols_simple(x: &[f64], y: &[f64]) -> (f64, f64, Vec<f64>, f64) {
+///
+/// Efficient single-pass formulation. For more complete output (r², SEs for both
+/// intercept and slope, residual_se), use `linear_algebra::simple_linear_regression`.
+/// This variant is optimized for callers that need only these 4 quantities.
+pub fn ols_simple(x: &[f64], y: &[f64]) -> (f64, f64, Vec<f64>, f64) {
     let n = x.len();
     let nf = n as f64;
     let mx: f64 = x.iter().sum::<f64>() / nf;
@@ -1297,7 +1301,11 @@ fn ols_simple(x: &[f64], y: &[f64]) -> (f64, f64, Vec<f64>, f64) {
 }
 
 /// 2-predictor OLS (x, m → y with intercept): returns (b0, b_x, b_m, se_b_m).
-fn ols_two_predictor(x: &[f64], m: &[f64], y: &[f64]) -> (f64, f64, f64, f64) {
+///
+/// Solves [1, x, m] → y via 3×3 normal equations using Cramer's rule.
+/// Used by mediation analysis (Baron-Kenny step 3). For general k-predictor OLS,
+/// use `linear_algebra::ols_normal_equations` or `linear_algebra::qr_solve`.
+pub fn ols_two_predictor(x: &[f64], m: &[f64], y: &[f64]) -> (f64, f64, f64, f64) {
     let n = x.len();
     let nf = n as f64;
     if n < 4 { return (0.0, 0.0, 0.0, 0.0); }

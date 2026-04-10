@@ -47,7 +47,8 @@ pub fn probabilities(counts: &[f64]) -> Vec<f64> {
 /// measure that needs to avoid `0 * log(0) = NaN`.
 #[inline]
 pub fn p_log_p(p: f64) -> f64 {
-    if p <= 0.0 { 0.0 } else { p * p.ln() }
+    if p < 0.0 { return f64::NAN; }  // negative probability is invalid
+    if p == 0.0 { 0.0 } else { p * p.ln() }
 }
 
 /// Safely compute p · ln(p/q), returning 0.0 when p ≤ 0, +∞ when q ≤ 0.
@@ -983,8 +984,11 @@ pub fn grassberger_entropy(data: &[f64], n_bins: usize) -> f64 {
 /// `p` and `q` must have the same length and be probability distributions.
 pub fn hellinger_distance_sq(p: &[f64], q: &[f64]) -> f64 {
     assert_eq!(p.len(), q.len(), "hellinger_distance_sq: p and q must have same length");
+    if p.iter().any(|&v| v < 0.0) || q.iter().any(|&v| v < 0.0) {
+        return f64::NAN;
+    }
     0.5 * p.iter().zip(q).map(|(&pi, &qi)| {
-        let diff = pi.max(0.0).sqrt() - qi.max(0.0).sqrt();
+        let diff = pi.sqrt() - qi.sqrt();
         diff * diff
     }).sum::<f64>()
 }

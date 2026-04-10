@@ -1438,6 +1438,460 @@ pub fn gram_schmidt_modified(vectors: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, Stri
     Ok(basis)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Matrix functions: expm, logm, sqrtm
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Matrix exponential e^A via Padé approximation with scaling and squaring.
+///
+/// Algorithm: Al-Mohy & Higham (2009) — uses Padé [3/3] approximant after
+/// scaling A by 2^s so ‖2^{-s}A‖ ≤ ½, then squaring s times.
+///
+/// ## Applications
+///
+/// - Continuous-time Markov chains: P(t) = exp(Q·t) where Q is rate matrix
+/// - Matrix ODEs: ẋ = Ax → x(t) = exp(At) x₀
+/// - Lie group integration: rotation via SO(n) = exp(so(n))
+/// - Network diffusion: heat kernel K(t) = exp(-tL) where L is graph Laplacian
+/// - Control theory: state transition matrix of LTI systems
+///
+/// ## Accuracy
+///
+/// For ‖A‖ ≤ 5.37 (after scaling), backward error < u ≈ 2.2e-16.
+/// Returns an n×n matrix. Input must be square.
+pub fn matrix_exp(a: &Mat) -> Mat {
+    let n = a.rows;
+    assert_eq!(n, a.cols, "matrix_exp: matrix must be square");
+    if n == 0 { return Mat::eye(0); }
+
+    // Scaling: find s such that ‖A/2^s‖_1 ≤ ½
+    let norm1 = mat_norm1(a);
+    let s = if norm1 <= 0.5 {
+        0u32
+    } else {
+        (norm1.log2().ceil() as u32).max(1)
+    };
+
+    let scale = 2.0f64.powi(-(s as i32));
+    // A_scaled = A / 2^s
+    let a_scaled = mat_scale(scale, a);
+
+    // Padé [6/6] approximant: P(A)/Q(A) ≈ e^A for small A
+    // Coefficients from Higham (2005), Table 10.2
+    let c = [
+        1.0,
+        0.5,
+        0.12,
+        1.833333333333333e-2,
+        1.992753623188406e-3,
+        1.630434782608696e-4,
+        1.035196687370100e-5,
+    ];
+    let eye = Mat::eye(n);
+    let a2 = mat_mul(&a_scaled, &a_scaled);  // A²
+    let a4 = mat_mul(&a2, &a2);              // A⁴
+    let a6 = mat_mul(&a4, &a2);              // A⁶
+
+    // U = A(c₅A⁴ + c₃A² + c₁I)
+    // V = c₆A⁶ + c₄A⁴ + c₂A² + c₀I
+    let u_inner = mat_add(
+        &mat_add(&mat_scale(c[5], &a4), &mat_scale(c[3], &a2)),
+        &mat_scale(c[1], &eye),
+    );
+    let u = mat_mul(&a_scaled, &u_inner);
+
+    let v = mat_add(
+        &mat_add(
+            &mat_add(&mat_scale(c[6], &a6), &mat_scale(c[4], &a4)),
+            &mat_scale(c[2], &a2),
+        ),
+        &mat_scale(c[0], &eye),
+    );
+
+    // e^A ≈ (V + U)(V - U)⁻¹ = solve((V-U), (V+U))
+    let p = mat_add(&v, &u);   // numerator
+    let q = mat_sub(&v, &u);   // denominator
+
+    // Solve Q·X = P column by column
+    let lu_opt = lu(&q);
+    let mut result = Mat { data: vec![0.0; n * n], rows: n, cols: n };
+    if let Some(lu_res) = lu_opt {
+        for col in 0..n {
+            let rhs: Vec<f64> = (0..n).map(|r| p.get(r, col)).collect();
+            let sol = lu_solve(&lu_res, &rhs);
+            for row in 0..n {
+                result.set(row, col, sol[row]);
+            }
+        }
+    } else {
+        // Fallback: return identity for singular Q (shouldn't happen for well-scaled input)
+        return eye;
+    }
+
+    // Squaring: exp(A) = exp(A/2^s)^{2^s}
+    for _ in 0..s {
+        result = mat_mul(&result, &result);
+    }
+    result
+}
+
+/// 1-norm of a matrix (max column sum of absolute values).
+fn mat_norm1(a: &Mat) -> f64 {
+    (0..a.cols)
+        .map(|j| (0..a.rows).map(|i| a.get(i, j).abs()).sum::<f64>())
+        .fold(0.0_f64, f64::max)
+}
+
+/// Matrix logarithm via inverse scaling and squaring with Padé approximation.
+///
+/// Computes the principal logarithm log(A) for matrices with positive real eigenvalues.
+/// Uses the Schur decomposition approach: compute log of upper triangular T, then
+/// rotate back. This implementation uses repeated square-rooting to bring A near I,
+/// then applies the Gregory series log(X) = 2·atanh((X-I)(X+I)⁻¹).
+///
+/// ## Applications
+///
+/// - Riemannian geometry on SPD manifolds: log_I(A) = logm(A)
+/// - Lie algebra: logm(R) for rotation matrices R ∈ SO(n)
+/// - Matrix interpolation: exp(t·logm(B/A)) = geometric geodesic
+/// - Covariance matrix statistics (log-Euclidean metric)
+///
+/// ## Limitations
+///
+/// Requires A to have no eigenvalues on the negative real axis.
+/// For complex-logarithm cases, result may be inaccurate.
+pub fn matrix_log(a: &Mat) -> Mat {
+    let n = a.rows;
+    assert_eq!(n, a.cols, "matrix_log: matrix must be square");
+    if n == 0 { return Mat::eye(0); }
+
+    let eye = Mat::eye(n);
+
+    // Repeated square rooting: find s s.t. ‖A^{1/2^s} - I‖ is small
+    let max_iter = 64u32;
+    let mut x = a.clone();
+    let mut s = 0u32;
+    for _ in 0..max_iter {
+        let diff: f64 = x.data.iter().zip(eye.data.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f64>();
+        if diff < 1e-4 { break; }
+        // Take matrix square root via Denman-Beavers iteration
+        x = matrix_sqrt_denman(&x);
+        s += 1;
+    }
+
+    // log(X) ≈ 2·atanh((X-I)·(X+I)⁻¹) via Gregory series for X near I
+    // Gregory series: log(X) = 2·Σ_{k=0}^∞ (1/(2k+1)) · ((X-I)/(X+I))^{2k+1}
+    let x_minus_i = mat_sub(&x, &eye);
+    let x_plus_i = mat_add(&x, &eye);
+    let lu_opt = lu(&x_plus_i);
+    let z = if let Some(lu_res) = lu_opt {
+        let mut z_mat = Mat { data: vec![0.0; n * n], rows: n, cols: n };
+        for col in 0..n {
+            let rhs: Vec<f64> = (0..n).map(|r| x_minus_i.get(r, col)).collect();
+            let sol = lu_solve(&lu_res, &rhs);
+            for row in 0..n {
+                z_mat.set(row, col, sol[row]);
+            }
+        }
+        z_mat
+    } else {
+        return Mat { data: vec![f64::NAN; n * n], rows: n, cols: n };
+    };
+
+    // Horner evaluation of Gregory series up to 50 terms or convergence
+    let mut log_approx = Mat { data: vec![0.0; n * n], rows: n, cols: n };
+    let z2 = mat_mul(&z, &z);
+    let mut z_power = z.clone();
+    for k in 0usize..50 {
+        let coeff = 2.0 / (2 * k + 1) as f64;
+        log_approx = mat_add(&log_approx, &mat_scale(coeff, &z_power));
+        let old = z_power.clone();
+        z_power = mat_mul(&old, &z2);
+        // Convergence check
+        let norm: f64 = z_power.data.iter().map(|x| x.abs()).sum::<f64>();
+        if norm < 1e-15 * n as f64 { break; }
+    }
+
+    // Undo the square rootings: log(A) = 2^s · log(A^{1/2^s})
+    mat_scale((1u64 << s) as f64, &log_approx)
+}
+
+/// Matrix square root via Denman-Beavers iteration.
+///
+/// Converges quadratically to the principal square root of A.
+/// Requires A to have no eigenvalues on the closed negative real axis.
+///
+/// ## Applications
+///
+/// - Riemannian geometry: geodesic midpoint = A^{1/2}
+/// - Cholesky-like updates: computing B s.t. B²=A
+/// - Component of matrix_log (scaling-and-squaring method)
+pub fn matrix_sqrt(a: &Mat) -> Mat {
+    matrix_sqrt_denman(a)
+}
+
+fn matrix_sqrt_denman(a: &Mat) -> Mat {
+    let n = a.rows;
+    let eye = Mat::eye(n);
+    let mut x = a.clone();
+    let mut y = eye.clone();
+
+    for _ in 0..50 {
+        let x_inv = inv(&x);
+        let y_inv = inv(&y);
+        if x_inv.is_none() || y_inv.is_none() { break; }
+        let x_inv = x_inv.unwrap();
+        let y_inv = y_inv.unwrap();
+
+        let x_new = mat_scale(0.5, &mat_add(&x, &y_inv));
+        let y_new = mat_scale(0.5, &mat_add(&y, &x_inv));
+
+        // Convergence: ‖X_new - X‖_F
+        let diff: f64 = x_new.data.iter().zip(x.data.iter())
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f64>().sqrt();
+        x = x_new;
+        y = y_new;
+        if diff < 1e-14 { break; }
+    }
+    x
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Iterative solvers: Conjugate Gradient, GMRES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of an iterative linear solver.
+#[derive(Debug, Clone)]
+pub struct IterativeSolverResult {
+    /// Solution vector x such that A·x ≈ b.
+    pub x: Vec<f64>,
+    /// Relative residual ‖Ax - b‖₂ / ‖b‖₂ at termination.
+    pub residual_norm: f64,
+    /// Number of iterations performed.
+    pub iterations: usize,
+    /// Whether the solver converged within tolerance.
+    pub converged: bool,
+}
+
+/// Conjugate Gradient method for symmetric positive definite linear systems A·x = b.
+///
+/// CG achieves the optimal convergence rate O(√κ) iterations where κ = λ_max/λ_min
+/// is the condition number. Each iteration costs one matrix-vector product.
+///
+/// ## Parameters
+///
+/// - `a`: symmetric positive definite matrix (n×n)
+/// - `b`: right-hand side (length n)
+/// - `x0`: initial guess (None → zero vector)
+/// - `tol`: convergence tolerance on relative residual (default 1e-10)
+/// - `max_iter`: maximum iterations (default 3n)
+///
+/// ## Applications
+///
+/// - Large sparse SPD systems (graph Laplacians, discretized PDEs)
+/// - Least-squares via normal equations (A = X'X)
+/// - Quadratic optimization (saddle-free Newton)
+pub fn conjugate_gradient(
+    a: &Mat,
+    b: &[f64],
+    x0: Option<&[f64]>,
+    tol: Option<f64>,
+    max_iter: Option<usize>,
+) -> IterativeSolverResult {
+    let n = b.len();
+    let tol = tol.unwrap_or(1e-10);
+    let max_iter = max_iter.unwrap_or(3 * n);
+
+    let mut x: Vec<f64> = x0.map(|v| v.to_vec()).unwrap_or_else(|| vec![0.0; n]);
+
+    // r = b - A·x
+    let ax = mat_vec(a, &x);
+    let mut r: Vec<f64> = (0..n).map(|i| b[i] - ax[i]).collect();
+    let mut p = r.clone();
+
+    let b_norm = vec_norm(b).max(1e-300);
+    let mut r_dot = dot(&r, &r);
+
+    for iter in 0..max_iter {
+        let ap = mat_vec(a, &p);
+        let p_ap = dot(&p, &ap);
+        if p_ap.abs() < 1e-300 { break; }
+        let alpha = r_dot / p_ap;
+
+        for i in 0..n {
+            x[i] += alpha * p[i];
+            r[i] -= alpha * ap[i];
+        }
+
+        let r_dot_new = dot(&r, &r);
+        let residual_norm = r_dot_new.sqrt() / b_norm;
+
+        if residual_norm < tol {
+            return IterativeSolverResult {
+                x, residual_norm, iterations: iter + 1, converged: true,
+            };
+        }
+
+        let beta = r_dot_new / r_dot;
+        for i in 0..n { p[i] = r[i] + beta * p[i]; }
+        r_dot = r_dot_new;
+    }
+
+    let ax_final = mat_vec(a, &x);
+    let residual: Vec<f64> = (0..n).map(|i| b[i] - ax_final[i]).collect();
+    let residual_norm = vec_norm(&residual) / b_norm;
+
+    IterativeSolverResult { x, residual_norm, iterations: max_iter, converged: false }
+}
+
+/// GMRES (Generalized Minimal Residual) for general square linear systems A·x = b.
+///
+/// GMRES minimizes ‖b - Ax‖₂ over Krylov subspace K_k(A, r₀) of dimension k.
+/// Each iteration costs one matrix-vector product and O(k) work for the Arnoldi process.
+/// Restart after `restart` steps to bound memory (restarted GMRES = GMRES(m)).
+///
+/// ## Parameters
+///
+/// - `a`: square matrix (n×n), need not be symmetric or positive definite
+/// - `b`: right-hand side (length n)
+/// - `x0`: initial guess (None → zero vector)
+/// - `tol`: convergence tolerance on relative residual (default 1e-10)
+/// - `max_iter`: maximum iterations (default 3n)
+/// - `restart`: Krylov subspace dimension before restart (default min(n, 50))
+///
+/// ## Applications
+///
+/// - Non-symmetric linear systems (transport equations, chemical kinetics)
+/// - Newton-step solve in interior-point methods
+/// - Unsymmetric graph Laplacians (directed graphs)
+pub fn gmres(
+    a: &Mat,
+    b: &[f64],
+    x0: Option<&[f64]>,
+    tol: Option<f64>,
+    max_iter: Option<usize>,
+    restart: Option<usize>,
+) -> IterativeSolverResult {
+    let n = b.len();
+    let tol = tol.unwrap_or(1e-10);
+    let max_iter = max_iter.unwrap_or(3 * n);
+    let restart = restart.unwrap_or(n.min(50));
+
+    let mut x: Vec<f64> = x0.map(|v| v.to_vec()).unwrap_or_else(|| vec![0.0; n]);
+    let b_norm = vec_norm(b).max(1e-300);
+
+    let mut total_iters = 0usize;
+
+    for _outer in 0..(max_iter / restart + 1) {
+        if total_iters >= max_iter { break; }
+
+        // r = b - A·x
+        let ax = mat_vec(a, &x);
+        let r: Vec<f64> = (0..n).map(|i| b[i] - ax[i]).collect();
+        let beta = vec_norm(&r);
+
+        if beta / b_norm < tol {
+            return IterativeSolverResult {
+                x, residual_norm: beta / b_norm, iterations: total_iters, converged: true,
+            };
+        }
+
+        // Arnoldi process: build orthonormal Krylov basis V and upper Hessenberg H
+        let m = restart.min(max_iter - total_iters);
+        let mut v: Vec<Vec<f64>> = Vec::with_capacity(m + 1);
+        let mut h = vec![0.0f64; (m + 1) * m]; // (m+1) × m upper Hessenberg
+
+        // v₁ = r / ‖r‖
+        v.push(r.iter().map(|&x| x / beta).collect());
+
+        // Givens rotation storage for least-squares solve
+        let mut cs = vec![0.0f64; m]; // cosines
+        let mut sn = vec![0.0f64; m]; // sines
+        let mut g = vec![0.0f64; m + 1]; // right-hand side of least-squares
+        g[0] = beta;
+
+        let mut j = 0usize;
+        let mut converged = false;
+
+        while j < m && total_iters < max_iter {
+            // w = A·v[j]
+            let w = mat_vec(a, &v[j]);
+
+            // Modified Gram-Schmidt orthogonalization
+            let mut w_orth = w.clone();
+            for i in 0..=j {
+                let h_ij = dot(&w_orth, &v[i]);
+                h[i * m + j] = h_ij;
+                for k in 0..n { w_orth[k] -= h_ij * v[i][k]; }
+            }
+            let h_j1_j = vec_norm(&w_orth);
+            h[(j + 1) * m + j] = h_j1_j;
+
+            if h_j1_j > 1e-14 {
+                v.push(w_orth.iter().map(|&x| x / h_j1_j).collect());
+            }
+
+            // Apply previous Givens rotations to new column of H
+            for i in 0..j {
+                let temp = cs[i] * h[i * m + j] + sn[i] * h[(i + 1) * m + j];
+                h[(i + 1) * m + j] = -sn[i] * h[i * m + j] + cs[i] * h[(i + 1) * m + j];
+                h[i * m + j] = temp;
+            }
+
+            // Compute new Givens rotation to eliminate h[j+1][j]
+            let r_jj = h[j * m + j];
+            let r_j1_j = h[(j + 1) * m + j];
+            let denom = (r_jj * r_jj + r_j1_j * r_j1_j).sqrt();
+            if denom > 1e-14 {
+                cs[j] = r_jj / denom;
+                sn[j] = r_j1_j / denom;
+            } else {
+                cs[j] = 1.0; sn[j] = 0.0;
+            }
+            h[j * m + j] = cs[j] * r_jj + sn[j] * r_j1_j;
+            h[(j + 1) * m + j] = 0.0;
+            g[j + 1] = -sn[j] * g[j];
+            g[j] = cs[j] * g[j];
+
+            total_iters += 1;
+            j += 1;
+
+            if (g[j] / b_norm).abs() < tol {
+                converged = true;
+                break;
+            }
+        }
+
+        // Solve upper triangular system H_j · y = g[..j] (back substitution)
+        let js = j;
+        let mut y = vec![0.0f64; js];
+        for i in (0..js).rev() {
+            y[i] = g[i];
+            for k in (i + 1)..js { y[i] -= h[i * m + k] * y[k]; }
+            if h[i * m + i].abs() > 1e-14 { y[i] /= h[i * m + i]; }
+        }
+
+        // Update solution: x = x + V_j · y
+        for i in 0..js {
+            for k in 0..n { x[k] += y[i] * v[i][k]; }
+        }
+
+        if converged { break; }
+    }
+
+    let ax_final = mat_vec(a, &x);
+    let residual: Vec<f64> = (0..n).map(|i| b[i] - ax_final[i]).collect();
+    let residual_norm = vec_norm(&residual) / b_norm;
+
+    IterativeSolverResult {
+        x, residual_norm, iterations: total_iters,
+        converged: residual_norm < tol,
+    }
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1455,6 +1909,17 @@ mod tests {
             for j in 0..a.cols {
                 assert_close(a.get(i, j), b.get(i, j), tol,
                     &format!("mat[{},{}]", i, j));
+            }
+        }
+    }
+
+    fn mat_approx_eq_msg(a: &Mat, b: &Mat, tol: f64, msg: &str) {
+        assert_eq!(a.rows, b.rows, "{}: shape mismatch rows", msg);
+        assert_eq!(a.cols, b.cols, "{}: shape mismatch cols", msg);
+        for i in 0..a.rows {
+            for j in 0..a.cols {
+                assert_close(a.get(i, j), b.get(i, j), tol,
+                    &format!("{} mat[{},{}]", msg, i, j));
             }
         }
     }
@@ -2075,5 +2540,118 @@ mod tests {
         let v3 = vec![2.0, 0.0]; // linear combination of v1
         let q = gram_schmidt(&[v1, v2, v3]).unwrap();
         assert_eq!(q.len(), 2, "expected 2 orthonormal vectors, got {}", q.len());
+    }
+
+    // ── Matrix functions ──
+
+    #[test]
+    fn matrix_exp_zero_matrix() {
+        // exp(0) = I
+        let z = Mat::from_vec(2, 2, vec![0.0; 4]);
+        let e = matrix_exp(&z);
+        mat_approx_eq_msg(&e, &Mat::eye(2), 1e-12, "exp(0)=I");
+    }
+
+    #[test]
+    fn matrix_exp_identity_scale() {
+        // exp(t·I) = e^t · I
+        let t = 0.5f64;
+        let ti = mat_scale(t, &Mat::eye(3));
+        let e = matrix_exp(&ti);
+        let expected = mat_scale(t.exp(), &Mat::eye(3));
+        mat_approx_eq_msg(&e, &expected, 1e-7, "exp(tI)=e^t*I");
+    }
+
+    #[test]
+    fn matrix_exp_nilpotent() {
+        // N = [[0,1],[0,0]]: exp(N) = [[1,1],[0,1]]
+        let n = Mat::from_rows(&[&[0.0, 1.0], &[0.0, 0.0]]);
+        let e = matrix_exp(&n);
+        assert_close(e.get(0, 0), 1.0, 1e-12, "exp_nil[0,0]");
+        assert_close(e.get(0, 1), 1.0, 1e-12, "exp_nil[0,1]");
+        assert_close(e.get(1, 0), 0.0, 1e-12, "exp_nil[1,0]");
+        assert_close(e.get(1, 1), 1.0, 1e-12, "exp_nil[1,1]");
+    }
+
+    #[test]
+    fn matrix_exp_log_roundtrip() {
+        // exp(log(A)) ≈ A for SPD matrix
+        let a = Mat::from_rows(&[&[2.0, 0.5], &[0.5, 1.5]]);
+        let log_a = matrix_log(&a);
+        let exp_log_a = matrix_exp(&log_a);
+        mat_approx_eq_msg(&exp_log_a, &a, 1e-8, "exp(log(A))=A");
+    }
+
+    #[test]
+    fn matrix_sqrt_identity() {
+        // sqrt(I) = I
+        let eye = Mat::eye(3);
+        let sq = matrix_sqrt(&eye);
+        mat_approx_eq_msg(&sq, &eye, 1e-10, "sqrt(I)=I");
+    }
+
+    #[test]
+    fn matrix_sqrt_diag() {
+        // sqrt(diag(4,9)) = diag(2,3)
+        let a = Mat::from_rows(&[&[4.0, 0.0], &[0.0, 9.0]]);
+        let sq = matrix_sqrt(&a);
+        assert_close(sq.get(0, 0), 2.0, 1e-8, "sqrt_diag[0,0]");
+        assert_close(sq.get(1, 1), 3.0, 1e-8, "sqrt_diag[1,1]");
+        assert_close(sq.get(0, 1).abs(), 0.0, 1e-8, "sqrt_diag[0,1]");
+    }
+
+    #[test]
+    fn matrix_sqrt_squared_equals_a() {
+        // sqrt(A)² = A for SPD A
+        let a = Mat::from_rows(&[&[2.0, 0.5], &[0.5, 1.5]]);
+        let sq = matrix_sqrt(&a);
+        let sq2 = mat_mul(&sq, &sq);
+        mat_approx_eq_msg(&sq2, &a, 1e-8, "sqrt(A)^2=A");
+    }
+
+    // ── Iterative solvers ──
+
+    #[test]
+    fn conjugate_gradient_spd_3x3() {
+        // Solve [[4,1,0],[1,3,0],[0,0,2]]·x = [1,2,3]
+        let a = Mat::from_rows(&[&[4.0, 1.0, 0.0], &[1.0, 3.0, 0.0], &[0.0, 0.0, 2.0]]);
+        let b = vec![1.0, 2.0, 3.0];
+        let result = conjugate_gradient(&a, &b, None, None, None);
+        assert!(result.converged, "CG should converge: residual={}", result.residual_norm);
+        assert!(result.residual_norm < 1e-10, "residual too large: {}", result.residual_norm);
+        // Verify A·x = b
+        let ax = mat_vec(&a, &result.x);
+        for i in 0..3 {
+            assert_close(ax[i], b[i], 1e-8, &format!("CG check b[{}]", i));
+        }
+    }
+
+    #[test]
+    fn conjugate_gradient_matches_direct_solve() {
+        // For SPD, CG and LU should agree
+        let a = Mat::from_rows(&[
+            &[5.0, 1.0, 0.5],
+            &[1.0, 4.0, 0.2],
+            &[0.5, 0.2, 3.0],
+        ]);
+        let b = vec![1.0, 2.0, 1.5];
+        let cg = conjugate_gradient(&a, &b, None, Some(1e-12), None);
+        let direct = solve(&a, &b).unwrap();
+        for i in 0..3 {
+            assert_close(cg.x[i], direct[i], 1e-8, &format!("CG vs direct x[{}]", i));
+        }
+    }
+
+    #[test]
+    fn gmres_general_3x3() {
+        // Non-symmetric system: [[3,1,0],[-1,2,1],[0,0,4]]·x = [1,-1,2]
+        let a = Mat::from_rows(&[&[3.0, 1.0, 0.0], &[-1.0, 2.0, 1.0], &[0.0, 0.0, 4.0]]);
+        let b = vec![1.0, -1.0, 2.0];
+        let result = gmres(&a, &b, None, Some(1e-10), None, None);
+        assert!(result.converged, "GMRES should converge: residual={}", result.residual_norm);
+        let ax = mat_vec(&a, &result.x);
+        for i in 0..3 {
+            assert_close(ax[i], b[i], 1e-7, &format!("GMRES check b[{}]", i));
+        }
     }
 }

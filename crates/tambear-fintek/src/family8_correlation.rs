@@ -165,6 +165,143 @@ mod tests {
     }
 }
 
+// ── Distributional distances (K02P16C02) ─────────────────────────────────────
+
+/// DistDistance result matching fintek's `dist_distance.rs` (K02P16C02R01).
+///
+/// Compares the first-half vs. second-half distribution of a return series.
+#[derive(Debug, Clone)]
+pub struct DistDistanceResult {
+    pub wasserstein: f64,
+    pub energy_distance: f64,
+    pub ks_stat: f64,
+    pub ks_p: f64,
+}
+
+impl DistDistanceResult {
+    pub fn nan() -> Self {
+        Self { wasserstein: f64::NAN, energy_distance: f64::NAN,
+               ks_stat: f64::NAN, ks_p: f64::NAN }
+    }
+}
+
+/// Distributional distance between first and second half of a return series.
+///
+/// Outputs:
+/// - Wasserstein-1 distance (sorted quantile interpolation)
+/// - Szekely-Rizzo energy distance (subsample ≤ 200 each half for O(n²))
+/// - KS statistic
+/// - KS p-value (Kolmogorov approximation)
+///
+/// Returns NaN if total returns < 20 or either half < 5.
+pub fn dist_distance(returns: &[f64]) -> DistDistanceResult {
+    let n = returns.len();
+    if n < 20 { return DistDistanceResult::nan(); }
+
+    let mid = n / 2;
+    let mut first: Vec<f64> = returns[..mid].iter().copied().filter(|v| v.is_finite()).collect();
+    let mut second: Vec<f64> = returns[mid..].iter().copied().filter(|v| v.is_finite()).collect();
+    first.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    second.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let n1 = first.len();
+    let n2 = second.len();
+    if n1 < 5 || n2 < 5 { return DistDistanceResult::nan(); }
+
+    // Wasserstein-1: quantile-grid interpolation
+    let grid = n1.max(n2);
+    let mut w_sum = 0.0f64;
+    for g in 0..grid {
+        let q = (g as f64 + 0.5) / grid as f64;
+        let idx1 = ((q * n1 as f64) as usize).min(n1 - 1);
+        let idx2 = ((q * n2 as f64) as usize).min(n2 - 1);
+        w_sum += (first[idx1] - second[idx2]).abs();
+    }
+    let wasserstein = w_sum / grid as f64;
+
+    // Energy distance (Szekely-Rizzo): subsample both halves to ≤ 200
+    const MAX_SUB: usize = 200;
+    let f_sub: Vec<f64> = if n1 > MAX_SUB {
+        let step = n1 / MAX_SUB;
+        first.iter().step_by(step).copied().collect()
+    } else { first.clone() };
+    let s_sub: Vec<f64> = if n2 > MAX_SUB {
+        let step = n2 / MAX_SUB;
+        second.iter().step_by(step).copied().collect()
+    } else { second.clone() };
+
+    let ns1 = f_sub.len(); let ns2 = s_sub.len();
+    let mut e_xy = 0.0f64;
+    for a in &f_sub { for b in &s_sub { e_xy += (a - b).abs(); } }
+    e_xy /= (ns1 * ns2) as f64;
+
+    let mut e_xx = 0.0f64;
+    for j in 0..ns1 { for k in (j+1)..ns1 { e_xx += (f_sub[j] - f_sub[k]).abs(); } }
+    if ns1 > 1 { e_xx *= 2.0 / (ns1 * (ns1 - 1)) as f64; }
+
+    let mut e_yy = 0.0f64;
+    for j in 0..ns2 { for k in (j+1)..ns2 { e_yy += (s_sub[j] - s_sub[k]).abs(); } }
+    if ns2 > 1 { e_yy *= 2.0 / (ns2 * (ns2 - 1)) as f64; }
+
+    let energy_distance = (2.0 * e_xy - e_xx - e_yy).max(0.0);
+
+    // KS two-sample statistic
+    let mut ks_max = 0.0f64;
+    let mut i1 = 0usize;
+    let mut i2 = 0usize;
+    let mut all: Vec<f64> = first.iter().chain(second.iter()).copied().collect();
+    all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    all.dedup();
+    for &v in &all {
+        while i1 < n1 && first[i1] <= v { i1 += 1; }
+        while i2 < n2 && second[i2] <= v { i2 += 1; }
+        let diff = (i1 as f64 / n1 as f64 - i2 as f64 / n2 as f64).abs();
+        if diff > ks_max { ks_max = diff; }
+    }
+
+    // Kolmogorov approximation for KS p-value
+    let en = ((n1 * n2) as f64 / (n1 + n2) as f64).sqrt();
+    let lambda = (en + 0.12 + 0.11 / en) * ks_max;
+    let ks_p = (2.0 * (-2.0 * lambda * lambda).exp()).clamp(0.0, 1.0);
+
+    DistDistanceResult { wasserstein, energy_distance, ks_stat: ks_max, ks_p }
+}
+
+#[cfg(test)]
+mod tests_dist {
+    use super::*;
+
+    #[test]
+    fn dist_distance_too_short() {
+        let r = dist_distance(&[0.1, 0.2, 0.3]);
+        assert!(r.wasserstein.is_nan());
+    }
+
+    #[test]
+    fn dist_distance_identical_distribution() {
+        // Same distribution both halves → small distances, high KS p-value
+        let n = 100;
+        let mut rng = tambear::rng::Xoshiro256::new(42);
+        let returns: Vec<f64> = (0..n).map(|_| tambear::rng::sample_normal(&mut rng, 0.0, 0.01)).collect();
+        let r = dist_distance(&returns);
+        assert!(r.wasserstein.is_finite() && r.wasserstein >= 0.0);
+        assert!(r.energy_distance.is_finite() && r.energy_distance >= 0.0);
+        assert!(r.ks_stat.is_finite() && r.ks_stat >= 0.0 && r.ks_stat <= 1.0);
+        assert!(r.ks_p.is_finite() && r.ks_p >= 0.0 && r.ks_p <= 1.0);
+    }
+
+    #[test]
+    fn dist_distance_shifted_halves() {
+        // Clear mean shift between halves → large Wasserstein, small KS p
+        let mut returns = vec![0.0f64; 50];
+        for i in 0..25 { returns[i] = -0.05; }
+        for i in 25..50 { returns[i] = 0.05; }
+        let r = dist_distance(&returns);
+        assert!(r.wasserstein > 0.0, "shifted halves should have W > 0, got {}", r.wasserstein);
+        assert!(r.ks_stat > 0.5, "KS stat should be high for shifted halves, got {}", r.ks_stat);
+    }
+}
+
 // ── M-split temporal coherence (K02P07C03) ────────────────────────────────────
 
 /// M-split temporal coherence features.

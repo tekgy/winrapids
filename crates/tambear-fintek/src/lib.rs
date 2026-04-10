@@ -29,9 +29,11 @@
 //! - [`family13_dim_reduction`] — pca, ssa
 //! - [`family14_topological`] — persistent_homology
 //! - [`family18_decomposition`] — stl, sde, hmm, savgol, fir_bandpass, seismic, scale_freeness
+//! - [`family19_shape`] — shape (21 combinatorial features: monotonicity, extrema, gradient, curvature)
+//! - [`family20_visibility_graphs`] — nvg (natural visibility graph), hvg (horizontal visibility graph)
 //!
-//! GAP leaves (primitives still missing): pelt, bocpd, ccm, mfdfa, nvg/hvg graph stats,
-//! phase_transition, harmonic (r-stat), mfdfa, arx, shape, dist_distance, transfer_entropy_bin.
+//! GAP leaves (primitives still missing): pelt, bocpd, ccm, mfdfa,
+//! phase_transition, harmonic (r-stat), transfer_entropy_bin.
 
 pub mod family1_distribution;
 pub mod family2_transforms;
@@ -51,6 +53,8 @@ pub mod family15_manifold_topology;
 pub mod family16_extremes;
 pub mod family17_market_microstructure;
 pub mod family18_decomposition;
+pub mod family19_shape;
+pub mod family20_visibility_graphs;
 
 /// Data quality primitives re-exported from tambear::data_quality.
 ///

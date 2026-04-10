@@ -1,6 +1,6 @@
 //! Family 4 — Time Series / ARMA.
 //!
-//! Covers fintek leaves: `autocorrelation`, `ar_model`, `arma`, `arima`, `arx`, `ar_burg`.
+//! Covers fintek leaves: `autocorrelation`, `ar_model`, `arma`, `arima`, `ar_burg`, `arx`.
 
 use tambear::time_series::{acf, pacf, ar_fit, ar_burg_fit, ar_psd, ArResult, difference};
 
@@ -390,5 +390,144 @@ mod tests {
     fn ar_burg_too_short() {
         let r = ar_burg(&[1.0, 2.0, 3.0]);
         assert!(r.spectral_centroid.is_nan());
+    }
+}
+
+// ── ARX(1,1) — Autoregressive with exogenous input ────────────────────────────
+
+/// ARX result matching fintek's `arx.rs` (K02P11C04R01).
+#[derive(Debug, Clone)]
+pub struct ArxResult {
+    pub ar_coeff: f64,
+    pub x_coeff: f64,
+    pub residual_var: f64,
+    pub r2_gain: f64,
+}
+
+impl ArxResult {
+    pub fn nan() -> Self {
+        Self { ar_coeff: f64::NAN, x_coeff: f64::NAN,
+               residual_var: f64::NAN, r2_gain: f64::NAN }
+    }
+}
+
+/// Fit ARX(1,1) model: y_t = a + b·y_{t-1} + c·x_{t-1} + ε.
+///
+/// Returns AR coefficient, exogenous coefficient, residual variance,
+/// and R² gain from adding the exogenous input over AR-only.
+///
+/// `returns`: log return series (y).
+/// `exog`: exogenous series (x), e.g. log volume changes.
+/// Both must be the same length. Returns NaN if `n < 6`.
+pub fn arx(returns: &[f64], exog: &[f64]) -> ArxResult {
+    let n = returns.len().min(exog.len());
+    if n < 6 { return ArxResult::nan(); }
+
+    let m = n - 1;
+    let y = &returns[1..=m];
+    let x_ar = &returns[..m];
+    let x_vol = &exog[..m];
+    let mf = m as f64;
+
+    // AR-only: y = a + b·x_ar
+    let mean_y: f64 = y.iter().sum::<f64>() / mf;
+    let mean_ar: f64 = x_ar.iter().sum::<f64>() / mf;
+
+    let mut cov_ar_y = 0.0f64;
+    let mut var_ar = 0.0f64;
+    let mut ss_tot = 0.0f64;
+    for i in 0..m {
+        let dy = y[i] - mean_y;
+        let dar = x_ar[i] - mean_ar;
+        cov_ar_y += dar * dy;
+        var_ar += dar * dar;
+        ss_tot += dy * dy;
+    }
+
+    let b_ar_only = if var_ar > 1e-30 { cov_ar_y / var_ar } else { 0.0 };
+    let a_ar_only = mean_y - b_ar_only * mean_ar;
+
+    let mut ss_res_ar = 0.0f64;
+    for i in 0..m {
+        let resid = y[i] - (a_ar_only + b_ar_only * x_ar[i]);
+        ss_res_ar += resid * resid;
+    }
+    let r2_ar = if ss_tot > 1e-30 { 1.0 - ss_res_ar / ss_tot } else { 0.0 };
+
+    // ARX: y = a + b·x_ar + c·x_vol (2×2 OLS in centered space)
+    let mean_vol: f64 = x_vol.iter().sum::<f64>() / mf;
+
+    let mut s11 = 0.0f64; let mut s12 = 0.0f64; let mut s22 = 0.0f64;
+    let mut r1 = 0.0f64;  let mut r2 = 0.0f64;
+    for i in 0..m {
+        let ar_c = x_ar[i] - mean_ar;
+        let vol_c = x_vol[i] - mean_vol;
+        let y_c = y[i] - mean_y;
+        s11 += ar_c * ar_c; s12 += ar_c * vol_c; s22 += vol_c * vol_c;
+        r1 += ar_c * y_c;   r2 += vol_c * y_c;
+    }
+
+    let det = s11 * s22 - s12 * s12;
+    let (b_arx, c_arx) = if det.abs() > 1e-30 {
+        let inv = 1.0 / det;
+        (inv * (s22 * r1 - s12 * r2), inv * (s11 * r2 - s12 * r1))
+    } else {
+        (b_ar_only, 0.0)
+    };
+    let a_arx = mean_y - b_arx * mean_ar - c_arx * mean_vol;
+
+    let mut ss_res_arx = 0.0f64;
+    for i in 0..m {
+        let resid = y[i] - (a_arx + b_arx * x_ar[i] + c_arx * x_vol[i]);
+        ss_res_arx += resid * resid;
+    }
+    let residual_var = ss_res_arx / mf;
+    let r2_arx = if ss_tot > 1e-30 { 1.0 - ss_res_arx / ss_tot } else { 0.0 };
+
+    ArxResult {
+        ar_coeff: b_arx,
+        x_coeff: c_arx,
+        residual_var,
+        r2_gain: r2_arx - r2_ar,
+    }
+}
+
+#[cfg(test)]
+mod tests_arx {
+    use super::*;
+
+    #[test]
+    fn arx_too_short() {
+        let r = arx(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]);
+        assert!(r.ar_coeff.is_nan());
+    }
+
+    #[test]
+    fn arx_white_noise_small_r2_gain() {
+        // White noise returns + independent exog → near-zero R² gain
+        let n = 100;
+        let mut rng = tambear::rng::Xoshiro256::new(42);
+        let returns: Vec<f64> = (0..n).map(|_| tambear::rng::sample_normal(&mut rng, 0.0, 0.01)).collect();
+        let exog: Vec<f64> = (0..n).map(|_| tambear::rng::sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let r = arx(&returns, &exog);
+        assert!(r.ar_coeff.is_finite());
+        assert!(r.x_coeff.is_finite());
+        assert!(r.residual_var.is_finite() && r.residual_var >= 0.0);
+        assert!(r.r2_gain.is_finite());
+    }
+
+    #[test]
+    fn arx_exog_predicts_returns() {
+        // Construct returns = 0.5 * lagged_exog + noise → x_coeff ≈ 0.5, r2_gain > 0
+        let n = 200;
+        let mut rng = tambear::rng::Xoshiro256::new(77);
+        let exog: Vec<f64> = (0..n).map(|_| tambear::rng::sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let mut returns = vec![0.0f64; n];
+        for i in 1..n {
+            returns[i] = 0.5 * exog[i-1] + tambear::rng::sample_normal(&mut rng, 0.0, 0.1);
+        }
+        let r = arx(&returns, &exog);
+        assert!(r.x_coeff.abs() > 0.2, "x_coeff should be significant, got {}", r.x_coeff);
+        assert!(r.r2_gain > 0.0, "exog should improve R², got gain={}", r.r2_gain);
     }
 }

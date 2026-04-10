@@ -249,6 +249,67 @@ If all pass, ship. If any fail, fix first.
 
 ---
 
+## Methods Are Compositions — Primitives Are the Atoms
+
+Every method in tambear decomposes into global primitives + a formula. The method doesn't *own* its sub-algorithms — it *composes* them. The formula is the only thing the method uniquely contributes. Everything else is a call to a primitive that exists independently in the global catalog.
+
+| Method | Primitives it composes | What the method uniquely owns |
+|--------|----------------------|-------------------------------|
+| Kendall tau | sort, inversion_count, tie_count | tau-b formula |
+| Pearson r | moments (mean, variance, covariance) | r = cov/(sx*sy) |
+| PCA | covariance_matrix, eigendecomposition | "top k eigenvectors" selection |
+| DBSCAN | distance_matrix, neighborhood_count, union_find | density reachability rule |
+| GARCH | log_likelihood, optimizer | variance recursion equation |
+| Kaplan-Meier | sort, prefix_product | conditional survival formula |
+| OLS regression | gram_matrix, cholesky_solve | (X'X)⁻¹X'y formula |
+
+**A primitive is math that exists because it's math, not because some method needs it.** `inversion_count` is a primitive. `covariance_matrix` is a primitive. `sort` is a primitive. Each has its own implementations (mergesort vs fenwick for inversions), its own kingdom classification, its own parameterization.
+
+**A method is a thin orchestration layer** — typically 20-50 lines of composition + formula. If a method is 200+ lines, it probably contains embedded primitives that should be extracted. Every private `fn` inside a method is a question: "is this math that exists independently?" Almost always yes.
+
+### Why primitive decomposition is load-bearing
+
+This isn't just clean code — it's what makes the entire architecture work:
+
+- **`using()` flows through compositions.** When `kendall_tau` calls the global `inversion_count` primitive, the user's `using(inversion_method="fenwick")` reaches it. If the inversion count is a private copy inside Kendall, the `using()` hook can't reach it.
+- **Sharing via TamSession.** If a method calls the global `covariance_matrix` primitive, the result registers in TamSession and PCA, factor analysis, LDA, Mahalanobis, and mixed effects all reuse it. If the covariance matrix is private inside each method, it gets computed 6 times per bin.
+- **Linting and kingdom classification.** The lint system and TAM scheduler need to know each operation's kingdom independently. If a method hides its sub-operations, `kingdom_of()` can't see inside.
+- **Every primitive is callable at Level 0 in TBS.** The user can call `inversion_count(col=0)` directly — not just Kendall. Same syntax, same `using()`, same output format at every level.
+
+### The fractal catalog — flat, not nested
+
+Every primitive is a family. `mean` alone has 15+ named variants: arithmetic, trimmed, winsorized, geometric, harmonic, power (generalized), Lehmer, Fréchet, contraharmonic, exponential moving, kernel-weighted, and more. Each has parameters. Each connects to other primitives (`geometric_mean = exp(mean(log(x)))` — a composition).
+
+The catalog is fractal — zoom in on any entry and it expands — but bounded. Bounded by the finite set of named mathematical operations in the human literature. Families share structure (power mean parameterized by p gives 5 variants from 1 implementation). The work is proportional to the number of DISTINCT mathematical ideas, not the number of combinations.
+
+**The catalog is flat, not hierarchically nested.** Families (statistics, algebra, spectral, etc.) are metadata tags on primitives, not namespaces that constrain access. In TBS, every path resolves to the same computation: `geometric_mean(col=0)`, `mean(col=0).using(method="geometric")`, `mean.geometric(col=0)` — all the same primitive. The user shouldn't need to know our internal module structure to find what they want. Nesting into families risks losing multi-composability — if geometric_mean lives "inside" the mean family, it becomes harder to discover from the geometry side or the transform side. Tags don't have this problem. A primitive can belong to multiple families simultaneously.
+
+The process for growing the catalog:
+1. For every method we implement, decompose it into named operations
+2. For every named operation, check if it exists as a standalone primitive
+3. If not, implement the primitive FIRST, then have the method call it
+4. For every new primitive, ask: what's the family? What are the variants?
+5. For every variant, check R/scipy/MATLAB/Julia for evidence of user demand
+6. Implement the demanded variants
+
+The catalog grows organically from decomposition, not from top-down planning.
+
+### TBS is the universal surface
+
+TBS exposes every level with the same syntax:
+
+- **Level 0 — Primitives**: `mean(col=0)`, `inversion_count(col=0)`, `sort(col=0)`
+- **Level 0+ — Compositions**: `rank(col=0).pearson_on_ranks(col_y=1)` (= Spearman, composed from primitives)
+- **Level 1 — Methods**: `kendall_tau(col_x=0, col_y=1)` (internally: sort → inversion_count → tie_count → formula)
+- **Level 2 — Pipelines**: `two_group_comparison(group_col=2)` (internally: shapiro_wilk → levene → [welch_t | mann_whitney] → cohens_d → ci)
+- **Level 3 — Discovery**: `discover_correlation(col_x=0, col_y=1)` (runs every correlation in parallel, reports agreement)
+
+`using()` flows DOWN through all levels. When `two_group_comparison` calls `shapiro_wilk`, the user's `using(alpha=0.01)` reaches it. The primitives don't know they're inside a method. The methods don't know they're inside a pipeline. Each queries the `using()` bag for its parameters and uses defaults if nothing is set.
+
+**The primitive IS the library. Everything above is composition.**
+
+---
+
 ## Layers Above the Math
 
 Tambear's primitives are pure math. They do one thing, do it correctly, and return a result. That's it — no opinions, no diagnostics, no method-switching, no workflow assembly. A primitive like `spearman_correlation(x, y)` just computes Spearman's ρ.

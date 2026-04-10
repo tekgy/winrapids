@@ -136,8 +136,19 @@ pub fn bayesian_linear_regression(
             let mut lambda_reg = lambda_n.clone();
             for j in 0..d { lambda_reg[j * d + j] += 1e-6; }
             let lam_reg_mat = crate::linear_algebra::Mat::from_vec(d, d, lambda_reg);
-            crate::linear_algebra::cholesky(&lam_reg_mat)
-                .expect("posterior precision not positive definite even with regularization")
+            match crate::linear_algebra::cholesky(&lam_reg_mat) {
+                Some(l) => l,
+                None => {
+                    // Degenerate: return NaN-filled result rather than panicking
+                    return BayesLinearResult {
+                        beta_mean: vec![f64::NAN; d],
+                        beta_cov: vec![f64::NAN; d * d],
+                        sigma2_mean: f64::NAN,
+                        alpha_post: alpha0 + n as f64 / 2.0,
+                        beta_post: f64::NAN,
+                    };
+                }
+            }
         }
     };
     let beta_mean = crate::linear_algebra::cholesky_solve(&l, &rhs);

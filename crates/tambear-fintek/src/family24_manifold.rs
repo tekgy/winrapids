@@ -206,7 +206,7 @@ pub fn harmonic(ticks: &[f64]) -> HarmonicResult {
     } else {
         ticks.to_vec()
     };
-    let n = data.len();
+    let _n = data.len();
 
     // Vol substrate: |returns| from price differences
     let vol: Vec<f64> = data.windows(2).map(|w| (w[1] - w[0]).abs()).collect();

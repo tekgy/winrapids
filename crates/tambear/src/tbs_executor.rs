@@ -904,6 +904,79 @@ pub fn execute(
                 TbsStepOutput::Scalar { name: "kendall_tau", value: crate::nonparametric::kendall_tau(&x, &yv) }
             }
 
+            // pearson_r: primitive (no auto-detection wrapper like "correlate")
+            ("pearson_r", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "pearson_r", value: crate::nonparametric::pearson_r(&x, &yv) }
+            }
+
+            ("biserial_correlation", None) | ("biserial", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (binary, continuous) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "biserial_correlation", value: crate::nonparametric::biserial_correlation(&binary, &continuous) }
+            }
+
+            ("rank_biserial", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "rank_biserial", value: crate::nonparametric::rank_biserial(&x, &yv) }
+            }
+
+            ("distance_correlation", None) | ("dcor", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "distance_correlation", value: crate::nonparametric::distance_correlation(&x, &yv) }
+            }
+
+            ("concordance_correlation", None) | ("ccc", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "concordance_correlation", value: crate::nonparametric::concordance_correlation(&x, &yv) }
+            }
+
+            // cramers_v: requires contingency table as 2D matrix (n_rows × n_cols)
+            ("cramers_v", None) => {
+                // data is treated as n_rows × pd contingency table
+                TbsStepOutput::Scalar { name: "cramers_v", value: crate::nonparametric::cramers_v(&pipeline.frame().data, pn) }
+            }
+
+            ("tetrachoric", None) => {
+                // 2×2 contingency table from 4 values: a, b, c, d (col 0..3)
+                if pipeline.frame().data.len() < 4 {
+                    return Err("tetrachoric: data must have at least 4 values (a,b,c,d of 2x2 table)".into());
+                }
+                let d = &pipeline.frame().data;
+                let table = [d[0], d[1], d[2], d[3]];
+                TbsStepOutput::Scalar { name: "tetrachoric", value: crate::nonparametric::tetrachoric(&table) }
+            }
+
+            // ols_simple: (intercept, slope, residuals, r2)
+            ("ols_simple", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                let (intercept, slope, _residuals, r2) = crate::hypothesis::ols_simple(&x, &yv);
+                TbsStepOutput::Vector { name: "ols_simple", values: vec![intercept, slope, r2] }
+            }
+
+            // ols_two_predictor: (b0, b1, b2, r2)
+            ("ols_two_predictor", None) => {
+                if pd < 3 {
+                    return Err("ols_two_predictor: need 3 columns (x, m, y)".into());
+                }
+                let x = extract_col(&pipeline.frame().data, pn, pd, 0);
+                let m = extract_col(&pipeline.frame().data, pn, pd, 1);
+                let yv = extract_col(&pipeline.frame().data, pn, pd, 2);
+                let (b0, b1, b2, r2) = crate::hypothesis::ols_two_predictor(&x, &m, &yv);
+                TbsStepOutput::Vector { name: "ols_two_predictor", values: vec![b0, b1, b2, r2] }
+            }
+
             ("mann_whitney", None) | ("mann_whitney_u", None) => {
                 let cx = usize_arg(step, "col_x", 0, 0);
                 let cy = usize_arg(step, "col_y", 1, 1);
@@ -3021,6 +3094,64 @@ pub fn execute(
                 let stats = crate::tda::persistence_statistics(&diag.pairs);
                 // [mean, std, max, total_persistence, n_pairs]
                 TbsStepOutput::Vector { name: "persistence_statistics", values: stats.to_vec() }
+            }
+
+            // bottleneck_distance / wasserstein_distance (TDA):
+            // Compare two diagrams computed from first half and second half of rows.
+            // Convention: split data at row pn/2; compute H1 for each half; compare.
+            ("bottleneck_distance", None) => {
+                let half = pn / 2;
+                if half < 4 { return Err("bottleneck_distance: need at least 8 rows (4 per half)".into()); }
+                let data = &pipeline.frame().data;
+                let max_edge = f64_arg(step, "max_edge", 0, f64::INFINITY);
+                let build_dist = |rows: std::ops::Range<usize>| {
+                    let nr = rows.len();
+                    let mut d = vec![0.0_f64; nr * nr];
+                    for (ii, i) in rows.clone().enumerate() {
+                        for (jj, j) in rows.clone().enumerate() {
+                            let v: f64 = (0..pd).map(|k| {
+                                let dx = data[i * pd + k] - data[j * pd + k];
+                                dx * dx
+                            }).sum::<f64>().sqrt();
+                            d[ii * nr + jj] = v;
+                        }
+                    }
+                    (d, nr)
+                };
+                let (d1, n1) = build_dist(0..half);
+                let (d2, n2) = build_dist(half..pn);
+                let diag1 = crate::tda::rips_h1(&d1, n1, max_edge);
+                let diag2 = crate::tda::rips_h1(&d2, n2, max_edge);
+                let dist = crate::tda::bottleneck_distance(&diag1.pairs, &diag2.pairs);
+                TbsStepOutput::Scalar { name: "bottleneck_distance", value: dist }
+            }
+
+            ("wasserstein_distance", None) => {
+                let half = pn / 2;
+                if half < 4 { return Err("wasserstein_distance: need at least 8 rows (4 per half)".into()); }
+                let data = &pipeline.frame().data;
+                let max_edge = f64_arg(step, "max_edge", 0, f64::INFINITY);
+                let build_dist_half = |from: usize, to: usize| {
+                    let nr = to - from;
+                    let mut d = vec![0.0_f64; nr * nr];
+                    for ii in 0..nr {
+                        for jj in 0..nr {
+                            let i = from + ii; let j = from + jj;
+                            let v: f64 = (0..pd).map(|k| {
+                                let dx = data[i * pd + k] - data[j * pd + k];
+                                dx * dx
+                            }).sum::<f64>().sqrt();
+                            d[ii * nr + jj] = v;
+                        }
+                    }
+                    (d, nr)
+                };
+                let (d1, n1) = build_dist_half(0, half);
+                let (d2, n2) = build_dist_half(half, pn);
+                let diag1 = crate::tda::rips_h1(&d1, n1, max_edge);
+                let diag2 = crate::tda::rips_h1(&d2, n2, max_edge);
+                let dist = crate::tda::wasserstein_distance(&diag1.pairs, &diag2.pairs);
+                TbsStepOutput::Scalar { name: "wasserstein_distance", value: dist }
             }
 
             // kmo_bartlett: factor analysis adequacy test

@@ -183,6 +183,220 @@ impl Op {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Semiring trait — the right abstraction for scan parallelism
+// ---------------------------------------------------------------------------
+//
+// ARCHITECTURAL NOTE (2026-04-10, from classification-bijection theory session):
+//
+// A computation is Kingdom A iff its state-transition maps are data-determined
+// AND compose associatively over SOME SEMIRING. The semiring identification IS
+// the DP-to-parallel-scan transformation. This is the same mathematical move that
+// reclassified GARCH as Kingdom A (finding the right state representation), but
+// applied to the OPERATION not the state space.
+//
+// DO NOT extend Op with `Op::TropicalMinPlus`, `Op::TropicalMaxPlus` as flat variants.
+// That bakes in specific semirings as special cases instead of recognizing semiring
+// as a parameter dimension.
+//
+// The correct extension path is:
+//   1. Define `Semiring<T>` trait (done below)
+//   2. Implement instances: AdditiveReal, TropicalMinPlus, TropicalMaxPlus, LogSumExp, Boolean
+//   3. Add `Op::PrefixScan { semiring: SemiringKind }` (enum-dispatched, not trait object)
+//      to avoid dyn overhead on the hot path
+//   4. Wire scan engine to dispatch `Grouping::Prefix` through the semiring parameter
+//
+// With this design, PELT (unpruned O(n²)), Viterbi, Floyd-Warshall, and all-pairs-shortest-path
+// become Kingdom A automatically — no new Op variants, just new SemiringKind variants.
+//
+// Phylum = (grouping, op, semiring) triple. Two algorithms share intermediates iff
+// they have the same triple. The bijection is over triples, not (grouping, op) pairs.
+
+/// A semiring over type T: two associative operations (add, mul) where add is
+/// commutative and mul distributes over add. The scan framework requires:
+/// - `add` is the combining operation for parallel prefix scan
+/// - `zero` is the additive identity (scan padding)
+/// - `mul` is element-wise transform (for matrix/product semirings)
+/// - `one` is the multiplicative identity
+///
+/// Every Kingdom A computation is a prefix scan over some semiring.
+pub trait Semiring: Clone + Copy + std::fmt::Debug {
+    /// The element type this semiring operates over.
+    type Elem: Clone + Copy + std::fmt::Debug;
+
+    /// Additive identity: add(zero(), x) = add(x, zero()) = x.
+    /// Used for scan padding. MUST be a true neutral element (not NaN).
+    fn zero() -> Self::Elem;
+
+    /// Multiplicative identity: mul(one(), x) = mul(x, one()) = x.
+    fn one() -> Self::Elem;
+
+    /// Associative, commutative combination (the "scan op").
+    /// For parallel prefix trees this must be associative.
+    fn add(a: Self::Elem, b: Self::Elem) -> Self::Elem;
+
+    /// Associative multiplication (distributes over add).
+    fn mul(a: Self::Elem, b: Self::Elem) -> Self::Elem;
+
+    /// The degenerate (error) value — NOT used for padding.
+    /// Returned when input is invalid/empty. Distinct from zero().
+    fn degenerate() -> Self::Elem;
+}
+
+/// Standard additive real semiring (ℝ, +, ×).
+/// This is the semiring underlying Op::Add.
+#[derive(Debug, Clone, Copy)]
+pub struct AdditiveReal;
+
+impl Semiring for AdditiveReal {
+    type Elem = f64;
+    fn zero() -> f64 { 0.0 }
+    fn one() -> f64 { 1.0 }
+    fn add(a: f64, b: f64) -> f64 { a + b }
+    fn mul(a: f64, b: f64) -> f64 { a * b }
+    fn degenerate() -> f64 { f64::NAN }
+}
+
+/// Tropical min-plus semiring (ℝ∪{∞}, min, +).
+/// add = min, mul = +, zero = +∞, one = 0.
+/// Enables PELT (unpruned), Viterbi-like shortest-path, Floyd-Warshall as Kingdom A.
+/// Reference: Goodman 1999, "Semiring Parsing".
+#[derive(Debug, Clone, Copy)]
+pub struct TropicalMinPlus;
+
+impl Semiring for TropicalMinPlus {
+    type Elem = f64;
+    fn zero() -> f64 { f64::INFINITY }       // additive identity for min: never beats anything
+    fn one() -> f64 { 0.0 }                  // multiplicative identity for +: zero cost
+    fn add(a: f64, b: f64) -> f64 { crate::numerical::nan_min(a, b) }
+    fn mul(a: f64, b: f64) -> f64 { a + b }  // "multiplication" in min-plus = addition of costs
+    fn degenerate() -> f64 { f64::NAN }
+}
+
+/// Tropical max-plus semiring (ℝ∪{-∞}, max, +).
+/// add = max, mul = +, zero = -∞, one = 0.
+/// Enables Viterbi decoding (max-probability path), longest-path DP as Kingdom A.
+#[derive(Debug, Clone, Copy)]
+pub struct TropicalMaxPlus;
+
+impl Semiring for TropicalMaxPlus {
+    type Elem = f64;
+    fn zero() -> f64 { f64::NEG_INFINITY }   // additive identity for max
+    fn one() -> f64 { 0.0 }                  // multiplicative identity for +
+    fn add(a: f64, b: f64) -> f64 { crate::numerical::nan_max(a, b) }
+    fn mul(a: f64, b: f64) -> f64 { a + b }
+    fn degenerate() -> f64 { f64::NAN }
+}
+
+/// LogSumExp semiring (ℝ, log-sum-exp, +).
+/// add = log(exp(a) + exp(b)) = lse(a, b) (numerically stable via max trick),
+/// mul = +, zero = -∞, one = 0.
+/// Underlying HMM forward algorithm, softmax, attention, Baum-Welch.
+/// The Blelloch scan over this semiring IS the forward algorithm.
+#[derive(Debug, Clone, Copy)]
+pub struct LogSumExpSemiring;
+
+impl Semiring for LogSumExpSemiring {
+    type Elem = f64;
+    fn zero() -> f64 { f64::NEG_INFINITY }   // lse(-∞, x) = x
+    fn one() -> f64 { 0.0 }
+    fn add(a: f64, b: f64) -> f64 {
+        // Numerically stable log-sum-exp: lse(a, b) = max + log(1 + exp(min - max))
+        let m = crate::numerical::nan_max(a, b);
+        if m.is_infinite() { return m; }
+        m + (1.0 + (crate::numerical::nan_min(a, b) - m).exp()).ln()
+    }
+    fn mul(a: f64, b: f64) -> f64 { a + b }
+    fn degenerate() -> f64 { f64::NAN }
+}
+
+/// Boolean semiring ({false, true}, ∨, ∧) — encoded as (0.0, 1.0).
+/// Enables reachability, graph connectivity, transitive closure as Kingdom A.
+/// Matrix power over Boolean semiring = Floyd-Warshall/BFS in matrix form.
+#[derive(Debug, Clone, Copy)]
+pub struct BooleanSemiring;
+
+impl Semiring for BooleanSemiring {
+    type Elem = f64;  // 0.0 = false, 1.0 = true (using f64 for engine compatibility)
+    fn zero() -> f64 { 0.0 }   // additive identity: ∨ with false = identity
+    fn one() -> f64 { 1.0 }    // multiplicative identity: ∧ with true = identity
+    fn add(a: f64, b: f64) -> f64 { if a > 0.5 || b > 0.5 { 1.0 } else { 0.0 } }
+    fn mul(a: f64, b: f64) -> f64 { if a > 0.5 && b > 0.5 { 1.0 } else { 0.0 } }
+    fn degenerate() -> f64 { f64::NAN }
+}
+
+/// Identifies which concrete semiring to use for a prefix scan.
+/// This is the enum that should appear in Op, not individual tropical variants.
+/// Adding a new semiring = adding one SemiringKind variant + one Semiring impl.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemiringKind {
+    /// Standard real addition (ℝ, +, ×). Default for most scans.
+    Additive,
+    /// Tropical min-plus (ℝ∪{∞}, min, +). For shortest-path, PELT-unpruned, Viterbi-min.
+    TropicalMin,
+    /// Tropical max-plus (ℝ∪{-∞}, max, +). For Viterbi-max, longest-path.
+    TropicalMax,
+    /// Log-sum-exp (ℝ, lse, +). For HMM forward, softmax, attention.
+    LogSumExp,
+    /// Boolean (∨, ∧). For reachability, connectivity, transitive closure.
+    Boolean,
+}
+
+impl SemiringKind {
+    /// Additive identity (scan padding value). Never use NaN for padding.
+    pub fn zero(&self) -> f64 {
+        match self {
+            SemiringKind::Additive   => 0.0,
+            SemiringKind::TropicalMin => f64::INFINITY,
+            SemiringKind::TropicalMax => f64::NEG_INFINITY,
+            SemiringKind::LogSumExp  => f64::NEG_INFINITY,
+            SemiringKind::Boolean    => 0.0,
+        }
+    }
+
+    /// Multiplicative identity.
+    pub fn one(&self) -> f64 {
+        match self {
+            SemiringKind::Additive   => 1.0,
+            SemiringKind::TropicalMin => 0.0,
+            SemiringKind::TropicalMax => 0.0,
+            SemiringKind::LogSumExp  => 0.0,
+            SemiringKind::Boolean    => 1.0,
+        }
+    }
+
+    /// Associative combine (the "add" operation of the semiring, used as the scan op).
+    pub fn add(&self, a: f64, b: f64) -> f64 {
+        match self {
+            SemiringKind::Additive   => a + b,
+            SemiringKind::TropicalMin => crate::numerical::nan_min(a, b),
+            SemiringKind::TropicalMax => crate::numerical::nan_max(a, b),
+            SemiringKind::LogSumExp  => {
+                let m = crate::numerical::nan_max(a, b);
+                if m.is_infinite() { return m; }
+                m + (1.0 + (crate::numerical::nan_min(a, b) - m).exp()).ln()
+            },
+            SemiringKind::Boolean    => if a > 0.5 || b > 0.5 { 1.0 } else { 0.0 },
+        }
+    }
+
+    /// Multiplicative combine (distribute over add).
+    pub fn mul(&self, a: f64, b: f64) -> f64 {
+        match self {
+            SemiringKind::Additive   => a * b,
+            SemiringKind::TropicalMin => a + b,
+            SemiringKind::TropicalMax => a + b,
+            SemiringKind::LogSumExp  => a + b,
+            SemiringKind::Boolean    => if a > 0.5 && b > 0.5 { 1.0 } else { 0.0 },
+        }
+    }
+
+    /// Degenerate value (error/empty signal, never used for padding).
+    pub fn degenerate(&self) -> f64 {
+        f64::NAN
+    }
+}
+
 /// Output of an accumulate call — shape depends on grouping.
 #[derive(Debug, Clone)]
 pub enum AccResult {
@@ -1380,6 +1594,130 @@ mod tests {
             AccResult::Scalar(s) => assert!((s - 1.0).abs() < 1e-9,
                 "min of all-positive should be 1, got {s}"),
             other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
+    // ── Semiring trait and SemiringKind tests ────────────────────────────────
+    //
+    // Tests verify: (1) zero is genuine additive identity, (2) one is genuine
+    // multiplicative identity, (3) add is associative on representative triples,
+    // (4) mul distributes over add (distributivity law).
+
+    #[test]
+    fn semiring_additive_real_laws() {
+        // (ℝ, +, ×): add=+, mul=*, zero=0, one=1
+        let s = SemiringKind::Additive;
+        // zero identity: add(zero, x) = x
+        assert!((s.add(s.zero(), 3.14) - 3.14).abs() < 1e-12, "Additive zero left-identity");
+        assert!((s.add(3.14, s.zero()) - 3.14).abs() < 1e-12, "Additive zero right-identity");
+        // one identity: mul(one, x) = x
+        assert!((s.mul(s.one(), 2.71) - 2.71).abs() < 1e-12, "Additive one left-identity");
+        // associativity of add
+        let (a, b, c) = (1.0, 2.0, 3.0);
+        assert!((s.add(s.add(a,b),c) - s.add(a,s.add(b,c))).abs() < 1e-12, "Additive assoc");
+        // distributivity: mul(a, add(b,c)) = add(mul(a,b), mul(a,c))
+        assert!((s.mul(a, s.add(b,c)) - s.add(s.mul(a,b), s.mul(a,c))).abs() < 1e-12, "Additive distrib");
+    }
+
+    #[test]
+    fn semiring_tropical_min_laws() {
+        // (ℝ∪{∞}, min, +): add=min, mul=+, zero=∞, one=0
+        let s = SemiringKind::TropicalMin;
+        let inf = f64::INFINITY;
+        // zero is +∞: min(∞, x) = x
+        assert_eq!(s.add(s.zero(), 5.0), 5.0, "TropicalMin zero left-identity");
+        assert_eq!(s.add(5.0, s.zero()), 5.0, "TropicalMin zero right-identity");
+        // one is 0: +(0, x) = x
+        assert_eq!(s.mul(s.one(), 3.0), 3.0, "TropicalMin one left-identity");
+        assert_eq!(s.mul(3.0, s.one()), 3.0, "TropicalMin one right-identity");
+        // zero absorbs: add(∞, ∞) = ∞
+        assert_eq!(s.add(inf, inf), inf, "TropicalMin double-zero");
+        // associativity of min
+        let (a, b, c) = (3.0, 1.0, 5.0);
+        assert_eq!(s.add(s.add(a,b),c), s.add(a,s.add(b,c)), "TropicalMin assoc");
+        // distributivity: min(a, b+c) should equal min(a+0, b+c) = min via the semiring
+        // distributivity in tropical: a + min(b,c) = min(a+b, a+c)
+        assert!((s.mul(a, s.add(b,c)) - s.add(s.mul(a,b), s.mul(a,c))).abs() < 1e-12,
+            "TropicalMin distrib: a+min(b,c) = min(a+b,a+c)");
+    }
+
+    #[test]
+    fn semiring_tropical_max_laws() {
+        // (ℝ∪{-∞}, max, +): add=max, mul=+, zero=-∞, one=0
+        let s = SemiringKind::TropicalMax;
+        // zero is -∞: max(-∞, x) = x
+        assert_eq!(s.add(s.zero(), 5.0), 5.0, "TropicalMax zero left-identity");
+        // one is 0: +(0, x) = x
+        assert_eq!(s.mul(s.one(), 3.0), 3.0, "TropicalMax one left-identity");
+        // associativity of max
+        let (a, b, c) = (3.0, 1.0, 5.0);
+        assert_eq!(s.add(s.add(a,b),c), s.add(a,s.add(b,c)), "TropicalMax assoc");
+        // distributivity: a + max(b,c) = max(a+b, a+c)
+        assert!((s.mul(a, s.add(b,c)) - s.add(s.mul(a,b), s.mul(a,c))).abs() < 1e-12,
+            "TropicalMax distrib");
+    }
+
+    #[test]
+    fn semiring_log_sum_exp_laws() {
+        // (ℝ, lse, +): add=lse, mul=+, zero=-∞, one=0
+        let s = SemiringKind::LogSumExp;
+        // zero is -∞: lse(-∞, x) = x
+        let x = 3.0_f64;
+        assert!((s.add(s.zero(), x) - x).abs() < 1e-10, "LogSumExp zero left-identity");
+        assert!((s.add(x, s.zero()) - x).abs() < 1e-10, "LogSumExp zero right-identity");
+        // one is 0: +(0, x) = x
+        assert!((s.mul(s.one(), x) - x).abs() < 1e-10, "LogSumExp one left-identity");
+        // associativity: lse(lse(a,b),c) = lse(a,lse(b,c))
+        let (a, b, c) = (1.0_f64, 2.0, 3.0);
+        let lhs = s.add(s.add(a, b), c);
+        let rhs = s.add(a, s.add(b, c));
+        assert!((lhs - rhs).abs() < 1e-10, "LogSumExp assoc: {lhs} vs {rhs}");
+        // Sanity: lse(0, 0) = ln(2) ≈ 0.693
+        assert!((s.add(0.0, 0.0) - 2.0_f64.ln()).abs() < 1e-10, "lse(0,0)=ln(2)");
+    }
+
+    #[test]
+    fn semiring_boolean_laws() {
+        // ({0,1}, ∨, ∧): add=or, mul=and, zero=0, one=1
+        let s = SemiringKind::Boolean;
+        // zero: or(0, x) = x
+        assert_eq!(s.add(s.zero(), 1.0), 1.0, "Boolean zero left-identity (or with false)");
+        assert_eq!(s.add(s.zero(), 0.0), 0.0, "Boolean zero left-identity (false)");
+        // one: and(1, x) = x
+        assert_eq!(s.mul(s.one(), 1.0), 1.0, "Boolean one left-identity (true)");
+        assert_eq!(s.mul(s.one(), 0.0), 0.0, "Boolean one left-identity (false)");
+        // distributivity: a ∧ (b ∨ c) = (a ∧ b) ∨ (a ∧ c)
+        for a in [0.0_f64, 1.0] {
+            for b in [0.0_f64, 1.0] {
+                for c in [0.0_f64, 1.0] {
+                    let lhs = s.mul(a, s.add(b, c));
+                    let rhs = s.add(s.mul(a, b), s.mul(a, c));
+                    assert_eq!(lhs, rhs, "Boolean distrib: a={a} b={b} c={c}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn semiring_zero_is_never_nan() {
+        // Scan padding uses zero(), which MUST NOT be NaN.
+        for sk in [SemiringKind::Additive, SemiringKind::TropicalMin,
+                   SemiringKind::TropicalMax, SemiringKind::LogSumExp,
+                   SemiringKind::Boolean] {
+            assert!(!sk.zero().is_nan(), "{sk:?}.zero() must not be NaN (used for padding)");
+        }
+    }
+
+    #[test]
+    fn semiring_degenerate_is_nan() {
+        // degenerate() signals error — always NaN, distinct from zero().
+        for sk in [SemiringKind::Additive, SemiringKind::TropicalMin,
+                   SemiringKind::TropicalMax, SemiringKind::LogSumExp,
+                   SemiringKind::Boolean] {
+            assert!(sk.degenerate().is_nan(), "{sk:?}.degenerate() should be NaN");
+            // And distinct from zero
+            assert!(sk.zero() != sk.degenerate() || sk.zero().is_nan() == false,
+                "{sk:?}: zero and degenerate must differ");
         }
     }
 }

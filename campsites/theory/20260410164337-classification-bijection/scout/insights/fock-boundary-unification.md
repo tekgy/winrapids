@@ -2,6 +2,25 @@
 
 *Scout, 2026-04-10*
 
+## The canonical formulations
+
+**One-liner (observer)**:
+> Kingdom B requires that the semigroup element at step t cannot be determined before executing step t-1.
+
+**Formal (biology-math-scan)**:
+> Kingdom A iff ∃ associative semigroup (S, ·) and map φ: D → S such that F(x,d) = φ(d)(x).
+> Kingdom B iff φ requires both data AND state: φ: D × X → S — circular dependency.
+
+In MCMC: φ(x_t, x') = [accept with prob π(x')/π(x_t)]. The element φ is parameterized
+by current state x_t — cannot be flattened into a semigroup over data alone.
+
+GARCH, HMM forward, Kalman: φ maps only data → semigroup element. All elements
+precomputable before any step runs. Kingdom A.
+
+This is the Fock boundary. Everything else in the taxonomy is elaboration.
+
+---
+
 ## The unification claim
 
 Today's theory work converged on a single statement:

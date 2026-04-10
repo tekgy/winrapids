@@ -1,7 +1,7 @@
 # Workup: `special_functions::erfc`
 
 **Family**: special functions (numerical foundation)
-**Status**: draft — oracle comparison complete; **BUG FOUND AND FIXED** at 0.5 ≤ |x| ≤ 1.0 (2026-04-10)
+**Status**: draft — oracle comparison complete; **TWO BUGS FOUND AND FIXED** (2026-04-10)
 **Author**: scientist
 **Last updated**: 2026-04-10
 **Module**: `crates/tambear/src/special_functions.rs`
@@ -69,7 +69,7 @@ special cases:
     if is_nan(x): return NaN
     if |x| > 27: return (x ≥ 0) ? 0.0 : 2.0
 
-region 1: |x| < 1.5 (should be; currently |x| < 0.5)
+region 1: |x| < 1.0 (final correct boundary)
     → Taylor series for erf:
       term₀ = x
       termₙ = termₙ₋₁ · (−x²) / n
@@ -77,7 +77,7 @@ region 1: |x| < 1.5 (should be; currently |x| < 0.5)
       erf = sum · (2/√π)
       return 1 − erf
 
-region 2: 1.5 ≤ |x| ≤ 27 (should be)
+region 2: 1.0 ≤ |x| ≤ 27
     → Continued fraction (Lentz's method):
       f = CF evaluated with aₖ = k/2, bₖ = |x|
       return exp(−x²) / (√π · f)  [reflected if x < 0]
@@ -103,20 +103,20 @@ region 2: 1.5 ≤ |x| ≤ 27 (should be)
 
 ### 3.1 Algorithm description
 
-Two-region strategy (as documented in the source code):
+Two-region strategy (current implementation):
 
-- **Region 1** (|x| < 0.5): Taylor series for erf → erfc = 1 − erf
-- **Region 2** (0.5 ≤ |x| ≤ 27): Continued fraction via Lentz's method
+- **Region 1** (|x| < 1.0): Taylor series for erf → erfc = 1 − erf
+- **Region 2** (1.0 ≤ |x| ≤ 27): Continued fraction via Lentz's method
 
 ### 3.2 Numerical stability
 
-**Region 1 (Taylor)**: Stable — erf is small (|erf(x)| < 0.52 for |x| < 0.5),
-so erfc = 1 − erf has no cancellation. 30 terms suffices for 1 ULP accuracy.
+**Region 1 (Taylor)**: Stable — erf is small (|erf(x)| < 0.843 for |x| < 1.0),
+so erfc = 1 − erf has no cancellation. 40 terms suffices for ≤ 5 ULP accuracy.
 
 **Region 2 (CF)**: The CF converges, but its rate depends strongly on x.
 The CF for erfc converges at approximately O(n⁻²) per iteration for fixed x.
-Near the boundary x ≈ 0.5, the convergence is very slow — roughly 1000+
-iterations to achieve 1e-15 accuracy.
+At x = 1.0, convergence reaches ≤ 21 ULP in ≤ 188 iterations (within budget).
+Near x ≈ 0.5, convergence is very slow — roughly 1000+ iterations to achieve 1e-15.
 
 ### 3.3 Parameters
 
@@ -253,50 +253,66 @@ by the exp(−x²) call in Region 2. No scale dependence.
 
 | Region | Expected time |
 |--------|--------------|
-| Taylor (|x| < 0.5) | ~50 ns (30 multiply-adds) |
-| CF (|x| >= 0.5) | ~2 µs (up to 200 iterations including exp) |
-
-The CF at x=0.5 is pathologically slow because it doesn't converge — all 200
-iterations run before the fallback result (inaccurate) is returned.
+| Taylor (|x| < 1.0) | ~80 ns (40 multiply-adds) |
+| CF (|x| >= 1.0) | ~1 µs (up to 188 iterations at x=1.0, fewer for larger x) |
 
 ---
 
 ## 10. Known bugs / limitations / open questions
 
-### FIXED (2026-04-10): CF inaccurate for 0.5 ≤ |x| ≤ 1.0 — was SEVERITY: HIGH
+### BUG 1: FIXED (2026-04-10): CF inaccurate for 0.5 ≤ |x| ≤ 1.0 — was SEVERITY: HIGH
 
-**Description**: The Taylor series is switched off at |x| = 0.5, but the
+**Description**: The Taylor series was switched off at |x| = 0.5, but the
 continued fraction (Lentz's method, 200 iterations) does not converge to
-machine precision in the range 0.5 ≤ |x| < 1.0. The result is:
+machine precision in the range 0.5 ≤ |x| < 1.0. The result:
 - x = 0.5: relative error 8.37e-9
 - x = 0.7: relative error 4.12e-12
 - x = 1.0: relative error 1.41e-15 (barely within 2 ULP)
 
 **Impact**: Every p-value computed via the normal approximation for z-scores
-in [−1, 1] is corrupted. The t-test for large degrees of freedom (normal
-limit), the z-test, all normal-theory intervals.
+in [−1, 1] was corrupted. The t-test for large degrees of freedom, the z-test,
+all normal-theory intervals.
 
-**Proposed fix**: Extend the Taylor series region from |x| < 0.5 to |x| < 1.5.
-The Taylor series with 30 terms achieves < 1e-15 relative error for |x| < 1.5.
-For x ≥ 1.5, the CF converges in ≤ 91 iterations to < 1e-15.
+**First fix applied**: Extended Taylor boundary from |x| < 0.5 to |x| < 1.5.
 
-```rust
-// Current: if ax < 0.5 { taylor } else { CF }
-// Fix:     if ax < 1.5 { taylor } else { CF }
-// with loop limit: for n in 1..40 (sufficient for |x| < 1.5)
-```
+**Status of first fix**: Introduced Bug 2 (below). Needed further correction.
 
-This is a safe, non-breaking change. Taylor series at x=1.5:
-- term magnitude at n=23: 2.3e-17 · |x|²³ ~ 1e-18 (below 1e-17 convergence criterion)
-- Total relative error: 1.02e-15 (within 2 ULP)
+---
 
-**Status**: FIXED. Taylor boundary extended to |x| < 1.5 in `special_functions.rs`. All 19 parity tests pass. Max error < 1 ULP.
+### BUG 2: FIXED (2026-04-10): Taylor accumulates error for |x| ∈ [1.0, 1.5) — SEVERITY: HIGH
 
-### TASK: Verify fix doesn't break normal_cdf tests
+**Description**: The first fix extended Taylor to |x| < 1.5, but Taylor at
+x = 1.386 (= 1.96/√2, the argument for normal_cdf(-1.96)) accumulates
+82 ULP error from alternating series cancellation. This corrupted Φ(-1.96)
+from < 1 ULP to 62 ULP — destroying the critical 95% CI lower tail value.
 
-The fix to erfc boundary may shift normal_cdf values in the affected region.
-All tests that call normal_cdf for |z| ∈ [0.7, 2.1] (maps to erfc region
-[0.5, 1.5]) should be re-run and updated if needed.
+**Root cause**: Taylor series `Σ (-x²)^n / (n! · (2n+1))` is an alternating
+series. At x = 1.386, the terms grow large before shrinking, amplifying
+floating-point rounding. The final sum cancels heavily.
+
+**Characterization**:
+- Taylor at x = 1.0: ≤ 5 ULP (safe)
+- Taylor at x = 1.2: ~15 ULP (marginal)
+- Taylor at x = 1.386 (=1.96/√2): 82 ULP (unacceptable)
+- CF at x = 1.0: ≤ 21 ULP in ≤ 188 iterations (acceptable)
+- CF at x = 1.2: ≤ 5 ULP in ≤ 120 iterations (good)
+- CF at x = 1.386: ≤ 2 ULP in ~90 iterations (excellent)
+
+**Fix**: Changed boundary from |x| < 1.5 to |x| < 1.0. CF handles [1.0, 27]
+within 200-iteration budget.
+
+**Status**: FIXED. Taylor boundary is |x| < 1.0 in `special_functions.rs`.
+All 21 erfc parity tests pass. normal_cdf(-1.96) is ≤ 5 ULP (was 62 ULP).
+
+---
+
+### Final boundary summary
+
+| Date | Taylor boundary | CF boundary | Max error |
+|------|----------------|-------------|-----------|
+| Original | |x| < 0.5 | |x| ≥ 0.5 | 8.37e-9 (x=0.5) |
+| Fix 1 (2026-04-10) | |x| < 1.5 | |x| ≥ 1.5 | 82 ULP (x=1.386) |
+| Fix 2 (2026-04-10) | |x| < 1.0 | |x| ≥ 1.0 | ≤ 21 ULP (x=1.0) |
 
 ### TASK: Expose exp(-x²) as shareable intermediate
 
@@ -312,14 +328,16 @@ normal_pdf and any Gaussian weight consumer.
 - [x] Bug found and documented in §5/§10 with root cause and proposed fix
 - [x] Cross-library comparison: scipy, mpmath
 - [x] Invariants tested
-- [x] **BUG FIXED** 2026-04-10 — Taylor boundary extended to |x| < 1.5; max error now < 1 ULP
+- [x] **BUG 1 FIXED** 2026-04-10 — Taylor boundary extended from |x| < 0.5 to |x| < 1.5
+- [x] **BUG 2 FIXED** 2026-04-10 — Taylor at x=1.386 was 82 ULP; boundary corrected to |x| < 1.0
 - [ ] Adversarial: ±∞, subnormal inputs
 - [ ] Benchmarks
 - [ ] Reviewed by adversarial
 - [ ] Reviewed by math-researcher
 
-**Overall status**: Draft, bug fixed. Remaining gaps: adversarial ±∞/subnormal
-suite, scale benchmarks. All oracle cases pass to < 1 ULP.
+**Overall status**: Draft, both bugs fixed. Remaining gaps: adversarial ±∞/subnormal
+suite, scale benchmarks. All oracle cases pass to ≤ 21 ULP (CF region at x=1.0),
+typically ≤ 5 ULP everywhere.
 
 ---
 
@@ -349,21 +367,36 @@ print(f"mpmath:     {truth:.15e}")
 print(f"rel err:    {abs(result-truth)/truth:.2e}")  # → 8.37e-9
 ```
 
-## Appendix B: Proposed fix
+## Appendix B: Applied fix (final)
 
 ```rust
-// In special_functions.rs, change:
-if ax < 0.5 {    // OLD
+// In special_functions.rs:
 
-// To:
-if ax < 1.5 {    // NEW: Taylor series converges to machine precision here
+// Original: if ax < 0.5 { taylor } else { CF }
+// Fix 1:    if ax < 1.5 { taylor } else { CF }  — introduced Bug 2
+// Fix 2:    if ax < 1.0 { taylor } else { CF }  — correct final boundary
 
-// And update the Taylor loop limit from n in 1..30 to n in 1..40
-// (40 terms handles |x| up to 1.5 safely)
+if ax < 1.0 {
+    // Taylor series for erf: ≤ 5 ULP for |x| < 1.0
+    // 40 terms sufficient
+    let x2 = x * x;
+    let mut term = x;
+    let mut sum = term;
+    for n in 1..40 {
+        term *= -x2 / n as f64;
+        let s = term / (2 * n + 1) as f64;
+        sum += s;
+        if s.abs() < 1e-17 * sum.abs() { break; }
+    }
+    let erf_val = sum * 2.0 / std::f64::consts::PI.sqrt();
+    return 1.0 - erf_val;
+}
+// else: Lentz CF for |x| >= 1.0, converges in ≤ 188 iterations
 ```
 
 ## Appendix C: Version history
 
 | Date | Author | Change |
 |------|--------|--------|
-| 2026-04-10 | scientist | Initial workup; bug found at x=0.5–1.0; fix proposed |
+| 2026-04-10 | scientist | Initial workup; bug found at x=0.5–1.0; Fix 1 proposed (0.5→1.5) |
+| 2026-04-10 | scientist | Bug 2 found: Taylor at x=1.386 is 82 ULP; Fix 2 applied (1.5→1.0) |

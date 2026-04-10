@@ -252,17 +252,14 @@ pub struct TieInfo {
 
 /// Count tied groups in a **sorted** slice.
 ///
-/// Input MUST be sorted (ascending). Equal consecutive values form a tie group.
-/// NaN values at the end of a sorted array are excluded from tie counting
-/// (NaN != NaN, so they never form a tie group themselves).
+/// Tie structure of a dataset. Input is sorted internally (O(n log n)).
 ///
-/// A single pass accumulates all five fields of [`TieInfo`], covering every
-/// rank-based correction term in the tambear catalog.
+/// A single pass over the sorted values accumulates all five fields of
+/// [`TieInfo`], covering every rank-based correction term in the tambear catalog.
+/// NaN values are excluded from tie counting.
 ///
 /// # Parameters
-/// - `sorted`: sorted slice of f64, ascending order. Equal consecutive values
-///   form a tie group. NaN values should be at the end (sort_by with total_cmp
-///   places them last); they are excluded.
+/// - `data`: slice of f64 values (any order). NaN values are excluded.
 ///
 /// # Returns
 /// [`TieInfo`] with all tie correction terms populated.
@@ -274,14 +271,17 @@ pub struct TieInfo {
 /// - `dunn_test`: uses `cubic_sum` as the global tie correction
 /// - Any rank-based test that uses the tie correction
 ///
-/// **Primitive**: exists independently of any single test. Kingdom A — O(n).
-pub fn tie_count(sorted: &[f64]) -> TieInfo {
+/// **Primitive**: exists independently of any single test. Kingdom A — O(n log n).
+pub fn tie_count(data: &[f64]) -> TieInfo {
     let mut info = TieInfo::default();
+
+    // Sort internally: callers should not need to pre-sort.
+    let mut sorted: Vec<f64> = data.iter().copied().filter(|v| !v.is_nan()).collect();
+    sorted.sort_by(|a, b| a.total_cmp(b));
 
     let mut i = 0;
     while i < sorted.len() {
         let v = sorted[i];
-        if v.is_nan() { break; } // NaN → skip remainder (sorted → all NaN at end)
         let mut j = i + 1;
         while j < sorted.len() && sorted[j] == v { j += 1; }
         let t = j - i;
@@ -1937,13 +1937,29 @@ pub fn distance_correlation(x: &[f64], y: &[f64]) -> f64 {
     if n < 2 { return f64::NAN; }
     let nf = n as f64;
 
+    // NaN/Inf guard: non-finite input → NaN result.
+    if x.iter().any(|v| !v.is_finite()) || y.iter().any(|v| !v.is_finite()) {
+        return f64::NAN;
+    }
+
+    // Scale-normalize to prevent overflow in distance computation.
+    // dCor is scale-invariant: dCor(c*X, d*Y) = dCor(X, Y) for any c,d > 0.
+    // Dividing by max |x| and max |y| keeps values in [-1, 1] without changing the result.
+    let max_ax = x.iter().copied().map(f64::abs).fold(0.0f64, f64::max);
+    let max_ay = y.iter().copied().map(f64::abs).fold(0.0f64, f64::max);
+    let scale_x = if max_ax > 0.0 { max_ax } else { 1.0 };
+    let scale_y = if max_ay > 0.0 { max_ay } else { 1.0 };
+
+    let xn: Vec<f64> = x.iter().map(|v| v / scale_x).collect();
+    let yn: Vec<f64> = y.iter().map(|v| v / scale_y).collect();
+
     // Distance matrices
     let mut a = vec![0.0; n * n];
     let mut b = vec![0.0; n * n];
     for i in 0..n {
         for j in 0..n {
-            a[i * n + j] = (x[i] - x[j]).abs();
-            b[i * n + j] = (y[i] - y[j]).abs();
+            a[i * n + j] = (xn[i] - xn[j]).abs();
+            b[i * n + j] = (yn[i] - yn[j]).abs();
         }
     }
 
@@ -3531,6 +3547,13 @@ pub fn hoeffdings_d(x: &[f64], y: &[f64]) -> f64 {
     //   Ann. Math. Statist. 19(4), 546–557.
     //   Hollander & Wolfe (1999). Nonparametric Statistical Methods, 2nd ed., §8.2.
 
+    // NaN guard: any NaN in input → NaN result.
+    // With NaN, `x[j] <= x[i]` is false for all j when x[i]=NaN, so NaN
+    // observations are silently dropped from ECDF counts — silently wrong.
+    if x.iter().any(|v| v.is_nan()) || y.iter().any(|v| v.is_nan()) {
+        return f64::NAN;
+    }
+
     let mut d_sum = 0.0f64;
     for i in 0..n {
         // Bivariate ECDF: #{j : x[j] <= x[i] AND y[j] <= y[i]} / n
@@ -3600,7 +3623,13 @@ pub fn blomqvist_beta(x: &[f64], y: &[f64]) -> f64 {
     if n == 0 { return f64::NAN; }
     let nf = n as f64;
 
-    // Compute medians
+    // NaN guard: any NaN in input → NaN result.
+    // NaN comparisons corrupt the concordance count silently without this check.
+    if x.iter().any(|v| v.is_nan()) || y.iter().any(|v| v.is_nan()) {
+        return f64::NAN;
+    }
+
+    // Compute medians via sort.
     let mut sx: Vec<f64> = x.to_vec();
     let mut sy: Vec<f64> = y.to_vec();
     sx.sort_by(|a, b| a.total_cmp(b));
@@ -3616,20 +3645,22 @@ pub fn blomqvist_beta(x: &[f64], y: &[f64]) -> f64 {
         (sy[n / 2 - 1] + sy[n / 2]) / 2.0
     };
 
-    // Count sign-concordant pairs: sgn(xᵢ - mx) == sgn(yᵢ - my)
-    // Ties at the median are split (contribute 0 to both sides).
+    // Count sign-concordant pairs: sgn(xᵢ - mx) == sgn(yᵢ - my).
+    // Ties at the median (dx == 0.0 exactly) contribute 0 to both sides.
+    //
+    // NOTE: We compare the raw differences to 0.0, NOT signum to 0.0.
+    // In Rust, 0.0f64.signum() = 1.0 (IEEE 754: signum preserves sign bit,
+    // and +0.0 has positive sign), so `signum == 0.0` would never fire for
+    // median-tied elements. The raw difference check is the correct test.
     let concordant: f64 = (0..n).map(|i| {
-        let sx_sign = (x[i] - mx).signum();
-        let sy_sign = (y[i] - my).signum();
-        // Both above median or both below: concordant (+1)
-        // Mixed: discordant (-1)
-        // Exactly at median: 0 (tie)
-        if sx_sign == 0.0 || sy_sign == 0.0 {
-            0.0
-        } else if sx_sign == sy_sign {
-            1.0
+        let dx = x[i] - mx;
+        let dy = y[i] - my;
+        if dx == 0.0 || dy == 0.0 {
+            0.0 // median-tied: contribute 0 (excluded from count)
+        } else if dx.signum() == dy.signum() {
+            1.0 // concordant: both above or both below
         } else {
-            -1.0
+            -1.0 // discordant: one above, one below
         }
     }).sum();
 

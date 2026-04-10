@@ -4093,8 +4093,13 @@ pub fn log_returns(prices: &[f64]) -> Vec<f64> {
     if prices.len() < 2 { return vec![]; }
     prices.windows(2)
         .map(|w| {
-            if w[0] <= 0.0 || w[1] <= 0.0 { f64::NAN }
-            else { (w[1] / w[0]).ln() }
+            // Guard: non-positive, non-finite, or NaN prices → NaN return.
+            // `<= 0.0` catches zero and negative but NOT Inf or NaN (both fail the test).
+            if !w[0].is_finite() || !w[1].is_finite() || w[0] <= 0.0 || w[1] <= 0.0 {
+                f64::NAN
+            } else {
+                (w[1] / w[0]).ln()
+            }
         })
         .collect()
 }

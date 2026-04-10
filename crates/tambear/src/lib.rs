@@ -159,6 +159,20 @@ pub use information_theory::{
     histogram_entropy,
     // Bias-corrected estimators
     grassberger_entropy,
+    // Atoms — public primitives for composing new information-theoretic measures
+    p_log_p, p_log_p_over_q,
+    contingency_from_labels, expected_mutual_info,
+    // f-divergence family
+    hellinger_distance_sq, hellinger_distance,
+    total_variation_distance,
+    chi_squared_divergence,
+    renyi_divergence,
+    bhattacharyya_coefficient, bhattacharyya_distance,
+    f_divergence,
+    // Joint entropy and PMI
+    joint_entropy, pointwise_mutual_information,
+    // Sample-based divergences
+    wasserstein_1d, mmd_rbf, energy_distance,
 };
 pub use descriptive::{
     DescriptiveEngine, DescriptiveResult, MomentStats, GroupedMomentStats,
@@ -220,6 +234,7 @@ pub use hypothesis::{
     BayesFactorResult, bayes_factor_t_one_sample, bayes_factor_correlation,
     // Primitives (flat catalog)
     interpret_bf,
+    ols_simple, ols_two_predictor,
 };
 pub use nonparametric::{
     rank, spearman, pearson_on_ranks, kendall_tau,
@@ -252,6 +267,9 @@ pub use complexity::{
     hurst_rs, dfa, higuchi_fd, lempel_ziv_complexity,
     correlation_dimension, largest_lyapunov,
     LyapunovSpectrum, lyapunov_spectrum,
+    // Atoms — promoted from private: composable sub-operations
+    count_matches, phi_func, pattern_to_index, factorial,
+    linear_fit_segment, estimate_mean_period,
 };
 pub use numerical::{
     RootResult, bisection, newton, secant, brent, fixed_point,
@@ -281,6 +299,12 @@ pub use linear_algebra::{
     effective_rank_from_sv,
     // Orthogonalization
     gram_schmidt, gram_schmidt_modified,
+    // Matrix functions
+    matrix_exp, matrix_log, matrix_sqrt,
+    // Iterative solvers
+    IterativeSolverResult, conjugate_gradient, gmres,
+    // Utilities
+    log_det,
 };
 pub use graph::{
     Edge, Graph, MstResult,

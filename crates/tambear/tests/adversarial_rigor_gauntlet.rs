@@ -227,13 +227,19 @@ fn hoeffdings_d_n_less_than_5_is_nan() {
 
 /// Beta for perfect monotone positive: all points above x-median are also
 /// above y-median → beta = 1.
+///
+/// NOTE: Use even n. For odd n, the median observation itself sits at the median
+/// (dx == 0.0), so it is correctly excluded from the concordance count.
+/// n=9 with X=Y gives 8/9 (correct), not 1.0.
+/// n=8 with X=Y: median is interpolated (no point lies exactly at it) → all 8
+/// points straddle the median → beta = 1.0 exactly.
 #[test]
 fn blomqvist_perfect_positive() {
-    let x: Vec<f64> = (1..=9).map(|i| i as f64).collect();
-    let y: Vec<f64> = (1..=9).map(|i| i as f64).collect();
+    let x: Vec<f64> = (1..=8).map(|i| i as f64).collect(); // even n=8
+    let y: Vec<f64> = (1..=8).map(|i| i as f64).collect();
     let b = blomqvist_beta(&x, &y);
     assert!((b - 1.0).abs() < 1e-10,
-        "blomqvist_beta(X=Y) should be 1.0, got {}", b);
+        "blomqvist_beta(X=Y, even n) should be 1.0, got {}", b);
 }
 
 /// BUG: signum(0.0) = 1.0 in Rust, not 0.0.

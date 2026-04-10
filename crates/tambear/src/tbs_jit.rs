@@ -252,9 +252,9 @@ pub fn execute_plan(
                                 let std_pop = var_pop.sqrt();
                                 let std_samp = var_samp.sqrt();
                                 let min_val = frame_data.iter().skip(j).step_by(pd).cloned()
-                                    .fold(f64::INFINITY, f64::min);
+                                    .fold(f64::INFINITY, crate::numerical::nan_min);
                                 let max_val = frame_data.iter().skip(j).step_by(pd).cloned()
-                                    .fold(f64::NEG_INFINITY, f64::max);
+                                    .fold(f64::NEG_INFINITY, crate::numerical::nan_max);
 
                                 let skewness = if count > 2.0 && std_pop > 1e-15 {
                                     let n = count;

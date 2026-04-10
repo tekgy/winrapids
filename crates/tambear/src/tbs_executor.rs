@@ -2016,15 +2016,14 @@ pub fn execute(
                 let n_bins = usize_arg(step, "n_bins", 1, 10);
                 let min_v = col.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
                 let max_v = col.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
-                if min_v.is_nan() || max_v.is_nan() {
-                    return Ok(TbsStepOutput::Scalar { name: "mutual_info", value: f64::NAN });
-                }
-                let range = (max_v - min_v).max(1e-15);
-                let binned: Vec<i32> = col.iter().map(|&v| ((v - min_v) / range * (n_bins as f64 - 1.0)).round() as i32).collect();
-                TbsStepOutput::Scalar {
-                    name: "mutual_info",
-                    value: crate::information_theory::mutual_info_score(labels, &binned),
-                }
+                let mi_value = if min_v.is_nan() || max_v.is_nan() {
+                    f64::NAN
+                } else {
+                    let range = (max_v - min_v).max(1e-15);
+                    let binned: Vec<i32> = col.iter().map(|&v| ((v - min_v) / range * (n_bins as f64 - 1.0)).round() as i32).collect();
+                    crate::information_theory::mutual_info_score(labels, &binned)
+                };
+                TbsStepOutput::Scalar { name: "mutual_info", value: mi_value }
             }
 
             // f-divergence family

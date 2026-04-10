@@ -1051,7 +1051,7 @@ pub fn euler1d_lax_friedrichs(states: &[FlowState], dx: f64, dt: f64, gamma: f64
 pub fn cfl_timestep(states: &[FlowState], dx: f64, cfl: f64, gamma: f64) -> f64 {
     let max_wave: f64 = states.iter().map(|s| {
         s.velocity().abs() + s.sound_speed(gamma)
-    }).fold(0.0_f64, f64::max);
+    }).fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     if max_wave > 1e-15 { cfl * dx / max_wave } else { f64::MAX }
 }
 

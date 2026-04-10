@@ -364,7 +364,7 @@ pub fn mixing_time(transition: &[f64], n_states: usize, epsilon: f64) -> usize {
 /// Accumulate: Poisson-weighted sum of discrete transition powers.
 pub fn ctmc_transition_matrix(q_matrix: &[f64], t: f64, n_states: usize) -> Vec<f64> {
     // Uniformization rate
-    let q_max = (0..n_states).map(|i| -q_matrix[i * n_states + i]).fold(0.0_f64, f64::max);
+    let q_max = (0..n_states).map(|i| -q_matrix[i * n_states + i]).fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     if q_max < 1e-15 {
         // Diagonal Q → identity (absorbing states)
         return (0..n_states * n_states).map(|i| if i / n_states == i % n_states { 1.0 } else { 0.0 }).collect();
@@ -411,7 +411,7 @@ pub fn ctmc_transition_matrix(q_matrix: &[f64], t: f64, n_states: usize) -> Vec<
 pub fn ctmc_stationary(q_matrix: &[f64], n_states: usize) -> Vec<f64> {
     let q_max = (0..n_states)
         .map(|i| -q_matrix[i * n_states + i])
-        .fold(0.0_f64, f64::max);
+        .fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     if q_max < 1e-15 {
         let mut pi = vec![0.0; n_states];
         pi[0] = 1.0;

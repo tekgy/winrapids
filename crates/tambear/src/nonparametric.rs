@@ -3240,7 +3240,7 @@ pub fn bath_law(mainshock_magnitude: f64, aftershock_magnitudes: &[f64]) -> Bath
     let largest = aftershock_magnitudes
         .iter()
         .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
+        .fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     let delta_m = mainshock_magnitude - largest;
     BathResult {
         mainshock_magnitude,
@@ -3399,8 +3399,8 @@ pub fn sde_estimate(prices: &[f64], n_grid: usize) -> SdeResult {
     let h = 1.06 * std_x * (m as f64).powf(-0.2);
     if h < 1e-30 { return SdeResult::nan(); }
 
-    let x_min = x.iter().copied().fold(f64::INFINITY, f64::min);
-    let x_max = x.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let x_min = x.iter().copied().fold(f64::INFINITY, crate::numerical::nan_min);
+    let x_max = x.iter().copied().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     if (x_max - x_min).abs() < 1e-30 { return SdeResult::nan(); }
 
     let ng = n_grid.max(3);

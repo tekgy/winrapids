@@ -751,8 +751,8 @@ pub use tda::{
 pub use volatility::{
     GarchResult, garch11_filter, garch11_log_likelihood, garch11_fit, garch11_forecast,
     EgarchResult, egarch11_fit,
-    GjrGarchResult, gjr_garch11_fit,
-    TgarchResult, tgarch11_fit,
+    GjrGarchResult, gjr_garch11_filter, gjr_garch11_fit,
+    TgarchResult, tgarch11_filter, tgarch11_fit,
     ewma_variance, realized_variance, realized_volatility,
     bipower_variation, jump_test_bns,
     roll_spread, kyle_lambda, amihud_illiquidity,

@@ -353,6 +353,33 @@ pub fn execute(
                 TbsStepOutput::Scalar { name: "coefficient_of_variation", value: crate::descriptive::coefficient_of_variation(&col) }
             }
 
+            ("mode", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                TbsStepOutput::Scalar { name: "mode", value: crate::descriptive::mode(&col) }
+            }
+
+            ("sem", None) | ("standard_error_of_mean", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                TbsStepOutput::Scalar { name: "sem", value: crate::descriptive::sem(&col) }
+            }
+
+            ("percentileofscore", None) | ("percentile_of_score", None) => {
+                let score = f64_req(step, "score", 0)?;
+                let c = usize_arg(step, "col", 1, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                TbsStepOutput::Scalar { name: "percentileofscore", value: crate::descriptive::percentileofscore(&col, score) }
+            }
+
+            ("lmoment", None) | ("l_moments", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let sorted = crate::descriptive::sorted_nan_free(&col);
+                let lm = crate::descriptive::lmoment(&sorted);
+                TbsStepOutput::Vector { name: "lmoment", values: lm.to_vec() }
+            }
+
             ("median", None) => {
                 let c = col_arg(step, 0);
                 let col = extract_col(&pipeline.frame().data, pn, pd, c);
@@ -997,6 +1024,39 @@ pub fn execute(
                 TbsStepOutput::Nonparametric(crate::nonparametric::mann_whitney_u(&x, &yv))
             }
 
+            ("ranksums", None) | ("wilcoxon_ranksums", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Nonparametric(crate::nonparametric::ranksums(&x, &yv))
+            }
+
+            ("skewtest", None) | ("dagostino_skewtest", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                TbsStepOutput::Nonparametric(crate::nonparametric::skewtest(&col))
+            }
+
+            ("kurtosistest", None) | ("dagostino_kurtosistest", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                TbsStepOutput::Nonparametric(crate::nonparametric::kurtosistest(&col))
+            }
+
+            ("theilslopes", None) | ("theil_sen", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let r = crate::nonparametric::theilslopes(&col, None);
+                TbsStepOutput::Vector { name: "theilslopes", values: vec![r.slope, r.intercept] }
+            }
+
+            ("siegelslopes", None) | ("siegel_repeated_median", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let r = crate::nonparametric::siegelslopes(&col, None);
+                TbsStepOutput::Vector { name: "siegelslopes", values: vec![r.slope, r.intercept] }
+            }
+
             ("wilcoxon", None) | ("wilcoxon_signed_rank", None) => {
                 let c = col_arg(step, 0);
                 let col = extract_col(&pipeline.frame().data, pn, pd, c);
@@ -1213,6 +1273,57 @@ pub fn execute(
                 let modal_win = sup.modal_value;
                 step_superposition = Some(sup);
                 TbsStepOutput::Scalar { name: "sweep_ma_window", value: modal_win }
+            }
+
+            // discover_correlation: run all bivariate correlation measures in superposition.
+            // modal_value = median of signed measures (pearson, spearman, kendall).
+            // agreement = stability of measures across methods.
+            ("discover_correlation", None) | ("sweep_correlation", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                let sup = crate::superposition::sweep_correlation(&x, &yv);
+                let modal_corr = sup.modal_value;
+                step_superposition = Some(sup);
+                TbsStepOutput::Scalar { name: "discover_correlation", value: modal_corr }
+            }
+
+            // discover_regression: run OLS, Theil-Sen, Siegel slopes in superposition.
+            // modal_value = median slope across methods.
+            // agreement = fraction of slopes within 20% of OLS estimate.
+            ("discover_regression", None) | ("sweep_regression", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                let sup = crate::superposition::sweep_regression(&x, &yv);
+                let modal_slope = sup.modal_value;
+                step_superposition = Some(sup);
+                TbsStepOutput::Scalar { name: "discover_regression_slope", value: modal_slope }
+            }
+
+            // discover_changepoint: run CUSUM, PELT, binary segmentation in superposition.
+            // modal_value = consensus number of changepoints across methods.
+            // agreement = fraction of methods that agree on the count.
+            ("discover_changepoint", None) | ("sweep_changepoint", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let sup = crate::superposition::sweep_changepoint(&col);
+                let modal_n = sup.modal_value;
+                step_superposition = Some(sup);
+                TbsStepOutput::Scalar { name: "discover_changepoint_n", value: modal_n }
+            }
+
+            // discover_stationarity: run ADF, KPSS, PP test, variance ratio in superposition.
+            // modal_value = 1.0 if consensus is stationary, 0.0 if non-stationary.
+            // agreement = fraction of tests that agree with the consensus conclusion.
+            ("discover_stationarity", None) | ("sweep_stationarity", None) => {
+                let c = col_arg(step, 0);
+                let alpha = f64_arg(step, "alpha", 1, 0.05);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let sup = crate::superposition::sweep_stationarity(&col, alpha);
+                let modal_stat = sup.modal_value;
+                step_superposition = Some(sup);
+                TbsStepOutput::Scalar { name: "discover_stationarity", value: modal_stat }
             }
 
             ("kmeans", None) => {
@@ -4620,5 +4731,87 @@ mod tests {
             }
             _ => panic!("expected Scalar output"),
         }
+    }
+
+    // ── discover_* Layer 4 superposition dispatches ───────────────────────────
+
+    #[test]
+    fn tbs_discover_correlation_basic() {
+        let data: Vec<f64> = (0..50)
+            .flat_map(|i| [i as f64, 2.0 * i as f64 + 1.0])
+            .collect();
+        let chain = TbsChain::parse("discover_correlation(col_x=0, col_y=1)").unwrap();
+        let result = execute(chain, data, 50, 2, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { name, value } => {
+                assert_eq!(*name, "discover_correlation");
+                assert!(value.is_finite(), "modal correlation={value}");
+                assert!(*value > 0.9, "perfectly linear data → high correlation, got {value}");
+            }
+            other => panic!("expected Scalar, got {:?}", std::mem::discriminant(other)),
+        }
+        // Superposition should be populated
+        assert!(result.superpositions[0].is_some(), "superposition should be set");
+        let sup = result.superpositions[0].as_ref().unwrap();
+        assert_eq!(sup.views.len(), 5, "should have 5 correlation methods");
+        assert_eq!(sup.swept_param, "correlation_method");
+    }
+
+    #[test]
+    fn tbs_discover_regression_basic() {
+        let data: Vec<f64> = (0..40)
+            .flat_map(|i| [i as f64, 3.0 * i as f64 + 5.0])
+            .collect();
+        let chain = TbsChain::parse("discover_regression(col_x=0, col_y=1)").unwrap();
+        let result = execute(chain, data, 40, 2, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { name, value } => {
+                assert_eq!(*name, "discover_regression_slope");
+                assert!(value.is_finite());
+                assert!((value - 3.0).abs() < 0.5, "slope should be near 3.0, got {value}");
+            }
+            other => panic!("expected Scalar, got {:?}", std::mem::discriminant(other)),
+        }
+        let sup = result.superpositions[0].as_ref().unwrap();
+        assert_eq!(sup.views.len(), 3, "OLS + Theil-Sen + Siegel");
+        assert_eq!(sup.swept_param, "regression_method");
+    }
+
+    #[test]
+    fn tbs_discover_changepoint_basic() {
+        // Step change at index 25
+        let mut data: Vec<f64> = (0..50).map(|_| 0.0).collect();
+        for i in 25..50 { data[i] = 10.0; }
+        let chain = TbsChain::parse("discover_changepoint(col=0)").unwrap();
+        let result = execute(chain, data, 50, 1, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { name, value } => {
+                assert_eq!(*name, "discover_changepoint_n");
+                assert!(value.is_finite());
+                assert!(*value >= 1.0, "should detect at least 1 changepoint, got {value}");
+            }
+            other => panic!("expected Scalar, got {:?}", std::mem::discriminant(other)),
+        }
+        let sup = result.superpositions[0].as_ref().unwrap();
+        assert_eq!(sup.views.len(), 3, "CUSUM + PELT + binary segmentation");
+        assert_eq!(sup.swept_param, "changepoint_method");
+    }
+
+    #[test]
+    fn tbs_discover_stationarity_basic() {
+        // White noise: should be stationary
+        let data: Vec<f64> = (0..100).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let chain = TbsChain::parse("discover_stationarity(col=0, alpha=0.05)").unwrap();
+        let result = execute(chain, data, 100, 1, None).unwrap();
+        match &result.outputs[0] {
+            TbsStepOutput::Scalar { name, value } => {
+                assert_eq!(*name, "discover_stationarity");
+                assert!(*value == 0.0 || *value == 1.0, "modal_value must be 0 or 1, got {value}");
+            }
+            other => panic!("expected Scalar, got {:?}", std::mem::discriminant(other)),
+        }
+        let sup = result.superpositions[0].as_ref().unwrap();
+        assert_eq!(sup.views.len(), 4, "ADF + KPSS + PP + VR");
+        assert_eq!(sup.swept_param, "stationarity_method");
     }
 }

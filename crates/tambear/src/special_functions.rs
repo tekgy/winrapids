@@ -1945,8 +1945,10 @@ pub fn log_softmax(x: &[f64]) -> Vec<f64> {
 ///
 /// Kingdom A: O(1) closed-form evaluation.
 pub fn stirling_approx(n: f64) -> f64 {
+    if n.is_nan() { return f64::NAN; }
     if n < 0.0 { return f64::NAN; }
     if n == 0.0 { return 0.0; }
+    if n.is_infinite() { return f64::INFINITY; }  // monotone increasing → Inf
     // Primary: n*ln(n) - n + 0.5*ln(2*pi*n)
     let two_pi_n = 2.0 * std::f64::consts::PI * n;
     n * n.ln() - n + 0.5 * two_pi_n.ln()

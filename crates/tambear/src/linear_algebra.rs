@@ -1204,10 +1204,12 @@ pub fn solve_tridiagonal(
 /// For i=0, a_0 = 0 by convention.
 pub fn tridiagonal_scan_element(a_i: f64, b_i: f64, c_i: f64) -> [f64; 9] {
     if b_i.abs() < 1e-300 {
-        // Degenerate: return identity to avoid NaN propagation
-        return [1.0, 0.0, 0.0,
-                0.0, 1.0, 0.0,
-                0.0, 0.0, 1.0];
+        // Singular pivot: return a zero-filled sentinel (det=0) rather than the identity (det=1).
+        // Returning identity would silently mask the singularity — the compose chain would
+        // continue as if the singular row didn't exist, producing garbage without any signal.
+        // A zero matrix composed via matrix multiply propagates zeros, making the singularity
+        // detectable in the final result (all-zero or NaN output, depending on RHS).
+        return [0.0_f64; 9];
     }
     let inv_b = 1.0 / b_i;
     // Row 0: [-a/b,  1/b,     0]
@@ -1369,6 +1371,8 @@ pub fn gram_schmidt(vectors: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
     let mut basis: Vec<Vec<f64>> = Vec::new();
 
     for v in vectors {
+        // Skip vectors with any NaN (norm = NaN, NaN < 1e-10 is false → would corrupt basis)
+        if v.iter().any(|x| x.is_nan()) { continue; }
         // Subtract projections onto all accepted basis vectors
         let mut r = v.clone();
         for q in &basis {
@@ -1380,8 +1384,8 @@ pub fn gram_schmidt(vectors: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
         }
         // Normalize
         let norm: f64 = r.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if norm < 1e-10 {
-            continue; // linearly dependent — skip
+        if !(norm >= 1e-10) {  // catches NaN and near-zero (linearly dependent)
+            continue;
         }
         basis.push(r.into_iter().map(|x| x / norm).collect());
     }

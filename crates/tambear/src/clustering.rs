@@ -530,7 +530,7 @@ pub fn cluster_centroids(data: &[f64], labels: &[i32], n_dims: usize) -> Option<
     cluster_ids.sort_unstable();
     cluster_ids.dedup();
     let k = cluster_ids.len();
-    if k < 2 { return None; }
+    if k < 1 { return None; }
 
     // Map cluster label → compact index
     let id_to_idx: std::collections::HashMap<i32, usize> =
@@ -1138,7 +1138,8 @@ pub fn gap_statistic(
     for (ki, &k) in k_values.iter().enumerate() {
         let labels = kmeans_cpu_f64(data, k, 100, seed.wrapping_add(ki as u64 * 13));
         let w = within_cluster_dispersion(data, &labels, k);
-        log_w_obs[ki] = if w > 0.0 { w.ln() } else { f64::NEG_INFINITY };
+        // Zero dispersion (constant data): use 0.0 instead of -Inf to avoid gap=Inf.
+        log_w_obs[ki] = if w > 0.0 { w.ln() } else { 0.0 };
     }
 
     // ── Reference dispersions ────────────────────────────────────────────
@@ -1163,7 +1164,7 @@ pub fn gap_statistic(
                 seed.wrapping_add(ref_idx as u64 * 997 + ki as u64 * 31),
             );
             let w = within_cluster_dispersion(&ref_data, &ref_labels, k);
-            log_w_refs[ref_idx][ki] = if w > 0.0 { w.ln() } else { f64::NEG_INFINITY };
+            log_w_refs[ref_idx][ki] = if w > 0.0 { w.ln() } else { 0.0 };
         }
     }
 
@@ -1238,7 +1239,7 @@ pub fn bic_score(data: &[f64], labels: &[i32], n_dims: usize, k: usize) -> f64 {
 
     // Compute centroids and pooled within-cluster variance
     let cc = match cluster_centroids(data, labels, n_dims) {
-        Some(c) if c.k >= 2 => c,
+        Some(c) if c.k >= 1 => c,  // k=1 is valid (baseline model)
         _ => return f64::INFINITY,
     };
 

@@ -2175,6 +2175,7 @@ pub fn dtw(x: &[f64], y: &[f64]) -> f64 {
     let n = x.len();
     let m = y.len();
     if n == 0 || m == 0 { return f64::NAN; }
+    if x.iter().any(|v| v.is_nan()) || y.iter().any(|v| v.is_nan()) { return f64::NAN; }
 
     // cost[i][j] = minimum total cost to align x[0..i] with y[0..j]
     let mut cost = vec![f64::INFINITY; (n + 1) * (m + 1)];

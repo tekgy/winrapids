@@ -306,6 +306,31 @@ TBS exposes every level with the same syntax:
 
 `using()` flows DOWN through all levels. When `two_group_comparison` calls `shapiro_wilk`, the user's `using(alpha=0.01)` reaches it. The primitives don't know they're inside a method. The methods don't know they're inside a pipeline. Each queries the `using()` bag for its parameters and uses defaults if nothing is set.
 
+**Every property propagates at every level.** Every node in the composition tree — from a Level 3 pipeline down to the lowest Level 0 primitive — is independently:
+
+- **Addressable** — `kendall_tau.inversion_count` is a valid path. So is just `inversion_count`.
+- **Decomposable** — `inversion_count` itself decomposes to `mergesort_with_count` or `fenwick_tree_count`. Each is a primitive. Each is addressable. The fractal goes all the way down.
+- **Tunable** — `using(inversion_method="fenwick")` reaches inside `kendall_tau` to the specific sub-step.
+- **Discoverable** — `discover_inversion_count` runs every algorithm, reports which is fastest, which gives which answer.
+- **Sweepable** — `sweep(inversion_method=["mergesort","fenwick","brute"])` runs all three, returns all three.
+- **Superpositionable** — don't collapse. Keep all results. The structural fingerprint of agreement IS the output.
+- **using()-able** — every parameter at every depth is reachable from the top.
+- **Shareable** — the result registers in TamSession. If Kendall already computed the inversion count, Spearman's footrule reuses it. First consumer pays; everyone else gets it free. One pass.
+
+A composed method in TBS is not a new thing — it's a **named grouping of existing things**. `kendall_tau` is syntactic sugar for `sort → inversion_count → tie_count → tau_b_formula`. The method adds a name and a formula. It doesn't add new computation. Every sub-step is independently addressable at Level 0. The composition tree IS the computation graph. TBS IS the compiler's IR.
+
+### TBS as completeness test
+
+TBS is the forcing function for primitive completeness. When you try to express a function as a TBS statement, every symbol in the expression must resolve to a primitive. If you can't write a clean expression, you've found a gap. The language surface IS the completeness test for the flat catalog.
+
+Three things TBS reveals:
+
+**"This primitive does more than one thing."** If a function internally does multiple distinct computations, it's a compound primitive that breaks composability. A real primitive is one symbol, one operation, one result. If `ar_fit` internally computes ACF + Levinson-Durbin + coefficients + residuals + AIC, that's 5 primitives glued together. Each should be callable independently, shareable independently, liftable independently. Test: can you decompose the TBS expression into smaller expressions that each do exactly one thing? If yes, it should BE those smaller expressions composed.
+
+**"What else computes this?"** For every primitive, the literature has alternative methods. `correlation` → Pearson, Spearman, Kendall, point-biserial, phi, polychoric, tetrachoric, distance, MIC, Hoeffding's D, Schweizer-Wolff, Blomqvist beta... Each is a flavor. Each is a `using(method=...)` key or a standalone primitive. If we only have 4, TBS makes the gap visible.
+
+**"What parameters do people actually tune?"** What R, scipy, MATLAB, Julia, Stata expose for the same computation — every parameter they offer that we don't is a missing `using()` key. The full parameter space of every primitive should be discoverable through TBS, not hidden in source code.
+
 **The primitive IS the library. Everything above is composition.**
 
 ---

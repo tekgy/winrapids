@@ -249,13 +249,27 @@ pub fn sn_scale(data: &[f64]) -> f64 {
     1.1926 * median(&inner_medians)
 }
 
-/// Tau-scale estimator.
+/// Tau-scale estimator (default parameters: MAD consistency factor 1.4826,
+/// bisquare k = 4.685 for 95% efficiency at the normal).
+///
+/// For full control, use [`tau_scale_with_params`].
+pub fn tau_scale(data: &[f64]) -> f64 {
+    tau_scale_with_params(data, 1.4826, 4.685)
+}
+
+/// Tau-scale estimator with tunable parameters.
 ///
 /// τ² = s² × (1/n) Σ ρ((xᵢ - μ)/s)
-/// where s = MAD, μ = median, ρ = bisquare rho function.
+/// where s = MAD × `mad_factor`, μ = median, ρ = bisquare rho with
+/// tuning constant `bisquare_k`.
+///
+/// `mad_factor`: consistency factor for the scale estimator. 1.4826 is
+///   correct for the normal distribution. 1.0 for the raw MAD.
+/// `bisquare_k`: bisquare rho/weight tuning constant. 4.685 gives 95%
+///   efficiency at the normal. Smaller values reject more aggressively.
 ///
 /// Combines high breakdown (50%) with good efficiency.
-pub fn tau_scale(data: &[f64]) -> f64 {
+pub fn tau_scale_with_params(data: &[f64], mad_factor: f64, bisquare_k: f64) -> f64 {
     let clean = sorted_nan_free(data);
     let n = clean.len();
     if n < 2 { return 0.0; }
@@ -264,8 +278,8 @@ pub fn tau_scale(data: &[f64]) -> f64 {
     let mad_val = mad_from_sorted(&clean, med);
     if mad_val == 0.0 { return 0.0; }
 
-    let s = mad_val * 1.4826;
-    let k = 4.685; // bisquare tuning constant
+    let s = mad_val * mad_factor;
+    let k = bisquare_k;
 
     let rho_sum: f64 = clean.iter().map(|&x| {
         let u = (x - med) / s;

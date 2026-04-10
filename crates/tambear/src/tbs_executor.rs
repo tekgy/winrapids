@@ -2098,23 +2098,25 @@ pub fn execute(
                 let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
                 let min_y = y.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
                 let max_y = y.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
-                if min_x.is_nan() || max_x.is_nan() || min_y.is_nan() || max_y.is_nan() {
-                    return Ok(TbsStepOutput::Matrix { name: "joint_entropy", data: vec![f64::NAN], rows: 1, cols: 1 });
-                }
-                let range_x = (max_x - min_x).max(1e-15);
-                let range_y = (max_y - min_y).max(1e-15);
-                // Build flat joint count table (n_bins × n_bins)
-                let mut counts = vec![0u64; n_bins * n_bins];
-                for i in 0..n {
-                    let bx = ((x[i] - min_x) / range_x * (n_bins as f64 - 1.0)).round() as usize;
-                    let by = ((y[i] - min_y) / range_y * (n_bins as f64 - 1.0)).round() as usize;
-                    let bx = bx.min(n_bins - 1);
-                    let by = by.min(n_bins - 1);
-                    counts[bx * n_bins + by] += 1;
-                }
-                let total = n as f64;
-                let joint_probs: Vec<f64> = counts.iter().map(|&c| c as f64 / total).collect();
-                TbsStepOutput::Scalar { name: "joint_entropy", value: crate::information_theory::joint_entropy(&joint_probs, n_bins, n_bins) }
+                let je_value = if min_x.is_nan() || max_x.is_nan() || min_y.is_nan() || max_y.is_nan() {
+                    f64::NAN
+                } else {
+                    let range_x = (max_x - min_x).max(1e-15);
+                    let range_y = (max_y - min_y).max(1e-15);
+                    // Build flat joint count table (n_bins × n_bins)
+                    let mut counts = vec![0u64; n_bins * n_bins];
+                    for i in 0..n {
+                        let bx = ((x[i] - min_x) / range_x * (n_bins as f64 - 1.0)).round() as usize;
+                        let by = ((y[i] - min_y) / range_y * (n_bins as f64 - 1.0)).round() as usize;
+                        let bx = bx.min(n_bins - 1);
+                        let by = by.min(n_bins - 1);
+                        counts[bx * n_bins + by] += 1;
+                    }
+                    let total = n as f64;
+                    let joint_probs: Vec<f64> = counts.iter().map(|&c| c as f64 / total).collect();
+                    crate::information_theory::joint_entropy(&joint_probs, n_bins, n_bins)
+                };
+                TbsStepOutput::Scalar { name: "joint_entropy", value: je_value }
             }
 
             ("chi_squared_divergence", None) | ("chi_sq_divergence", None) => {

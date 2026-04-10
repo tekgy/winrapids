@@ -180,14 +180,37 @@ pub fn kendall_tau(x: &[f64], y: &[f64]) -> f64 {
     (concordant - discordant) as f64 / denom
 }
 
-/// Merge-sort inversion count for Kendall's tau. Returns the number of
-/// pairs (i, j) with i < j but arr[i] > arr[j]. O(n log n).
-fn kendall_merge_sort_count(arr: &[f64]) -> i64 {
+/// Count inversions in `arr` via merge-sort. O(n log n).
+///
+/// An inversion is a pair (i, j) with i < j but arr[i] > arr[j].
+/// Returns the count as i64 (negative values are impossible; i64 for
+/// arithmetic convenience in Kendall's tau formula).
+///
+/// This is the canonical tambear primitive for inversion counting.
+/// Equal values are not counted as inversions (stable merge: arr[i] <= arr[j]
+/// → keep arr[i] first, no inversion increment).
+///
+/// **Primitive**: exists independently. Kendall tau, rank correlation,
+/// displacement distance, and any order-based statistic compose this.
+pub fn inversion_count_mergesort(arr: &[f64]) -> i64 {
     let n = arr.len();
     if n <= 1 { return 0; }
     let mut buf = arr.to_vec();
     let mut tmp = vec![0.0f64; n];
     kt_merge_count(&mut buf, &mut tmp, 0, n)
+}
+
+/// Count inversions in `arr`. O(n log n).
+///
+/// Convenience alias for `inversion_count_mergesort`. Returns the number of
+/// pairs (i, j) with i < j but arr[i] > arr[j].
+pub fn inversion_count(arr: &[f64]) -> i64 {
+    inversion_count_mergesort(arr)
+}
+
+// Internal: merge-sort with inversion counting. Called by inversion_count_mergesort.
+fn kendall_merge_sort_count(arr: &[f64]) -> i64 {
+    inversion_count_mergesort(arr)
 }
 
 fn kt_merge_count(arr: &mut [f64], tmp: &mut [f64], lo: usize, hi: usize) -> i64 {
@@ -363,12 +386,8 @@ pub fn partial_correlation_full(
 
 /// OLS slope of y on x: β = cov(y,x) / var(x)
 fn ols_slope(y: &[f64], x: &[f64]) -> f64 {
-    let n = y.len() as f64;
-    let mx = x.iter().sum::<f64>() / n;
-    let my = y.iter().sum::<f64>() / n;
-    let sxy: f64 = x.iter().zip(y.iter()).map(|(xi, yi)| (xi - mx) * (yi - my)).sum();
-    let sxx: f64 = x.iter().map(|xi| (xi - mx).powi(2)).sum();
-    if sxx < 1e-300 { 0.0 } else { sxy / sxx }
+    // Delegate to the global primitive (note: argument order is (x, y) there)
+    crate::linear_algebra::ols_slope(x, y)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

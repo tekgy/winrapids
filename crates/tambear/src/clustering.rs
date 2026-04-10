@@ -1061,9 +1061,50 @@ pub fn gap_statistic(
         }
     }
 
+    // ── Inline CPU k-means (Lloyd's algorithm, f64) ──────────────────────
+    // The kmeans.rs crate uses f32 GPU paths; we need f64 CPU k-means here.
+    let kmeans_cpu_f64 = |pts: &[f64], k: usize, max_iter: usize, init_seed: u64| -> Vec<i32> {
+        let k = k.min(n).max(1);
+        let mut rng_init = crate::rng::Xoshiro256::new(init_seed);
+        let init_idx = crate::rng::sample_without_replacement(&mut rng_init, n, k);
+        let mut centroids: Vec<f64> = init_idx.iter()
+            .flat_map(|&i| pts[i * d..(i + 1) * d].iter().copied())
+            .collect();
+        let mut labels = vec![0i32; n];
+        for _iter in 0..max_iter {
+            let mut changed = false;
+            for i in 0..n {
+                let mut best = 0usize;
+                let mut best_d2 = f64::INFINITY;
+                for ci in 0..k {
+                    let d2: f64 = (0..d).map(|dim|
+                        (pts[i * d + dim] - centroids[ci * d + dim]).powi(2)
+                    ).sum();
+                    if d2 < best_d2 { best_d2 = d2; best = ci; }
+                }
+                if labels[i] != best as i32 { changed = true; }
+                labels[i] = best as i32;
+            }
+            if !changed { break; }
+            let mut new_c = vec![0.0_f64; k * d];
+            let mut counts = vec![0usize; k];
+            for i in 0..n {
+                let ci = labels[i] as usize;
+                counts[ci] += 1;
+                for dim in 0..d { new_c[ci * d + dim] += pts[i * d + dim]; }
+            }
+            for ci in 0..k {
+                if counts[ci] > 0 {
+                    for dim in 0..d { new_c[ci * d + dim] /= counts[ci] as f64; }
+                }
+            }
+            centroids = new_c;
+        }
+        labels
+    };
+
     // ── Helper: within-cluster dispersion Wₖ for a given labeling ────────
-    // W_k = Σ_r (1 / 2nᵣ) Σ_{i,j in r} ‖xᵢ - xⱼ‖²
-    // = Σ_r (1 / nᵣ) Σ_{i in r} ‖xᵢ - centroid_r‖²  (equivalent)
+    // W_k = Σ_r (1 / nᵣ) Σ_{i in r} ‖xᵢ - centroid_r‖²
     let within_cluster_dispersion = |pts: &[f64], labels: &[i32], k: usize| -> f64 {
         let mut sizes = vec![0usize; k];
         let mut centroids = vec![0.0_f64; k * d];
@@ -1095,10 +1136,7 @@ pub fn gap_statistic(
     // ── Observed dispersions ─────────────────────────────────────────────
     let mut log_w_obs = vec![0.0_f64; n_k];
     for (ki, &k) in k_values.iter().enumerate() {
-        // Use k-means (fixed iterations) to get labels
-        // TODO: needs kmeans primitive (not yet implemented)
-        // let km = crate::kmeans::kmeans(data, n, d, k, 100, seed + ki as u64);
-        let labels: Vec<i32> = (0..n).map(|i| (i % k) as i32).collect(); // placeholder
+        let labels = kmeans_cpu_f64(data, k, 100, seed.wrapping_add(ki as u64 * 13));
         let w = within_cluster_dispersion(data, &labels, k);
         log_w_obs[ki] = if w > 0.0 { w.ln() } else { f64::NEG_INFINITY };
     }
@@ -1120,9 +1158,10 @@ pub fn gap_statistic(
             }
         }
         for (ki, &k) in k_values.iter().enumerate() {
-            // TODO: needs kmeans primitive
-            // let km = crate::kmeans::kmeans(&ref_data, n, d, k, 100, seed...);
-            let ref_labels: Vec<i32> = (0..n).map(|i| (i % k) as i32).collect();
+            let ref_labels = kmeans_cpu_f64(
+                &ref_data, k, 100,
+                seed.wrapping_add(ref_idx as u64 * 997 + ki as u64 * 31),
+            );
             let w = within_cluster_dispersion(&ref_data, &ref_labels, k);
             log_w_refs[ref_idx][ki] = if w > 0.0 { w.ln() } else { f64::NEG_INFINITY };
         }
@@ -1769,5 +1808,100 @@ mod tests {
         // Later merges should have larger distances than very first merge
         assert!(result.dendrogram.last().unwrap().distance >
                 result.dendrogram[0].distance);
+    }
+
+    // ── Hopkins statistic ─────────────────────────────────────────────────
+
+    #[test]
+    fn hopkins_uniform_near_half() {
+        // Uniform data → Hopkins near 0.5 (under null)
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let n = 200;
+        let d = 2;
+        let mut buf = vec![0.0f64; n * d];
+        crate::rng::fill_uniform(&mut rng, &mut buf);
+        let h = hopkins_statistic(&buf, n, d, 30, 1234);
+        // Uniform data should give H close to 0.5 (allow wide range for small n)
+        assert!(h > 0.1 && h < 0.9, "Hopkins for uniform data: H={h}");
+    }
+
+    #[test]
+    fn hopkins_clustered_near_one() {
+        // Two tight, well-separated clusters → Hopkins near 1
+        let data: Vec<f64> = (0..50).flat_map(|_| vec![0.0_f64, 0.0])
+            .chain((0..50).flat_map(|_| vec![100.0_f64, 100.0]))
+            .collect();
+        let h = hopkins_statistic(&data, 100, 2, 20, 999);
+        // Very clustered data: H should be > 0.5
+        assert!(h > 0.5, "Hopkins for clustered data: H={h}");
+    }
+
+    // ── Gap statistic ─────────────────────────────────────────────────────
+
+    #[test]
+    fn gap_statistic_two_clusters_preferred() {
+        // Two tight clusters: gap should prefer k=2 over k=1
+        let data: Vec<f64> = (0..20)
+            .flat_map(|i| vec![(i as f64) * 0.01, 0.0_f64])
+            .chain((0..20).flat_map(|i| vec![10.0 + (i as f64) * 0.01, 0.0_f64]))
+            .collect();
+        let result = gap_statistic(&data, 40, 2, 1..=4, 5, 42);
+        // Gap(2) should be ≥ Gap(1) for clustered data
+        assert!(result.gaps[1] >= result.gaps[0],
+            "gap[k=2]={} should be >= gap[k=1]={}", result.gaps[1], result.gaps[0]);
+        assert!(result.optimal_k.is_some());
+    }
+
+    #[test]
+    fn gap_statistic_returns_correct_k_range() {
+        let data: Vec<f64> = (0..10).flat_map(|i| vec![i as f64, 0.0_f64]).collect();
+        let result = gap_statistic(&data, 10, 2, 1..=3, 3, 7);
+        assert_eq!(result.k_values, vec![1, 2, 3]);
+        assert_eq!(result.gaps.len(), 3);
+        assert_eq!(result.std_errs.len(), 3);
+    }
+
+    // ── BIC / AIC scores ─────────────────────────────────────────────────
+
+    #[test]
+    fn bic_and_aic_finite_for_valid_clustering() {
+        // BIC and AIC must return finite values for well-formed input.
+        // Use data with spread so pooled variance is non-trivial.
+        let mut data = Vec::with_capacity(80);
+        for i in 0..20 { data.push(i as f64 * 0.1); data.push(0.0_f64); }
+        for i in 0..20 { data.push(20.0 + i as f64 * 0.1); data.push(0.0_f64); }
+        let labels: Vec<i32> = (0..20).map(|_| 0i32).chain((0..20).map(|_| 1)).collect();
+
+        let bic = bic_score(&data, &labels, 2, 2);
+        let aic = aic_score(&data, &labels, 2, 2);
+        assert!(bic.is_finite(), "BIC should be finite, got {bic}");
+        assert!(aic.is_finite(), "AIC should be finite, got {aic}");
+    }
+
+    #[test]
+    fn aic_lower_than_bic_for_same_k() {
+        // AIC penalizes complexity less than BIC.
+        // BIC penalty = p * ln(n), AIC penalty = 2p.
+        // For n=40, d=2, k=2, p=4: BIC_penalty = 4*ln(40)≈14.8 vs AIC_penalty = 8.
+        // So for the same log-likelihood, BIC > AIC when n > e² ≈ 7.4.
+        let mut data = Vec::with_capacity(80);
+        for i in 0..20 { data.push(i as f64 * 0.1); data.push(0.0_f64); }
+        for i in 0..20 { data.push(20.0 + i as f64 * 0.1); data.push(0.0_f64); }
+        let labels: Vec<i32> = (0..20).map(|_| 0i32).chain((0..20).map(|_| 1)).collect();
+        let bic = bic_score(&data, &labels, 2, 2);
+        let aic = aic_score(&data, &labels, 2, 2);
+        assert!(bic.is_finite() && aic.is_finite(), "BIC={bic}, AIC={aic}");
+        // For n=40 > e² ≈ 7.4, ln(n) > 2, so BIC penalty (p*ln(n)) > AIC penalty (2p)
+        assert!(bic > aic, "BIC ({bic}) should be > AIC ({aic}) for the same model");
+    }
+
+    #[test]
+    fn bic_returns_inf_for_degenerate_input() {
+        // Single cluster: cluster_centroids returns None → INFINITY
+        // data: 4 points, 1D → n_dims=1
+        let data = vec![1.0_f64, 2.0, 3.0, 4.0];
+        let labels = vec![0i32, 0, 0, 0]; // only 1 label → k < 2 → None from cluster_centroids
+        let bic = bic_score(&data, &labels, 1, 1);
+        assert!(!bic.is_finite(), "degenerate BIC (single cluster) should be INFINITY, got {bic}");
     }
 }

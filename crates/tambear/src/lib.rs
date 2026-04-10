@@ -194,6 +194,8 @@ pub use descriptive::{
     mae, rmse, mape, mase,
     // Scipy gap closure (2026-04-10)
     mode, sem, percentileofscore, lmoment, lmoment_ratios,
+    // Deduplication primitives (2026-04-10)
+    mean_of, variance_of,
 };
 pub use tb_io::{TbFile, TbColumnWrite, write_tb};
 pub use special_functions::{
@@ -447,6 +449,9 @@ pub mod knn;
 pub mod manifold;
 pub mod neural;
 pub mod pipeline;
+pub mod tbs_advice;
+pub use tbs_advice::{TbsDiagnostic, TbsRecommendation, TbsOverride, TbsStepAdvice};
+pub mod tbs_autodetect;
 pub mod tbs_executor;
 pub mod tbs_jit;
 pub mod tbs_lint;
@@ -525,8 +530,8 @@ pub use number_theory::{
     // Combinatorial atoms (Section 10)
     log_binomial, binomial_coeff, multinomial_coeff, log_multinomial,
     catalan_number, log_catalan,
-    stirling1, stirling1_row, stirling2,
-    bell_number,
+    stirling1, stirling1_row, stirling2, stirling2_f64,
+    bell_number, bell_number_f64,
     fibonacci, lucas_number,
     derangement,
     falling_factorial, rising_factorial,

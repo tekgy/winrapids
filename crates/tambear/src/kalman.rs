@@ -368,8 +368,13 @@ impl HmmParams {
         }
     }
 
-    fn a(&self, i: usize, j: usize) -> f64 { self.transition[i * self.n_states + j] }
-    fn b(&self, i: usize, o: usize) -> f64 { self.emission[i * self.n_symbols + o] }
+    /// Convert to the canonical `hmm::Hmm` log-domain representation.
+    pub fn to_hmm(&self) -> crate::hmm::Hmm {
+        crate::hmm::Hmm::from_probs(
+            self.n_states, self.n_symbols,
+            &self.pi, &self.transition, &self.emission,
+        )
+    }
 }
 
 /// Forward-backward algorithm result.
@@ -385,151 +390,54 @@ pub struct HmmForwardBackwardResult {
 
 /// Run the HMM forward-backward algorithm.
 ///
+/// Delegates to the canonical log-domain implementation in `hmm::hmm_forward_backward`.
 /// `observations`: T integer indices in [0, n_symbols).
 pub fn hmm_forward_backward(
     params: &HmmParams,
     observations: &[usize],
 ) -> Option<HmmForwardBackwardResult> {
+    if observations.is_empty() { return None; }
+    let hmm = params.to_hmm();
+    let fb = crate::hmm::hmm_forward_backward(&hmm, observations);
+    if !fb.log_likelihood.is_finite() && fb.log_likelihood == f64::NEG_INFINITY {
+        return None;
+    }
+
     let t = observations.len();
     let s = params.n_states;
-    if t == 0 { return None; }
 
-    // Forward: alpha_t(i) = P(y_1,...,y_t, q_t=i)
-    // Scaled to avoid underflow (Rabiner 1989, Section VI-A)
-    let mut alpha = vec![vec![0.0_f64; s]; t];
-    let mut scale = vec![0.0_f64; t];
+    // Convert flat gamma (t × s) to Vec<Vec<f64>>
+    let gamma: Vec<Vec<f64>> = (0..t)
+        .map(|tt| fb.gamma[tt * s..(tt * s + s)].to_vec())
+        .collect();
 
-    // t=0
-    for i in 0..s {
-        alpha[0][i] = params.pi[i] * params.b(i, observations[0]);
-    }
-    scale[0] = alpha[0].iter().sum::<f64>();
-    if scale[0] < 1e-300 { return None; }
-    for i in 0..s { alpha[0][i] /= scale[0]; }
+    // Convert flat xi ((t-1) × s² ) to Vec<Vec<f64>>
+    let xi: Vec<Vec<f64>> = if t > 1 {
+        (0..t - 1)
+            .map(|tt| fb.xi[tt * s * s..(tt * s * s + s * s)].to_vec())
+            .collect()
+    } else {
+        vec![]
+    };
 
-    // t=1..T-1
-    for tt in 1..t {
-        let o = observations[tt];
-        for j in 0..s {
-            alpha[tt][j] = (0..s).map(|i| alpha[tt-1][i] * params.a(i, j)).sum::<f64>()
-                * params.b(j, o);
-        }
-        scale[tt] = alpha[tt].iter().sum::<f64>();
-        if scale[tt] < 1e-300 { return None; }
-        for j in 0..s { alpha[tt][j] /= scale[tt]; }
-    }
-
-    // Backward: beta_t(i) = P(y_{t+1},...,y_T | q_t=i), scaled
-    let mut beta = vec![vec![1.0_f64; s]; t];
-    // beta_{T-1} = 1 (already), but scale by 1/scale[T-1]
-    for i in 0..s { beta[t-1][i] /= scale[t-1]; }
-
-    for tt in (0..t-1).rev() {
-        let o_next = observations[tt + 1];
-        for i in 0..s {
-            beta[tt][i] = (0..s)
-                .map(|j| params.a(i, j) * params.b(j, o_next) * beta[tt+1][j])
-                .sum::<f64>()
-                / scale[tt];
-        }
-    }
-
-    // Gamma: γ_t(i) = α_t(i) * β_t(i) / Σ_j α_t(j) β_t(j)
-    let mut gamma = vec![vec![0.0_f64; s]; t];
-    for tt in 0..t {
-        let denom: f64 = (0..s).map(|i| alpha[tt][i] * beta[tt][i]).sum();
-        if denom < 1e-300 { continue; }
-        for i in 0..s { gamma[tt][i] = alpha[tt][i] * beta[tt][i] / denom; }
-    }
-
-    // Xi: ξ_t(i,j) = α_t(i) * A[i,j] * B[j,o_{t+1}] * β_{t+1}(j) / P(obs)
-    let mut xi = vec![vec![0.0_f64; s * s]; t - 1];
-    for tt in 0..t-1 {
-        let o_next = observations[tt + 1];
-        let mut denom = 0.0_f64;
-        for i in 0..s {
-            for j in 0..s {
-                xi[tt][i * s + j] = alpha[tt][i] * params.a(i,j) * params.b(j, o_next) * beta[tt+1][j];
-                denom += xi[tt][i * s + j];
-            }
-        }
-        if denom > 1e-300 {
-            for v in xi[tt].iter_mut() { *v /= denom; }
-        }
-    }
-
-    // Log-likelihood: Σ ln(scale_t)
-    let log_likelihood = scale.iter().map(|&c| c.ln()).sum::<f64>();
-
-    Some(HmmForwardBackwardResult { gamma, xi, log_likelihood })
+    Some(HmmForwardBackwardResult { gamma, xi, log_likelihood: fb.log_likelihood })
 }
 
 /// Viterbi decoding: most likely hidden state sequence.
 ///
+/// Delegates to the canonical log-domain implementation in `hmm::hmm_viterbi`.
 /// Returns the most probable hidden state sequence and its log-probability.
 pub fn hmm_viterbi(params: &HmmParams, observations: &[usize]) -> Option<(Vec<usize>, f64)> {
-    let t = observations.len();
-    let s = params.n_states;
-    if t == 0 { return None; }
-
-    // delta[t][i] = max log-prob of any path ending in state i at time t
-    let mut delta = vec![vec![f64::NEG_INFINITY; s]; t];
-    let mut psi   = vec![vec![0usize; s]; t];
-
-    // Initialize
-    for i in 0..s {
-        let pi_i = params.pi[i];
-        let b_i0 = params.b(i, observations[0]);
-        delta[0][i] = if pi_i > 0.0 && b_i0 > 0.0 {
-            pi_i.ln() + b_i0.ln()
-        } else {
-            f64::NEG_INFINITY
-        };
-    }
-
-    // Recursion
-    for tt in 1..t {
-        let o = observations[tt];
-        for j in 0..s {
-            let b_jo = params.b(j, o);
-            if b_jo <= 0.0 {
-                delta[tt][j] = f64::NEG_INFINITY;
-                psi[tt][j] = 0;
-                continue;
-            }
-            let log_b = b_jo.ln();
-            let (best_i, best_val) = (0..s)
-                .map(|i| {
-                    let a_ij = params.a(i, j);
-                    let v = if a_ij > 0.0 { delta[tt-1][i] + a_ij.ln() + log_b }
-                            else { f64::NEG_INFINITY };
-                    (i, v)
-                })
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-                .unwrap();
-            delta[tt][j] = best_val;
-            psi[tt][j] = best_i;
-        }
-    }
-
-    // Termination
-    let (best_final, best_log_prob) = (0..s)
-        .map(|i| (i, delta[t-1][i]))
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-        .unwrap();
-
-    // Backtrack
-    let mut path = vec![0usize; t];
-    path[t-1] = best_final;
-    for tt in (0..t-1).rev() {
-        path[tt] = psi[tt+1][path[tt+1]];
-    }
-
-    Some((path, best_log_prob))
+    if observations.is_empty() { return None; }
+    let hmm = params.to_hmm();
+    let r = crate::hmm::hmm_viterbi(&hmm, observations);
+    if r.states.is_empty() { return None; }
+    Some((r.states, r.log_prob))
 }
 
 /// Baum-Welch EM algorithm for HMM parameter estimation.
 ///
+/// Delegates to the canonical implementation in `hmm::hmm_baum_welch`.
 /// Runs up to `max_iter` iterations or until log-likelihood improvement < `tol`.
 /// Returns the fitted `HmmParams` and the final log-likelihood.
 pub fn hmm_baum_welch(
@@ -538,76 +446,21 @@ pub fn hmm_baum_welch(
     max_iter: usize,
     tol: f64,
 ) -> Option<(HmmParams, f64)> {
-    let mut params = initial_params.clone();
-    let s = params.n_states;
-    let v = params.n_symbols;
-    let t = observations.len();
-    if t == 0 { return None; }
+    if observations.is_empty() { return None; }
+    let hmm = initial_params.to_hmm();
+    let result = crate::hmm::hmm_baum_welch(&hmm, &[observations], max_iter, tol);
+    let final_ll = result.log_likelihoods.last().copied().unwrap_or(f64::NEG_INFINITY);
+    if !final_ll.is_finite() { return None; }
 
-    let mut prev_ll = f64::NEG_INFINITY;
+    // Convert trained Hmm back to HmmParams (exp of log-probs)
+    let n = result.hmm.n_states;
+    let k = result.hmm.n_obs;
+    let pi: Vec<f64> = result.hmm.log_pi.iter().map(|&v| v.exp()).collect();
+    let transition: Vec<f64> = result.hmm.log_trans.iter().map(|&v| v.exp()).collect();
+    let emission: Vec<f64> = result.hmm.log_emit.iter().map(|&v| v.exp()).collect();
 
-    for _iter in 0..max_iter {
-        let fb = hmm_forward_backward(&params, observations)?;
-        let ll = fb.log_likelihood;
-
-        // M-step: re-estimate pi, A, B from gamma and xi
-        let gamma = &fb.gamma;
-        let xi = &fb.xi;
-
-        // pi: P(q_1=i) = gamma_0(i)
-        let new_pi = gamma[0].clone();
-
-        // A: A[i,j] = Σ_{t=0}^{T-2} ξ_t(i,j) / Σ_{t=0}^{T-2} γ_t(i)
-        let mut new_a = vec![0.0_f64; s * s];
-        for i in 0..s {
-            let denom: f64 = (0..t-1).map(|tt| gamma[tt][i]).sum();
-            if denom < 1e-300 {
-                // Keep row uniform if state never visited
-                for j in 0..s { new_a[i * s + j] = 1.0 / s as f64; }
-                continue;
-            }
-            for j in 0..s {
-                let numer: f64 = (0..t-1).map(|tt| xi[tt][i * s + j]).sum();
-                new_a[i * s + j] = numer / denom;
-            }
-            // Normalize row to sum to 1 (may differ from 1 due to floating point)
-            let row_sum: f64 = (0..s).map(|j| new_a[i * s + j]).sum();
-            if row_sum > 1e-300 {
-                for j in 0..s { new_a[i * s + j] /= row_sum; }
-            }
-        }
-
-        // B: B[i,o] = Σ_{t: obs_t=o} γ_t(i) / Σ_t γ_t(i)
-        let mut new_b = vec![0.0_f64; s * v];
-        for i in 0..s {
-            let denom: f64 = (0..t).map(|tt| gamma[tt][i]).sum();
-            if denom < 1e-300 {
-                for o in 0..v { new_b[i * v + o] = 1.0 / v as f64; }
-                continue;
-            }
-            for o in 0..v {
-                let numer: f64 = (0..t)
-                    .filter(|&tt| observations[tt] == o)
-                    .map(|tt| gamma[tt][i])
-                    .sum();
-                new_b[i * v + o] = numer / denom;
-            }
-            let row_sum: f64 = (0..v).map(|o| new_b[i * v + o]).sum();
-            if row_sum > 1e-300 {
-                for o in 0..v { new_b[i * v + o] /= row_sum; }
-            }
-        }
-
-        params.pi = new_pi;
-        params.transition = new_a;
-        params.emission = new_b;
-
-        if (ll - prev_ll).abs() < tol { break; }
-        prev_ll = ll;
-    }
-
-    let final_fb = hmm_forward_backward(&params, observations)?;
-    Some((params, final_fb.log_likelihood))
+    let fitted = HmmParams { pi, transition, emission, n_states: n, n_symbols: k };
+    Some((fitted, final_ll))
 }
 
 #[cfg(test)]

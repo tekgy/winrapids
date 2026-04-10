@@ -345,6 +345,12 @@ pub fn execute(
                 TbsStepOutput::Scalar { name: "kurtosis", value: stats.kurtosis(true, false) }
             }
 
+            ("coefficient_of_variation", None) | ("cv", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                TbsStepOutput::Scalar { name: "coefficient_of_variation", value: crate::descriptive::coefficient_of_variation(&col) }
+            }
+
             ("median", None) => {
                 let c = col_arg(step, 0);
                 let col = extract_col(&pipeline.frame().data, pn, pd, c);
@@ -1076,6 +1082,16 @@ pub fn execute(
                 TbsStepOutput::Transform
             }
 
+            // kmeans_f64: pure f64 CPU Lloyd's — returns label vector
+            ("kmeans_f64", None) => {
+                let k = usize_req(step, "k", 0)?;
+                let d = usize_arg(step, "d", 1, pd);
+                let max_iter = usize_arg(step, "max_iter", 2, 100);
+                let seed = usize_arg(step, "seed", 3, 42) as u64;
+                let labels = crate::clustering::kmeans_f64(&pipeline.frame().data, pn, d, k, max_iter, seed);
+                TbsStepOutput::Vector { name: "kmeans_f64_labels", values: labels.iter().map(|&l| l as f64).collect() }
+            }
+
             // ══════════════════════════════════════════════════════════════
             // Neighbors
             // ══════════════════════════════════════════════════════════════
@@ -1206,6 +1222,29 @@ pub fn execute(
                 pipeline = p;
                 logistic_model = Some(m);
                 TbsStepOutput::Transform
+            }
+
+            // Gaussian Naive Bayes — fit returns class means/variances/priors as vectors
+            ("train", Some("naive_bayes")) | ("gaussian_nb_fit", None) => {
+                let y_ref = y.as_deref()
+                    .ok_or("gaussian_nb_fit: y (class labels as f64) must be provided")?;
+                let labels: Vec<i32> = y_ref.iter().map(|&v| v.round() as i32).collect();
+                let data = &pipeline.frame().data;
+                let model = crate::train::naive_bayes::gaussian_nb_fit(data, &labels, pn, pd, None);
+                // Return class priors as vector output
+                TbsStepOutput::Vector { name: "gaussian_nb_priors", values: model.class_prior.clone() }
+            }
+
+            ("gaussian_nb_predict", None) => {
+                // Requires y to contain class labels used for fitting — no: we need the model
+                // Since TBS doesn't have model state for NB yet, run fit+predict in one step
+                let y_ref = y.as_deref()
+                    .ok_or("gaussian_nb_predict: y (class labels as f64) must be provided for fit")?;
+                let labels: Vec<i32> = y_ref.iter().map(|&v| v.round() as i32).collect();
+                let data = &pipeline.frame().data;
+                let model = crate::train::naive_bayes::gaussian_nb_fit(data, &labels, pn, pd, None);
+                let preds = crate::train::naive_bayes::gaussian_nb_predict(&model, data, pn);
+                TbsStepOutput::Vector { name: "gaussian_nb_predictions", values: preds.iter().map(|&l| l as f64).collect() }
             }
 
             // ══════════════════════════════════════════════════════════════
@@ -1805,6 +1844,37 @@ pub fn execute(
                 let total = n as f64;
                 let joint_probs: Vec<f64> = counts.iter().map(|&c| c as f64 / total).collect();
                 TbsStepOutput::Scalar { name: "joint_entropy", value: crate::information_theory::joint_entropy(&joint_probs, n_bins, n_bins) }
+            }
+
+            ("chi_squared_divergence", None) | ("chi_sq_divergence", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (p, q) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                TbsStepOutput::Scalar { name: "chi_squared_divergence", value: crate::information_theory::chi_squared_divergence(&p, &q) }
+            }
+
+            ("pmi", None) | ("pointwise_mutual_info", None) => {
+                // PMI matrix between col_x and col_y (binned into n_bins×n_bins joint counts)
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let n_bins = usize_arg(step, "n_bins", 2, 10);
+                let positive = bool_arg(step, "positive", 3, false);
+                let (x, y) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                let n = x.len().min(y.len());
+                let min_x = x.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let min_y = y.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max_y = y.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let range_x = (max_x - min_x).max(1e-15);
+                let range_y = (max_y - min_y).max(1e-15);
+                let mut counts = vec![0.0f64; n_bins * n_bins];
+                for i in 0..n {
+                    let bx = ((x[i] - min_x) / range_x * (n_bins as f64 - 1.0)).round() as usize;
+                    let by = ((y[i] - min_y) / range_y * (n_bins as f64 - 1.0)).round() as usize;
+                    counts[bx.min(n_bins - 1) * n_bins + by.min(n_bins - 1)] += 1.0;
+                }
+                let pmi_mat = crate::information_theory::pointwise_mutual_information(&counts, n_bins, n_bins, positive);
+                TbsStepOutput::Matrix { name: "pmi", data: pmi_mat, rows: n_bins, cols: n_bins }
             }
 
             // ══════════════════════════════════════════════════════════════
@@ -2463,6 +2533,61 @@ pub fn execute(
                 TbsStepOutput::Vector { name: "eigenvalues", values: eigenvalues }
             }
 
+            ("matrix_exp", None) => {
+                if pn != pd { return Err("matrix_exp: matrix must be square".into()); }
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let res = crate::linear_algebra::matrix_exp(&mat);
+                TbsStepOutput::Matrix { name: "matrix_exp", data: res.data, rows: res.rows, cols: res.cols }
+            }
+
+            ("matrix_log", None) => {
+                if pn != pd { return Err("matrix_log: matrix must be square".into()); }
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let res = crate::linear_algebra::matrix_log(&mat);
+                TbsStepOutput::Matrix { name: "matrix_log", data: res.data, rows: res.rows, cols: res.cols }
+            }
+
+            ("matrix_sqrt", None) => {
+                if pn != pd { return Err("matrix_sqrt: matrix must be square".into()); }
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let res = crate::linear_algebra::matrix_sqrt(&mat);
+                TbsStepOutput::Matrix { name: "matrix_sqrt", data: res.data, rows: res.rows, cols: res.cols }
+            }
+
+            ("log_det", None) => {
+                if pn != pd { return Err("log_det: matrix must be square".into()); }
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                TbsStepOutput::Scalar { name: "log_det", value: crate::linear_algebra::log_det(&mat) }
+            }
+
+            ("effective_rank", None) | ("effective_rank_from_sv", None) => {
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let svd_res = crate::linear_algebra::svd(&mat);
+                TbsStepOutput::Scalar { name: "effective_rank", value: crate::linear_algebra::effective_rank_from_sv(&svd_res.sigma) }
+            }
+
+            ("conjugate_gradient", None) | ("cg", None) => {
+                // Ax = b: data is n×n SPD matrix A; y is RHS b.
+                if pn != pd { return Err("conjugate_gradient: matrix must be square".into()); }
+                let b = y.as_deref().ok_or("conjugate_gradient: y (RHS vector) must be provided")?;
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let tol = f64_arg(step, "tol", 0, 1e-10);
+                let max_iter = usize_arg(step, "max_iter", 1, 1000);
+                let res = crate::linear_algebra::conjugate_gradient(&mat, b, None, Some(tol), Some(max_iter));
+                TbsStepOutput::Vector { name: "cg_solution", values: res.x }
+            }
+
+            ("gmres", None) => {
+                // Ax = b: data is n×n matrix A; y is RHS b.
+                if pn != pd { return Err("gmres: matrix must be square".into()); }
+                let b = y.as_deref().ok_or("gmres: y (RHS vector) must be provided")?;
+                let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
+                let tol = f64_arg(step, "tol", 0, 1e-10);
+                let max_iter = usize_arg(step, "max_iter", 1, 1000);
+                let res = crate::linear_algebra::gmres(&mat, b, None, Some(tol), Some(max_iter), None);
+                TbsStepOutput::Vector { name: "gmres_solution", values: res.x }
+            }
+
             // ══════════════════════════════════════════════════════════════
             // Multivariate tests: Hotelling, MANOVA, CCA, LDA, Mardia
             // ══════════════════════════════════════════════════════════════
@@ -2765,6 +2890,112 @@ pub fn execute(
                 let diag = crate::tda::rips_h1(&dist, pn, max_edge);
                 let ent = crate::tda::persistence_entropy(&diag.pairs);
                 TbsStepOutput::Scalar { name: "persistence_entropy", value: ent }
+            }
+
+            ("rips_h1", None) | ("persistent_homology_h1", None) => {
+                let data = &pipeline.frame().data;
+                let mut dist = vec![0.0_f64; pn * pn];
+                for i in 0..pn {
+                    for j in 0..pn {
+                        let d2: f64 = (0..pd).map(|k| {
+                            let diff = data[i * pd + k] - data[j * pd + k];
+                            diff * diff
+                        }).sum();
+                        dist[i * pn + j] = d2.sqrt();
+                    }
+                }
+                let max_edge = f64_arg(step, "max_edge", 0, f64::INFINITY);
+                let diag = crate::tda::rips_h1(&dist, pn, max_edge);
+                let n_loops = diag.pairs.len();
+                TbsStepOutput::Scalar { name: "h1_loops", value: n_loops as f64 }
+            }
+
+            ("betti_curve", None) => {
+                let data = &pipeline.frame().data;
+                let mut dist = vec![0.0_f64; pn * pn];
+                for i in 0..pn {
+                    for j in 0..pn {
+                        let d2: f64 = (0..pd).map(|k| {
+                            let diff = data[i * pd + k] - data[j * pd + k];
+                            diff * diff
+                        }).sum();
+                        dist[i * pn + j] = d2.sqrt();
+                    }
+                }
+                let max_edge = f64_arg(step, "max_edge", 0, f64::INFINITY);
+                let n_steps = usize_arg(step, "n_steps", 1, 50);
+                let diag = crate::tda::rips_h1(&dist, pn, max_edge);
+                // Build n_steps evenly-spaced thresholds in [0, max_finite_edge]
+                let max_val = dist.iter().cloned().filter(|v| v.is_finite()).fold(0.0_f64, f64::max);
+                let thresholds: Vec<f64> = (0..n_steps).map(|i| max_val * i as f64 / (n_steps - 1).max(1) as f64).collect();
+                let counts = crate::tda::betti_curve(&diag.pairs, &thresholds);
+                // Interleave threshold and betti count
+                let mut out = Vec::with_capacity(thresholds.len() * 2);
+                for (t, c) in thresholds.iter().zip(counts.iter()) {
+                    out.push(*t);
+                    out.push(*c as f64);
+                }
+                TbsStepOutput::Vector { name: "betti_curve", values: out }
+            }
+
+            ("persistence_statistics", None) => {
+                let data = &pipeline.frame().data;
+                let mut dist = vec![0.0_f64; pn * pn];
+                for i in 0..pn {
+                    for j in 0..pn {
+                        let d2: f64 = (0..pd).map(|k| {
+                            let diff = data[i * pd + k] - data[j * pd + k];
+                            diff * diff
+                        }).sum();
+                        dist[i * pn + j] = d2.sqrt();
+                    }
+                }
+                let max_edge = f64_arg(step, "max_edge", 0, f64::INFINITY);
+                let diag = crate::tda::rips_h1(&dist, pn, max_edge);
+                let stats = crate::tda::persistence_statistics(&diag.pairs);
+                // [mean, std, max, total_persistence, n_pairs]
+                TbsStepOutput::Vector { name: "persistence_statistics", values: stats.to_vec() }
+            }
+
+            // kmo_bartlett: factor analysis adequacy test
+            ("kmo_bartlett", None) | ("kmo", None) => {
+                let data = &pipeline.frame().data;
+                let corr_mat = crate::factor_analysis::correlation_matrix(data, pn, pd);
+                let res = crate::factor_analysis::kmo_bartlett(&corr_mat, pn);
+                TbsStepOutput::Vector {
+                    name: "kmo_bartlett",
+                    values: vec![res.kmo_overall, res.bartlett_statistic, res.bartlett_p_value],
+                }
+            }
+
+            // Spectral clustering
+            ("spectral_cluster", None) => {
+                let k = usize_req(step, "k", 0)?;
+                let sigma = f64_arg(step, "sigma", 1, 1.0);
+                let data = &pipeline.frame().data;
+                let params = crate::spectral_clustering::SpectralClusterParams {
+                    k,
+                    affinity: crate::spectral_clustering::AffinityKind::Rbf { sigma },
+                    laplacian: crate::spectral_clustering::LaplacianKind::SymmetricNormalized,
+                    kmeans_max_iter: usize_arg(step, "max_iter", 2, 100),
+                    kmeans_tol: f64_arg(step, "tol", 3, 1e-6),
+                    seed: usize_arg(step, "seed", 4, 42) as u64,
+                };
+                let result = crate::spectral_clustering::spectral_cluster(data, pn, pd, &params);
+                TbsStepOutput::Vector { name: "spectral_labels", values: result.labels.iter().map(|&l| l as f64).collect() }
+            }
+
+            ("spectral_embedding", None) => {
+                // Build affinity + laplacian from data, then embed
+                let k = usize_arg(step, "k", 0, 2);
+                let sigma = f64_arg(step, "sigma", 1, 1.0);
+                let data = &pipeline.frame().data;
+                let sq = crate::spectral_clustering::pairwise_sq_dist(data, pn, pd);
+                let w = crate::spectral_clustering::build_affinity(&sq, crate::spectral_clustering::AffinityKind::Rbf { sigma });
+                let lap = crate::spectral_clustering::build_laplacian(&w, crate::spectral_clustering::LaplacianKind::SymmetricNormalized);
+                let (embedding, _eigenvalues) = crate::spectral_clustering::spectral_embedding(&lap, k, true);
+                // embedding is pn*k row-major
+                TbsStepOutput::Matrix { name: "spectral_embedding", data: embedding, rows: pn, cols: k }
             }
 
             // ══════════════════════════════════════════════════════════════

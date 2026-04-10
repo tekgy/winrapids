@@ -743,23 +743,30 @@ fn svd_col_dots(data: &[f64], m: usize, n: usize, p: usize, q: usize) -> (f64, f
 ///
 /// # Parameters
 ///
-/// - `rcond` — singular values smaller than this threshold are treated as
-///   zero when inverting. Smaller values retain more near-zero singular
-///   values (less aggressive truncation); larger values suppress more noise.
-///   Type: `Option<f64>`, range: `(0, ∞)`, default: `1e-12`.
-///   Note: MATLAB uses `max(m,n) * eps * max(σ)` (relative); this parameter
-///   is absolute. Use `None` for the default absolute threshold.
+/// - `rcond` — singular values smaller than `rcond * max_sv` are treated as
+///   zero when inverting (relative threshold). Smaller values retain more
+///   near-zero singular values; larger values suppress more noise.
+///   Type: `Option<f64>`, range: `(0, 1)`, default: `max(m,n) * eps`
+///   (matches NumPy `linalg.pinv` and LAPACK `dgelss` default).
+///   Pass `Some(t)` to set an absolute threshold `t` directly.
 pub fn pinv(a: &Mat, rcond: Option<f64>) -> Mat {
-    let rcond = rcond.unwrap_or(1e-12);
     let svd_res = svd(a);
     let m = a.rows;
     let n = a.cols;
     let k = svd_res.sigma.len();
 
+    // Threshold: if caller passed an explicit rcond, use it as-is (absolute threshold).
+    // If None: use max(m,n) * eps * max_sv — matches NumPy linalg.pinv and LAPACK dgelss.
+    let max_sv = svd_res.sigma.first().copied().unwrap_or(0.0);
+    let threshold = rcond.unwrap_or_else(|| {
+        let max_dim = m.max(n) as f64;
+        max_dim * f64::EPSILON * max_sv
+    });
+
     // A⁺ = V Σ⁺ U^T
     let mut sigma_inv = vec![0.0; k];
     for i in 0..k {
-        if svd_res.sigma[i] > rcond {
+        if svd_res.sigma[i] > threshold {
             sigma_inv[i] = 1.0 / svd_res.sigma[i];
         }
     }

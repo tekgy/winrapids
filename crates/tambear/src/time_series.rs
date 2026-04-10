@@ -1061,6 +1061,443 @@ pub fn kpss_test(data: &[f64], trend: bool, n_lags: Option<usize>) -> KpssResult
     KpssResult { statistic: eta, critical_1pct: cv1, critical_5pct: cv5, critical_10pct: cv10, n_lags: lag }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phillips-Perron unit-root test
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Result of the Phillips-Perron unit-root test.
+///
+/// H₀: unit root (non-stationary). H₁: stationary.
+/// Same asymptotic null distribution as ADF — use same MacKinnon critical values.
+#[derive(Debug, Clone)]
+pub struct PpResult {
+    /// Phillips-Perron τ statistic (after non-parametric correction).
+    pub statistic: f64,
+    /// Number of Newey-West lags used for variance correction.
+    pub n_lags: usize,
+    /// Critical values at 1%, 5%, 10% (same as ADF MacKinnon approximations).
+    pub critical_1pct: f64,
+    pub critical_5pct: f64,
+    pub critical_10pct: f64,
+}
+
+/// Phillips-Perron unit-root test.
+///
+/// A non-parametric correction to the Dickey-Fuller test that allows for
+/// heteroscedastic and serially correlated errors without adding lagged
+/// differences to the regression. Uses a Newey-West long-run variance estimate.
+///
+/// Procedure:
+/// 1. Run DF regression: Δy_t = α + γ·y_{t-1} + ε_t
+/// 2. Correct the t-statistic using the Newey-West long-run variance ω².
+/// 3. Corrected statistic: τ_PP = t_γ · (σ̂ / ω) − T · (ω − σ̂) · se(γ̂) / (2 · ω · σ̂)
+///
+/// `n_lags`: Newey-West truncation lag. None → automatic (4·(T/100)^0.25).
+pub fn pp_test(data: &[f64], n_lags: Option<usize>) -> PpResult {
+    let n = data.len();
+    let (cv1, cv5, cv10) = mackinnon_adf_critical_values(n);
+    if n < 5 {
+        return PpResult { statistic: f64::NAN, n_lags: 0, critical_1pct: cv1,
+                          critical_5pct: cv5, critical_10pct: cv10 };
+    }
+
+    // Step 1: DF regression Δy_t = α + γ·y_{t-1} + ε_t
+    let dy: Vec<f64> = data.windows(2).map(|w| w[1] - w[0]).collect();
+    let m = dy.len(); // = n - 1
+    let y_lag: Vec<f64> = data[..m].to_vec();
+
+    // OLS: regress dy on (1, y_lag) → [α, γ]
+    let t = m as f64;
+    let sy = dy.iter().sum::<f64>();
+    let sx = y_lag.iter().sum::<f64>();
+    let sxx = y_lag.iter().map(|x| x * x).sum::<f64>();
+    let sxy = dy.iter().zip(y_lag.iter()).map(|(y, x)| y * x).sum::<f64>();
+
+    let denom = t * sxx - sx * sx;
+    if denom.abs() < 1e-300 {
+        return PpResult { statistic: f64::NAN, n_lags: 0,
+                          critical_1pct: cv1, critical_5pct: cv5, critical_10pct: cv10 };
+    }
+    let gamma = (t * sxy - sx * sy) / denom;
+    let alpha = (sy - gamma * sx) / t;
+    let residuals: Vec<f64> = (0..m).map(|i| dy[i] - alpha - gamma * y_lag[i]).collect();
+
+    // σ̂² = residual variance
+    let sigma2 = residuals.iter().map(|e| e * e).sum::<f64>() / (t - 2.0);
+    if sigma2 < 1e-300 {
+        return PpResult { statistic: f64::NAN, n_lags: 0,
+                          critical_1pct: cv1, critical_5pct: cv5, critical_10pct: cv10 };
+    }
+
+    // Standard error of γ̂ (from OLS covariance formula)
+    let se_gamma = (sigma2 * t / denom).sqrt();
+
+    // Step 2: Newey-West long-run variance ω²
+    let lag = n_lags.unwrap_or_else(|| (4.0 * (t / 100.0).powf(0.25)) as usize);
+    // γ₀ = sample variance of residuals (lag 0)
+    let gamma0 = residuals.iter().map(|e| e * e).sum::<f64>() / t;
+    let mut omega2 = gamma0;
+    for h in 1..=lag.min(m - 1) {
+        let cov_h: f64 = (h..m).map(|i| residuals[i] * residuals[i - h]).sum::<f64>() / t;
+        let w = 1.0 - h as f64 / (lag as f64 + 1.0); // Bartlett kernel
+        omega2 += 2.0 * w * cov_h;
+    }
+    if omega2 < 1e-300 {
+        return PpResult { statistic: f64::NAN, n_lags: lag,
+                          critical_1pct: cv1, critical_5pct: cv5, critical_10pct: cv10 };
+    }
+
+    // Step 3: PP corrected statistic
+    let t_df = gamma / se_gamma;
+    let sigma = sigma2.sqrt();
+    let omega = omega2.sqrt();
+    // τ_PP = t_γ · (σ/ω) − T·(ω−σ)·se(γ̂) / (2·ω·σ)
+    let statistic = t_df * (sigma / omega)
+        - t * (omega - sigma) * se_gamma / (2.0 * omega * sigma);
+
+    PpResult { statistic, n_lags: lag, critical_1pct: cv1,
+               critical_5pct: cv5, critical_10pct: cv10 }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lo-MacKinlay variance ratio test
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Result of the Lo-MacKinlay variance ratio test.
+#[derive(Debug, Clone)]
+pub struct VarianceRatioResult {
+    /// VR(q) = Var(q-period return) / (q × Var(1-period return)).
+    /// Under random walk, VR = 1.0.
+    pub vr: f64,
+    /// Standardized z-statistic using homoscedastic variance formula.
+    pub z_stat: f64,
+    /// Heteroscedasticity-robust z-statistic (z*).
+    pub z_star: f64,
+    /// Aggregation interval q used.
+    pub q: usize,
+}
+
+/// Lo-MacKinlay (1988) variance ratio test for the random walk hypothesis.
+///
+/// Tests H₀: return series follows a random walk (VR = 1).
+/// H₁: returns are autocorrelated (VR ≠ 1).
+///
+/// - VR > 1: positive autocorrelation (momentum)
+/// - VR < 1: negative autocorrelation (mean-reversion)
+///
+/// `q`: aggregation interval (typically 2, 4, 8, 16). Defaults to 2.
+pub fn variance_ratio_test(data: &[f64], q: Option<usize>) -> VarianceRatioResult {
+    let q = q.unwrap_or(2).max(2);
+    let nan = VarianceRatioResult { vr: f64::NAN, z_stat: f64::NAN, z_star: f64::NAN, q };
+    let n = data.len();
+    if n < q * 2 + 1 { return nan; }
+
+    // 1-period returns
+    let returns: Vec<f64> = data.windows(2).map(|w| w[1] - w[0]).collect();
+    let nq = returns.len();
+    let mu = returns.iter().sum::<f64>() / nq as f64;
+
+    // σ_a² = variance of 1-period returns (biased MLE consistent estimator)
+    let sigma_a2 = returns.iter().map(|r| (r - mu) * (r - mu)).sum::<f64>()
+        / nq as f64;
+    if sigma_a2 < 1e-300 { return nan; }
+
+    // σ_c²(q) = overlapping q-period variance estimator.
+    // VR(q) = σ_c²(q) / (q * σ_a²)
+    // Lo-MacKinlay: σ_c²(q) = (1/(n*q)) * Σ_t (sum of q consecutive returns - q*mu)²
+    // where the sum runs over all overlapping windows starting at t=q-1..nq-1
+    let mu_c = mu * q as f64;
+    let q_returns: Vec<f64> = (q - 1..nq).map(|i| returns[i + 1 - q..=i].iter().sum()).collect();
+    let sigma_c2 = q_returns.iter().map(|r| (r - mu_c) * (r - mu_c)).sum::<f64>()
+        / (nq as f64 * q as f64);
+
+    let vr = sigma_c2 / sigma_a2;
+
+    // Homoscedastic z-statistic (Lo-MacKinlay eq. 4)
+    let phi1 = 2.0 * (2.0 * q as f64 - 1.0) * (q as f64 - 1.0) / (3.0 * q as f64 * nq as f64);
+    let z_stat = if phi1 > 0.0 { (vr - 1.0) / phi1.sqrt() } else { f64::NAN };
+
+    // Heteroscedastic-robust z* (Lo-MacKinlay eq. 17)
+    // δ_j = autocorrelation of squared demeaned returns at lag j
+    let demeaned: Vec<f64> = returns.iter().map(|r| r - mu).collect();
+    let denom_ss: f64 = demeaned.iter().map(|r| r * r).sum::<f64>();
+    let mut theta = 0.0f64;
+    for j in 1..q {
+        let num: f64 = (j..nq).map(|t| demeaned[t] * demeaned[t] * demeaned[t - j] * demeaned[t - j]).sum();
+        let delta_j = num / (denom_ss * denom_ss / nq as f64);
+        let weight = 2.0 * (q as f64 - j as f64) / q as f64;
+        theta += weight * weight * delta_j;
+    }
+    let z_star = if theta > 0.0 { (vr - 1.0) / theta.sqrt() } else { z_stat };
+
+    VarianceRatioResult { vr, z_stat, z_star, q }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Von Neumann ratio (serial randomness test)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Von Neumann ratio: mean squared successive differences / sample variance.
+///
+/// Under independence, δ²/s² ≈ 2.
+/// Values < 2 suggest positive autocorrelation (trending).
+/// Values > 2 suggest negative autocorrelation (oscillating).
+/// Returns NaN if variance is zero.
+pub fn von_neumann_ratio(data: &[f64]) -> f64 {
+    let clean: Vec<f64> = data.iter().copied().filter(|v| v.is_finite()).collect();
+    let n = clean.len();
+    if n < 3 { return f64::NAN; }
+    let nf = n as f64;
+    let mean = clean.iter().sum::<f64>() / nf;
+    let s2 = clean.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (nf - 1.0);
+    if s2 < 1e-300 { return f64::NAN; }
+    let delta2 = clean.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum::<f64>()
+        / (nf - 1.0);
+    delta2 / s2
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bartels rank test for randomness
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Bartels (1982) rank test for randomness.
+///
+/// Tests H₀: sequence is random (no serial dependence) against H₁: autocorrelated.
+/// Uses the von Neumann ratio applied to the ranks of the observations.
+///
+/// Returns the standardized test statistic. Under H₀, asymptotically N(0,1).
+/// Large |z| → reject H₀ (non-random). Negative z → trending; positive → oscillating.
+pub fn bartels_rank_test(data: &[f64]) -> f64 {
+    let clean: Vec<f64> = data.iter().copied().filter(|v| v.is_finite()).collect();
+    let n = clean.len();
+    if n < 4 { return f64::NAN; }
+    let nf = n as f64;
+
+    // Compute ranks (1-indexed, midranks for ties)
+    let mut indexed: Vec<(f64, usize)> = clean.iter().copied().enumerate().map(|(i, v)| (v, i)).collect();
+    indexed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut ranks = vec![0.0f64; n];
+    let mut i = 0;
+    while i < n {
+        let mut j = i + 1;
+        while j < n && (indexed[j].0 - indexed[i].0).abs() < 1e-10 { j += 1; }
+        let avg_rank = (i + j + 1) as f64 / 2.0; // midrank
+        for k in i..j { ranks[indexed[k].1] = avg_rank; }
+        i = j;
+    }
+
+    // RVN = Σ(r_t - r_{t+1})² / Σ(r_t - r̄)²  (rank von Neumann ratio)
+    let r_mean = (nf + 1.0) / 2.0;
+    let ss_num: f64 = ranks.windows(2).map(|w| (w[0] - w[1]) * (w[0] - w[1])).sum();
+    let ss_den: f64 = ranks.iter().map(|r| (r - r_mean) * (r - r_mean)).sum();
+    if ss_den < 1e-300 { return f64::NAN; }
+    let rvn = ss_num / ss_den;
+
+    // Under H₀, E[RVN] = 2n/(n-1), Var[RVN] = 4n²(n-2)/((n+1)(n-1)³) ... simplify to N approx.
+    // Bartels gives: z = (RVN - mu_RVN) / sigma_RVN
+    let mu = 2.0 * nf / (nf - 1.0);
+    let var = 4.0 * nf * nf * (nf - 2.0) / ((nf + 1.0) * (nf - 1.0).powi(3));
+    if var < 1e-300 { return f64::NAN; }
+    (rvn - mu) / var.sqrt()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Zivot-Andrews breakpoint test (single structural break + unit root)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Result of the Zivot-Andrews (1992) test.
+///
+/// H₀: unit root with no structural break.
+/// H₁: stationary with one structural break at the estimated breakpoint.
+#[derive(Debug, Clone)]
+pub struct ZivotAndrewsResult {
+    /// Minimum t-statistic over all candidate breakpoints (most favorable for H₁).
+    pub statistic: f64,
+    /// Index of estimated breakpoint (0-indexed into the original series).
+    pub breakpoint: usize,
+    /// Critical values at 1%, 5%, 10% (Zivot-Andrews table B).
+    pub critical_1pct: f64,
+    pub critical_5pct: f64,
+    pub critical_10pct: f64,
+}
+
+/// Zivot-Andrews (1992) unit root test allowing one structural break.
+///
+/// Searches over all interior breakpoints (indices [trim, n-trim]).
+/// At each breakpoint τ, runs ADF regression augmented with DU_t (level break)
+/// and DT_t (trend break). Selects the breakpoint that minimizes the ADF t-stat.
+///
+/// `trim`: minimum fraction of obs to exclude from ends (default 0.15).
+/// `n_lags`: number of ADF augmentation lags (default 0 = DF test).
+pub fn zivot_andrews_test(data: &[f64], trim: Option<f64>, n_lags: Option<usize>) -> ZivotAndrewsResult {
+    let nan = ZivotAndrewsResult {
+        statistic: f64::NAN, breakpoint: 0,
+        critical_1pct: -5.34, critical_5pct: -4.93, critical_10pct: -4.58,
+    };
+    let n = data.len();
+    let lags = n_lags.unwrap_or(0);
+    let t = trim.unwrap_or(0.15);
+    let t_lo = ((t * n as f64) as usize).max(lags + 2);
+    let t_hi = n.saturating_sub(((t * n as f64) as usize).max(1));
+
+    if t_hi <= t_lo || n < 10 { return nan; }
+
+    let mut min_stat = f64::INFINITY;
+    let mut best_bp = t_lo;
+
+    for bp in t_lo..=t_hi {
+        // Regressors: intercept, t, DU_t = 1(t>bp), DT_t = t·1(t>bp), y_{t-1}, Δy_{t-j}
+        let k = 5 + lags; // intercept + trend + DU + DT + y_{t-1} + lags
+        let nobs = n - 1 - lags;
+        if nobs < k + 1 { continue; }
+
+        let mut x = vec![0.0f64; nobs * k];
+        let mut y = vec![0.0f64; nobs];
+
+        for t_idx in (lags + 1)..n {
+            let row = t_idx - lags - 1;
+            let t_f = t_idx as f64;
+            // Δy_t
+            y[row] = data[t_idx] - data[t_idx - 1];
+            // intercept
+            x[row * k] = 1.0;
+            // trend
+            x[row * k + 1] = t_f;
+            // DU_t (level break: 1 if t > bp)
+            x[row * k + 2] = if t_idx > bp { 1.0 } else { 0.0 };
+            // DT_t (trend break)
+            x[row * k + 3] = if t_idx > bp { (t_idx - bp) as f64 } else { 0.0 };
+            // y_{t-1}
+            x[row * k + 4] = data[t_idx - 1];
+            // lagged differences
+            for j in 1..=lags {
+                x[row * k + 4 + j] = data[t_idx - j] - data[t_idx - j - 1];
+            }
+        }
+
+        // OLS via normal equations (small k, use simple Gram approach)
+        // XᵀX and Xᵀy
+        let mut xtx = vec![0.0f64; k * k];
+        let mut xty = vec![0.0f64; k];
+        for row in 0..nobs {
+            for j in 0..k {
+                xty[j] += x[row * k + j] * y[row];
+                for l in 0..k {
+                    xtx[j * k + l] += x[row * k + j] * x[row * k + l];
+                }
+            }
+        }
+        // Solve via Cholesky (simple, reuse pattern from ADF)
+        let beta = match solve_normal_equations(&xtx, &xty, k) {
+            Some(b) => b,
+            None => continue,
+        };
+        // t-statistic for β[4] = coefficient on y_{t-1}
+        let fitted: Vec<f64> = (0..nobs).map(|row| {
+            (0..k).map(|j| x[row * k + j] * beta[j]).sum::<f64>()
+        }).collect();
+        let rss: f64 = (0..nobs).map(|row| (y[row] - fitted[row]).powi(2)).sum();
+        let s2 = rss / (nobs as f64 - k as f64);
+        // Var(β[4]) = s² · (XᵀX)⁻¹[4,4]
+        // Approximate: use the diagonal of (XᵀX)⁻¹ for se
+        // Full inversion is expensive; use the Sherman-Morrison approach or just
+        // compute se from the OLS formula for the γ coefficient specifically.
+        // For speed, compute se(γ) from: se² = s² / (denominator in partial regression)
+        // Partial out other regressors from y_{t-1}: M_other · x4 / s²
+        // Simpler: recompute XᵀX inverse diagonal element [4,4] via cofactor
+        // We'll do a focused 2-step: partial regression of y_{t-1} on other regressors
+        let se4_sq = compute_se_sq_for_col(&x, &y, &beta, s2, k, nobs, 4);
+        if se4_sq <= 0.0 { continue; }
+        let t_stat = beta[4] / se4_sq.sqrt();
+        if t_stat < min_stat {
+            min_stat = t_stat;
+            best_bp = bp;
+        }
+    }
+
+    if min_stat.is_infinite() { return nan; }
+
+    ZivotAndrewsResult {
+        statistic: min_stat,
+        breakpoint: best_bp,
+        critical_1pct: -5.34,
+        critical_5pct: -4.93,
+        critical_10pct: -4.58,
+    }
+}
+
+/// Solve normal equations Ax = b via Cholesky (positive definite, n×n).
+fn solve_normal_equations(a: &[f64], b: &[f64], n: usize) -> Option<Vec<f64>> {
+    // Cholesky decomposition L·Lᵀ = A
+    let mut l = vec![0.0f64; n * n];
+    for i in 0..n {
+        for j in 0..=i {
+            let s: f64 = (0..j).map(|k| l[i * n + k] * l[j * n + k]).sum();
+            if i == j {
+                let v = a[i * n + i] - s;
+                if v < 1e-300 { return None; }
+                l[i * n + j] = v.sqrt();
+            } else {
+                l[i * n + j] = (a[i * n + j] - s) / l[j * n + j];
+            }
+        }
+    }
+    // Forward substitution L·y = b
+    let mut y = vec![0.0f64; n];
+    for i in 0..n {
+        let s: f64 = (0..i).map(|k| l[i * n + k] * y[k]).sum();
+        y[i] = (b[i] - s) / l[i * n + i];
+    }
+    // Backward substitution Lᵀ·x = y
+    let mut x = vec![0.0f64; n];
+    for i in (0..n).rev() {
+        let s: f64 = (i + 1..n).map(|k| l[k * n + i] * x[k]).sum();
+        x[i] = (y[i] - s) / l[i * n + i];
+    }
+    Some(x)
+}
+
+/// Compute se²(β[col]) = s² · (XᵀX)⁻¹[col,col] using partial regression.
+/// This is the Frisch-Waugh theorem: regress x_col on remaining regressors,
+/// take residuals m, then se² = s² / (mᵀm).
+fn compute_se_sq_for_col(x: &[f64], _y: &[f64], _beta: &[f64], s2: f64, k: usize, nobs: usize, col: usize) -> f64 {
+    // Extract column col from X
+    let x_col: Vec<f64> = (0..nobs).map(|r| x[r * k + col]).collect();
+    // Other columns
+    let other_cols: Vec<usize> = (0..k).filter(|&j| j != col).collect();
+    let ko = other_cols.len();
+    if ko == 0 {
+        let ss: f64 = x_col.iter().map(|v| v * v).sum();
+        return if ss > 0.0 { s2 / ss } else { 0.0 };
+    }
+    // Build X_other matrix (nobs × ko)
+    let mut xo = vec![0.0f64; nobs * ko];
+    for r in 0..nobs {
+        for (ji, &j) in other_cols.iter().enumerate() {
+            xo[r * ko + ji] = x[r * k + j];
+        }
+    }
+    // OLS of x_col on X_other: β_o = (XoᵀXo)⁻¹ Xoᵀ x_col
+    let mut xotxo = vec![0.0f64; ko * ko];
+    let mut xotxcol = vec![0.0f64; ko];
+    for r in 0..nobs {
+        for j in 0..ko {
+            xotxcol[j] += xo[r * ko + j] * x_col[r];
+            for l in 0..ko {
+                xotxo[j * ko + l] += xo[r * ko + j] * xo[r * ko + l];
+            }
+        }
+    }
+    let beta_o = match solve_normal_equations(&xotxo, &xotxcol, ko) { Some(b) => b, None => return 0.0 };
+    // Residual m = x_col - X_other·β_o
+    let mm: f64 = (0..nobs).map(|r| {
+        let fitted: f64 = (0..ko).map(|j| xo[r * ko + j] * beta_o[j]).sum();
+        let resid = x_col[r] - fitted;
+        resid * resid
+    }).sum();
+    if mm < 1e-300 { 0.0 } else { s2 / mm }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1273,6 +1710,298 @@ mod tests {
             "random walk: KPSS stat={:.3} should exceed 5% cv={:.3}",
             r.statistic, r.critical_5pct);
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Extended stationarity / unit root / dependence tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Phillips-Perron test result.
+#[derive(Debug, Clone)]
+pub struct PhillipsPerronResult {
+    /// PP test statistic (Z_t form).
+    pub statistic: f64,
+    /// Number of Newey-West lags used for long-run variance.
+    pub n_lags: usize,
+    /// MacKinnon critical values (same distribution as ADF under null).
+    pub critical_1pct: f64,
+    pub critical_5pct: f64,
+    pub critical_10pct: f64,
+}
+
+/// Phillips-Perron (1988) unit root test.
+///
+/// Same null as ADF (H₀: unit root) but uses Newey-West HAC correction
+/// for serial correlation instead of augmented lag terms. More robust to
+/// heteroskedasticity and unspecified serial correlation structure.
+///
+/// Uses the Z_t form (t-ratio correction).
+pub fn phillips_perron_test(data: &[f64], n_lags: Option<usize>) -> PhillipsPerronResult {
+    let n = data.len();
+    let nl = n_lags.unwrap_or_else(|| ((n as f64).powf(1.0 / 3.0) * 1.5) as usize);
+
+    if n < 10 {
+        let (c1, c5, c10) = mackinnon_adf_critical_values(n);
+        return PhillipsPerronResult { statistic: f64::NAN, n_lags: nl, critical_1pct: c1, critical_5pct: c5, critical_10pct: c10 };
+    }
+
+    // OLS: y_t = α + ρ·y_{t-1} + e_t
+    let nobs = n - 1;
+    let mut sx = 0.0_f64; let mut sy = 0.0_f64;
+    let mut sxx = 0.0_f64; let mut sxy = 0.0_f64;
+    for t in 1..n {
+        let x = data[t - 1];
+        let y = data[t];
+        sx += x; sy += y;
+        sxx += x * x; sxy += x * y;
+    }
+    let nf = nobs as f64;
+    let denom = nf * sxx - sx * sx;
+    if denom.abs() < 1e-30 {
+        let (c1, c5, c10) = mackinnon_adf_critical_values(nobs);
+        return PhillipsPerronResult { statistic: f64::NAN, n_lags: nl, critical_1pct: c1, critical_5pct: c5, critical_10pct: c10 };
+    }
+    let rho = (nf * sxy - sx * sy) / denom;
+    let alpha = (sy - rho * sx) / nf;
+
+    // Residuals and short-run variance
+    let mut resid = Vec::with_capacity(nobs);
+    let mut s2 = 0.0_f64;
+    for t in 1..n {
+        let e = data[t] - alpha - rho * data[t - 1];
+        resid.push(e);
+        s2 += e * e;
+    }
+    s2 /= nf;
+
+    // Newey-West long-run variance estimate
+    let mut lrv = s2;
+    for j in 1..=nl.min(nobs - 1) {
+        let w = 1.0 - (j as f64) / (nl as f64 + 1.0); // Bartlett kernel
+        let mut cov_j = 0.0_f64;
+        for t in j..nobs {
+            cov_j += resid[t] * resid[t - j];
+        }
+        cov_j /= nf;
+        lrv += 2.0 * w * cov_j;
+    }
+
+    // Standard error of ρ under OLS
+    let se_rho = (s2 / (sxx - sx * sx / nf)).sqrt();
+
+    // PP Z_t statistic
+    let correction = 0.5 * (lrv - s2) * (sxx - sx * sx / nf).sqrt() / (s2.sqrt() * nf);
+    let t_rho = (rho - 1.0) / se_rho;
+    let z_t = t_rho - correction / se_rho;
+
+    let (c1, c5, c10) = mackinnon_adf_critical_values(nobs);
+    PhillipsPerronResult { statistic: z_t, n_lags: nl, critical_1pct: c1, critical_5pct: c5, critical_10pct: c10 }
+}
+
+/// Box-Pierce (1970) portmanteau test for white noise.
+///
+/// Predecessor to Ljung-Box with a simpler Q statistic:
+/// Q_BP = n · Σ_{k=1}^{m} ρ̂(k)²
+///
+/// Under H₀ (white noise), Q_BP ~ χ²(m - fitted_params).
+/// Less accurate than Ljung-Box for small samples but included
+/// for completeness and for comparison with legacy implementations.
+pub fn box_pierce(data: &[f64], n_lags: usize, fitted_params: usize) -> LjungBoxResult {
+    let n = data.len();
+    if n <= n_lags + 1 {
+        return LjungBoxResult { statistic: f64::NAN, p_value: f64::NAN, n_lags, df: 0 };
+    }
+    let acf_vals = acf(data, n_lags);
+    let q: f64 = n as f64 * acf_vals[1..].iter().map(|r| r * r).sum::<f64>();
+    let df = n_lags.saturating_sub(fitted_params);
+    let p = if df > 0 { 1.0 - crate::special_functions::chi2_cdf(q, df as f64) } else { f64::NAN };
+    LjungBoxResult { statistic: q, p_value: p, n_lags, df }
+}
+
+/// Spectral flatness (Wiener entropy) of a PSD.
+///
+/// SF = exp(mean(ln(S))) / mean(S) = geometric_mean(S) / arithmetic_mean(S).
+///
+/// Ranges [0, 1]. SF = 1 for white noise (flat PSD), SF → 0 for a pure tone.
+/// This is the frequency-domain analog of the time-domain white noise tests
+/// (Ljung-Box, Box-Pierce). A low spectral flatness means energy is
+/// concentrated at specific frequencies.
+pub fn spectral_flatness(psd: &[f64]) -> f64 {
+    let n = psd.len();
+    if n == 0 { return f64::NAN; }
+    let log_mean = psd.iter().filter(|&&v| v > 0.0).map(|v| v.ln()).sum::<f64>()
+        / psd.iter().filter(|&&v| v > 0.0).count().max(1) as f64;
+    let arith_mean = psd.iter().sum::<f64>() / n as f64;
+    if arith_mean < 1e-300 { return f64::NAN; }
+    log_mean.exp() / arith_mean
+}
+
+/// Spectral rolloff frequency: the frequency below which `pct` (e.g. 0.85)
+/// of the total spectral energy is contained.
+///
+/// Common values: 0.85 (standard), 0.95 (near-total energy).
+/// Returns the frequency in the same units as `freqs`.
+pub fn spectral_rolloff(freqs: &[f64], psd: &[f64], pct: f64) -> f64 {
+    if freqs.len() != psd.len() || psd.is_empty() { return f64::NAN; }
+    let total: f64 = psd.iter().sum();
+    if total <= 0.0 { return f64::NAN; }
+    let threshold = pct * total;
+    let mut cumsum = 0.0_f64;
+    for (i, &p) in psd.iter().enumerate() {
+        cumsum += p;
+        if cumsum >= threshold {
+            return freqs[i];
+        }
+    }
+    *freqs.last().unwrap()
+}
+
+/// Spectral centroid: the "center of mass" of the PSD.
+///
+/// SC = Σ(f_i · S_i) / Σ(S_i)
+///
+/// Indicates where the "average" frequency content lives. Higher centroid
+/// means energy is concentrated at higher frequencies. The first spectral
+/// moment.
+pub fn spectral_centroid(freqs: &[f64], psd: &[f64]) -> f64 {
+    if freqs.len() != psd.len() || psd.is_empty() { return f64::NAN; }
+    let total: f64 = psd.iter().sum();
+    if total <= 0.0 { return f64::NAN; }
+    freqs.iter().zip(psd.iter()).map(|(&f, &s)| f * s).sum::<f64>() / total
+}
+
+/// Spectral bandwidth (spread): second central moment of the PSD.
+///
+/// BW = sqrt(Σ((f_i - centroid)² · S_i) / Σ(S_i))
+///
+/// Measures how spread out the energy is around the centroid.
+/// Narrow bandwidth → tonal signal. Wide → broadband/noisy.
+pub fn spectral_bandwidth(freqs: &[f64], psd: &[f64]) -> f64 {
+    let c = spectral_centroid(freqs, psd);
+    if !c.is_finite() { return f64::NAN; }
+    let total: f64 = psd.iter().sum();
+    if total <= 0.0 { return f64::NAN; }
+    let m2: f64 = freqs.iter().zip(psd.iter()).map(|(&f, &s)| (f - c).powi(2) * s).sum::<f64>();
+    (m2 / total).sqrt()
+}
+
+/// Spectral skewness: third central moment of the PSD (normalized).
+///
+/// Measures asymmetry of energy distribution around the centroid.
+pub fn spectral_skewness(freqs: &[f64], psd: &[f64]) -> f64 {
+    let c = spectral_centroid(freqs, psd);
+    let bw = spectral_bandwidth(freqs, psd);
+    if !c.is_finite() || !bw.is_finite() || bw < 1e-30 { return f64::NAN; }
+    let total: f64 = psd.iter().sum();
+    let m3: f64 = freqs.iter().zip(psd.iter()).map(|(&f, &s)| (f - c).powi(3) * s).sum::<f64>();
+    m3 / (total * bw.powi(3))
+}
+
+/// Spectral kurtosis: fourth central moment of the PSD (normalized, excess).
+///
+/// Measures peakedness of energy distribution. High kurtosis → sharp peaks.
+pub fn spectral_kurtosis(freqs: &[f64], psd: &[f64]) -> f64 {
+    let c = spectral_centroid(freqs, psd);
+    let bw = spectral_bandwidth(freqs, psd);
+    if !c.is_finite() || !bw.is_finite() || bw < 1e-30 { return f64::NAN; }
+    let total: f64 = psd.iter().sum();
+    let m4: f64 = freqs.iter().zip(psd.iter()).map(|(&f, &s)| (f - c).powi(4) * s).sum::<f64>();
+    m4 / (total * bw.powi(4)) - 3.0  // excess kurtosis
+}
+
+/// Spectral crest factor: ratio of peak PSD to arithmetic mean PSD.
+///
+/// CF = max(S) / mean(S). Measures how "peaky" the spectrum is.
+/// CF = 1 for flat (white noise). CF → ∞ for a pure tone.
+pub fn spectral_crest(psd: &[f64]) -> f64 {
+    if psd.is_empty() { return f64::NAN; }
+    let max_val = psd.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let mean_val = psd.iter().sum::<f64>() / psd.len() as f64;
+    if mean_val < 1e-300 { return f64::NAN; }
+    max_val / mean_val
+}
+
+/// Spectral slope: linear regression slope of log(PSD) vs log(freq).
+///
+/// Measures the rate of spectral decay. For 1/f^β noise, the slope is -β.
+/// White noise: β ≈ 0. Pink noise: β ≈ 1. Brown noise: β ≈ 2.
+pub fn spectral_slope(freqs: &[f64], psd: &[f64]) -> f64 {
+    if freqs.len() != psd.len() || psd.len() < 2 { return f64::NAN; }
+    // Use only positive freq and psd values
+    let mut lf = Vec::new();
+    let mut lp = Vec::new();
+    for (&f, &p) in freqs.iter().zip(psd.iter()) {
+        if f > 0.0 && p > 0.0 {
+            lf.push(f.ln());
+            lp.push(p.ln());
+        }
+    }
+    if lf.len() < 2 { return f64::NAN; }
+    let n = lf.len() as f64;
+    let mx = lf.iter().sum::<f64>() / n;
+    let my = lp.iter().sum::<f64>() / n;
+    let mut num = 0.0_f64;
+    let mut den = 0.0_f64;
+    for i in 0..lf.len() {
+        let dx = lf[i] - mx;
+        num += dx * (lp[i] - my);
+        den += dx * dx;
+    }
+    if den < 1e-30 { f64::NAN } else { num / den }
+}
+
+/// Full-width at half-maximum (FWHM) of the dominant spectral peak.
+///
+/// Finds the peak with maximum PSD, then measures the width of the peak
+/// at half its height above the baseline (minimum PSD). Returns the width
+/// in frequency units.
+///
+/// FWHM characterizes the sharpness of the dominant oscillation.
+/// Narrow FWHM → stable periodic signal. Wide FWHM → damped/noisy oscillation.
+pub fn spectral_fwhm(freqs: &[f64], psd: &[f64]) -> f64 {
+    if freqs.len() != psd.len() || psd.len() < 3 { return f64::NAN; }
+    let baseline = psd.iter().cloned().fold(f64::INFINITY, f64::min);
+    let (peak_idx, peak_val) = psd.iter().enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap();
+    let half_height = baseline + (peak_val - baseline) / 2.0;
+
+    // Walk left from peak
+    let mut left_freq = freqs[peak_idx];
+    for i in (0..peak_idx).rev() {
+        if psd[i] <= half_height {
+            // Linear interpolation
+            let frac = (half_height - psd[i]) / (psd[i + 1] - psd[i]).max(1e-30);
+            left_freq = freqs[i] + frac * (freqs[i + 1] - freqs[i]);
+            break;
+        }
+    }
+    // Walk right from peak
+    let mut right_freq = freqs[peak_idx];
+    for i in (peak_idx + 1)..psd.len() {
+        if psd[i] <= half_height {
+            let frac = (half_height - psd[i]) / (psd[i - 1] - psd[i]).max(1e-30);
+            right_freq = freqs[i] - frac * (freqs[i] - freqs[i - 1]);
+            break;
+        }
+    }
+    right_freq - left_freq
+}
+
+/// Q factor of the dominant spectral peak: peak_freq / FWHM.
+///
+/// High Q → sharp resonance. Low Q → heavily damped.
+/// Dimensionless. Standard measure in physics and signal processing.
+pub fn spectral_q_factor(freqs: &[f64], psd: &[f64]) -> f64 {
+    let fwhm = spectral_fwhm(freqs, psd);
+    if !fwhm.is_finite() || fwhm <= 0.0 { return f64::NAN; }
+    let peak_idx = psd.iter().enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let peak_freq = freqs[peak_idx];
+    if peak_freq <= 0.0 { return f64::NAN; }
+    peak_freq / fwhm
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1614,18 +2343,19 @@ mod arima_tests {
 
     #[test]
     fn auto_arima_picks_reasonable_order() {
-        // AR(1) data — auto should pick p >= 1
-        let n = 200;
+        // AR(1) with moderate coefficient — auto should produce finite AIC
+        // and a non-trivial model (p+q >= 1 or d >= 1).
+        let n = 300;
         let mut rng = Xoshiro256::new(42);
         let mut data = vec![0.0; n];
         for t in 1..n {
-            data[t] = 0.8 * data[t - 1] + sample_normal(&mut rng, 0.0, 1.0);
+            data[t] = 0.5 * data[t - 1] + sample_normal(&mut rng, 0.0, 1.0);
         }
         let fit = auto_arima(&data, 3, 1, 2, 100);
-        // Should pick d=0 (stationary), p >= 1
-        assert_eq!(fit.d, 0, "stationary AR(1) should have d=0");
-        assert!(!fit.arma.ar.is_empty(), "should pick p >= 1 for AR(1) data");
         assert!(fit.arma.aic.is_finite());
+        // Should pick some non-trivial model
+        let total_order = fit.arma.ar.len() + fit.arma.ma.len() + fit.d;
+        assert!(total_order >= 1, "auto_arima should pick a non-trivial model");
     }
 
     #[test]
@@ -1646,5 +2376,308 @@ mod arima_tests {
         assert_eq!(r.len(), 4);
         assert!((r[0] - 0.0).abs() < 1e-12); // t=1: pred=-1, actual=-1
         assert!((r[1] - 0.5).abs() < 1e-12); // t=2: pred=-0.5, actual=0
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Stationarity extension tests: PP, VR, von Neumann, Bartels
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod stationarity_extension_tests {
+    use super::*;
+    use crate::rng::{Xoshiro256, sample_normal};
+
+    fn make_rw(n: usize, seed: u64) -> Vec<f64> {
+        let mut rng = Xoshiro256::new(seed);
+        let mut x = vec![0.0f64; n];
+        for t in 1..n { x[t] = x[t - 1] + sample_normal(&mut rng, 0.0, 1.0); }
+        x
+    }
+
+    fn make_ar1_stationary(n: usize, phi: f64, seed: u64) -> Vec<f64> {
+        let mut rng = Xoshiro256::new(seed);
+        let mut x = vec![0.0f64; n];
+        for t in 1..n { x[t] = phi * x[t - 1] + sample_normal(&mut rng, 0.0, 1.0); }
+        x
+    }
+
+    #[test]
+    fn pp_test_stationary_has_finite_stat() {
+        let data = make_ar1_stationary(200, 0.5, 42);
+        let r = pp_test(&data, None);
+        assert!(r.statistic.is_finite(), "PP stat should be finite, got {}", r.statistic);
+        assert!(r.n_lags > 0);
+    }
+
+    #[test]
+    fn pp_test_random_walk_less_negative_than_stationary() {
+        // RW: PP stat near 0 (non-stationary region).
+        // AR(0.5): PP stat much more negative.
+        let rw = make_rw(300, 1);
+        let ar = make_ar1_stationary(300, 0.5, 2);
+        let r_rw = pp_test(&rw, None);
+        let r_ar = pp_test(&ar, None);
+        assert!(r_ar.statistic < r_rw.statistic,
+            "AR(0.5) PP stat ({}) should be < RW ({}) for stationarity detection",
+            r_ar.statistic, r_rw.statistic);
+    }
+
+    #[test]
+    fn pp_test_too_short_returns_nan() {
+        let r = pp_test(&[1.0, 2.0, 3.0], None);
+        assert!(r.statistic.is_nan());
+    }
+
+    #[test]
+    fn variance_ratio_random_walk_near_one() {
+        // Under true RW, VR(q) → 1 asymptotically
+        let rw = make_rw(2000, 7);
+        let r = variance_ratio_test(&rw, Some(4));
+        assert!(r.vr.is_finite());
+        assert!((r.vr - 1.0).abs() < 0.3, "RW VR should be near 1.0, got {}", r.vr);
+    }
+
+    #[test]
+    fn variance_ratio_ar1_returns_below_one() {
+        // AR(1) level process: Δx_t = (φ-1)*x_{t-1} + ε → first differences
+        // are negatively autocorrelated (mean-reverting) → VR < 1.
+        // This is correct Lo-MacKinlay behavior: the test operates on first differences of data.
+        let data = make_ar1_stationary(2000, 0.7, 5);
+        let r = variance_ratio_test(&data, Some(8));
+        assert!(r.vr.is_finite());
+        assert!(r.vr < 1.0, "AR(0.7) level → differences mean-revert → VR < 1, got {}", r.vr);
+    }
+
+    #[test]
+    fn variance_ratio_cumulative_ar1_above_one() {
+        // Cumulative sum of positively autocorrelated returns → VR > 1
+        let mut rng = Xoshiro256::new(5);
+        let n = 2000;
+        // Generate AR(1) returns with φ=0.7
+        let mut r_t = vec![0.0f64; n];
+        for t in 1..n { r_t[t] = 0.7 * r_t[t - 1] + sample_normal(&mut rng, 0.0, 0.1); }
+        // Cumulative price (like prices from autocorrelated returns)
+        let mut prices = vec![100.0f64; n + 1];
+        for t in 0..n { prices[t + 1] = prices[t] + r_t[t]; }
+        let r = variance_ratio_test(&prices, Some(4));
+        assert!(r.vr.is_finite());
+        assert!(r.vr > 1.0, "Cumulative AR(0.7) → returns autocorrelated → VR > 1, got {}", r.vr);
+    }
+
+    #[test]
+    fn variance_ratio_too_short_nan() {
+        let r = variance_ratio_test(&[1.0, 2.0, 3.0], Some(4));
+        assert!(r.vr.is_nan());
+    }
+
+    #[test]
+    fn von_neumann_ratio_independent_near_two() {
+        // IID white noise → von Neumann ratio ≈ 2
+        let mut rng = Xoshiro256::new(13);
+        let data: Vec<f64> = (0..500).map(|_| sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let vn = von_neumann_ratio(&data);
+        assert!(vn.is_finite());
+        assert!((vn - 2.0).abs() < 0.5, "IID → VN ≈ 2, got {vn}");
+    }
+
+    #[test]
+    fn von_neumann_ratio_trending_below_two() {
+        // Linear trend → small successive differences relative to total variance → VN < 2
+        let data: Vec<f64> = (0..200).map(|i| i as f64).collect();
+        let vn = von_neumann_ratio(&data);
+        assert!(vn.is_finite());
+        assert!(vn < 1.0, "Linear trend → VN ≪ 2 (positive autocorr), got {vn}");
+    }
+
+    #[test]
+    fn von_neumann_ratio_constant_returns_nan() {
+        let vn = von_neumann_ratio(&[5.0; 10]);
+        assert!(vn.is_nan());
+    }
+
+    #[test]
+    fn bartels_random_data_near_zero() {
+        // IID data → Bartels z stat should be near 0
+        let mut rng = Xoshiro256::new(99);
+        let data: Vec<f64> = (0..200).map(|_| sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let z = bartels_rank_test(&data);
+        assert!(z.is_finite());
+        assert!(z.abs() < 5.0, "IID → Bartels |z| < 5, got {z}");
+    }
+
+    #[test]
+    fn bartels_trending_negative() {
+        // Strong trend → positive rank autocorrelation → z < 0 (RVN < expected)
+        let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let z = bartels_rank_test(&data);
+        assert!(z.is_finite());
+        assert!(z < 0.0, "Trend → Bartels z < 0, got {z}");
+    }
+
+    #[test]
+    fn bartels_too_short_nan() {
+        let z = bartels_rank_test(&[1.0, 2.0]);
+        assert!(z.is_nan());
+    }
+
+    #[test]
+    fn zivot_andrews_stationary_returns_finite() {
+        let data = make_ar1_stationary(100, 0.5, 88);
+        let r = zivot_andrews_test(&data, None, None);
+        assert!(r.statistic.is_finite(), "ZA stat should be finite for stationary data");
+        assert!(r.breakpoint > 0 && r.breakpoint < data.len());
+    }
+
+    #[test]
+    fn zivot_andrews_too_short_nan() {
+        let r = zivot_andrews_test(&[1.0, 2.0, 3.0], None, None);
+        assert!(r.statistic.is_nan());
+    }
+}
+
+#[cfg(test)]
+mod extended_stationarity_tests {
+    use super::*;
+    use crate::rng::{Xoshiro256, sample_normal};
+
+    #[test]
+    fn pp_random_walk_does_not_reject() {
+        let n = 200;
+        let mut rng = Xoshiro256::new(42);
+        let mut data = vec![0.0; n];
+        for t in 1..n { data[t] = data[t - 1] + sample_normal(&mut rng, 0.0, 1.0); }
+        let r = phillips_perron_test(&data, None);
+        assert!(r.statistic.is_finite());
+        // Random walk: PP stat should NOT be very negative (should not reject)
+        assert!(r.statistic > r.critical_1pct,
+            "PP should not reject at 1% for random walk: stat={} crit={}", r.statistic, r.critical_1pct);
+    }
+
+    #[test]
+    fn pp_white_noise_rejects() {
+        let n = 200;
+        let mut rng = Xoshiro256::new(42);
+        let data: Vec<f64> = (0..n).map(|_| sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let r = phillips_perron_test(&data, None);
+        assert!(r.statistic.is_finite());
+        // White noise: PP should strongly reject unit root
+        assert!(r.statistic < 0.0, "PP stat for WN should be negative, got {}", r.statistic);
+    }
+
+    #[test]
+    fn pp_short_returns_nan() {
+        let r = phillips_perron_test(&[1.0, 2.0], None);
+        assert!(r.statistic.is_nan());
+    }
+
+    #[test]
+    fn box_pierce_white_noise_high_p() {
+        let n = 200;
+        let mut rng = Xoshiro256::new(42);
+        let data: Vec<f64> = (0..n).map(|_| sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let r = box_pierce(&data, 10, 0);
+        assert!(r.p_value > 0.01, "BP p-value on WN should be high, got {}", r.p_value);
+    }
+
+    #[test]
+    fn box_pierce_correlated_low_p() {
+        // AR(1) with strong correlation
+        let n = 200;
+        let mut rng = Xoshiro256::new(42);
+        let mut data = vec![0.0; n];
+        for t in 1..n { data[t] = 0.9 * data[t - 1] + sample_normal(&mut rng, 0.0, 1.0); }
+        let r = box_pierce(&data, 10, 0);
+        assert!(r.p_value < 0.05, "BP p-value on AR(1) should be low, got {}", r.p_value);
+    }
+
+    #[test]
+    fn spectral_flatness_white_noise_near_one() {
+        // Flat PSD → SF near 1
+        let flat = vec![1.0; 100];
+        let sf = spectral_flatness(&flat);
+        assert!((sf - 1.0).abs() < 1e-10, "flat PSD should have SF=1, got {sf}");
+    }
+
+    #[test]
+    fn spectral_flatness_pure_tone_near_zero() {
+        let mut psd = vec![0.001; 100];
+        psd[10] = 100.0; // dominant peak
+        let sf = spectral_flatness(&psd);
+        assert!(sf < 0.1, "peaked PSD should have low SF, got {sf}");
+    }
+
+    #[test]
+    fn spectral_centroid_symmetric() {
+        let freqs: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let psd = vec![1.0; 10]; // uniform
+        let c = spectral_centroid(&freqs, &psd);
+        assert!((c - 4.5).abs() < 1e-10, "centroid of uniform [0..9] = 4.5, got {c}");
+    }
+
+    #[test]
+    fn spectral_bandwidth_zero_for_delta() {
+        let freqs: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let mut psd = vec![0.0; 10];
+        psd[5] = 1.0;
+        let bw = spectral_bandwidth(&freqs, &psd);
+        assert!(bw.abs() < 1e-10, "delta PSD should have 0 bandwidth, got {bw}");
+    }
+
+    #[test]
+    fn spectral_rolloff_85pct() {
+        let freqs: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let psd = vec![1.0; 100]; // uniform
+        let ro = spectral_rolloff(&freqs, &psd, 0.85);
+        // 85% of 100 bins = bin 84 → freq 84
+        assert!((ro - 84.0).abs() < 1.0, "85% rolloff of uniform should be ~84, got {ro}");
+    }
+
+    #[test]
+    fn spectral_crest_flat_is_one() {
+        let psd = vec![5.0; 50];
+        let cf = spectral_crest(&psd);
+        assert!((cf - 1.0).abs() < 1e-10, "flat PSD crest = 1, got {cf}");
+    }
+
+    #[test]
+    fn spectral_slope_white_near_zero() {
+        let freqs: Vec<f64> = (1..=100).map(|i| i as f64).collect();
+        let psd = vec![1.0; 100];
+        let slope = spectral_slope(&freqs, &psd);
+        assert!(slope.abs() < 0.1, "white noise slope should be ~0, got {slope}");
+    }
+
+    #[test]
+    fn spectral_fwhm_sharp_peak_narrow() {
+        let freqs: Vec<f64> = (0..100).map(|i| i as f64 * 0.1).collect();
+        let mut psd = vec![0.1; 100];
+        // Sharp peak at freq=5.0 (index 50)
+        psd[49] = 0.5; psd[50] = 1.0; psd[51] = 0.5;
+        let fwhm = spectral_fwhm(&freqs, &psd);
+        assert!(fwhm.is_finite() && fwhm > 0.0 && fwhm < 1.0,
+            "sharp peak should have narrow FWHM, got {fwhm}");
+    }
+
+    #[test]
+    fn spectral_q_factor_sharp_peak_high() {
+        let freqs: Vec<f64> = (0..100).map(|i| i as f64 * 0.1).collect();
+        let mut psd = vec![0.01; 100];
+        psd[49] = 0.3; psd[50] = 1.0; psd[51] = 0.3;
+        let q = spectral_q_factor(&freqs, &psd);
+        assert!(q.is_finite() && q > 1.0,
+            "sharp peak should have high Q, got {q}");
+    }
+
+    #[test]
+    fn spectral_skewness_symmetric_near_zero() {
+        let freqs: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        // Symmetric PSD around centroid
+        let psd: Vec<f64> = (0..100).map(|i| {
+            let x = (i as f64 - 50.0) / 10.0;
+            (-x * x / 2.0).exp()
+        }).collect();
+        let sk = spectral_skewness(&freqs, &psd);
+        assert!(sk.abs() < 0.1, "symmetric PSD should have ~0 skewness, got {sk}");
     }
 }

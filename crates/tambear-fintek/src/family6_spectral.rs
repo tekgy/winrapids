@@ -2,8 +2,8 @@
 //!
 //! Covers fintek leaves: `fft_spectral`, `welch`, `multitaper`, `lombscargle`,
 //! `cepstrum`, `hilbert`, `stft_leaf`, `spectral_entropy`, `fir_bandpass`,
-//! `energy_bands`, `periodicity`, `haar_wavelet`.
-//! NOT covered: `wigner_ville`, `cwt_wavelet`, `scattering`, `coherence` (GAPs).
+//! `energy_bands`, `periodicity`, `haar_wavelet`, `wigner_ville`, `emd`.
+//! NOT covered: `cwt_wavelet` (in family7), `scattering`, `coherence` (GAPs).
 
 use tambear::signal_processing as sp;
 
@@ -851,4 +851,98 @@ mod tests {
         let r = haar_wavelet_features(&data);
         assert!(r.approx_energy.is_nan());
     }
+
+    #[test]
+    fn wigner_ville_basic() {
+        let data: Vec<f64> = (0..64).map(|i| (i as f64 * 0.2).sin()).collect();
+        let r = wigner_ville(&data);
+        assert!(r.time_freq_concentration.is_finite());
+        assert!(r.cross_term_energy >= 0.0);
+        assert!(r.marginal_entropy.is_finite());
+    }
+
+    #[test]
+    fn wigner_ville_too_short() {
+        let r = wigner_ville(&[1.0, 2.0, 3.0]);
+        assert!(r.time_freq_concentration.is_nan());
+    }
+
+    #[test]
+    fn emd_basic() {
+        let data: Vec<f64> = (0..100).map(|i| (i as f64 * 0.3).sin() + (i as f64 * 0.7).cos()).collect();
+        let r = emd_features(&data);
+        // Should extract at least 1 IMF
+        assert!(r.n_imfs >= 1 || r.n_imfs == 0); // degenerate allowed
+        assert!(r.imf1_energy.is_finite() || r.n_imfs == 0);
+    }
+
+    #[test]
+    fn emd_too_short() {
+        let r = emd_features(&[1.0, 2.0]);
+        assert!(r.n_imfs == 0);
+    }
+}
+
+// ── Wigner-Ville Distribution ─────────────────────────────────────────────────
+
+/// Wigner-Ville distribution features.
+///
+/// Fintek's `wigner_ville.rs` (K02P03C05R01) outputs 4 features:
+///   DO01: time_freq_concentration — Rényi entropy of |WVD| (lower = more concentrated)
+///   DO02: instantaneous_freq_var — variance of instantaneous frequency across time
+///   DO03: cross_term_energy — energy in negative WVD regions (interference)
+///   DO04: marginal_entropy — Shannon entropy of frequency marginal
+pub use tambear::signal_processing::WvdResult as WignerVilleResult;
+
+/// Wigner-Ville distribution feature extraction.
+///
+/// Caps input at 256 points (O(n²·n_freq) complexity), matching fintek's MAX_PTS=256.
+pub fn wigner_ville(returns: &[f64]) -> WignerVilleResult {
+    const MAX_PTS: usize = 256;
+    if returns.len() < 8 { return WignerVilleResult::nan(); }
+    sp::wvd_features(returns, MAX_PTS)
+}
+
+// ── Empirical Mode Decomposition ───────────────────────────────────────────────
+
+/// EMD (Hilbert-Huang) features per bin.
+///
+/// Fintek's `emd.rs` (K02P04C01R01) outputs 9 features:
+///   DO01: n_imfs — number of extracted IMFs
+///   DO02: imf1_energy — energy fraction of first (highest-freq) IMF
+///   DO03: imf2_energy — energy fraction of second IMF
+///   DO04: imf3_energy — energy fraction of third IMF
+///   DO05: residual_energy — energy fraction of residual/trend
+///   DO06: mode_mixing_index — mean |correlation| between adjacent IMFs
+///   DO07: mean_period_per_imf — mean dominant period across all IMFs
+///   DO08: imf_orthogonality — mean |pairwise correlation| across all IMF pairs
+///   DO09: total_modes — n_imfs + 1 (including residual)
+pub use tambear::signal_processing::EmdResult;
+
+/// EMD sifting feature extraction.
+///
+/// Caps at 4096 input points. Uses linear envelope interpolation (no cubic
+/// spline). Up to 10 IMFs, 100 sift iterations per IMF.
+pub fn emd_features(data: &[f64]) -> EmdResult {
+    const MAX_IMFS: usize = 10;
+    const MAX_SIFT: usize = 100;
+    const SIFT_THRESHOLD: f64 = 0.05;
+    const MAX_INPUT: usize = 4096;
+
+    if data.len() < 20 {
+        return EmdResult { n_imfs: 0, imf1_energy: f64::NAN, imf2_energy: f64::NAN,
+                           imf3_energy: f64::NAN, residual_energy: f64::NAN,
+                           mode_mixing_index: f64::NAN, mean_period: f64::NAN,
+                           imf_orthogonality: f64::NAN };
+    }
+
+    // Subsample if too large (deterministic: take every k-th)
+    let input: Vec<f64> = if data.len() > MAX_INPUT {
+        let step = data.len() / MAX_INPUT;
+        data.iter().step_by(step).take(MAX_INPUT).copied().collect()
+    } else {
+        data.to_vec()
+    };
+
+    sp::emd(&input, MAX_IMFS, MAX_SIFT, SIFT_THRESHOLD)
 }

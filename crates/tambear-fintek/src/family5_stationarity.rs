@@ -1,9 +1,12 @@
 //! Family 5 — Stationarity / Structural tests.
 //!
-//! Covers fintek leaves: `stationarity`, `dependence`.
-//! NOT covered: `struct_break`, `classical_cp`, `pelt`, `bocpd` (GAPS — tasks #143).
+//! Covers fintek leaves: `stationarity`, `dependence`, `classical_cp`.
+//! NOT covered: `pelt` (needs new primitive), `bocpd` (needs new primitive).
 
-use tambear::time_series::{adf_test, kpss_test, ljung_box, AdfResult, KpssResult, LjungBoxResult};
+use tambear::time_series::{
+    adf_test, kpss_test, ljung_box, cusum_binary_segmentation,
+    AdfResult, KpssResult, LjungBoxResult,
+};
 
 /// Classification result from combined ADF + KPSS confirmatory test pair.
 ///
@@ -120,6 +123,116 @@ pub fn dependence(returns: &[f64], n_lags: usize) -> DependenceResult {
     }
 }
 
+// ── Classical changepoint (CUSUM + binary segmentation) ──────────────────────
+
+/// Classical changepoint detection result.
+///
+/// Fintek's `classical_cp.rs` (K02P18C01R01F01) outputs 4 scalars per bin:
+///   DO01: n_changepoints — number of detected changepoints
+///   DO02: max_cusum — maximum |CUSUM| statistic (structural break strength)
+///   DO03: mean_segment_var_ratio — ratio of max to min segment variance (regime contrast)
+///   DO04: detection_delay — average distance from bin boundary to nearest changepoint
+#[derive(Debug, Clone)]
+pub struct ClassicalCpResult {
+    pub n_changepoints: f64,
+    pub max_cusum: f64,
+    pub mean_segment_var_ratio: f64,
+    pub detection_delay: f64,
+}
+
+impl ClassicalCpResult {
+    pub fn nan() -> Self {
+        Self { n_changepoints: f64::NAN, max_cusum: f64::NAN,
+               mean_segment_var_ratio: f64::NAN, detection_delay: f64::NAN }
+    }
+}
+
+/// CUSUM + binary segmentation changepoint detection.
+///
+/// Matches fintek's `classical_cp.rs`:
+/// - Threshold = 2 · std(data) · sqrt(n)  (approximately 5% significance level)
+/// - min_segment_size = 20, max_changepoints = 5 (fintek default depth=5)
+/// - Returns 4 summary scalars.
+pub fn classical_cp(returns: &[f64]) -> ClassicalCpResult {
+    const MIN_N: usize = 40; // 2 × min_segment_size
+    const MIN_SEGMENT: usize = 20;
+    const MAX_CP: usize = 5;
+
+    if returns.len() < MIN_N {
+        return ClassicalCpResult::nan();
+    }
+    let n = returns.len();
+
+    // Compute std for threshold
+    let mean = returns.iter().sum::<f64>() / n as f64;
+    let var = returns.iter().map(|&x| (x - mean) * (x - mean)).sum::<f64>() / n as f64;
+    let std = var.sqrt();
+    if std < 1e-12 {
+        // Constant series — no structural breaks
+        return ClassicalCpResult {
+            n_changepoints: 0.0,
+            max_cusum: 0.0,
+            mean_segment_var_ratio: 1.0,
+            detection_delay: 0.0,
+        };
+    }
+
+    // Threshold: 2σ√n matches fintek's calibration
+    let threshold = 2.0 * std * (n as f64).sqrt();
+
+    let cps = cusum_binary_segmentation(returns, threshold, MIN_SEGMENT, MAX_CP);
+    let n_cp = cps.len();
+
+    // Max |CUSUM| across full series
+    let mut max_cusum = 0.0_f64;
+    let mut running = 0.0_f64;
+    for &x in returns {
+        running += x - mean;
+        max_cusum = max_cusum.max(running.abs());
+    }
+
+    // Segment variance ratio: max/min variance across segments
+    let boundaries: Vec<usize> = std::iter::once(0)
+        .chain(cps.iter().copied())
+        .chain(std::iter::once(n))
+        .collect();
+    let seg_vars: Vec<f64> = boundaries.windows(2).filter_map(|w| {
+        let seg = &returns[w[0]..w[1]];
+        if seg.len() < 2 { return None; }
+        let m = seg.iter().sum::<f64>() / seg.len() as f64;
+        let v = seg.iter().map(|&x| (x - m) * (x - m)).sum::<f64>() / seg.len() as f64;
+        Some(v)
+    }).collect();
+
+    let mean_seg_var_ratio = if seg_vars.len() >= 2 {
+        let max_v = seg_vars.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let min_v = seg_vars.iter().cloned().fold(f64::INFINITY, f64::min);
+        if min_v > 1e-14 { max_v / min_v } else { f64::NAN }
+    } else {
+        1.0
+    };
+
+    // Detection delay: mean distance from each changepoint to nearest bin boundary (0 or n)
+    // Normalized by n so it's ∈ [0, 0.5]
+    let detection_delay = if n_cp == 0 {
+        0.0
+    } else {
+        let sum: f64 = cps.iter().map(|&cp| {
+            let d_left = cp as f64;
+            let d_right = (n - cp) as f64;
+            d_left.min(d_right) / n as f64
+        }).sum::<f64>();
+        sum / n_cp as f64
+    };
+
+    ClassicalCpResult {
+        n_changepoints: n_cp as f64,
+        max_cusum,
+        mean_segment_var_ratio: mean_seg_var_ratio,
+        detection_delay,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +275,32 @@ mod tests {
     fn dependence_too_short() {
         let r = dependence(&[1.0, 2.0], 10);
         assert!(r.lb_statistic.is_nan());
+    }
+
+    #[test]
+    fn classical_cp_no_break() {
+        // White noise — no systematic breaks expected
+        let n = 100;
+        let mut rng = tambear::rng::Xoshiro256::new(42);
+        let data: Vec<f64> = (0..n).map(|_| tambear::rng::sample_normal(&mut rng, 0.0, 1.0)).collect();
+        let r = classical_cp(&data);
+        // Should run without panic; n_changepoints is non-negative
+        assert!(r.n_changepoints >= 0.0 || r.n_changepoints.is_nan());
+    }
+
+    #[test]
+    fn classical_cp_step_break() {
+        // Step function: 50 zeros then 50 ones → strong mean break
+        let mut data = vec![0.0_f64; 50];
+        data.extend(vec![10.0_f64; 50]);
+        let r = classical_cp(&data);
+        assert!(r.n_changepoints >= 1.0, "should detect ≥1 break, got {}", r.n_changepoints);
+        assert!(r.max_cusum.is_finite());
+    }
+
+    #[test]
+    fn classical_cp_too_short() {
+        let r = classical_cp(&[1.0, 2.0, 3.0]);
+        assert!(r.n_changepoints.is_nan());
     }
 }

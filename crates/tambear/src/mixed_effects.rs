@@ -230,6 +230,97 @@ pub fn icc_oneway(values: &[f64], groups: &[usize]) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ICC types (2,1) and (3,1) — Shrout & Fleiss 1979
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of a two-way ICC computation.
+#[derive(Debug, Clone)]
+pub struct IccResult {
+    /// ICC value.
+    pub icc: f64,
+    /// Type string: "1,1", "2,1", or "3,1".
+    pub icc_type: &'static str,
+    /// Mean square for subjects (rows).
+    pub ms_subjects: f64,
+    /// Mean square for raters (columns). NaN for one-way.
+    pub ms_raters: f64,
+    /// Mean square error (residual).
+    pub ms_error: f64,
+}
+
+/// Two-way ANOVA decomposition for ICC.
+/// `data`: n_subjects × n_raters matrix (row-major).
+fn twoway_anova_ms(data: &[f64], n_subjects: usize, n_raters: usize) -> (f64, f64, f64) {
+    let n = n_subjects;
+    let k = n_raters;
+    let nk = (n * k) as f64;
+
+    let grand_mean = data.iter().sum::<f64>() / nk;
+
+    // Row means (subjects)
+    let row_means: Vec<f64> = (0..n).map(|i| {
+        data[i * k..(i + 1) * k].iter().sum::<f64>() / k as f64
+    }).collect();
+
+    // Column means (raters)
+    let col_means: Vec<f64> = (0..k).map(|j| {
+        (0..n).map(|i| data[i * k + j]).sum::<f64>() / n as f64
+    }).collect();
+
+    // SS subjects = k * Σ (row_mean_i - grand_mean)²
+    let ss_subjects: f64 = row_means.iter()
+        .map(|&m| (m - grand_mean).powi(2)).sum::<f64>() * k as f64;
+    // SS raters = n * Σ (col_mean_j - grand_mean)²
+    let ss_raters: f64 = col_means.iter()
+        .map(|&m| (m - grand_mean).powi(2)).sum::<f64>() * n as f64;
+    // SS total = ΣΣ (x_ij - grand_mean)²
+    let ss_total: f64 = data.iter().map(|&x| (x - grand_mean).powi(2)).sum();
+    // SS error = SS_total - SS_subjects - SS_raters
+    let ss_error = (ss_total - ss_subjects - ss_raters).max(0.0);
+
+    let ms_s = ss_subjects / (n - 1).max(1) as f64;
+    let ms_r = ss_raters / (k - 1).max(1) as f64;
+    let ms_e = ss_error / ((n - 1) * (k - 1)).max(1) as f64;
+
+    (ms_s, ms_r, ms_e)
+}
+
+/// ICC(2,1): two-way random effects, single measures (Shrout & Fleiss 1979).
+///
+/// Each target is rated by the same set of raters; raters are a random sample.
+/// ICC(2,1) = (MS_S - MS_E) / (MS_S + (k-1)·MS_E + k·(MS_R - MS_E)/n)
+///
+/// `data`: n_subjects × n_raters matrix (row-major).
+pub fn icc_twoway_random(data: &[f64], n_subjects: usize, n_raters: usize) -> IccResult {
+    if n_subjects < 2 || n_raters < 2 || data.len() != n_subjects * n_raters {
+        return IccResult { icc: f64::NAN, icc_type: "2,1", ms_subjects: f64::NAN, ms_raters: f64::NAN, ms_error: f64::NAN };
+    }
+    let (ms_s, ms_r, ms_e) = twoway_anova_ms(data, n_subjects, n_raters);
+    let n = n_subjects as f64;
+    let k = n_raters as f64;
+    let denom = ms_s + (k - 1.0) * ms_e + k * (ms_r - ms_e) / n;
+    let icc = if denom > 1e-300 { ((ms_s - ms_e) / denom).clamp(-1.0, 1.0) } else { 0.0 };
+    IccResult { icc, icc_type: "2,1", ms_subjects: ms_s, ms_raters: ms_r, ms_error: ms_e }
+}
+
+/// ICC(3,1): two-way mixed effects, single measures (Shrout & Fleiss 1979).
+///
+/// Each target is rated by the same set of raters; raters are fixed (not a sample).
+/// ICC(3,1) = (MS_S - MS_E) / (MS_S + (k-1)·MS_E)
+///
+/// `data`: n_subjects × n_raters matrix (row-major).
+pub fn icc_twoway_mixed(data: &[f64], n_subjects: usize, n_raters: usize) -> IccResult {
+    if n_subjects < 2 || n_raters < 2 || data.len() != n_subjects * n_raters {
+        return IccResult { icc: f64::NAN, icc_type: "3,1", ms_subjects: f64::NAN, ms_raters: f64::NAN, ms_error: f64::NAN };
+    }
+    let (ms_s, ms_r, ms_e) = twoway_anova_ms(data, n_subjects, n_raters);
+    let k = n_raters as f64;
+    let denom = ms_s + (k - 1.0) * ms_e;
+    let icc = if denom > 1e-300 { ((ms_s - ms_e) / denom).clamp(-1.0, 1.0) } else { 0.0 };
+    IccResult { icc, icc_type: "3,1", ms_subjects: ms_s, ms_raters: ms_r, ms_error: ms_e }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Design effect
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -416,5 +507,71 @@ mod tests {
         // Slope should recover β₁ ≈ 3.0
         assert!((res.beta[1] - 3.0).abs() < 0.5,
             "Slope={:.4} should be near 3.0", res.beta[1]);
+    }
+
+    // ── ICC types (2,1) and (3,1) ──────────────────────────────────────
+
+    #[test]
+    fn icc_twoway_perfect_agreement() {
+        // All raters give identical scores → ICC should be 1.0
+        // 5 subjects, 3 raters, all agree
+        let data = vec![
+            1.0, 1.0, 1.0,
+            2.0, 2.0, 2.0,
+            3.0, 3.0, 3.0,
+            4.0, 4.0, 4.0,
+            5.0, 5.0, 5.0,
+        ];
+        let r21 = icc_twoway_random(&data, 5, 3);
+        let r31 = icc_twoway_mixed(&data, 5, 3);
+        assert!((r21.icc - 1.0).abs() < 1e-6, "ICC(2,1)={} should be 1.0", r21.icc);
+        assert!((r31.icc - 1.0).abs() < 1e-6, "ICC(3,1)={} should be 1.0", r31.icc);
+    }
+
+    #[test]
+    fn icc_twoway_no_agreement() {
+        // Raters disagree completely (random values, no subject effect)
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let data: Vec<f64> = (0..30).map(|_| {
+            crate::rng::sample_normal(&mut rng, 5.0, 2.0)
+        }).collect();
+        let r21 = icc_twoway_random(&data, 10, 3);
+        let r31 = icc_twoway_mixed(&data, 10, 3);
+        // ICC should be near zero (or even negative) for random data
+        assert!(r21.icc < 0.4, "ICC(2,1)={} should be low for random data", r21.icc);
+        assert!(r31.icc < 0.4, "ICC(3,1)={} should be low for random data", r31.icc);
+    }
+
+    #[test]
+    fn icc_twoway_high_agreement() {
+        // Strong agreement: raters agree up to small noise
+        let mut rng = crate::rng::Xoshiro256::new(99);
+        let true_scores = [1.0, 3.0, 5.0, 7.0, 9.0, 2.0, 4.0, 6.0];
+        let mut data = Vec::new();
+        for &score in &true_scores {
+            for _ in 0..4 { // 4 raters
+                data.push(score + crate::rng::sample_normal(&mut rng, 0.0, 0.2));
+            }
+        }
+        let r21 = icc_twoway_random(&data, 8, 4);
+        let r31 = icc_twoway_mixed(&data, 8, 4);
+        assert!(r21.icc > 0.9, "ICC(2,1)={} should be high", r21.icc);
+        assert!(r31.icc > 0.9, "ICC(3,1)={} should be high", r31.icc);
+    }
+
+    #[test]
+    fn icc_31_gte_21() {
+        // ICC(3,1) ≥ ICC(2,1) always (removing rater variance from denominator)
+        let data = vec![
+            1.0, 2.0, 3.0,
+            2.0, 3.0, 4.0,
+            3.0, 3.5, 5.0,
+            4.0, 5.0, 6.0,
+            5.0, 5.5, 7.0,
+        ];
+        let r21 = icc_twoway_random(&data, 5, 3);
+        let r31 = icc_twoway_mixed(&data, 5, 3);
+        assert!(r31.icc >= r21.icc - 1e-10,
+            "ICC(3,1)={} should be >= ICC(2,1)={}", r31.icc, r21.icc);
     }
 }

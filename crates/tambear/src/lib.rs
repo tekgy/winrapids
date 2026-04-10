@@ -295,6 +295,14 @@ pub use time_series::{
     StlResult, stl_decompose,
     ArmaResult, arma_fit, ArimaResult, arima_fit, arima_forecast, auto_arima,
     undifference,
+    // Stationarity / unit root
+    PhillipsPerronResult, phillips_perron_test,
+    // White noise / dependence
+    box_pierce,
+    // Spectral post-processing
+    spectral_flatness, spectral_rolloff, spectral_centroid, spectral_bandwidth,
+    spectral_skewness, spectral_kurtosis, spectral_crest, spectral_slope,
+    spectral_fwhm, spectral_q_factor,
 };
 pub mod volatility;
 pub mod factor_analysis;

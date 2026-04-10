@@ -28,9 +28,10 @@
 //! - [`family10_nonlinear`] — sample_entropy, dfa, hurst, lyapunov
 //! - [`family13_dim_reduction`] — pca, ssa
 //! - [`family14_topological`] — persistent_homology
+//! - [`family18_decomposition`] — stl, sde, hmm, savgol, fir_bandpass, seismic, scale_freeness
 //!
-//! GAP leaves (families with missing primitives like Kalman, ICA,
-//! Hawkes, DTW, etc.) are not yet implemented — see tasks #137-#146.
+//! GAP leaves (primitives still missing): pelt, bocpd, ccm, mfdfa, nvg/hvg graph stats,
+//! phase_transition, harmonic (r-stat), mfdfa, arx, shape, dist_distance, transfer_entropy_bin.
 
 pub mod family1_distribution;
 pub mod family2_transforms;
@@ -49,6 +50,7 @@ pub mod family14_topological;
 pub mod family15_manifold_topology;
 pub mod family16_extremes;
 pub mod family17_market_microstructure;
+pub mod family18_decomposition;
 
 /// Data quality primitives re-exported from tambear::data_quality.
 ///
@@ -88,6 +90,24 @@ pub mod data_quality {
         distance_is_valid, causality_is_valid, regime_detection_is_valid,
         continuous_time_is_valid, decomposition_is_valid,
         statistical_tests_is_valid, correlation_is_valid,
+        // IAT primitives
+        iats, iat_mean, iat_median, iat_variance, iat_std, iat_mad,
+        iat_skewness, iat_kurtosis, iat_gini, iat_hill_tail_index,
+        iat_lag1_autocorrelation, iat_memory_coefficient, iat_burstiness, iat_entropy,
+        poisson_dispersion_index, fano_factor,
+        iat_allan_variance, iat_ks_exponential, iat_ks_uniform,
+        // Counting primitives
+        count_finite, count_nan, count_inf,
+        count_positive, count_negative, count_zeros,
+        count_above, count_below, count_in_range,
+        count_zero_crossings, count_sign_changes,
+        count_peaks, count_troughs, count_inflections,
+        count_runs, count_outliers_mad, count_outliers_zscore,
+        count_inversions, count_ties,
+        // Dispersion measures
+        iqr, quartile_coefficient_of_dispersion, range, midrange, studentized_range,
+        theil_t, theil_l, atkinson_index, hoover_index, palma_ratio,
+        coefficient_of_dispersion,
     };
 }
 

@@ -1772,8 +1772,313 @@ pub fn logistic_regression(
     })
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Generalized Linear Model (GLM) — Poisson & Negative Binomial via IRLS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// GLM family specifying link, variance, and deviance functions.
+#[derive(Debug, Clone, Copy)]
+pub enum GlmFamily {
+    /// Poisson: link=log, variance=μ.
+    Poisson,
+    /// Negative binomial: link=log, variance=μ + μ²/theta.
+    NegativeBinomial(f64), // theta (dispersion)
+}
+
+/// Result of fitting a GLM.
+#[derive(Debug, Clone)]
+pub struct GlmResult {
+    /// Regression coefficients (length = p+1, last = intercept).
+    pub coefficients: Vec<f64>,
+    /// Standard errors.
+    pub std_errors: Vec<f64>,
+    /// z-statistics (Wald).
+    pub z_statistics: Vec<f64>,
+    /// p-values (two-tailed normal).
+    pub p_values: Vec<f64>,
+    /// Residual deviance.
+    pub deviance: f64,
+    /// Null deviance (intercept-only).
+    pub null_deviance: f64,
+    /// AIC = deviance + 2p.
+    pub aic: f64,
+    /// Number of IRLS iterations.
+    pub iterations: usize,
+    /// Whether IRLS converged.
+    pub converged: bool,
+}
+
+/// Fit a Generalized Linear Model via IRLS.
+///
+/// `x`: n×p design matrix (row-major, NO intercept column — added internally).
+/// `y`: response vector (counts for Poisson/NegBin, must be non-negative).
+/// `family`: GLM family (Poisson or NegativeBinomial(theta)).
+/// `max_iter`: maximum IRLS iterations.
+/// `tol`: convergence tolerance on deviance change.
+pub fn glm_fit(
+    x: &crate::linear_algebra::Mat, y: &[f64],
+    family: GlmFamily, max_iter: usize, tol: f64,
+) -> GlmResult {
+    let n = x.rows;
+    let p = x.cols;
+    let q = p + 1; // with intercept
+
+    // Build augmented design matrix [X | 1]
+    let mut xa_data = vec![0.0; n * q];
+    for i in 0..n {
+        for j in 0..p { xa_data[i * q + j] = x.get(i, j); }
+        xa_data[i * q + p] = 1.0; // intercept
+    }
+    let xa = crate::linear_algebra::Mat::from_vec(n, q, xa_data);
+
+    // Initialize: β = 0, μ = y_mean (or y + 0.5 for zeros)
+    let mut beta = vec![0.0; q];
+    let y_mean = y.iter().sum::<f64>() / n as f64;
+    beta[p] = y_mean.max(0.1).ln(); // intercept = log(mean)
+
+    let link_inv = |eta: f64| -> f64 { eta.exp().min(1e15) }; // exp for log link
+    let variance = |mu: f64, fam: GlmFamily| -> f64 {
+        match fam {
+            GlmFamily::Poisson => mu.max(1e-10),
+            GlmFamily::NegativeBinomial(theta) => (mu + mu * mu / theta).max(1e-10),
+        }
+    };
+
+    let mut converged = false;
+    let mut iterations = 0;
+    let mut prev_dev = f64::INFINITY;
+
+    for iter in 0..max_iter {
+        iterations = iter + 1;
+
+        // Compute η = Xβ, μ = g⁻¹(η), weights w = 1/(V(μ) · (dμ/dη)²)
+        // For log link: dμ/dη = μ, so w = μ²/V(μ) · 1/μ² = 1/V(μ) · μ...
+        // Actually: w_i = (dμ/dη)² / V(μ) = μ² / V(μ)
+        let mut eta = vec![0.0; n];
+        let mut mu = vec![0.0; n];
+        let mut w = vec![0.0; n];
+        let mut z = vec![0.0; n]; // working response
+
+        for i in 0..n {
+            eta[i] = (0..q).map(|j| xa.get(i, j) * beta[j]).sum::<f64>();
+            mu[i] = link_inv(eta[i]);
+            let v = variance(mu[i], family);
+            let dmu_deta = mu[i]; // for log link
+            w[i] = dmu_deta * dmu_deta / v;
+            // Working response: z = η + (y - μ) / (dμ/dη)
+            z[i] = eta[i] + (y[i] - mu[i]) / dmu_deta.max(1e-15);
+        }
+
+        // Weighted least squares: β = (X'WX)⁻¹ X'Wz
+        let mut xtwx = vec![0.0; q * q];
+        let mut xtwz = vec![0.0; q];
+        for i in 0..n {
+            for j in 0..q {
+                xtwz[j] += xa.get(i, j) * w[i] * z[i];
+                for k in 0..q {
+                    xtwx[j * q + k] += xa.get(i, j) * w[i] * xa.get(i, k);
+                }
+            }
+        }
+        let xtwx_mat = crate::linear_algebra::Mat::from_vec(q, q, xtwx);
+        let l = match crate::linear_algebra::cholesky(&xtwx_mat) {
+            Some(l) => l,
+            None => break,
+        };
+        let new_beta = crate::linear_algebra::cholesky_solve(&l, &xtwz);
+
+        // Deviance
+        let dev: f64 = (0..n).map(|i| {
+            let eta_i: f64 = (0..q).map(|j| xa.get(i, j) * new_beta[j]).sum();
+            let mu_i = link_inv(eta_i);
+            match family {
+                GlmFamily::Poisson => {
+                    if y[i] > 0.0 { 2.0 * (y[i] * (y[i] / mu_i).ln() - (y[i] - mu_i)) }
+                    else { 2.0 * mu_i }
+                }
+                GlmFamily::NegativeBinomial(theta) => {
+                    let mut d = 0.0;
+                    if y[i] > 0.0 { d += 2.0 * y[i] * (y[i] / mu_i).ln(); }
+                    d += 2.0 * (y[i] + theta) * ((mu_i + theta) / (y[i] + theta)).ln();
+                    d
+                }
+            }
+        }).sum();
+
+        beta = new_beta;
+
+        if (prev_dev - dev).abs() < tol {
+            converged = true;
+            break;
+        }
+        prev_dev = dev;
+    }
+
+    // Final deviance and null deviance
+    let final_dev: f64 = (0..n).map(|i| {
+        let eta_i: f64 = (0..q).map(|j| xa.get(i, j) * beta[j]).sum();
+        let mu_i = link_inv(eta_i);
+        match family {
+            GlmFamily::Poisson => {
+                if y[i] > 0.0 { 2.0 * (y[i] * (y[i] / mu_i).ln() - (y[i] - mu_i)) }
+                else { 2.0 * mu_i }
+            }
+            GlmFamily::NegativeBinomial(theta) => {
+                let mut d = 0.0;
+                if y[i] > 0.0 { d += 2.0 * y[i] * (y[i] / mu_i).ln(); }
+                d += 2.0 * (y[i] + theta) * ((mu_i + theta) / (y[i] + theta)).ln();
+                d
+            }
+        }
+    }).sum();
+
+    let null_mu = y_mean.max(1e-10);
+    let null_dev: f64 = (0..n).map(|i| {
+        match family {
+            GlmFamily::Poisson => {
+                if y[i] > 0.0 { 2.0 * (y[i] * (y[i] / null_mu).ln() - (y[i] - null_mu)) }
+                else { 2.0 * null_mu }
+            }
+            GlmFamily::NegativeBinomial(theta) => {
+                let mut d = 0.0;
+                if y[i] > 0.0 { d += 2.0 * y[i] * (y[i] / null_mu).ln(); }
+                d += 2.0 * (y[i] + theta) * ((null_mu + theta) / (y[i] + theta)).ln();
+                d
+            }
+        }
+    }).sum();
+
+    // Standard errors from final (X'WX)⁻¹
+    let mut w_final = vec![0.0; n];
+    for i in 0..n {
+        let eta_i: f64 = (0..q).map(|j| xa.get(i, j) * beta[j]).sum();
+        let mu_i = link_inv(eta_i);
+        let v = variance(mu_i, family);
+        w_final[i] = mu_i * mu_i / v;
+    }
+    let mut xtwx_f = vec![0.0; q * q];
+    for i in 0..n {
+        for j in 0..q {
+            for k in 0..q {
+                xtwx_f[j * q + k] += xa.get(i, j) * w_final[i] * xa.get(i, k);
+            }
+        }
+    }
+    let info = crate::linear_algebra::Mat::from_vec(q, q, xtwx_f);
+    let std_errors = if let Some(cov) = crate::linear_algebra::inv(&info) {
+        (0..q).map(|j| cov.get(j, j).max(0.0).sqrt()).collect()
+    } else {
+        vec![f64::NAN; q]
+    };
+
+    let z_statistics: Vec<f64> = beta.iter().zip(&std_errors)
+        .map(|(b, se)| if *se > 0.0 { b / se } else { 0.0 }).collect();
+    let p_values: Vec<f64> = z_statistics.iter()
+        .map(|&z| normal_two_tail_p(z)).collect();
+
+    let aic = final_dev + 2.0 * q as f64;
+
+    GlmResult {
+        coefficients: beta, std_errors, z_statistics, p_values,
+        deviance: final_dev, null_deviance: null_dev, aic,
+        iterations, converged,
+    }
+}
+
 /// Engine that wraps a ComputeEngine for hypothesis tests on raw data.
 ///
+// ═══════════════════════════════════════════════════════════════════════════
+// Expert pipeline: two-group comparison (Layer 3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Comprehensive two-group comparison report.
+#[derive(Debug, Clone)]
+pub struct TwoGroupReport {
+    pub n1: usize, pub n2: usize,
+    pub mean1: f64, pub mean2: f64,
+    pub std1: f64, pub std2: f64,
+    pub median1: f64, pub median2: f64,
+    pub normality_p1: f64, pub normality_p2: f64,
+    pub normality_test: &'static str,
+    pub both_normal: bool,
+    pub levene_p: f64, pub equal_variance: bool,
+    pub test_name: &'static str,
+    pub statistic: f64, pub p_value: f64, pub df: f64,
+    pub cohens_d: f64, pub hedges_g: f64,
+    pub mean_diff: f64, pub ci_lower: f64, pub ci_upper: f64,
+    pub recommendation: String,
+}
+
+/// Expert two-group comparison: descriptives → normality → variance → test → effect size → CI.
+pub fn two_group_comparison(group1: &[f64], group2: &[f64], alpha: Option<f64>) -> TwoGroupReport {
+    let alpha = alpha.unwrap_or(0.05);
+    let (n1, n2) = (group1.len(), group2.len());
+    let s1 = crate::descriptive::moments_ungrouped(group1);
+    let s2 = crate::descriptive::moments_ungrouped(group2);
+    let mut sorted1 = group1.to_vec(); sorted1.sort_by(|a, b| a.total_cmp(b));
+    let mut sorted2 = group2.to_vec(); sorted2.sort_by(|a, b| a.total_cmp(b));
+    let median1 = crate::descriptive::median(&sorted1);
+    let median2 = crate::descriptive::median(&sorted2);
+
+    let normality_test = if n1.max(n2) < 5000 { "Shapiro-Wilk" } else { "D'Agostino-Pearson" };
+    let (np1, np2) = if n1.max(n2) < 5000 {
+        (crate::nonparametric::shapiro_wilk(group1).p_value,
+         crate::nonparametric::shapiro_wilk(group2).p_value)
+    } else {
+        (crate::nonparametric::dagostino_pearson(group1).p_value,
+         crate::nonparametric::dagostino_pearson(group2).p_value)
+    };
+    let both_normal = np1 > alpha && np2 > alpha;
+
+    let lev = levene_test(&[group1, group2], LeveneCenter::Median);
+    let equal_variance = lev.p_value > alpha;
+
+    let (test_name, statistic, p_value, df): (&str, f64, f64, f64) = if both_normal {
+        if equal_variance {
+            let t = two_sample_t(&s1, &s2);
+            ("Student's t-test (pooled)", t.statistic, t.p_value, t.df)
+        } else {
+            let t = welch_t(&s1, &s2);
+            ("Welch's t-test", t.statistic, t.p_value, t.df)
+        }
+    } else {
+        let mw = crate::nonparametric::mann_whitney_u(group1, group2);
+        ("Mann-Whitney U", mw.statistic, mw.p_value, f64::NAN)
+    };
+
+    let d = cohens_d(&s1, &s2);
+    let g = hedges_g(&s1, &s2);
+    let mean_diff = s1.mean() - s2.mean();
+    let se = (s1.variance(1) / n1 as f64 + s2.variance(1) / n2 as f64).sqrt();
+    let welch_df = {
+        let v1 = s1.variance(1) / n1 as f64;
+        let v2 = s2.variance(1) / n2 as f64;
+        let num = (v1 + v2).powi(2);
+        let den = v1 * v1 / (n1 - 1).max(1) as f64 + v2 * v2 / (n2 - 1).max(1) as f64;
+        if den > 0.0 { num / den } else { 1.0 }
+    };
+    let t_crit = crate::special_functions::t_quantile(1.0 - alpha / 2.0, welch_df);
+
+    let recommendation = if both_normal && equal_variance {
+        format!("Normal + equal variance → pooled t. d={d:.3}")
+    } else if both_normal {
+        format!("Normal + unequal variance → Welch t. d={d:.3}")
+    } else {
+        format!("Non-normal → Mann-Whitney U. d={d:.3} (interpret cautiously)")
+    };
+
+    TwoGroupReport {
+        n1, n2, mean1: s1.mean(), mean2: s2.mean(),
+        std1: s1.std(1), std2: s2.std(1), median1, median2,
+        normality_p1: np1, normality_p2: np2, normality_test, both_normal,
+        levene_p: lev.p_value, equal_variance,
+        test_name, statistic, p_value, df,
+        cohens_d: d, hedges_g: g,
+        mean_diff, ci_lower: mean_diff - t_crit * se, ci_upper: mean_diff + t_crit * se,
+        recommendation,
+    }
+}
+
 /// For tests that only need MomentStats, use the free functions directly.
 /// The engine provides convenience methods that compute MomentStats from
 /// raw data via scatter, then run the test.
@@ -2934,6 +3239,31 @@ mod tests {
         assert!(result.bf10 > 10.0, "BF10={} should be > 10 for strong r", result.bf10);
     }
 
+    // ── GLM (Poisson) ──
+
+    #[test]
+    fn glm_poisson_count_data() {
+        // y ~ Poisson(exp(0.5 + 0.3*x))
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let n = 200;
+        let x_vals: Vec<f64> = (0..n).map(|i| (i as f64 - 100.0) / 50.0).collect();
+        let y_vals: Vec<f64> = x_vals.iter().map(|&xi| {
+            let lambda = (0.5 + 0.3 * xi).exp();
+            crate::rng::sample_poisson(&mut rng, lambda) as f64
+        }).collect();
+        let x_mat = crate::linear_algebra::Mat::from_vec(n, 1,
+            x_vals.iter().copied().collect());
+        let result = glm_fit(&x_mat, &y_vals, GlmFamily::Poisson, 50, 1e-8);
+        assert!(result.converged, "Poisson GLM should converge");
+        // Intercept ≈ 0.5, slope ≈ 0.3
+        assert!((result.coefficients[0] - 0.3).abs() < 0.15,
+            "slope={} should be ~0.3", result.coefficients[0]);
+        assert!((result.coefficients[1] - 0.5).abs() < 0.15,
+            "intercept={} should be ~0.5", result.coefficients[1]);
+        assert!(result.deviance < result.null_deviance,
+            "model deviance should be less than null");
+    }
+
     #[test]
     fn moderation_no_interaction() {
         // y = 1 + 2x + 0.5z + noise (no x*z term)
@@ -2953,5 +3283,29 @@ mod tests {
         // And not significant
         assert!(res.p_interaction > 0.05,
             "p_interaction={} should not be significant", res.p_interaction);
+    }
+
+    // ── Expert pipeline: two-group comparison ──
+
+    #[test]
+    fn two_group_comparison_different_means() {
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let g1: Vec<f64> = (0..50).map(|_| crate::rng::sample_normal(&mut rng, 10.0, 2.0)).collect();
+        let g2: Vec<f64> = (0..50).map(|_| crate::rng::sample_normal(&mut rng, 15.0, 2.0)).collect();
+        let report = two_group_comparison(&g1, &g2, None);
+        assert!(report.p_value < 0.001, "Should detect difference, p={}", report.p_value);
+        assert!(report.cohens_d.abs() > 1.0, "Large effect expected, d={}", report.cohens_d);
+        assert!(report.ci_lower < report.mean_diff && report.mean_diff < report.ci_upper);
+        assert!(!report.recommendation.is_empty());
+    }
+
+    #[test]
+    fn two_group_comparison_same_distribution() {
+        let mut rng = crate::rng::Xoshiro256::new(99);
+        let g1: Vec<f64> = (0..50).map(|_| crate::rng::sample_normal(&mut rng, 10.0, 2.0)).collect();
+        let g2: Vec<f64> = (0..50).map(|_| crate::rng::sample_normal(&mut rng, 10.0, 2.0)).collect();
+        let report = two_group_comparison(&g1, &g2, None);
+        assert!(report.p_value > 0.05, "Should not reject, p={}", report.p_value);
+        assert!(report.cohens_d.abs() < 0.5, "Small effect, d={}", report.cohens_d);
     }
 }

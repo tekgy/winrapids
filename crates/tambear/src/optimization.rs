@@ -342,12 +342,45 @@ fn dot_vec(a: &[f64], b: &[f64]) -> f64 {
 
 // ─── Nelder-Mead ────────────────────────────────────────────────────
 
-/// Nelder-Mead simplex method (derivative-free).
+/// Nelder-Mead simplex coefficients.
 ///
-/// Works for any continuous function, even non-differentiable.
-/// Uses reflection, expansion, contraction, and shrinkage.
+/// Defaults match the original Nelder & Mead (1965) paper.
+#[derive(Debug, Clone, Copy)]
+pub struct NelderMeadParams {
+    /// Reflection coefficient (α). Default 1.0.
+    pub alpha: f64,
+    /// Expansion coefficient (γ). Default 2.0.
+    pub gamma: f64,
+    /// Contraction coefficient (ρ). Default 0.5.
+    pub rho: f64,
+    /// Shrinkage coefficient (σ). Default 0.5.
+    pub sigma: f64,
+}
+
+impl Default for NelderMeadParams {
+    fn default() -> Self {
+        Self { alpha: 1.0, gamma: 2.0, rho: 0.5, sigma: 0.5 }
+    }
+}
+
+/// Nelder-Mead simplex method (derivative-free) with default coefficients.
+///
+/// For tunable simplex coefficients, use [`nelder_mead_with_params`].
 pub fn nelder_mead<F: Fn(&[f64]) -> f64>(
     f: &F, x0: &[f64], step: f64, max_iter: usize, tol: f64,
+) -> OptResult {
+    nelder_mead_with_params(f, x0, step, max_iter, tol, &NelderMeadParams::default())
+}
+
+/// Nelder-Mead with explicit simplex coefficients.
+///
+/// `params.alpha`: reflection (default 1.0).
+/// `params.gamma`: expansion (default 2.0, must be > 1).
+/// `params.rho`: contraction (default 0.5, in (0, 1)).
+/// `params.sigma`: shrinkage (default 0.5, in (0, 1)).
+pub fn nelder_mead_with_params<F: Fn(&[f64]) -> f64>(
+    f: &F, x0: &[f64], step: f64, max_iter: usize, tol: f64,
+    params: &NelderMeadParams,
 ) -> OptResult {
     let n = x0.len();
     let np1 = n + 1;
@@ -363,10 +396,10 @@ pub fn nelder_mead<F: Fn(&[f64]) -> f64>(
     }
     let mut f_vals: Vec<f64> = simplex.iter().map(|v| f(v)).collect();
 
-    let alpha = 1.0; // reflection
-    let gamma = 2.0; // expansion
-    let rho = 0.5;   // contraction
-    let sigma = 0.5;  // shrinkage
+    let alpha = params.alpha;
+    let gamma = params.gamma;
+    let rho = params.rho;
+    let sigma = params.sigma;
 
     for iter in 0..max_iter {
         // Sort by function value

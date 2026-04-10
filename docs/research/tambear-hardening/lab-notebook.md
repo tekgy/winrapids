@@ -407,3 +407,46 @@ This is the map, not the territory. ~450 functions implemented, ~200+ gaps ident
 Fixed `adversarial_disputed.rs:218`: renamed `ewma_initialization_is_forward_looking` to `ewma_initialization_is_causal`, inverted assertion to verify the fix works. 113/113 adversarial_disputed pass.
 
 **Checkpoint 4**: 1,626 lib + 826 gold + 113 disputed + 422 boundary + 49 tbs + 22 svd = **3,058 passed, 0 failed, 25 ignored**. Delta from baseline: +154 tests, still zero failures.
+
+### Entry 11: 2026-04-09 -- Checkpoint 5, Contract violations fixed
+
+**Checkpoint 5**: 1,989 lib tests passed, 0 failed. Delta from baseline: +1,085 tests.
+
+Contract Principle 4 violations fixed this session:
+- superposition.rs: hardcoded alpha=0.05 -> parameterized via sweep_two_sample_tests_alpha (task #97)
+- Tukey HSD alpha: already fixed by pathmaker (task #93)
+- Cook's distance threshold: already fixed by pathmaker (task #94)
+- Robust tuning constants: already fixed by pathmaker (task #99)
+
+Remaining known violations in tbs_executor.rs (Layer 1 auto-detection, ~15 hardcoded 0.05 thresholds). These are acceptable per the layer model -- auto-detection chains ARE threshold-applying code -- but should eventually be configurable via using().
+
+Data quality module: IAT family (16 functions), temporal primitives (5), DataQualitySummary, 103 tests passing. data_quality_catalog.rs owns counting + variability families (32 tests). No duplicates.
+
+Gap analysis update: ARIMA (#85), EGARCH/GJR/TGARCH (#106), Weibull/Pareto/GEV (#127), hierarchical clustering (#105), spectral clustering (#108), state-space family (#101/#102/#168) all completed since Entry 9. The gap map is shrinking.
+
+### Entry 12: 2026-04-09 -- Adversarial bug triage (task #28)
+
+Ran all 10 adversarial_boundary test files with `--nocapture` to see which `CONFIRMED BUG` markers still fire at runtime vs are stale (bug was fixed but marker not removed).
+
+**Result: 50 of 57 bugs are SILENTLY FIXED. Only 7 still fire.**
+
+Still-firing bugs (confirmed by runtime output):
+1. `t-SNE panics on all-identical points` (boundary2) -- degenerate distance matrix
+2. `Hotelling T² with n=1 returns NaN` (boundary5) -- singular covariance, arguably correct behavior
+3. `DID returns NaN effect with no post-treatment` (boundary5) -- empty group edge case
+4. `Clark-Evans R with area=0 produces NaN` (boundary6) -- div by zero
+5. `Bayesian regression panics on underdetermined system` (boundary7) -- needs guard
+6. `Lagrange with duplicate x produces NaN` (boundary9) -- div by zero in basis polynomials
+7. `sample_exponential(lambda=0) returns inf` (boundary10) -- needs guard
+
+The 4 critical infinite loops (kaplan_meier NaN, log_rank_test NaN, sample_geometric p=0, max_flow source==sink) are ALL FIXED. The fixes:
+- kaplan_meier/log_rank_test: NaN filtering via total_cmp (NaN sorts last, n_valid limits iteration)
+- sample_geometric(p=0): returns u64::MAX instead of looping
+- max_flow(source==sink): early return 0.0
+
+Of the 7 still-firing:
+- #2 (Hotelling n=1 → NaN) is arguably correct behavior, not a bug
+- #6 (Lagrange duplicate x → NaN) is mathematically correct (Lagrange basis is undefined for duplicate nodes)
+- The other 5 are real edge-case defects that need input guards
+
+**Impact**: The adversarial bug situation is 88% resolved. The stale `CONFIRMED BUG` markers should be cleaned up or converted to `FIXED:` markers.

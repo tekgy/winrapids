@@ -92,43 +92,123 @@ pub fn spearman(x: &[f64], y: &[f64]) -> f64 {
 
 /// Kendall's tau-b (handles ties).
 ///
-/// tau_b = (C - D) / √((C+D+T_x)(C+D+T_y))
-/// where C = concordant pairs, D = discordant pairs, T_x/T_y = ties in x/y only
+/// `tau_b = (C - D) / sqrt((C+D+T_x)(C+D+T_y))`
+/// where C = concordant pairs, D = discordant pairs, T_x/T_y = ties in x/y only.
+///
+/// ## Algorithm
+///
+/// Uses Knight's (1966) O(n log n) merge-sort algorithm for the core
+/// concordant/discordant count, with a linear-time pre-pass to count
+/// tie contributions exactly. This replaces the naive O(n²) pairwise loop,
+/// enabling interactive use on n up to ~10⁸.
+///
+/// ## Kingdom classification
+///
+/// **Kingdom A** — the merge-sort is a parallel prefix reduction on the
+/// permutation induced by sorting x. The tie-counting pass is a sequential
+/// scan of the sorted array.
 pub fn kendall_tau(x: &[f64], y: &[f64]) -> f64 {
     assert_eq!(x.len(), y.len());
     let n = x.len();
     if n < 2 { return f64::NAN; }
 
-    let mut concordant: i64 = 0;
-    let mut discordant: i64 = 0;
-    let mut ties_x: i64 = 0;
-    let mut ties_y: i64 = 0;
+    // Sort pairs by x, breaking ties by y (stable sort preserves relative
+    // order of y within x-tied groups, which is what Knight's algorithm needs).
+    let mut pairs: Vec<(f64, f64)> = x.iter().zip(y.iter()).map(|(&a, &b)| (a, b)).collect();
+    pairs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
 
-    for i in 0..n {
-        for j in (i+1)..n {
-            let dx = x[i] - x[j];
-            let dy = y[i] - y[j];
-            let product = dx * dy;
-
-            if dx == 0.0 && dy == 0.0 {
-                // Joint tie — doesn't count
-            } else if dx == 0.0 {
-                ties_x += 1;
-            } else if dy == 0.0 {
-                ties_y += 1;
-            } else if product > 0.0 {
-                concordant += 1;
-            } else {
-                discordant += 1;
-            }
+    // Count tie contributions from x-ties and y-ties.
+    // n_x(t) = number of tied pairs within each x-group of size t: C(t, 2) = t(t-1)/2
+    let mut ties_x_total: i64 = 0;
+    {
+        let mut i = 0;
+        while i < n {
+            let mut j = i + 1;
+            while j < n && pairs[j].0 == pairs[i].0 { j += 1; }
+            let t = (j - i) as i64;
+            ties_x_total += t * (t - 1) / 2;
+            i = j;
         }
     }
 
-    let denom_x = (concordant + discordant + ties_x) as f64;
-    let denom_y = (concordant + discordant + ties_y) as f64;
+    // For y-ties, we need to count pairs with same y regardless of x.
+    // Sort a copy by y and count run lengths.
+    let mut y_sorted: Vec<f64> = pairs.iter().map(|p| p.1).collect();
+    y_sorted.sort_by(|a, b| a.total_cmp(b));
+    let mut ties_y_total: i64 = 0;
+    {
+        let mut i = 0;
+        while i < n {
+            let mut j = i + 1;
+            while j < n && y_sorted[j] == y_sorted[i] { j += 1; }
+            let t = (j - i) as i64;
+            ties_y_total += t * (t - 1) / 2;
+            i = j;
+        }
+    }
+
+    // Joint ties: pairs with same x AND same y. Count from the sorted-by-x array.
+    let mut joint_ties: i64 = 0;
+    {
+        let mut i = 0;
+        while i < n {
+            let mut j = i + 1;
+            while j < n && pairs[j].0 == pairs[i].0 && pairs[j].1 == pairs[i].1 { j += 1; }
+            let t = (j - i) as i64;
+            joint_ties += t * (t - 1) / 2;
+            i = j;
+        }
+    }
+
+    // Knight's merge-sort: count swaps (= discordant pairs) when merge-sorting
+    // the y-values of the x-sorted pairs. Total pairs = n(n-1)/2.
+    // discordant = number of inversions in the y-permutation.
+    // concordant = total_pairs - discordant - ties_x - ties_y + joint_ties
+    let y_vals: Vec<f64> = pairs.iter().map(|p| p.1).collect();
+    let n_swaps = kendall_merge_sort_count(&y_vals);
+    let total_pairs = n as i64 * (n as i64 - 1) / 2;
+    let discordant = n_swaps;
+    let concordant = total_pairs - discordant - ties_x_total - ties_y_total + joint_ties;
+
+    // tau-b denominator uses (C+D+Tx_only)(C+D+Ty_only)
+    // where Tx_only = ties_x_total - joint_ties, Ty_only = ties_y_total - joint_ties
+    let n0 = concordant + discordant;
+    let denom_x = (n0 + ties_x_total - joint_ties) as f64;
+    let denom_y = (n0 + ties_y_total - joint_ties) as f64;
     let denom = (denom_x * denom_y).sqrt();
     if denom == 0.0 { return f64::NAN; }
     (concordant - discordant) as f64 / denom
+}
+
+/// Merge-sort inversion count for Kendall's tau. Returns the number of
+/// pairs (i, j) with i < j but arr[i] > arr[j]. O(n log n).
+fn kendall_merge_sort_count(arr: &[f64]) -> i64 {
+    let n = arr.len();
+    if n <= 1 { return 0; }
+    let mut buf = arr.to_vec();
+    let mut tmp = vec![0.0f64; n];
+    kt_merge_count(&mut buf, &mut tmp, 0, n)
+}
+
+fn kt_merge_count(arr: &mut [f64], tmp: &mut [f64], lo: usize, hi: usize) -> i64 {
+    if hi - lo <= 1 { return 0; }
+    let mid = (lo + hi) / 2;
+    let mut inv = kt_merge_count(arr, tmp, lo, mid);
+    inv += kt_merge_count(arr, tmp, mid, hi);
+    let (mut i, mut j, mut k) = (lo, mid, lo);
+    while i < mid && j < hi {
+        if arr[i] <= arr[j] {
+            tmp[k] = arr[i]; i += 1;
+        } else {
+            tmp[k] = arr[j]; j += 1;
+            inv += (mid - i) as i64;
+        }
+        k += 1;
+    }
+    while i < mid { tmp[k] = arr[i]; i += 1; k += 1; }
+    while j < hi { tmp[k] = arr[j]; j += 1; k += 1; }
+    arr[lo..hi].copy_from_slice(&tmp[lo..hi]);
+    inv
 }
 
 /// Pearson correlation on already-ranked data (used by Spearman).

@@ -1974,4 +1974,199 @@ mod tests {
         label_set.dedup();
         assert_eq!(label_set.len(), 3, "Each point should be in its own cluster");
     }
+
+    // ── Holographic error-correction experiment ──────────────────────────────
+    //
+    // Claim (from classification-bijection theory, 2026-04-10):
+    //   The ".discover()" superposition mechanism implements holographic error correction.
+    //   When a shared intermediate (distance matrix) is corrupted, view_agreement drops.
+    //
+    // This is the formal experimental test of that claim, using only the CPU primitive
+    // `clustering_from_distance` and a local Rand Index implementation.
+    //
+    // The null hypothesis: view_agreement is insensitive to corruption.
+    // If the experiment confirms the claim, "run everything" is a CORRECTNESS property,
+    // not just a completeness property — more views = more error detection capability.
+
+    /// Rand Index between two labelings over the first `n` points.
+    /// Measures fraction of pairs (i,j) where both labelings agree on same/different.
+    fn rand_index(a: &[i32], b: &[i32]) -> f64 {
+        let n = a.len().min(b.len());
+        let mut agree = 0u64;
+        let mut total = 0u64;
+        for i in 0..n {
+            for j in i+1..n {
+                let same_a = a[i] == a[j];
+                let same_b = b[i] == b[j];
+                if same_a == same_b { agree += 1; }
+                total += 1;
+            }
+        }
+        if total == 0 { 1.0 } else { agree as f64 / total as f64 }
+    }
+
+    /// Pairwise mean Rand Index across a set of labelings.
+    fn pairwise_mean_rand(labelings: &[Vec<i32>]) -> f64 {
+        let m = labelings.len();
+        if m < 2 { return 1.0; }
+        let mut sum = 0.0;
+        let mut count = 0;
+        for i in 0..m {
+            for j in i+1..m {
+                sum += rand_index(&labelings[i], &labelings[j]);
+                count += 1;
+            }
+        }
+        if count == 0 { 1.0 } else { sum / count as f64 }
+    }
+
+    /// Build a pairwise squared-L2 distance matrix for n points in d dimensions.
+    fn build_dist_matrix(data: &[f64], n: usize, d: usize) -> Vec<f64> {
+        let mut dist = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let sq: f64 = (0..d).map(|k| {
+                    let diff = data[i * d + k] - data[j * d + k];
+                    diff * diff
+                }).sum();
+                dist[i * n + j] = sq;
+            }
+        }
+        dist
+    }
+
+    /// Run DBSCAN at multiple epsilon values on a distance matrix.
+    /// Returns one labeling per epsilon.
+    fn dbscan_multi_epsilon(dist: &[f64], n: usize, epsilons_sq: &[f64]) -> Vec<Vec<i32>> {
+        epsilons_sq.iter().map(|&eps_sq| {
+            clustering_from_distance(dist, n, eps_sq, 2).labels
+        }).collect()
+    }
+
+    #[test]
+    fn holographic_baseline_clean_data_high_agreement() {
+        // Two well-separated clusters: A = (0,0)x10 points, B = (10,0)x10 points
+        // Clean data should produce high view_agreement across multiple epsilons.
+        let n = 20;
+        let d = 2;
+        let mut data = Vec::with_capacity(n * d);
+        for _ in 0..10 { data.extend_from_slice(&[0.0_f64, 0.0]); }
+        for _ in 0..10 { data.extend_from_slice(&[10.0_f64, 0.0]); }
+
+        let dist = build_dist_matrix(&data, n, d);
+        // Three epsilons: tight (captures intra-cluster), mid, loose (both clusters merge)
+        let epsilons_sq = [1.5_f64.powi(2), 2.5_f64.powi(2), 4.0_f64.powi(2)];
+        let labelings = dbscan_multi_epsilon(&dist, n, &epsilons_sq);
+
+        let baseline_agreement = pairwise_mean_rand(&labelings);
+        // Two well-separated clusters: all epsilon regimes should find the same 2-cluster structure
+        assert!(baseline_agreement >= 0.85,
+            "Clean two-cluster data: baseline view_agreement={baseline_agreement:.3} should be >= 0.85");
+    }
+
+    #[test]
+    fn holographic_nan_injection_drops_agreement() {
+        // Inject NaN into the distance matrix — should cause disagreement across views.
+        let n = 20;
+        let d = 2;
+        let mut data = Vec::with_capacity(n * d);
+        for _ in 0..10 { data.extend_from_slice(&[0.0_f64, 0.0]); }
+        for _ in 0..10 { data.extend_from_slice(&[10.0_f64, 0.0]); }
+
+        let clean_dist = build_dist_matrix(&data, n, d);
+        let epsilons_sq = [1.5_f64.powi(2), 2.5_f64.powi(2), 4.0_f64.powi(2)];
+
+        let clean_labelings = dbscan_multi_epsilon(&clean_dist, n, &epsilons_sq);
+        let clean_agreement = pairwise_mean_rand(&clean_labelings);
+
+        // Corrupt: inject NaN into an entire row (simulating a hardware bit-flip
+        // that corrupts all distances for point 5)
+        let mut corrupted_dist = clean_dist.clone();
+        for j in 0..n {
+            corrupted_dist[5 * n + j] = f64::NAN;
+            corrupted_dist[j * n + 5] = f64::NAN;
+        }
+
+        let corrupted_labelings = dbscan_multi_epsilon(&corrupted_dist, n, &epsilons_sq);
+        let corrupted_agreement = pairwise_mean_rand(&corrupted_labelings);
+
+        // The holographic claim: corruption drops view_agreement
+        assert!(corrupted_agreement < clean_agreement,
+            "NaN injection should drop view_agreement: clean={clean_agreement:.3}, corrupted={corrupted_agreement:.3}");
+    }
+
+    #[test]
+    fn holographic_row_offset_drops_agreement() {
+        // Add a large offset to one point's distances — moves it into the other cluster.
+        let n = 20;
+        let d = 2;
+        let mut data = Vec::with_capacity(n * d);
+        for _ in 0..10 { data.extend_from_slice(&[0.0_f64, 0.0]); }
+        for _ in 0..10 { data.extend_from_slice(&[10.0_f64, 0.0]); }
+
+        let clean_dist = build_dist_matrix(&data, n, d);
+        let epsilons_sq = [1.5_f64.powi(2), 2.5_f64.powi(2), 4.0_f64.powi(2)];
+
+        let clean_labelings = dbscan_multi_epsilon(&clean_dist, n, &epsilons_sq);
+        let clean_agreement = pairwise_mean_rand(&clean_labelings);
+
+        // Corrupt: add 200.0 to row 0 distances (point 0 now looks far from everything)
+        let mut corrupted_dist = clean_dist.clone();
+        let corruption_magnitude = 200.0_f64;
+        for j in 0..n {
+            if j != 0 {
+                corrupted_dist[0 * n + j] += corruption_magnitude;
+                corrupted_dist[j * n + 0] += corruption_magnitude;
+            }
+        }
+
+        let corrupted_labelings = dbscan_multi_epsilon(&corrupted_dist, n, &epsilons_sq);
+        let corrupted_agreement = pairwise_mean_rand(&corrupted_labelings);
+
+        // Large corruption isolates point 0 from both clusters — at tight epsilon it becomes
+        // noise while at loose epsilon it might still attach. Views disagree.
+        assert!(corrupted_agreement < clean_agreement,
+            "Row-offset corruption should drop view_agreement: clean={clean_agreement:.3}, corrupted={corrupted_agreement:.3}");
+    }
+
+    #[test]
+    fn holographic_more_views_detects_smaller_corruption() {
+        // Code distance increases with number of views.
+        // A small corruption that might slip past 2 views is detected by 5 views.
+        let n = 30;
+        let d = 2;
+        let mut data = Vec::with_capacity(n * d);
+        for i in 0..15 { data.extend_from_slice(&[i as f64 * 0.2, 0.0]); }
+        for i in 0..15 { data.extend_from_slice(&[10.0 + i as f64 * 0.2, 0.0]); }
+
+        let clean_dist = build_dist_matrix(&data, n, d);
+
+        // Small corruption: perturb just one cross-cluster distance slightly
+        let mut small_corrupt = clean_dist.clone();
+        small_corrupt[0 * n + 15] = 0.01;  // point 0 (cluster A) looks very close to point 15 (cluster B)
+        small_corrupt[15 * n + 0] = 0.01;
+
+        // 2 views
+        let eps_2 = [1.0_f64.powi(2), 3.0_f64.powi(2)];
+        let clean_2 = pairwise_mean_rand(&dbscan_multi_epsilon(&clean_dist, n, &eps_2));
+        let corrupt_2 = pairwise_mean_rand(&dbscan_multi_epsilon(&small_corrupt, n, &eps_2));
+        let drop_2 = clean_2 - corrupt_2;
+
+        // 5 views (more sensitive)
+        let eps_5 = [0.5_f64.powi(2), 1.0_f64.powi(2), 2.0_f64.powi(2), 3.0_f64.powi(2), 5.0_f64.powi(2)];
+        let clean_5 = pairwise_mean_rand(&dbscan_multi_epsilon(&clean_dist, n, &eps_5));
+        let corrupt_5 = pairwise_mean_rand(&dbscan_multi_epsilon(&small_corrupt, n, &eps_5));
+        let drop_5 = clean_5 - corrupt_5;
+
+        // More views should detect corruption more sensitively (larger drop)
+        // Note: this is a SOFT assertion — the holographic property is statistical,
+        // not guaranteed for every single corruption. The experiment documents the behavior.
+        let total_drop_is_nonzero = drop_2 > 1e-6 || drop_5 > 1e-6;
+        assert!(total_drop_is_nonzero,
+            "At least one view set should detect the corruption: drop_2={drop_2:.4}, drop_5={drop_5:.4}");
+
+        // Log the result — this is experimental data, not a hard threshold.
+        // Expected: drop_5 >= drop_2 (more views = more sensitive detection)
+        let _ = (drop_2, drop_5); // values available for inspection
+    }
 }

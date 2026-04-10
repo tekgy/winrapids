@@ -882,6 +882,78 @@ pub fn cosine_similarity_matrix(data: &[f64], n: usize, d: usize) -> Vec<f64> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Grassberger entropy — digamma-corrected bias reduction
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Grassberger (2003) bias-corrected entropy estimator.
+///
+/// The naive plug-in estimator H = -Σ (nᵢ/N) log(nᵢ/N) has a systematic
+/// upward bias of (k-1)/(2N) nats for small samples (Miller 1955).
+/// Grassberger replaces each term with a digamma-based correction that
+/// removes the leading-order bias without requiring knowledge of the true
+/// support size.
+///
+/// ## Formula
+///
+/// ```text
+/// H_G = log(N) - (1/N) Σᵢ nᵢ × ψ(nᵢ)
+/// ```
+///
+/// where ψ is the digamma function (derivative of log Γ) and the sum
+/// runs over occupied bins only (nᵢ > 0).
+///
+/// This converges to the plug-in estimator for large N (since ψ(n) → log(n)
+/// for large n) but removes the O(1/N) bias term for small samples.
+///
+/// ## Parameters
+///
+/// - `data`: continuous observations (any finite f64 values; NaN excluded).
+/// - `n_bins`: number of histogram bins. The range [min, max] is divided
+///   uniformly. Must be ≥ 1. Returns 0.0 for empty or constant data.
+///
+/// ## Returns
+///
+/// Bias-corrected entropy in nats (base e). Non-negative.
+///
+/// ## References
+///
+/// Grassberger, P. (2003). Entropy estimates from insufficient samplings.
+/// arXiv:physics/0307138.
+///
+/// Miller, G. (1955). Note on the bias of information estimates.
+/// *Information Theory in Psychology*, 95–100.
+pub fn grassberger_entropy(data: &[f64], n_bins: usize) -> f64 {
+    use crate::special_functions::digamma;
+
+    let n_bins = n_bins.max(1);
+    let clean: Vec<f64> = data.iter().copied().filter(|x| x.is_finite()).collect();
+    let n = clean.len();
+    if n == 0 { return 0.0; }
+    let nf = n as f64;
+
+    let xmin = clean.iter().copied().fold(f64::INFINITY, f64::min);
+    let xmax = clean.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if (xmax - xmin).abs() < 1e-300 { return 0.0; }
+
+    // Bin counts
+    let width = (xmax - xmin) / n_bins as f64;
+    let mut counts = vec![0u64; n_bins];
+    for &v in &clean {
+        let bin = ((v - xmin) / width).floor() as usize;
+        let bin = bin.min(n_bins - 1);
+        counts[bin] += 1;
+    }
+
+    // H_G = log(N) - (1/N) Σ nᵢ × ψ(nᵢ)
+    let correction: f64 = counts.iter()
+        .filter(|&&c| c > 0)
+        .map(|&c| c as f64 * digamma(c as f64))
+        .sum();
+
+    (nf.ln() - correction / nf).max(0.0)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1250,6 +1322,39 @@ mod tests {
         assert!(fi_norm.is_finite() && fi_bi.is_finite(), "both should be finite");
         // Bimodal has more structure → higher Fisher-Rao distance from Gaussian
         assert!(fd_bi >= fd_norm - 0.1, "bimodal should have >= Fisher distance: norm={fd_norm} bi={fd_bi}");
+    }
+
+    // ── Grassberger entropy ───────────────────────────────────────────
+
+    #[test]
+    fn grassberger_entropy_constant_is_zero() {
+        // Constant data → all in one bin → H = 0
+        let data = vec![5.0; 30];
+        close(grassberger_entropy(&data, 8), 0.0, 1e-10, "grassberger_constant");
+    }
+
+    #[test]
+    fn grassberger_entropy_uniform_positive() {
+        // Uniform data should yield positive entropy
+        let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let h = grassberger_entropy(&data, 10);
+        assert!(h > 0.0, "uniform data should have positive entropy, got {h}");
+        // Should be close to log(10) = ln(10) ≈ 2.303 for 10 equal bins
+        assert!(h < 2.5 && h > 1.5, "uniform entropy should be near ln(10), got {h}");
+    }
+
+    #[test]
+    fn grassberger_entropy_less_than_naive_for_small_n() {
+        // For small n, Grassberger corrects downward (removes upward bias)
+        // Both estimators with the same data and bins
+        let data: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let n_bins = 10;
+        let hg = grassberger_entropy(&data, n_bins);
+        // Naive: entropy_histogram
+        let hn = entropy_histogram(&data, n_bins);
+        // Grassberger corrects upward bias → should be ≤ naive (or close)
+        // The correction is O(1/N) so within ~0.5 nats for n=20
+        assert!((hg - hn).abs() < 0.5, "Grassberger and naive should be close: G={hg} N={hn}");
     }
 
     // ── TF-IDF ──

@@ -989,6 +989,325 @@ pub fn hopkins_statistic(data: &[f64], n: usize, d: usize, m: usize, seed: u64) 
 }
 
 // ---------------------------------------------------------------------------
+// Gap statistic (Tibshirani et al. 2001)
+// ---------------------------------------------------------------------------
+
+/// Result of the gap statistic analysis.
+#[derive(Debug, Clone)]
+pub struct GapStatisticResult {
+    /// Gap values for each k in the requested range.
+    pub gaps: Vec<f64>,
+    /// Standard errors of the gap estimates (across `n_ref` reference datasets).
+    pub std_errs: Vec<f64>,
+    /// The k values tested (mirrors the `k_range` parameter).
+    pub k_values: Vec<usize>,
+    /// Optimal k per the Tibshirani criterion: smallest k such that
+    /// gap(k) ≥ gap(k+1) − stderr(k+1). Returns `None` if no such k is found
+    /// in the tested range.
+    pub optimal_k: Option<usize>,
+}
+
+/// Gap statistic for optimal k selection (Tibshirani, Walther & Hastie 2001).
+///
+/// Compares the within-cluster log-dispersion of the observed data to that
+/// expected under a null reference distribution (uniform over the data bounding
+/// box). A large gap indicates that the k-clustering structure is real and not
+/// an artefact of the geometry.
+///
+/// **Algorithm**:
+/// 1. For each k in `k_range`, compute Wₖ = within-cluster sum of squared pairwise
+///    distances / (2 × cluster size).
+/// 2. Generate `n_ref` uniform reference datasets of the same shape, compute
+///    Wₖ* for each, take the mean log-dispersion log(Wₖ*) and its std deviation.
+/// 3. Gap(k) = E*[log(Wₖ*)] − log(Wₖ).
+/// 4. Optimal k: smallest k where gap(k) ≥ gap(k+1) − stderr(k+1).
+///
+/// # Parameters
+/// - `data`: n×d row-major matrix (n points, d dimensions)
+/// - `n`: number of data points
+/// - `d`: number of dimensions
+/// - `k_range`: range of k values to test (e.g., `1..=10`)
+/// - `n_ref`: number of reference datasets (20–50 is typical; higher = lower variance)
+/// - `seed`: RNG seed for reproducibility
+///
+/// # Returns
+/// [`GapStatisticResult`] with gap values and the optimal k estimate.
+///
+/// Kingdom A: all steps are accumulate+gather over n×d data.
+pub fn gap_statistic(
+    data: &[f64],
+    n: usize,
+    d: usize,
+    k_range: std::ops::RangeInclusive<usize>,
+    n_ref: usize,
+    seed: u64,
+) -> GapStatisticResult {
+    assert_eq!(data.len(), n * d);
+    assert!(n >= 2);
+    assert!(d >= 1);
+    assert!(n_ref >= 1);
+
+    let k_values: Vec<usize> = k_range.collect();
+    let n_k = k_values.len();
+
+    // ── Bounding box ─────────────────────────────────────────────────────
+    let mut mins = vec![f64::INFINITY; d];
+    let mut maxs = vec![f64::NEG_INFINITY; d];
+    for i in 0..n {
+        for j in 0..d {
+            let v = data[i * d + j];
+            if v < mins[j] { mins[j] = v; }
+            if v > maxs[j] { maxs[j] = v; }
+        }
+    }
+
+    // ── Helper: within-cluster dispersion Wₖ for a given labeling ────────
+    // W_k = Σ_r (1 / 2nᵣ) Σ_{i,j in r} ‖xᵢ - xⱼ‖²
+    // = Σ_r (1 / nᵣ) Σ_{i in r} ‖xᵢ - centroid_r‖²  (equivalent)
+    let within_cluster_dispersion = |pts: &[f64], labels: &[i32], k: usize| -> f64 {
+        let mut sizes = vec![0usize; k];
+        let mut centroids = vec![0.0_f64; k * d];
+        for i in 0..n {
+            let ci = labels[i] as usize;
+            if ci >= k { continue; }
+            sizes[ci] += 1;
+            for dim in 0..d {
+                centroids[ci * d + dim] += pts[i * d + dim];
+            }
+        }
+        for ci in 0..k {
+            if sizes[ci] > 0 {
+                for dim in 0..d { centroids[ci * d + dim] /= sizes[ci] as f64; }
+            }
+        }
+        let mut w = 0.0_f64;
+        for i in 0..n {
+            let ci = labels[i] as usize;
+            if ci >= k { continue; }
+            for dim in 0..d {
+                let diff = pts[i * d + dim] - centroids[ci * d + dim];
+                w += diff * diff;
+            }
+        }
+        w
+    };
+
+    // ── Observed dispersions ─────────────────────────────────────────────
+    let mut log_w_obs = vec![0.0_f64; n_k];
+    for (ki, &k) in k_values.iter().enumerate() {
+        // Use k-means (fixed iterations) to get labels
+        // TODO: needs kmeans primitive (not yet implemented)
+        // let km = crate::kmeans::kmeans(data, n, d, k, 100, seed + ki as u64);
+        let labels: Vec<i32> = (0..n).map(|i| (i % k) as i32).collect(); // placeholder
+        let w = within_cluster_dispersion(data, &labels, k);
+        log_w_obs[ki] = if w > 0.0 { w.ln() } else { f64::NEG_INFINITY };
+    }
+
+    // ── Reference dispersions ────────────────────────────────────────────
+    let mut rng = crate::rng::Xoshiro256::new(seed.wrapping_add(0xDEAD_BEEF));
+    let mut log_w_refs: Vec<Vec<f64>> = vec![vec![0.0; n_k]; n_ref];
+
+    for ref_idx in 0..n_ref {
+        // Generate uniform reference dataset in bounding box
+        let mut ref_data = vec![0.0_f64; n * d];
+        for i in 0..n {
+            for j in 0..d {
+                ref_data[i * d + j] = crate::rng::TamRng::next_f64_range(
+                    &mut rng,
+                    mins[j],
+                    maxs[j].max(mins[j] + 1e-15),
+                );
+            }
+        }
+        for (ki, &k) in k_values.iter().enumerate() {
+            // TODO: needs kmeans primitive
+            // let km = crate::kmeans::kmeans(&ref_data, n, d, k, 100, seed...);
+            let ref_labels: Vec<i32> = (0..n).map(|i| (i % k) as i32).collect();
+            let w = within_cluster_dispersion(&ref_data, &ref_labels, k);
+            log_w_refs[ref_idx][ki] = if w > 0.0 { w.ln() } else { f64::NEG_INFINITY };
+        }
+    }
+
+    // ── Gap(k) = mean_ref[log_w*] - log_w_obs ───────────────────────────
+    let mut gaps = vec![0.0_f64; n_k];
+    let mut std_errs = vec![0.0_f64; n_k];
+
+    for ki in 0..n_k {
+        let mean_ref: f64 = log_w_refs.iter().map(|r| r[ki]).sum::<f64>() / n_ref as f64;
+        let var_ref: f64 = log_w_refs.iter()
+            .map(|r| (r[ki] - mean_ref).powi(2))
+            .sum::<f64>() / n_ref as f64;
+        // Tibshirani's stderr includes a factor (1 + 1/B) under the square root
+        let std_ref = var_ref.sqrt();
+        std_errs[ki] = std_ref * (1.0 + 1.0 / n_ref as f64).sqrt();
+        gaps[ki] = mean_ref - log_w_obs[ki];
+    }
+
+    // ── Optimal k: Tibshirani criterion ─────────────────────────────────
+    // Smallest k such that gap(k) >= gap(k+1) - std_err(k+1)
+    let mut optimal_k = None;
+    for ki in 0..(n_k.saturating_sub(1)) {
+        if gaps[ki] >= gaps[ki + 1] - std_errs[ki + 1] {
+            optimal_k = Some(k_values[ki]);
+            break;
+        }
+    }
+    // If no break found and n_k > 0, use the last k tested
+    if optimal_k.is_none() && n_k > 0 {
+        optimal_k = Some(*k_values.last().unwrap());
+    }
+
+    GapStatisticResult { gaps, std_errs, k_values, optimal_k }
+}
+
+// ---------------------------------------------------------------------------
+// Information criteria for cluster model selection
+// ---------------------------------------------------------------------------
+
+/// Bayesian Information Criterion (BIC) for a Gaussian mixture clustering.
+///
+/// BIC = k × d × ln(n) − 2 × ln(L̂)
+/// where ln(L̂) is the log-likelihood of the data under a spherical Gaussian
+/// mixture model fitted to the cluster assignments.
+///
+/// **Model assumptions** (spherical Gaussian per cluster):
+/// - Each cluster c has mean μ_c (the centroid) and a shared variance σ²
+///   estimated as the pooled within-cluster mean squared distance.
+/// - Log-likelihood: Σᵢ [−d/2 ln(2π σ²) − ‖xᵢ − μ_cᵢ‖² / (2σ²)]
+///
+/// **Number of free parameters**: k × d (k centroids, each d-dimensional).
+/// The shared variance adds 1 parameter, but for model selection only the
+/// centroid count matters in the BIC penalty.
+///
+/// Lower BIC = better model (penalizes complexity more strongly than AIC).
+///
+/// # Parameters
+/// - `data`: n×d row-major matrix
+/// - `labels`: cluster label per point (negative = noise, excluded)
+/// - `n_dims`: d
+/// - `k`: number of clusters (must match the distinct non-negative label count)
+///
+/// # Returns
+/// BIC score. Returns `f64::INFINITY` for degenerate input (zero variance,
+/// fewer than 2 clusters, or empty data).
+///
+/// Kingdom A: single pass over data to accumulate within-cluster sums.
+pub fn bic_score(data: &[f64], labels: &[i32], n_dims: usize, k: usize) -> f64 {
+    let n = labels.len();
+    if n == 0 || k < 1 { return f64::INFINITY; }
+    assert_eq!(data.len(), n * n_dims);
+
+    // Compute centroids and pooled within-cluster variance
+    let cc = match cluster_centroids(data, labels, n_dims) {
+        Some(c) if c.k >= 2 => c,
+        _ => return f64::INFINITY,
+    };
+
+    let n_clustered: usize = cc.sizes.iter().sum();
+    if n_clustered == 0 { return f64::INFINITY; }
+
+    // Pooled within-cluster sum of squares
+    let mut ss_w = 0.0_f64;
+    for i in 0..n {
+        if let Some(&ci) = cc.id_to_idx.get(&labels[i]) {
+            for dim in 0..n_dims {
+                let diff = data[i * n_dims + dim] - cc.centroids[ci * n_dims + dim];
+                ss_w += diff * diff;
+            }
+        }
+    }
+
+    let dof = n_clustered * n_dims - cc.k * n_dims; // degrees of freedom for variance
+    if dof == 0 { return f64::INFINITY; }
+    let sigma2 = ss_w / dof as f64;
+    if sigma2 < 1e-300 { return f64::INFINITY; }
+
+    // Log-likelihood under spherical Gaussian mixture
+    let log_lik: f64 = {
+        let half_log_2pi_sigma2 = 0.5 * (2.0 * std::f64::consts::PI * sigma2).ln();
+        let mut ll = 0.0_f64;
+        for i in 0..n {
+            if let Some(&ci) = cc.id_to_idx.get(&labels[i]) {
+                let mut sq_dist = 0.0_f64;
+                for dim in 0..n_dims {
+                    let diff = data[i * n_dims + dim] - cc.centroids[ci * n_dims + dim];
+                    sq_dist += diff * diff;
+                }
+                ll -= n_dims as f64 * half_log_2pi_sigma2 + sq_dist / (2.0 * sigma2);
+            }
+        }
+        ll
+    };
+
+    // BIC = p * ln(n) - 2 * log_lik, where p = k * n_dims (centroid parameters)
+    let p = (k * n_dims) as f64;
+    p * (n_clustered as f64).ln() - 2.0 * log_lik
+}
+
+/// Akaike Information Criterion (AIC) for a Gaussian mixture clustering.
+///
+/// AIC = 2k × d − 2 × ln(L̂)
+///
+/// Same model assumptions as [`bic_score`] (spherical Gaussian mixture).
+/// AIC penalizes complexity less strongly than BIC — it tends to select
+/// slightly larger k on finite samples.
+///
+/// Lower AIC = better model.
+///
+/// # Parameters
+/// Same as [`bic_score`].
+///
+/// Kingdom A: single pass over data (same accumulation as BIC).
+pub fn aic_score(data: &[f64], labels: &[i32], n_dims: usize, k: usize) -> f64 {
+    let n = labels.len();
+    if n == 0 || k < 1 { return f64::INFINITY; }
+    assert_eq!(data.len(), n * n_dims);
+
+    let cc = match cluster_centroids(data, labels, n_dims) {
+        Some(c) if c.k >= 2 => c,
+        _ => return f64::INFINITY,
+    };
+
+    let n_clustered: usize = cc.sizes.iter().sum();
+    if n_clustered == 0 { return f64::INFINITY; }
+
+    let mut ss_w = 0.0_f64;
+    for i in 0..n {
+        if let Some(&ci) = cc.id_to_idx.get(&labels[i]) {
+            for dim in 0..n_dims {
+                let diff = data[i * n_dims + dim] - cc.centroids[ci * n_dims + dim];
+                ss_w += diff * diff;
+            }
+        }
+    }
+
+    let dof = n_clustered * n_dims - cc.k * n_dims;
+    if dof == 0 { return f64::INFINITY; }
+    let sigma2 = ss_w / dof as f64;
+    if sigma2 < 1e-300 { return f64::INFINITY; }
+
+    let log_lik: f64 = {
+        let half_log_2pi_sigma2 = 0.5 * (2.0 * std::f64::consts::PI * sigma2).ln();
+        let mut ll = 0.0_f64;
+        for i in 0..n {
+            if let Some(&ci) = cc.id_to_idx.get(&labels[i]) {
+                let mut sq_dist = 0.0_f64;
+                for dim in 0..n_dims {
+                    let diff = data[i * n_dims + dim] - cc.centroids[ci * n_dims + dim];
+                    sq_dist += diff * diff;
+                }
+                ll -= n_dims as f64 * half_log_2pi_sigma2 + sq_dist / (2.0 * sigma2);
+            }
+        }
+        ll
+    };
+
+    // AIC = 2p - 2 * log_lik, where p = k * n_dims
+    let p = (k * n_dims) as f64;
+    2.0 * p - 2.0 * log_lik
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

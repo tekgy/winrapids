@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TamSession Spring Network</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a0f; color: #c8c8d0; display: flex; height: 100vh; overflow: hidden; }
+
+#controls { width: 320px; min-width: 320px; background: #12121a; border-right: 1px solid #2a2a3a; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+#canvas-wrap { flex: 1; position: relative; }
+canvas { width: 100%; height: 100%; display: block; }
+
+h1 { font-size: 15px; color: #e0e0f0; margin-bottom: 4px; }
+h2 { font-size: 12px; color: #8888aa; font-weight: 500; text-transform: uppercase; letter-spacing: 1px; margin-top: 8px; }
+
+.ctrl { display: flex; flex-direction: column; gap: 3px; }
+.ctrl label { font-size: 11px; color: #9999bb; display: flex; justify-content: space-between; }
+.ctrl label span { color: #6cf; font-family: monospace; }
+input[type=range] { width: 100%; accent-color: #6cf; height: 4px; }
+
+.btn-row { display: flex; gap: 6px; }
+button { background: #1e1e2e; border: 1px solid #3a3a5a; color: #c8c8d0; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; flex: 1; }
+button:hover { background: #2a2a3e; border-color: #6cf; }
+button.active { background: #1a3a5a; border-color: #6cf; color: #6cf; }
+
+.stats { background: #0e0e16; border: 1px solid #2a2a3a; border-radius: 4px; padding: 10px; font-family: monospace; font-size: 11px; line-height: 1.6; }
+.stats .val { color: #6cf; }
+.stats .energy-low { color: #4f8; }
+.stats .energy-high { color: #f84; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 6px; }
+.legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+.preset-row { display: flex; gap: 4px; flex-wrap: wrap; }
+.preset-row button { flex: 0 1 auto; padding: 4px 8px; font-size: 10px; }
+
+#prompt-area { background: #0e0e16; border: 1px solid #2a2a3a; border-radius: 4px; padding: 10px; font-size: 11px; line-height: 1.5; min-height: 60px; max-height: 120px; overflow-y: auto; }
+#copy-btn { margin-top: 4px; }
+.copied { color: #4f8 !important; border-color: #4f8 !important; }
+
+.tooltip { position: absolute; background: #1a1a2e; border: 1px solid #3a3a5a; border-radius: 4px; padding: 6px 10px; font-size: 11px; pointer-events: none; z-index: 10; display: none; }
+</style>
+</head>
+<body>
+
+<div id="controls">
+  <h1>TamSession Spring Network</h1>
+  <p style="font-size:11px;color:#666;margin-bottom:8px">Force-directed visualization of tambear's sharing topology. Primitives cluster by shared intermediates.</p>
+
+  <h2>Physics</h2>
+  <div class="ctrl">
+    <label>Spring stiffness <span id="v-spring">0.040</span></label>
+    <input type="range" id="spring-k" min="0.005" max="0.2" step="0.005" value="0.04">
+  </div>
+  <div class="ctrl">
+    <label>Repulsion strength <span id="v-repel">500</span></label>
+    <input type="range" id="repel-k" min="50" max="2000" step="25" value="500">
+  </div>
+  <div class="ctrl">
+    <label>Damping <span id="v-damp">0.850</span></label>
+    <input type="range" id="damping" min="0.7" max="0.95" step="0.005" value="0.85">
+  </div>
+  <div class="ctrl">
+    <label>Rest length <span id="v-rest">80</span></label>
+    <input type="range" id="rest-len" min="20" max="200" step="5" value="80">
+  </div>
+
+  <h2>Presets</h2>
+  <div class="preset-row">
+    <button onclick="preset('tight')">Tight clusters</button>
+    <button onclick="preset('loose')">Loose</button>
+    <button onclick="preset('bridges')">Show bridges</button>
+    <button onclick="preset('explode')">Explode</button>
+    <button onclick="preset('default')">Default</button>
+  </div>
+
+  <h2>Controls</h2>
+  <div class="btn-row">
+    <button id="btn-play" class="active" onclick="togglePlay()">Pause</button>
+    <button onclick="resetSim()">Reset</button>
+  </div>
+  <div class="btn-row">
+    <button onclick="toggleLabels()">Toggle labels</button>
+    <button onclick="toggleEdges()">Toggle edges</button>
+  </div>
+
+  <h2>Legend</h2>
+  <div class="legend" id="legend"></div>
+
+  <h2>Statistics</h2>
+  <div class="stats" id="stats"></div>
+
+  <h2>Cluster Analysis</h2>
+  <div class="stats" id="clusters"></div>
+
+  <h2>Sharing Insight</h2>
+  <div id="prompt-area"></div>
+  <button id="copy-btn" onclick="copyPrompt()">Copy insight</button>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="c"></canvas>
+  <div class="tooltip" id="tooltip"></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// DATA: The actual fintek sharing topology
+// ═══════════════════════════════════════════════════════════════════
+
+const FAMILIES = {
+  spectral:      { color: '#4488ff', label: 'Spectral' },
+  descriptive:   { color: '#44cc66', label: 'Descriptive' },
+  hypothesis:    { color: '#ff4466', label: 'Hypothesis' },
+  time_series:   { color: '#aa66ff', label: 'Time Series' },
+  clustering:    { color: '#ff8844', label: 'Clustering' },
+  linear_algebra:{ color: '#44dddd', label: 'Linear Algebra' },
+  nonparametric: { color: '#ddaa44', label: 'Nonparametric' },
+  multivariate:  { color: '#dd44aa', label: 'Multivariate' },
+  volatility:    { color: '#88cc44', label: 'Volatility' },
+  information:   { color: '#44aadd', label: 'Information Theory' },
+  complexity:    { color: '#cc8844', label: 'Complexity' },
+};
+
+// Nodes: actual tambear primitives with their family assignment
+const NODES_DATA = [
+  // FFT phylum consumers (spectral family)
+  { id: 'spectral_centroid', family: 'spectral' },
+  { id: 'spectral_bandwidth', family: 'spectral' },
+  { id: 'spectral_rolloff', family: 'spectral' },
+  { id: 'spectral_entropy', family: 'spectral' },
+  { id: 'spectral_slope', family: 'spectral' },
+  { id: 'periodogram', family: 'spectral' },
+  { id: 'welch', family: 'spectral' },
+  { id: 'multitaper', family: 'spectral' },
+  { id: 'lomb_scargle', family: 'spectral' },
+  { id: 'stft', family: 'spectral' },
+  { id: 'energy_bands', family: 'spectral' },
+  { id: 'cwt', family: 'spectral' },
+  { id: 'wigner_ville', family: 'spectral' },
+  { id: 'ar_psd', family: 'spectral' },
+  { id: 'harmonic', family: 'spectral' },
+
+  // MomentStats phylum consumers (descriptive family)
+  { id: 'power_mean', family: 'descriptive' },  // p=1 arithmetic, p=0 geometric, p=-1 harmonic, p=2 RMS
+  { id: 'variance', family: 'descriptive' },
+  { id: 'skewness', family: 'descriptive' },
+  { id: 'kurtosis', family: 'descriptive' },
+  { id: 'cv', family: 'descriptive' },
+  { id: 'z_score', family: 'descriptive' },
+  { id: 'trimmed_mean', family: 'descriptive' },  // needs sorted data
+  { id: 'winsorized_mean', family: 'descriptive' },  // needs sorted data
+  { id: 'mad', family: 'descriptive' },  // needs sorted data
+  { id: 'gini', family: 'descriptive' },  // needs sorted data
+  { id: 'bowley_skewness', family: 'descriptive' },  // needs sorted data
+  { id: 'mae', family: 'descriptive' },
+  { id: 'rmse', family: 'descriptive' },
+
+  // Hypothesis testing (shares MomentStats)
+  { id: 'jarque_bera', family: 'hypothesis' },
+  { id: 'shapiro_wilk', family: 'hypothesis' },
+  { id: 'dagostino_pearson', family: 'hypothesis' },
+  { id: 'one_sample_t', family: 'hypothesis' },
+  { id: 'welch_t', family: 'hypothesis' },
+  { id: 'one_way_anova', family: 'hypothesis' },
+  { id: 'levene', family: 'hypothesis' },
+  { id: 'bartlett', family: 'hypothesis' },
+  { id: 'breusch_pagan', family: 'hypothesis' },
+  { id: 'tukey_hsd', family: 'hypothesis' },
+
+  // Sorted order stats phylum consumers (nonparametric)
+  { id: 'quantile', family: 'nonparametric' },
+  { id: 'median', family: 'nonparametric' },
+  { id: 'iqr', family: 'nonparametric' },
+  { id: 'ecdf', family: 'nonparametric' },
+  { id: 'ks_test', family: 'nonparametric' },
+  { id: 'mann_whitney', family: 'nonparametric' },
+  { id: 'kendall_tau', family: 'nonparametric' },
+  { id: 'spearman', family: 'nonparametric' },
+
+  // Covariance matrix phylum (multivariate)
+  { id: 'pca', family: 'multivariate' },
+  { id: 'factor_analysis', family: 'multivariate' },
+  { id: 'lda', family: 'multivariate' },
+  { id: 'mahalanobis', family: 'multivariate' },
+  { id: 'cca', family: 'multivariate' },
+
+  // Distance matrix phylum (clustering)
+  { id: 'dbscan', family: 'clustering' },
+  { id: 'knn', family: 'clustering' },
+  { id: 'spectral_clustering', family: 'clustering' },
+  { id: 'hierarchical', family: 'clustering' },
+  { id: 'silhouette', family: 'clustering' },
+  { id: 'calinski_harabasz', family: 'clustering' },
+
+  // ACF phylum consumers (time_series)
+  { id: 'pacf', family: 'time_series' },
+  { id: 'ar_fit', family: 'time_series' },
+  { id: 'arma', family: 'time_series' },
+  { id: 'ljung_box', family: 'time_series' },
+  { id: 'durbin_watson', family: 'time_series' },
+  { id: 'adf_test', family: 'time_series' },
+  { id: 'kpss', family: 'time_series' },
+  { id: 'cusum', family: 'time_series' },
+  { id: 'pelt', family: 'time_series' },
+  { id: 'bocpd', family: 'time_series' },
+
+  // Volatility (shares MomentStats + ACF)
+  { id: 'garch', family: 'volatility' },
+  { id: 'egarch', family: 'volatility' },
+  { id: 'parkinson', family: 'volatility' },
+  { id: 'garman_klass', family: 'volatility' },
+  { id: 'yang_zhang', family: 'volatility' },
+
+  // Linear algebra (shared by many)
+  { id: 'cholesky', family: 'linear_algebra' },
+  { id: 'qr', family: 'linear_algebra' },
+  { id: 'svd', family: 'linear_algebra' },
+  { id: 'eigendecomp', family: 'linear_algebra' },
+  { id: 'ols', family: 'linear_algebra' },
+
+  // Information theory
+  { id: 'shannon_entropy', family: 'information' },
+  { id: 'mutual_info', family: 'information' },
+  { id: 'transfer_entropy', family: 'information' },
+  { id: 'kl_divergence', family: 'information' },
+
+  // Complexity (shares sorted + distance)
+  { id: 'sample_entropy', family: 'complexity' },
+  { id: 'permutation_entropy', family: 'complexity' },
+  { id: 'dfa', family: 'complexity' },
+  { id: 'hurst', family: 'complexity' },
+  { id: 'lyapunov', family: 'complexity' },
+];
+
+// Shared intermediates (phyla) — each connects its consumers
+const PHYLA = [
+  { id: 'FFT', consumers: ['spectral_centroid','spectral_bandwidth','spectral_rolloff','spectral_entropy','spectral_slope','periodogram','welch','multitaper','lomb_scargle','stft','energy_bands','cwt','wigner_ville','ar_psd','harmonic'], weight: 3 },
+  { id: 'MomentStats', consumers: ['power_mean','variance','skewness','kurtosis','cv','z_score','jarque_bera','shapiro_wilk','dagostino_pearson','one_sample_t','welch_t','one_way_anova','levene','bartlett','garch'], weight: 3 },
+  { id: 'SortedOrder', consumers: ['quantile','median','iqr','ecdf','ks_test','mann_whitney','kendall_tau','spearman','trimmed_mean','winsorized_mean','mad','gini','bowley_skewness'], weight: 2 },
+  { id: 'LogTransform', consumers: ['power_mean','dfa','hurst','log_returns','garch','egarch','parkinson','garman_klass','yang_zhang'], weight: 1.5 },
+  { id: 'CovMatrix', consumers: ['pca','factor_analysis','lda','mahalanobis','cca','garch','egarch'], weight: 2.5 },
+  { id: 'DistMatrix', consumers: ['dbscan','knn','spectral_clustering','hierarchical','silhouette','calinski_harabasz','sample_entropy','lyapunov'], weight: 2 },
+  { id: 'ACF', consumers: ['pacf','ar_fit','arma','ljung_box','durbin_watson','adf_test','kpss','garch','egarch','transfer_entropy'], weight: 2 },
+  // Cross-phylum bridges
+  { id: 'OLS', consumers: ['ols','adf_test','breusch_pagan','durbin_watson','arma','garch','dfa'], weight: 1.5 },
+  { id: 'Eigendecomp', consumers: ['eigendecomp','pca','spectral_clustering','lda','factor_analysis'], weight: 2 },
+  { id: 'Cholesky', consumers: ['cholesky','ols','mahalanobis','qr'], weight: 1.5 },
+  { id: 'InvCount', consumers: ['kendall_tau','spearman','mann_whitney'], weight: 1 },
+  { id: 'LogReturns', consumers: ['garch','egarch','parkinson','garman_klass','yang_zhang','shannon_entropy','permutation_entropy'], weight: 2 },
+];
+
+// ═══════════════════════════════════════════════════════════════════
+// SIMULATION
+// ═══════════════════════════════════════════════════════════════════
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+let nodes = [];
+let edges = [];
+let running = true;
+let showLabels = true;
+let showEdges = true;
+let iteration = 0;
+let totalEnergy = 0;
+let dragNode = null;
+let hoverNode = null;
+let panX = 0, panY = 0, zoom = 1;
+let lastMouse = null;
+
+const DEFAULTS = { springK: 0.04, repelK: 500, damping: 0.85, restLen: 80 };
+let state = { ...DEFAULTS };
+const MAX_VELOCITY = 8; // cap velocity to prevent escape
+
+function initNodes() {
+  nodes = NODES_DATA.map((d, i) => ({
+    ...d,
+    x: W/2 + (Math.random() - 0.5) * Math.min(W, 800) * 0.4,
+    y: H/2 + (Math.random() - 0.5) * Math.min(H, 600) * 0.4,
+    vx: 0, vy: 0,
+    radius: 5,
+    connections: 0,
+  }));
+
+  // Build edges from phyla
+  edges = [];
+  const idMap = {};
+  nodes.forEach((n, i) => idMap[n.id] = i);
+
+  PHYLA.forEach(phylum => {
+    const cs = phylum.consumers.filter(c => idMap[c] !== undefined);
+    for (let i = 0; i < cs.length; i++) {
+      for (let j = i + 1; j < cs.length; j++) {
+        const a = idMap[cs[i]], b = idMap[cs[j]];
+        // Check if edge already exists
+        const existing = edges.find(e => (e.a === a && e.b === b) || (e.a === b && e.b === a));
+        if (existing) {
+          existing.weight += phylum.weight * 0.3;
+          if (!existing.phyla.includes(phylum.id)) existing.phyla.push(phylum.id);
+        } else {
+          edges.push({ a, b, weight: phylum.weight, phyla: [phylum.id] });
+        }
+        nodes[a].connections++;
+        nodes[b].connections++;
+      }
+    }
+  });
+
+  // Scale node radius by connection count
+  const maxConn = Math.max(...nodes.map(n => n.connections));
+  nodes.forEach(n => {
+    n.radius = 3 + 6 * (n.connections / maxConn);
+  });
+
+  iteration = 0;
+}
+
+function step() {
+  const { springK, repelK, damping, restLen } = state;
+  totalEnergy = 0;
+
+  // Spring forces (attractive along edges)
+  edges.forEach(e => {
+    const a = nodes[e.a], b = nodes[e.b];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    const force = springK * e.weight * (dist - restLen);
+    const fx = force * dx / dist;
+    const fy = force * dy / dist;
+    a.vx += fx; a.vy += fy;
+    b.vx -= fx; b.vy -= fy;
+  });
+
+  // Coulomb repulsion (all pairs)
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i], b = nodes[j];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const distSq = dx * dx + dy * dy || 1;
+      const dist = Math.sqrt(distSq);
+      const force = repelK / distSq;
+      const fx = force * dx / dist;
+      const fy = force * dy / dist;
+      a.vx -= fx; a.vy -= fy;
+      b.vx += fx; b.vy += fy;
+    }
+  }
+
+  // Center gravity (weak pull toward center)
+  nodes.forEach(n => {
+    n.vx += (W/2 - n.x) * 0.0005;
+    n.vy += (H/2 - n.y) * 0.0005;
+  });
+
+  // Update positions with velocity capping and boundary clamping
+  nodes.forEach(n => {
+    if (n === dragNode) return;
+    n.vx *= damping;
+    n.vy *= damping;
+    // Cap velocity
+    const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+    if (speed > MAX_VELOCITY) {
+      n.vx = n.vx / speed * MAX_VELOCITY;
+      n.vy = n.vy / speed * MAX_VELOCITY;
+    }
+    n.x += n.vx;
+    n.y += n.vy;
+    // Keep in bounds with soft bounce
+    const margin = 50;
+    if (n.x < margin) { n.x = margin; n.vx *= -0.3; }
+    if (n.x > W - margin) { n.x = W - margin; n.vx *= -0.3; }
+    if (n.y < margin) { n.y = margin; n.vy *= -0.3; }
+    if (n.y > H - margin) { n.y = H - margin; n.vy *= -0.3; }
+    totalEnergy += n.vx * n.vx + n.vy * n.vy;
+  });
+
+  iteration++;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RENDERING
+// ═══════════════════════════════════════════════════════════════════
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(panX, panY);
+  ctx.scale(zoom, zoom);
+
+  // Edges
+  if (showEdges) {
+    edges.forEach(e => {
+      const a = nodes[e.a], b = nodes[e.b];
+      const alpha = Math.min(0.4, 0.05 + e.weight * 0.04);
+      ctx.strokeStyle = `rgba(100, 140, 200, ${alpha})`;
+      ctx.lineWidth = 0.3 + e.weight * 0.3;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    });
+  }
+
+  // Nodes
+  nodes.forEach(n => {
+    const fam = FAMILIES[n.family];
+    const isHover = n === hoverNode;
+
+    // Glow for hovered
+    if (isHover) {
+      ctx.shadowColor = fam.color;
+      ctx.shadowBlur = 15;
+    }
+
+    ctx.fillStyle = fam.color;
+    ctx.globalAlpha = isHover ? 1 : 0.85;
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, n.radius * (isHover ? 1.5 : 1), 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+
+    // Labels
+    if (showLabels && (isHover || zoom > 0.8)) {
+      ctx.fillStyle = isHover ? '#fff' : 'rgba(200,200,220,0.6)';
+      ctx.font = `${isHover ? 11 : 9}px system-ui`;
+      ctx.textAlign = 'center';
+      ctx.fillText(n.id, n.x, n.y - n.radius - 4);
+    }
+  });
+
+  // Highlight hovered node's edges
+  if (hoverNode) {
+    edges.forEach(e => {
+      if (nodes[e.a] === hoverNode || nodes[e.b] === hoverNode) {
+        const a = nodes[e.a], b = nodes[e.b];
+        ctx.strokeStyle = FAMILIES[hoverNode.family].color + '88';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+    });
+  }
+
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CLUSTER DETECTION
+// ═══════════════════════════════════════════════════════════════════
+
+function detectClusters() {
+  // Simple: group by centroid proximity
+  const centroids = {};
+  Object.keys(FAMILIES).forEach(f => {
+    const fNodes = nodes.filter(n => n.family === f);
+    if (fNodes.length === 0) return;
+    const cx = fNodes.reduce((s, n) => s + n.x, 0) / fNodes.length;
+    const cy = fNodes.reduce((s, n) => s + n.y, 0) / fNodes.length;
+    const spread = Math.sqrt(fNodes.reduce((s, n) => s + (n.x-cx)**2 + (n.y-cy)**2, 0) / fNodes.length);
+    centroids[f] = { cx, cy, spread, count: fNodes.length };
+  });
+
+  // Find bridges: nodes with edges to multiple families
+  const bridges = [];
+  nodes.forEach(n => {
+    const neighborFamilies = new Set();
+    edges.forEach(e => {
+      if (nodes[e.a] === n) neighborFamilies.add(nodes[e.b].family);
+      if (nodes[e.b] === n) neighborFamilies.add(nodes[e.a].family);
+    });
+    if (neighborFamilies.size >= 3) {
+      bridges.push({ id: n.id, families: [...neighborFamilies] });
+    }
+  });
+
+  return { centroids, bridges };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// UI
+// ═══════════════════════════════════════════════════════════════════
+
+function updateStats() {
+  const { centroids, bridges } = detectClusters();
+  const energyClass = totalEnergy < 1 ? 'energy-low' : 'energy-high';
+
+  document.getElementById('stats').innerHTML = `
+    Iteration: <span class="val">${iteration}</span><br>
+    Total energy: <span class="${energyClass}">${totalEnergy.toFixed(2)}</span><br>
+    Nodes: <span class="val">${nodes.length}</span> &nbsp; Edges: <span class="val">${edges.length}</span><br>
+    Status: <span class="val">${totalEnergy < 0.5 ? 'EQUILIBRIUM' : totalEnergy < 5 ? 'settling...' : 'active'}</span>
+  `;
+
+  // Cluster analysis
+  const sortedFams = Object.entries(centroids).sort((a, b) => a[1].spread - b[1].spread);
+  let clusterHTML = '<b>Cluster tightness:</b><br>';
+  sortedFams.forEach(([f, c]) => {
+    const dot = `<span style="color:${FAMILIES[f]?.color || '#888'}">\u25CF</span>`;
+    clusterHTML += `${dot} ${f}: spread=${c.spread.toFixed(0)} (${c.count})<br>`;
+  });
+
+  if (bridges.length > 0) {
+    clusterHTML += `<br><b>Bridge nodes (3+ families):</b><br>`;
+    bridges.slice(0, 8).forEach(b => {
+      clusterHTML += `\u2022 <span class="val">${b.id}</span> \u2192 ${b.families.length} families<br>`;
+    });
+  }
+
+  document.getElementById('clusters').innerHTML = clusterHTML;
+
+  // Prompt/insight
+  const tightestCluster = sortedFams[0];
+  const loosestCluster = sortedFams[sortedFams.length - 1];
+  const topBridge = bridges[0];
+
+  let insight = '';
+  if (totalEnergy < 1) {
+    insight = `Equilibrium reached at iteration ${iteration}. `;
+    if (tightestCluster) insight += `Tightest cluster: ${tightestCluster[0]} (spread ${tightestCluster[1].spread.toFixed(0)}). `;
+    if (loosestCluster) insight += `Loosest: ${loosestCluster[0]} (spread ${loosestCluster[1].spread.toFixed(0)}). `;
+    if (topBridge) insight += `Key bridge: ${topBridge.id} connects ${topBridge.families.length} families. `;
+    insight += `The sharing topology reveals ${bridges.length} bridge primitives that connect across family boundaries — these are the structurally important nodes for TamSession caching.`;
+  } else {
+    insight = `Simulation running (energy: ${totalEnergy.toFixed(1)}). Watch for cluster formation — primitives sharing the same intermediate pull together.`;
+  }
+  document.getElementById('prompt-area').textContent = insight;
+}
+
+function buildLegend() {
+  const el = document.getElementById('legend');
+  el.innerHTML = Object.entries(FAMILIES).map(([k, v]) => {
+    const count = nodes.filter(n => n.family === k).length;
+    if (count === 0) return '';
+    return `<div class="legend-item"><div class="legend-dot" style="background:${v.color}"></div>${v.label} (${count})</div>`;
+  }).join('');
+}
+
+// Controls
+document.getElementById('spring-k').oninput = e => { state.springK = +e.target.value; document.getElementById('v-spring').textContent = state.springK.toFixed(3); };
+document.getElementById('repel-k').oninput = e => { state.repelK = +e.target.value; document.getElementById('v-repel').textContent = state.repelK; };
+document.getElementById('damping').oninput = e => { state.damping = +e.target.value; document.getElementById('v-damp').textContent = state.damping.toFixed(3); };
+document.getElementById('rest-len').oninput = e => { state.restLen = +e.target.value; document.getElementById('v-rest').textContent = state.restLen; };
+
+function togglePlay() {
+  running = !running;
+  const btn = document.getElementById('btn-play');
+  btn.textContent = running ? 'Pause' : 'Play';
+  btn.classList.toggle('active', running);
+}
+
+function toggleLabels() { showLabels = !showLabels; }
+function toggleEdges() { showEdges = !showEdges; }
+
+function resetSim() {
+  initNodes();
+}
+
+function preset(name) {
+  const p = {
+    tight:   { springK: 0.08, repelK: 300, damping: 0.85, restLen: 40 },
+    loose:   { springK: 0.02, repelK: 800, damping: 0.88, restLen: 120 },
+    bridges: { springK: 0.04, repelK: 600, damping: 0.86, restLen: 90 },
+    explode: { springK: 0.01, repelK: 1500, damping: 0.90, restLen: 150 },
+    default: { ...DEFAULTS },
+  }[name] || DEFAULTS;
+
+  Object.assign(state, p);
+  document.getElementById('spring-k').value = state.springK;
+  document.getElementById('repel-k').value = state.repelK;
+  document.getElementById('damping').value = state.damping;
+  document.getElementById('rest-len').value = state.restLen;
+  document.getElementById('v-spring').textContent = state.springK.toFixed(3);
+  document.getElementById('v-repel').textContent = state.repelK;
+  document.getElementById('v-damp').textContent = state.damping.toFixed(3);
+  document.getElementById('v-rest').textContent = state.restLen;
+}
+
+function copyPrompt() {
+  const text = document.getElementById('prompt-area').textContent;
+  navigator.clipboard.writeText(text);
+  const btn = document.getElementById('copy-btn');
+  btn.textContent = 'Copied!';
+  btn.classList.add('copied');
+  setTimeout(() => { btn.textContent = 'Copy insight'; btn.classList.remove('copied'); }, 1500);
+}
+
+// Mouse interaction
+canvas.addEventListener('mousedown', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left - panX) / zoom;
+  const my = (e.clientY - rect.top - panY) / zoom;
+  dragNode = nodes.find(n => Math.hypot(n.x - mx, n.y - my) < n.radius * 2);
+  if (!dragNode) lastMouse = { x: e.clientX, y: e.clientY };
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left - panX) / zoom;
+  const my = (e.clientY - rect.top - panY) / zoom;
+
+  if (dragNode) {
+    dragNode.x = mx;
+    dragNode.y = my;
+    dragNode.vx = 0;
+    dragNode.vy = 0;
+  } else if (lastMouse) {
+    panX += e.clientX - lastMouse.x;
+    panY += e.clientY - lastMouse.y;
+    lastMouse = { x: e.clientX, y: e.clientY };
+  }
+
+  // Hover detection
+  hoverNode = nodes.find(n => Math.hypot(n.x - mx, n.y - my) < n.radius * 2) || null;
+
+  // Tooltip
+  const tip = document.getElementById('tooltip');
+  if (hoverNode) {
+    const connEdges = edges.filter(e => nodes[e.a] === hoverNode || nodes[e.b] === hoverNode);
+    const phyla = new Set();
+    connEdges.forEach(e => e.phyla.forEach(p => phyla.add(p)));
+    tip.innerHTML = `<b>${hoverNode.id}</b><br>Family: ${hoverNode.family}<br>Connections: ${hoverNode.connections}<br>Shared via: ${[...phyla].join(', ')}`;
+    tip.style.display = 'block';
+    tip.style.left = (e.clientX - 310) + 'px';
+    tip.style.top = (e.clientY + 15) + 'px';
+  } else {
+    tip.style.display = 'none';
+  }
+});
+
+canvas.addEventListener('mouseup', () => { dragNode = null; lastMouse = null; });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const scale = e.deltaY > 0 ? 0.95 : 1.05;
+  zoom *= scale;
+  zoom = Math.max(0.2, Math.min(3, zoom));
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// MAIN LOOP
+// ═══════════════════════════════════════════════════════════════════
+
+function resize() {
+  const wrap = document.getElementById('canvas-wrap');
+  W = canvas.width = wrap.clientWidth;
+  H = canvas.height = wrap.clientHeight;
+}
+
+let statsTimer = 0;
+function loop() {
+  if (running) {
+    step();
+  }
+  render();
+  if (++statsTimer % 15 === 0) updateStats();
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('resize', resize);
+resize();
+initNodes();
+buildLegend();
+updateStats();
+loop();
+</script>
+</body>
+</html>

@@ -1337,6 +1337,107 @@ pub fn ols_residuals(x: &[f64], y: &[f64]) -> Vec<f64> {
     r.residuals
 }
 
+// ─── Gram-Schmidt orthogonalization ─────────────────────────────────────────
+
+/// Classical Gram-Schmidt orthogonalization.
+///
+/// Given a list of vectors, produces an orthonormal basis for their span.
+/// Linearly dependent vectors (after projection, their residual norm < 1e-10)
+/// are silently dropped — the output may have fewer columns than the input.
+///
+/// **Algorithm**: for each input vector vᵢ, subtract projections onto all
+/// previously accepted basis vectors, then normalize. This is the textbook
+/// "sequential" variant; it is numerically correct for well-conditioned inputs
+/// but can accumulate floating-point error for nearly-dependent vectors.
+/// Use [`gram_schmidt_modified`] for improved stability.
+///
+/// # Parameters
+/// - `vectors`: list of vectors, all the same length d
+///
+/// # Returns
+/// `Ok(basis)` — orthonormal basis vectors. `Err` if the input is empty
+/// or the vectors have inconsistent dimensions.
+///
+/// Kingdom A: accumulate (projection sums) + gather (normalize).
+pub fn gram_schmidt(vectors: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
+    if vectors.is_empty() { return Ok(vec![]); }
+    let d = vectors[0].len();
+    for v in vectors {
+        if v.len() != d { return Err(format!("inconsistent dimension: {} vs {}", v.len(), d)); }
+    }
+
+    let mut basis: Vec<Vec<f64>> = Vec::new();
+
+    for v in vectors {
+        // Subtract projections onto all accepted basis vectors
+        let mut r = v.clone();
+        for q in &basis {
+            // proj_q(r) = (r · q) * q  (q is already unit length)
+            let coeff: f64 = r.iter().zip(q.iter()).map(|(a, b)| a * b).sum();
+            for (ri, &qi) in r.iter_mut().zip(q.iter()) {
+                *ri -= coeff * qi;
+            }
+        }
+        // Normalize
+        let norm: f64 = r.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm < 1e-10 {
+            continue; // linearly dependent — skip
+        }
+        basis.push(r.into_iter().map(|x| x / norm).collect());
+    }
+
+    Ok(basis)
+}
+
+/// Modified Gram-Schmidt orthogonalization (numerically stable variant).
+///
+/// Identical output to [`gram_schmidt`] but with improved numerical stability.
+/// Instead of computing all projections from the original vector `v`, the
+/// modified form updates the working vector after each projection step. This
+/// prevents error accumulation when basis vectors are nearly collinear.
+///
+/// For well-conditioned inputs the two variants agree to machine precision.
+/// For ill-conditioned inputs (near-linearly-dependent vectors), MGS is
+/// significantly more accurate — the classical variant can lose orthogonality,
+/// while MGS maintains it.
+///
+/// **Reference**: Bjorck 1967, "Solving linear least-squares problems by
+/// Gram-Schmidt orthogonalization."
+///
+/// Kingdom A: accumulate (projection sums, updated in-place) + gather (normalize).
+pub fn gram_schmidt_modified(vectors: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
+    if vectors.is_empty() { return Ok(vec![]); }
+    let d = vectors[0].len();
+    for v in vectors {
+        if v.len() != d { return Err(format!("inconsistent dimension: {} vs {}", v.len(), d)); }
+    }
+
+    // Work on mutable copies; accept/normalize as we go
+    let mut work: Vec<Vec<f64>> = vectors.to_vec();
+    let mut basis: Vec<Vec<f64>> = Vec::new();
+
+    for i in 0..work.len() {
+        // Normalize work[i]
+        let norm: f64 = work[i].iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm < 1e-10 {
+            continue; // linearly dependent — skip
+        }
+        let qi: Vec<f64> = work[i].iter().map(|x| x / norm).collect();
+
+        // Subtract projection onto qi from all subsequent working vectors
+        for j in (i + 1)..work.len() {
+            let coeff: f64 = work[j].iter().zip(qi.iter()).map(|(a, b)| a * b).sum();
+            for (wjk, &qik) in work[j].iter_mut().zip(qi.iter()) {
+                *wjk -= coeff * qik;
+            }
+        }
+
+        basis.push(qi);
+    }
+
+    Ok(basis)
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1910,5 +2011,69 @@ mod tests {
         assert!(sigmoid(-100.0) < 0.001);
         assert!(sigmoid(710.0).is_finite()); // no overflow
         assert!(sigmoid(-710.0).is_finite());
+    }
+
+    // ── Gram-Schmidt ───────────────────────────────────────────────────────
+
+    #[test]
+    fn gram_schmidt_orthonormal_2d() {
+        let v1 = vec![3.0, 0.0];
+        let v2 = vec![1.0, 1.0];
+        let q = gram_schmidt(&[v1, v2]).unwrap();
+        assert_eq!(q.len(), 2);
+        // Each output vector has unit norm
+        for qi in &q {
+            let norm: f64 = qi.iter().map(|x| x * x).sum::<f64>().sqrt();
+            assert!((norm - 1.0).abs() < 1e-12, "norm={norm}");
+        }
+        // Orthogonality
+        let dot: f64 = q[0].iter().zip(q[1].iter()).map(|(a, b)| a * b).sum();
+        assert!(dot.abs() < 1e-12, "dot={dot}");
+    }
+
+    #[test]
+    fn gram_schmidt_spans_original_space() {
+        // The span of the output should equal the span of the input.
+        // A vector in the original span should also be in the output span.
+        let v1 = vec![1.0, 2.0, 3.0];
+        let v2 = vec![4.0, 5.0, 6.0];
+        let v3 = vec![7.0, 8.0, 10.0];
+        let q = gram_schmidt(&[v1, v2, v3]).unwrap();
+        // All output vectors orthonormal
+        for (i, qi) in q.iter().enumerate() {
+            let norm: f64 = qi.iter().map(|x| x * x).sum::<f64>().sqrt();
+            assert!((norm - 1.0).abs() < 1e-10, "q[{i}] norm={norm}");
+            for (j, qj) in q.iter().enumerate() {
+                if i == j { continue; }
+                let dot: f64 = qi.iter().zip(qj.iter()).map(|(a, b)| a * b).sum();
+                assert!(dot.abs() < 1e-10, "q[{i}]·q[{j}]={dot}");
+            }
+        }
+    }
+
+    #[test]
+    fn gram_schmidt_modified_matches_classical() {
+        let v1 = vec![1.0, 1.0, 0.0];
+        let v2 = vec![1.0, 0.0, 1.0];
+        let v3 = vec![0.0, 1.0, 1.0];
+        let q_c = gram_schmidt(&[v1.clone(), v2.clone(), v3.clone()]).unwrap();
+        let q_m = gram_schmidt_modified(&[v1, v2, v3]).unwrap();
+        // Both should produce orthonormal bases; they may differ by signs but
+        // the column spaces are identical — check norms and mutual orthogonality
+        for qi in &q_m {
+            let norm: f64 = qi.iter().map(|x| x * x).sum::<f64>().sqrt();
+            assert!((norm - 1.0).abs() < 1e-12, "norm={norm}");
+        }
+        assert_eq!(q_c.len(), q_m.len());
+    }
+
+    #[test]
+    fn gram_schmidt_linearly_dependent_drops() {
+        // Third vector = first; should produce only 2 output vectors
+        let v1 = vec![1.0, 0.0];
+        let v2 = vec![0.0, 1.0];
+        let v3 = vec![2.0, 0.0]; // linear combination of v1
+        let q = gram_schmidt(&[v1, v2, v3]).unwrap();
+        assert_eq!(q.len(), 2, "expected 2 orthonormal vectors, got {}", q.len());
     }
 }

@@ -136,6 +136,10 @@ pub use clustering::{
     ClusterCentroids, ClusterValidation,
     cluster_centroids, cluster_validation,
     calinski_harabasz_score, davies_bouldin_score, silhouette_score,
+    // Cluster tendency / model selection
+    hopkins_statistic,
+    gap_statistic, GapStatisticResult,
+    bic_score, aic_score,
 };
 pub use intermediates::{DistanceMatrix, Metric, SufficientStatistics, IntermediateTag, TamSession, DataId};
 pub use reduce_op::ReduceOp;
@@ -153,6 +157,8 @@ pub use information_theory::{
     entropy_histogram,
     mutual_info_miller_madow, fisher_information_histogram,
     histogram_entropy,
+    // Bias-corrected estimators
+    grassberger_entropy,
 };
 pub use descriptive::{
     DescriptiveEngine, DescriptiveResult, MomentStats, GroupedMomentStats,
@@ -193,6 +199,8 @@ pub use special_functions::{
     logistic, logit,
     // Normal PDF
     normal_pdf, normal_pdf_standard,
+    // Stirling approximation
+    stirling_approx, stirling_approx_corrected,
 };
 pub use hypothesis::{
     TestResult, AnovaResult, ChiSquareResult, HypothesisEngine,
@@ -236,6 +244,8 @@ pub use nonparametric::{
     TieInfo, tie_count,
     // Primitives (flat catalog)
     shapiro_wilk_coefficients,
+    // Missing flavors (added 2026-04-10)
+    hoeffdings_d, blomqvist_beta,
 };
 pub use complexity::{
     sample_entropy, approx_entropy, permutation_entropy, normalized_permutation_entropy,
@@ -248,6 +258,11 @@ pub use numerical::{
     derivative_central, derivative2_central, derivative_richardson,
     simpson, gauss_legendre_5, adaptive_simpson, trapezoid,
     OdeSolution, euler, rk4, rk45, rk4_system,
+    // Geometry
+    stereographic_project, stereographic_project_inverse,
+    // Dynamical systems
+    BrusselatorAnalysis, brusselator_rhs, brusselator_jacobian,
+    brusselator_bifurcation, brusselator_simulate,
 };
 pub use linear_algebra::{
     Mat, mat_mul, mat_add, mat_sub, mat_scale, mat_vec, dot, vec_norm, outer,
@@ -264,6 +279,8 @@ pub use linear_algebra::{
     ols_normal_equations, ols_residuals,
     forward_solve, back_solve_transpose,
     effective_rank_from_sv,
+    // Orthogonalization
+    gram_schmidt, gram_schmidt_modified,
 };
 pub use graph::{
     Edge, Graph, MstResult,

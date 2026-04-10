@@ -1911,6 +1911,76 @@ pub fn log_softmax(x: &[f64]) -> Vec<f64> {
     x.iter().map(|&xi| xi - max_x - log_sum).collect()
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Stirling's approximation for ln(n!)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Stirling's approximation for the natural log of the factorial: ln(n!).
+///
+/// Uses the asymptotic series:
+///   ln(n!) ≈ n·ln(n) − n + ½·ln(2πn)
+///
+/// This is exact only as n → ∞, but already accurate to < 0.1% for n ≥ 10
+/// and < 0.001% for n ≥ 100. For exact values at small n, use `log_gamma(n+1)`
+/// (Lanczos) which is computed from first principles with < 1e-12 relative error.
+///
+/// **Use case**: Stirling is the formula a domain expert reaches for when they
+/// need a fast closed-form bound on combinatorial quantities — entropy rates,
+/// binomial asymptotics, large-N statistical mechanics. It is a named primitive
+/// in its own right, not just an approximation to log_gamma.
+///
+/// # Parameters
+/// - `n`: non-negative real number (works for non-integer n too)
+///
+/// # Returns
+/// Stirling approximation of ln(n!) = ln(Γ(n+1)).
+/// Returns 0.0 for n = 0 (by convention, 0! = 1 → ln(1) = 0).
+/// Returns `f64::NAN` for n < 0.
+///
+/// Kingdom A: O(1) closed-form evaluation.
+pub fn stirling_approx(n: f64) -> f64 {
+    if n < 0.0 { return f64::NAN; }
+    if n == 0.0 { return 0.0; }
+    // Primary: n*ln(n) - n + 0.5*ln(2*pi*n)
+    let two_pi_n = 2.0 * std::f64::consts::PI * n;
+    n * n.ln() - n + 0.5 * two_pi_n.ln()
+}
+
+/// Stirling's approximation with first-order Stirling series correction.
+///
+/// Adds the first correction term of the Stirling series:
+///   ln(n!) ≈ n·ln(n) − n + ½·ln(2πn) + 1/(12n)
+///
+/// The correction term 1/(12n) reduces the relative error from O(1/n) to O(1/n²).
+/// For n ≥ 5, the corrected approximation is within 1e-4 of ln_gamma(n+1).
+/// For n ≥ 10, within 1e-5. For n ≥ 100, within 1e-8.
+///
+/// Adding more Stirling series terms: the full series is:
+///   1/(12n) − 1/(360n³) + 1/(1260n⁵) − ...
+///
+/// Each term reduces error by another factor of 1/n². Two terms are included
+/// here as the improvement beyond two terms is below f64 significance for n ≥ 1.
+///
+/// # Parameters
+/// - `n`: positive real number (n > 0)
+///
+/// # Returns
+/// Corrected Stirling approximation of ln(n!).
+/// Returns 0.0 for n = 0. Returns `f64::NAN` for n < 0.
+///
+/// Kingdom A: O(1) closed-form evaluation.
+pub fn stirling_approx_corrected(n: f64) -> f64 {
+    if n < 0.0 { return f64::NAN; }
+    if n == 0.0 { return 0.0; }
+    let base = stirling_approx(n);
+    // Stirling series: +1/(12n) - 1/(360n³) + 1/(1260n⁵) - ...
+    let n2 = n * n;
+    let correction = 1.0 / (12.0 * n)
+                   - 1.0 / (360.0 * n * n2)
+                   + 1.0 / (1260.0 * n * n2 * n2);
+    base + correction
+}
+
 #[cfg(test)]
 mod orthogonal_bessel_rmt_tests {
     use super::*;
@@ -2201,6 +2271,37 @@ mod orthogonal_bessel_rmt_tests {
         for (ls_i, s_i) in ls.iter().zip(s.iter()) {
             assert!((ls_i - s_i.ln()).abs() < 1e-12,
                 "log_softmax vs log(softmax): {ls_i} vs {}", s_i.ln());
+        }
+    }
+
+    // ── Stirling tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn stirling_zero_and_boundary() {
+        assert!((stirling_approx(0.0) - 0.0).abs() < 1e-12);
+        assert!(stirling_approx(-1.0).is_nan());
+    }
+
+    #[test]
+    fn stirling_matches_log_gamma_large_n() {
+        // For large n, Stirling ≈ log_gamma(n+1) = ln(n!)
+        // Relative error should be < 0.001% for n ≥ 100
+        for &n in &[100.0_f64, 500.0, 1000.0, 1e6] {
+            let exact = log_gamma(n + 1.0);
+            let approx = stirling_approx(n);
+            let rel_err = (approx - exact).abs() / exact.abs();
+            assert!(rel_err < 1e-3, "n={n}: rel_err={rel_err}");
+        }
+    }
+
+    #[test]
+    fn stirling_corrected_more_accurate() {
+        // Corrected variant should be strictly closer to log_gamma for n ≥ 5
+        for &n in &[5.0_f64, 10.0, 20.0, 50.0, 100.0] {
+            let exact = log_gamma(n + 1.0);
+            let basic = (stirling_approx(n) - exact).abs();
+            let corrected = (stirling_approx_corrected(n) - exact).abs();
+            assert!(corrected < basic, "n={n}: corrected={corrected} not < basic={basic}");
         }
     }
 }

@@ -3458,6 +3458,185 @@ pub fn sde_estimate(prices: &[f64], n_grid: usize) -> SdeResult {
     SdeResult { drift_mean, drift_slope, diffusion_mean, diffusion_slope, drift_diffusion_corr }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Hoeffding's D — independence test for nonlinear dependence
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Hoeffding's D statistic for independence testing.
+///
+/// Detects nonlinear dependence that Pearson and Spearman miss. D is
+/// based on the deviation between the bivariate rank distribution and the
+/// product of the marginal rank distributions. D = 0 under independence;
+/// D = 1 under perfect monotone dependence.
+///
+/// ## Formula
+///
+/// Let Rᵢ = rank(xᵢ), Sᵢ = rank(yᵢ), Qᵢ = #{j : xⱼ < xᵢ AND yⱼ < yᵢ}.
+///
+/// ```text
+/// D = 30 × [(n-2)(n-3)A - 2(n-2)B + C]
+///          ─────────────────────────────
+///                 n(n-1)(n-2)(n-3)(n-4)
+/// ```
+///
+/// where:
+/// - A = Σᵢ (Qᵢ-1)(Qᵢ-2)
+/// - B = Σᵢ (Rᵢ-2)(Sᵢ-2)(Qᵢ-1)
+/// - C = Σᵢ (Rᵢ-1)(Rᵢ-2)(Sᵢ-1)(Sᵢ-2) / 4   (adjusted for 1-based ranks)
+///
+/// Blum, Kiefer, Rosenblatt (1961); Hoeffding (1948).
+///
+/// ## Parameters
+///
+/// - `x`, `y`: paired observations, equal length ≥ 5. Returns `NaN` if n < 5.
+///
+/// ## Returns
+///
+/// D statistic in `[-0.5, 1.0]`. Positive values indicate association.
+/// For large n the statistic is rescaled so that 1 represents perfect
+/// monotone dependence.
+///
+/// ## References
+///
+/// Hoeffding, W. (1948). A non-parametric test of independence.
+/// *Annals of Mathematical Statistics*, 19(4), 546–557.
+pub fn hoeffdings_d(x: &[f64], y: &[f64]) -> f64 {
+    assert_eq!(x.len(), y.len(), "hoeffdings_d: x and y must have equal length");
+    let n = x.len();
+    if n < 5 { return f64::NAN; }
+    let nf = n as f64;
+
+    // Step 1: compute 1-based ranks Rᵢ, Sᵢ (average ties)
+    let rx = rank(x);
+    let ry = rank(y);
+
+    // Step 2: compute Qᵢ = #{j : xⱼ ≤ xᵢ AND yⱼ ≤ yᵢ} - 1
+    // This is the bivariate rank in the joint distribution, 0-indexed.
+    // Implementation: for each i, count j where xⱼ < xᵢ AND yⱼ < yᵢ,
+    // plus 0.5 * #{j : xⱼ = xᵢ AND yⱼ < yᵢ} + 0.5 * #{j : xⱼ < xᵢ AND yⱼ = yᵢ}
+    // + 0.25 * #{j : xⱼ = xᵢ AND yⱼ = yᵢ} (including i itself).
+    // For simplicity and correctness with ties, use the relationship:
+    //   Qᵢ = Cᵢⱼ where bivariate rank = #{j: Rⱼ < Rᵢ AND Sⱼ < Sᵢ} with tie adjustments.
+    // The cleanest approach: Qᵢ = (Rᵢ - 1)(Sᵢ - 1)/n is NOT correct (that would be expected).
+    // Instead follow Blum, Kiefer, Rosenblatt (1961) exactly:
+    //   Qᵢ = #{j ≠ i : xⱼ < xᵢ AND yⱼ < yᵢ} + 1  (1-based, strict inequalities)
+    // For ties: use the marginal rank formula — strictly less counts are (Rᵢ - 1) adjusted.
+    // We use the exact "quadrant count" approach.
+    let mut q = vec![0.0f64; n];
+    for i in 0..n {
+        let mut cnt = 0.0f64;
+        for j in 0..n {
+            // Count j where both x and y are strictly less than i
+            // Ties in x: use rank tie-adjusted count
+            let cx = if x[j] < x[i] { 1.0 } else if (x[j] - x[i]).abs() < 1e-300 { 0.5 } else { 0.0 };
+            let cy = if y[j] < y[i] { 1.0 } else if (y[j] - y[i]).abs() < 1e-300 { 0.5 } else { 0.0 };
+            cnt += cx * cy;
+        }
+        // Q is 1-based (includes the point itself as the lower corner)
+        q[i] = cnt; // already includes i itself at 0.25 contribution from 0.5*0.5
+    }
+
+    // Blum-Kiefer-Rosenblatt (1961) formula exactly as in R's hoeffd():
+    //   A = Σᵢ (Qᵢ)(Qᵢ - 1)
+    //   B = Σᵢ (Rᵢ - 1)(Sᵢ - 1) * Qᵢ    (using 1-based: Rᵢ-1 = #strictly below in x)
+    //   C = Σᵢ (Rᵢ - 1)(Rᵢ - 2)(Sᵢ - 1)(Sᵢ - 2)
+    //   D = 30[(n-2)(n-3)A - 2(n-2)B + C] / [n(n-1)(n-2)(n-3)(n-4)]
+    //
+    // With the Q defined above (0-indexed, including self):
+    //   - Q ranges from 0.25 (smallest point) up to n² approx.
+    //   - Marginal ranks rx, ry are 1-based (smallest = 1).
+    //   - (Rᵢ - 1) counts the number of xⱼ < xᵢ (with tie adjustments from average-rank).
+    //
+    // Reference: Hoeffding, W. (1948). Ann. Math. Statist. 19:546-557.
+    //            Blum, Kiefer, Rosenblatt (1961). Ann. Math. Statist. 32:485-498.
+
+    let a: f64 = q.iter().map(|&qi| qi * (qi - 1.0)).sum();
+    let b: f64 = (0..n).map(|i| (rx[i] - 1.0) * (ry[i] - 1.0) * q[i]).sum();
+    let c: f64 = (0..n).map(|i| {
+        (rx[i] - 1.0) * (rx[i] - 2.0) * (ry[i] - 1.0) * (ry[i] - 2.0)
+    }).sum();
+
+    let num = (nf - 2.0) * (nf - 3.0) * a - 2.0 * (nf - 2.0) * b + c;
+    let den = nf * (nf - 1.0) * (nf - 2.0) * (nf - 3.0) * (nf - 4.0);
+
+    if den.abs() < 1e-30 { return f64::NAN; }
+    30.0 * num / den
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Blomqvist's beta — medial correlation coefficient
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Blomqvist's medial correlation coefficient (beta).
+///
+/// A robust nonparametric measure of association based on sign-concordance
+/// at the joint median. Detects monotone dependence without assuming linearity.
+///
+/// ## Formula
+///
+/// ```text
+/// β = 4 × P(X > m_x AND Y > m_y) - 1
+///   = (2/n) × #{i : sgn(xᵢ - m_x) = sgn(yᵢ - m_y)} - 1
+/// ```
+///
+/// Equivalently: β = (n_cc + n_dd - n_cd - n_dc) / n, where cc = concordant
+/// (both above median), dd = discordant (both below), cd/dc = mixed.
+///
+/// ## Parameters
+///
+/// - `x`, `y`: paired observations, equal length ≥ 1. Returns `NaN` if empty.
+///
+/// ## Returns
+///
+/// β ∈ [-1, 1]. β = 1 for perfect positive monotone dependence,
+/// β = -1 for perfect negative, β ≈ 0 for independence.
+///
+/// ## References
+///
+/// Blomqvist, N. (1950). On a measure of dependence between two random
+/// variables. *Annals of Mathematical Statistics*, 21(4), 593–600.
+pub fn blomqvist_beta(x: &[f64], y: &[f64]) -> f64 {
+    assert_eq!(x.len(), y.len(), "blomqvist_beta: x and y must have equal length");
+    let n = x.len();
+    if n == 0 { return f64::NAN; }
+    let nf = n as f64;
+
+    // Compute medians
+    let mut sx: Vec<f64> = x.to_vec();
+    let mut sy: Vec<f64> = y.to_vec();
+    sx.sort_by(|a, b| a.total_cmp(b));
+    sy.sort_by(|a, b| a.total_cmp(b));
+    let mx = if n % 2 == 1 {
+        sx[n / 2]
+    } else {
+        (sx[n / 2 - 1] + sx[n / 2]) / 2.0
+    };
+    let my = if n % 2 == 1 {
+        sy[n / 2]
+    } else {
+        (sy[n / 2 - 1] + sy[n / 2]) / 2.0
+    };
+
+    // Count sign-concordant pairs: sgn(xᵢ - mx) == sgn(yᵢ - my)
+    // Ties at the median are split (contribute 0 to both sides).
+    let concordant: f64 = (0..n).map(|i| {
+        let sx_sign = (x[i] - mx).signum();
+        let sy_sign = (y[i] - my).signum();
+        // Both above median or both below: concordant (+1)
+        // Mixed: discordant (-1)
+        // Exactly at median: 0 (tie)
+        if sx_sign == 0.0 || sy_sign == 0.0 {
+            0.0
+        } else if sx_sign == sy_sign {
+            1.0
+        } else {
+            -1.0
+        }
+    }).sum();
+
+    concordant / nf
+}
+
 #[cfg(test)]
 mod sde_tests {
     use super::*;
@@ -3515,6 +3694,61 @@ mod sde_tests {
         assert!(r.drift_mean.is_finite());
         assert!(r.diffusion_mean.is_finite() && r.diffusion_mean >= 0.0);
         assert!(r.drift_diffusion_corr.abs() <= 1.0 + 1e-10);
+    }
+
+    // ── Hoeffding's D ─────────────────────────────────────────────────
+
+    #[test]
+    fn hoeffdings_d_independent() {
+        // Perfectly independent: x and y have no relationship
+        // For large n, D should be near 0
+        let x: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let y: Vec<f64> = (0..20).map(|i| ((i * 7 + 3) % 20) as f64).collect();
+        let d = hoeffdings_d(&x, &y);
+        assert!(d.abs() < 0.2, "independent data should have D near 0, got {d}");
+    }
+
+    #[test]
+    fn hoeffdings_d_perfect_monotone() {
+        // Perfect monotone relationship → D = 1
+        let x: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let y = x.clone();
+        let d = hoeffdings_d(&x, &y);
+        // For perfect concordance, D should be close to 1 (exact for large n)
+        assert!(d > 0.8, "perfect correlation should have high D, got {d}");
+    }
+
+    #[test]
+    fn hoeffdings_d_too_short_nan() {
+        let d = hoeffdings_d(&[1.0, 2.0, 3.0, 4.0], &[1.0, 2.0, 3.0, 4.0]);
+        assert!(d.is_nan(), "n < 5 should return NaN");
+    }
+
+    // ── Blomqvist beta ────────────────────────────────────────────────
+
+    #[test]
+    fn blomqvist_beta_perfect_positive() {
+        let x: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let y = x.clone();
+        let b = blomqvist_beta(&x, &y);
+        assert!((b - 1.0).abs() < 1e-10, "perfect positive: beta=1, got {b}");
+    }
+
+    #[test]
+    fn blomqvist_beta_perfect_negative() {
+        let x: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let y: Vec<f64> = (0..20).map(|i| (19 - i) as f64).collect();
+        let b = blomqvist_beta(&x, &y);
+        assert!((b + 1.0).abs() < 1e-10, "perfect negative: beta=-1, got {b}");
+    }
+
+    #[test]
+    fn blomqvist_beta_independent() {
+        // Checkerboard pattern: uncorrelated
+        let x = vec![1.0, 3.0, 2.0, 4.0];
+        let y = vec![3.0, 1.0, 4.0, 2.0];
+        let b = blomqvist_beta(&x, &y);
+        assert!(b.abs() <= 1.0, "beta must be in [-1, 1], got {b}");
     }
 
     #[test]

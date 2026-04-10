@@ -688,6 +688,64 @@ pub fn weighted_variance(x: &[f64], w: &[f64], bessel: bool) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Stereographic projection
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Stereographic projection: unit sphere ℝ³ → extended plane ℝ².
+///
+/// Projects from the north pole N = (0, 0, 1) onto the equatorial plane z=0.
+/// A point (x, y, z) on the unit sphere (with z ≠ 1) maps to (u, v) in the plane.
+///
+/// **Formula**: u = x/(1−z),  v = y/(1−z)
+///
+/// The north pole (z = 1) maps to the point at infinity — this function returns
+/// `[f64::INFINITY, f64::INFINITY]` in that degenerate case.
+///
+/// # Parameters
+/// - `point`: `[x, y, z]` — a point on (or near) the unit sphere.
+///   The caller is responsible for ensuring ‖point‖ ≈ 1; this function
+///   does not normalize the input.
+///
+/// # Returns
+/// `[u, v]` — coordinates in the equatorial plane.
+///
+/// Kingdom A: two gather operations (divide by the same denominator).
+pub fn stereographic_project(point: &[f64; 3]) -> [f64; 2] {
+    let [x, y, z] = *point;
+    let denom = 1.0 - z;
+    if denom.abs() < 1e-300 {
+        return [f64::INFINITY, f64::INFINITY];
+    }
+    [x / denom, y / denom]
+}
+
+/// Inverse stereographic projection: plane ℝ² → unit sphere ℝ³.
+///
+/// Maps a point (u, v) in the equatorial plane back to the unit sphere via:
+///
+///   x = 2u / (u² + v² + 1)
+///   y = 2v / (u² + v² + 1)
+///   z = (u² + v² − 1) / (u² + v² + 1)
+///
+/// This is the exact inverse of [`stereographic_project`]: for any (x,y,z)
+/// with z ≠ 1, `stereographic_project_inverse(stereographic_project([x,y,z]))
+/// == [x, y, z]`.
+///
+/// # Parameters
+/// - `point`: `[u, v]` — coordinates in the equatorial plane.
+///
+/// # Returns
+/// `[x, y, z]` — point on the unit sphere (‖result‖ = 1 to machine precision).
+///
+/// Kingdom A: three gather operations (divide by the same denominator).
+pub fn stereographic_project_inverse(point: &[f64; 2]) -> [f64; 3] {
+    let [u, v] = *point;
+    let r2 = u * u + v * v;
+    let denom = r2 + 1.0;
+    [2.0 * u / denom, 2.0 * v / denom, (r2 - 1.0) / denom]
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -932,5 +990,161 @@ mod tests {
     #[test]
     fn weighted_mean_empty() {
         assert!(super::weighted_mean(&[], &[]).is_nan());
+    }
+
+    // ── Stereographic projection ──────────────────────────────────────────
+
+    #[test]
+    fn stereographic_roundtrip() {
+        // Project a point on the sphere, then invert — should recover the original
+        let pts: &[[f64; 3]] = &[
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, -1.0],     // south pole
+            [1.0 / 3.0_f64.sqrt(), 1.0 / 3.0_f64.sqrt(), -1.0 / 3.0_f64.sqrt()],
+        ];
+        for &pt in pts {
+            let projected = super::stereographic_project(&pt);
+            let recovered = super::stereographic_project_inverse(&projected);
+            for (orig, rec) in pt.iter().zip(recovered.iter()) {
+                assert!((orig - rec).abs() < 1e-12, "roundtrip mismatch: {orig} vs {rec}");
+            }
+        }
+    }
+
+    #[test]
+    fn stereographic_known_values() {
+        // (1, 0, 0) → (1, 0) in plane
+        let [u, v] = super::stereographic_project(&[1.0, 0.0, 0.0]);
+        assert!((u - 1.0).abs() < 1e-12);
+        assert!(v.abs() < 1e-12);
+
+        // south pole (0, 0, -1) → (0, 0)
+        let [u, v] = super::stereographic_project(&[0.0, 0.0, -1.0]);
+        assert!(u.abs() < 1e-12);
+        assert!(v.abs() < 1e-12);
+    }
+
+    #[test]
+    fn stereographic_inverse_on_sphere() {
+        // For any (u, v), the inverse should produce a unit-sphere point
+        let test_pts: &[[f64; 2]] = &[[0.0, 0.0], [1.0, 0.0], [0.5, 0.5], [3.0, -2.0]];
+        for &uv in test_pts {
+            let [x, y, z] = super::stereographic_project_inverse(&uv);
+            let norm_sq = x * x + y * y + z * z;
+            assert!((norm_sq - 1.0).abs() < 1e-12, "not on sphere: |pt|²={norm_sq}");
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Brusselator — Hopf bifurcation model (Prigogine & Lefever, 1968)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Bifurcation analysis of the Brusselator dynamical system.
+#[derive(Debug, Clone)]
+pub struct BrusselatorAnalysis {
+    pub fixed_point: [f64; 2],
+    pub b_critical: f64,
+    pub is_stable: bool,
+    pub trace: f64,
+    pub determinant: f64,
+    pub oscillation_frequency: f64,
+    pub bifurcation_distance: f64,
+}
+
+/// Brusselator ODE right-hand side.
+///
+/// dx/dt = a - (b+1)x + x²y,  dy/dt = bx - x²y
+///
+/// Prigogine & Lefever 1968. Exhibits Hopf bifurcation at b = 1 + a².
+pub fn brusselator_rhs(state: &[f64], a: f64, b: f64) -> Vec<f64> {
+    let (x, y) = (state[0], state[1]);
+    vec![a - (b + 1.0) * x + x * x * y, b * x - x * x * y]
+}
+
+/// Brusselator Jacobian at a given state.
+pub fn brusselator_jacobian(state: &[f64], b: f64) -> [[f64; 2]; 2] {
+    let (x, y) = (state[0], state[1]);
+    [[2.0 * x * y - (b + 1.0), x * x], [b - 2.0 * x * y, -(x * x)]]
+}
+
+/// Brusselator bifurcation analysis.
+///
+/// Fixed point: (a, b/a). Hopf bifurcation at b_critical = 1 + a².
+/// Below critical: stable fixed point. Above: stable limit cycle
+/// with frequency = a. Supercritical (smooth amplitude growth).
+///
+/// Structural rhyme with finance: bifurcation distance is analogous
+/// to GARCH persistence (α+β - 1). Critical slowing down near
+/// bifurcation → increasing vol autocorrelation → detectable precursor.
+pub fn brusselator_bifurcation(a: f64, b: f64) -> BrusselatorAnalysis {
+    let b_critical = 1.0 + a * a;
+    let trace = b - 1.0 - a * a;
+    let det = a * a;
+    BrusselatorAnalysis {
+        fixed_point: [a, b / a],
+        b_critical,
+        is_stable: b < b_critical,
+        trace,
+        determinant: det,
+        oscillation_frequency: det.sqrt(),
+        bifurcation_distance: b - b_critical,
+    }
+}
+
+/// Simulate the Brusselator via RK4 and return the trajectory.
+pub fn brusselator_simulate(
+    a: f64, b: f64, x0: f64, y0: f64, t_end: f64, n_steps: usize,
+) -> (Vec<f64>, Vec<Vec<f64>>) {
+    rk4_system(|_t, s| brusselator_rhs(s, a, b), &[x0, y0], 0.0, t_end, n_steps)
+}
+
+#[cfg(test)]
+mod tests_brusselator {
+    use super::*;
+
+    #[test]
+    fn fixed_point_correct() {
+        let r = brusselator_bifurcation(1.0, 2.5);
+        assert!((r.fixed_point[0] - 1.0).abs() < 1e-12);
+        assert!((r.fixed_point[1] - 2.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stable_below_critical() {
+        let r = brusselator_bifurcation(1.0, 1.5); // b_c = 2
+        assert!(r.is_stable);
+        assert!(r.bifurcation_distance < 0.0);
+    }
+
+    #[test]
+    fn unstable_above_critical() {
+        let r = brusselator_bifurcation(1.0, 3.0);
+        assert!(!r.is_stable);
+        assert!(r.bifurcation_distance > 0.0);
+    }
+
+    #[test]
+    fn oscillation_freq_equals_a() {
+        let r = brusselator_bifurcation(2.5, 10.0);
+        assert!((r.oscillation_frequency - 2.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stable_simulation_converges() {
+        let (_, states) = brusselator_simulate(1.0, 1.5, 0.5, 0.5, 50.0, 5000);
+        let last = states.last().unwrap();
+        assert!((last[0] - 1.0).abs() < 0.01);
+        assert!((last[1] - 1.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn unstable_simulation_oscillates() {
+        let (_, states) = brusselator_simulate(1.0, 3.0, 1.0, 1.0, 100.0, 10000);
+        let late_x: Vec<f64> = states[8000..].iter().map(|s| s[0]).collect();
+        let amp = late_x.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+                - late_x.iter().cloned().fold(f64::INFINITY, f64::min);
+        assert!(amp > 0.1, "should oscillate, got amplitude {amp}");
     }
 }

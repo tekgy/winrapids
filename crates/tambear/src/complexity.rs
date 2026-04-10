@@ -228,6 +228,11 @@ pub fn hurst_rs(data: &[f64]) -> f64 {
             let start = b * block_size;
             let block = &data[start..start + block_size];
 
+            // NaN or Inf in any block element → NaN propagates to H (invalid input = invalid output)
+            if block.iter().any(|v| !v.is_finite()) {
+                return f64::NAN;
+            }
+
             let mean: f64 = block.iter().sum::<f64>() / block_size as f64;
 
             // Cumulative deviations from mean
@@ -237,8 +242,8 @@ pub fn hurst_rs(data: &[f64]) -> f64 {
                 cum_dev[i] = cum_dev[i - 1] + (block[i] - mean);
             }
 
-            let range = cum_dev.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
-                - cum_dev.iter().cloned().fold(f64::INFINITY, f64::min);
+            let range = cum_dev.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max)
+                - cum_dev.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
 
             let std = (block.iter().map(|&x| (x - mean).powi(2)).sum::<f64>()
                 / (block_size - 1) as f64).sqrt();

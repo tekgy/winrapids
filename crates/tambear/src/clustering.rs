@@ -663,7 +663,7 @@ pub fn davies_bouldin_score(
         (0..*k).filter(|&j| j != i).map(|j| {
             let d_ij = sq_dist(&centroids[i*n_dims..(i+1)*n_dims], &centroids[j*n_dims..(j+1)*n_dims]).sqrt();
             if d_ij < 1e-300 { 0.0 } else { (s[i] + s[j]) / d_ij }
-        }).fold(0.0_f64, f64::max)
+        }).fold(f64::NEG_INFINITY, crate::numerical::nan_max)
     }).sum();
     db_sum / *k as f64
 }

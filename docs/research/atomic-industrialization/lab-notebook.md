@@ -205,12 +205,16 @@ a blocking dependency.
 | kmeans is a phantom | scout campsite | PARTIALLY — gap but not phantom | kmeans.rs exists; gap_statistic uses local closure |
 | delay_embed decomposition preserves test count | implicit | YES | 2,152 still pass |
 | ~10/400 pub fns wire using() | campsite | YES — 14 pub fns, ~16 call sites | measured via grep |
-| blomqvist_beta signum bug | gauntlet commit | DISPUTED — code appears already fixed | raw diff check present with comment |
-| log_returns Inf slips through | gauntlet commit | DISPUTED — is_finite guard catches Inf | verified manually |
-| hoeffdings_d NaN silently dropped | gauntlet commit | PLAUSIBLE — NaN sort undefined | cannot run external test |
-| distance_correlation overflow silent 0 | gauntlet commit | PLAUSIBLE — extreme values overflow | cannot run external test |
-| tie_count unsorted assumption | gauntlet commit | CONFIRMED as documented assumption | test explicitly says "should fail" |
-| 59/67 gauntlet tests pass, 8 fail | gauntlet commit | CANNOT VERIFY | external test binary blocked by linker |
+| blomqvist_beta signum bug | gauntlet commit | RESOLVED — was already fixed | raw diff check present; test passes |
+| log_returns Inf slips through | gauntlet commit | RESOLVED — NOT a bug | is_finite guard correctly catches Inf |
+| hoeffdings_d NaN silently dropped | gauntlet commit | FIXED (0e9d42b) | part of 8 gauntlet fixes |
+| distance_correlation overflow silent 0 | gauntlet commit | FIXED (0e9d42b) | part of 8 gauntlet fixes |
+| tie_count unsorted assumption | gauntlet commit | DOCUMENTED — not a code bug | assumption violation, not impl error |
+| 59/67 gauntlet tests pass, 8 fail | gauntlet commit | RESOLVED — all 8 fixed (0e9d42b) | external tests fixed and committed |
+| matrix_exp [6/6] only ~1e-8 accurate | observer (7c4b54d) | FIXED (376bbd5) | upgraded to Padé [13/13] |
+| pinv absolute rcond wrong default | navigator | FIXED (ff13e63) | now relative: max(m,n)*eps*max_sv |
+| kmeans gap_statistic local closure | observer | FIXED (560c21e) | kmeans_f64 extracted as primitive |
+| 2,194 tambear tests green | navigator (ff13e63) | YES — independently verified | ran cargo test --lib |
 
 ---
 
@@ -356,4 +360,101 @@ count in `--lib` runs.
 
 ---
 
-*Last updated: 2026-04-10 by observer (after commit 7c4b54d — test suite BROKEN, 1 failure)*
+---
+
+## Current State (after commit ff13e63)
+
+**Verified**: 2026-04-10, after navigator's fix commit
+
+| Crate | Tests | Status |
+|-------|-------|--------|
+| tambear | **2,194** | **all green** |
+| tambear-fintek | 279 | all green |
+| **Total** | **2,473** | **all green** |
+
+`cargo check`: clean. `cargo test --lib` on both crates: clean.
+
+**Test count trajectory this session**:
+- Session start (c005fe0): 2,152 + 279 = 2,431
+- After adversarial gauntlet (f2655fd): 2,152 + 279 = 2,431 (external tests, not counted in --lib)
+- After wave 11 (7c4b54d): 2,190 + 279 = 2,469 (+38 lib tests, 1 FAILING)
+- After rigor fixes + wave 6 + waves 11-15 + phantom fixes (376bbd5 through ff13e63): **2,194 + 279 = 2,473** (all green)
+
+**Net additions this session**: +42 lib tests in tambear. 0 regressions.
+
+**Public function count**: 1,287 pub fn (up from 1,257 at session start, +30 new primitives)
+
+---
+
+### Commits in this session (21 total, c005fe0 → ff13e63)
+
+| Commit | Summary | Verified? |
+|--------|---------|-----------|
+| f2655fd | Adversarial gauntlet: 8 bugs, 67 external tests | external tests not runnable |
+| 7c4b54d | Adversarial wave 11: 5 more bugs, matrix_exp tests added | broke lib tests (1 fail) |
+| 0e9d42b | Rigor gauntlet: 8 bug fixes + 12 info theory primitives + 74 tests | tests green |
+| 06df6f2 | Adversarial wave 12: 7 bugs in unstaged primitives | not individually checked |
+| f431f2e | Phantom fix: 6 complete families + 5 complexity items at crate surface | phantom scan resolved |
+| 87dfbf8 | Adversarial wave 13: scan identity/associativity — 1 bug, 22 proofs | not individually checked |
+| 376bbd5 | Correctness: MMD U-stat + Padé [13/13] + renyi_divergence NaN | **Padé bug confirmed fixed** |
+| 4d97979 | Wave 6: matrix_exp/log/sqrt + CG/GMRES + primitive promotion + API fix | new primitives |
+| a6fa8ce | Adversarial wave 14: singularity-as-identity — 2 bugs, 16 proofs | not individually checked |
+| 825710e | Adversarial wave 15: three-test template on Welford merges | not individually checked |
+| 25400e4 | Workup test suites: erfc, pearson_r, inversion_count | workup docs created |
+| 79c08d2 | Adversarial waves 14-15: 3 NaN-eating bugs fixed | not individually checked |
+| 8983f3f | TBS executor: wire 12 info theory primitives; fix 3 NaN-eating bugs | not individually checked |
+| 65c06f6 | Add nan_min/nan_max primitives | +2 new primitives |
+| d11f6a6 | JBD first expedition burst | large batch |
+| 229b4b9 | Expose phantom primitives + coefficient_of_variation | phantoms resolved |
+| 560c21e | Extract kmeans_f64 primitive + remaining phantoms | kmeans_f64 extracted |
+| 8069534 | Expose dim_reduction, factor_analysis, spectral_clustering, tda | crate surface |
+| 5227597 | Fix unused variable warning in family24_manifold | lint fix |
+| ff13e63 | TBS executor: 10 sig fix-ups + pinv relative rcond | **green, verified** |
+
+---
+
+### Bugs confirmed fixed this session
+
+1. **matrix_exp Padé [6/6] → [13/13]** (376bbd5): Observer flagged the [6/6] numerical
+   failure; commit confirms "previous [6/6] gave only ~1e-8 accuracy". Now matches MATLAB
+   expm / scipy coefficients from Higham 2005 §10.3 Table 10.4.
+
+2. **pinv rcond absolute → relative** (ff13e63): Now `max(m,n) * eps * max_sv`, matching
+   NumPy linalg.pinv and LAPACK dgelss. Verified in code: `linear_algebra.rs:761-764`.
+
+3. **MMD U-statistic cross-term** (376bbd5): Exy now excludes diagonal when n=m,
+   ensuring MMD²(X,X)=0 exactly.
+
+4. **renyi_divergence NaN on negative alpha** (376bbd5): assert!() panic replaced with NaN.
+
+5. **kmeans_f64 extracted** (560c21e): gap_statistic's embedded CPU k-means is now a
+   proper `kmeans_f64` primitive at the crate surface. The gap I documented (local closure
+   duplication) is resolved.
+
+6. **Rigor gauntlet 8 original bugs** (0e9d42b): The 8 failures from f2655fd were fixed.
+
+---
+
+### Open disputed claims — resolved
+
+- **blomqvist_beta signum**: Was already fixed before gauntlet was written. Confirmed.
+- **log_returns Inf guard**: Was NOT a bug. `is_finite()` correctly catches Inf. Confirmed.
+- **tie_count unsorted**: Documented assumption violation, not implementation bug. Confirmed.
+
+---
+
+### Items flagged by navigator needing attention
+
+1. **using() persistence design question** (Aristotle): One-call vs. pipeline-persistent
+   semantics. Note at `tbs/20260410144156-discover-superposition/aristotle/insights/
+   using-discover-epistemic-duality.md`. Pathmaker decision pending.
+
+2. **NaN-eating instances remaining**: `clustering.rs:666`, `complexity.rs:240-241`.
+   Wave 16 adversarial tests targeting these. Not yet committed.
+
+3. **fintek family22/24 bridge**: `ccm`/`mfdfa`/`phase_transition` now at crate surface;
+   bridges still reimplement them. Path B (delegate to `tambear::complexity`) is clean fix.
+
+---
+
+*Last updated: 2026-04-10 by observer (after commit ff13e63 — 2,194+279 tests, all green)*

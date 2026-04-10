@@ -1130,6 +1130,160 @@ pub fn mase(actual: &[f64], predicted: &[f64], seasonal_period: usize) -> f64 {
     out_mae / baseline_mae
 }
 
+// ── mode ──────────────────────────────────────────────────────────────────
+
+/// Sample mode: the most frequently occurring finite value.
+///
+/// Ties are broken by returning the smallest tied value (matches scipy's
+/// `statistics.mode` behaviour for deterministic output). Returns `f64::NAN`
+/// when the input is empty or contains only NaN values.
+///
+/// # Parameters
+/// - `values`: slice of observations (may contain NaN — NaN is ignored)
+///
+/// # Algorithm
+/// O(n log n): sort finite values, linear scan for longest run. When two
+/// values tie for longest run the smaller one wins (first encountered in
+/// sorted order).
+pub fn mode(values: &[f64]) -> f64 {
+    let mut finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    if finite.is_empty() { return f64::NAN; }
+    finite.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let mut best_val = finite[0];
+    let mut best_count = 1usize;
+    let mut cur_val = finite[0];
+    let mut cur_count = 1usize;
+
+    for &v in &finite[1..] {
+        if v == cur_val {
+            cur_count += 1;
+        } else {
+            cur_val = v;
+            cur_count = 1;
+        }
+        if cur_count > best_count {
+            best_count = cur_count;
+            best_val = cur_val;
+        }
+    }
+    best_val
+}
+
+// ── sem ───────────────────────────────────────────────────────────────────
+
+/// Standard error of the mean: `std(ddof=1) / sqrt(n)`.
+///
+/// Returns `f64::NAN` when fewer than 2 finite values are present (undefined
+/// for n < 2 with ddof=1).
+///
+/// # Parameters
+/// - `values`: slice of observations (NaN is excluded)
+pub fn sem(values: &[f64]) -> f64 {
+    let finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    let n = finite.len();
+    if n < 2 { return f64::NAN; }
+    let mean = finite.iter().sum::<f64>() / n as f64;
+    let var = finite.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64;
+    var.sqrt() / (n as f64).sqrt()
+}
+
+// ── percentileofscore ─────────────────────────────────────────────────────
+
+/// Percentile rank of `score` within `values`, returned in \[0, 100\].
+///
+/// Equivalent to scipy `percentileofscore(a, score, kind='rank')`:
+/// `100 * (number of values ≤ score) / n`.
+///
+/// Returns `f64::NAN` if `values` is empty.
+///
+/// # Parameters
+/// - `values`: reference sample (unsorted; NaN values are included in count)
+/// - `score`: the query value
+pub fn percentileofscore(values: &[f64], score: f64) -> f64 {
+    let n = values.len();
+    if n == 0 { return f64::NAN; }
+    let n_leq = values.iter().filter(|&&v| v <= score).count();
+    100.0 * n_leq as f64 / n as f64
+}
+
+// ── lmoment ───────────────────────────────────────────────────────────────
+
+/// L-moments of order 1–4 for a sample.
+///
+/// L-moments are linear combinations of order statistics with well-defined
+/// properties for heavy-tailed and bounded distributions. Returns `[L1, L2,
+/// L3, L4]`.
+///
+/// - L1 = mean
+/// - L2 = half the expected absolute difference between two random draws
+/// - τ3 = L3/L2 = L-skewness (use `lmoment_ratios`)
+/// - τ4 = L4/L2 = L-kurtosis (use `lmoment_ratios`)
+///
+/// Returns `[f64::NAN; 4]` for n < 4.
+///
+/// # Parameters
+/// - `sorted`: **sorted** slice of finite observations (ascending)
+///
+/// # Reference
+/// Hosking (1990). L-Moments: Analysis and Estimation of Distributions Using
+/// Linear Combinations of Order Statistics. JRSS-B 52(1):105–124.
+pub fn lmoment(sorted: &[f64]) -> [f64; 4] {
+    let n = sorted.len();
+    if n < 4 { return [f64::NAN; 4]; }
+    let nf = n as f64;
+
+    // Probability-weighted moments β_r = (1/n) Σ_i x_{i:n} * C(i-1, r)/C(n-1, r)
+    // where i is 1-based, C(a,b) is binomial coefficient.
+    // Use the unbiased estimator:
+    // b0 = (1/n) Σ x_{i:n}
+    // b1 = (1/n) Σ x_{i:n} * (i-1)/(n-1)
+    // b2 = (1/n) Σ x_{i:n} * (i-1)(i-2)/((n-1)(n-2))
+    // b3 = (1/n) Σ x_{i:n} * (i-1)(i-2)(i-3)/((n-1)(n-2)(n-3))
+    let mut b0 = 0.0_f64;
+    let mut b1 = 0.0_f64;
+    let mut b2 = 0.0_f64;
+    let mut b3 = 0.0_f64;
+
+    for (idx, &x) in sorted.iter().enumerate() {
+        let i = idx as f64 + 1.0; // 1-based
+        b0 += x;
+        if n >= 2 {
+            b1 += x * (i - 1.0) / (nf - 1.0);
+        }
+        if n >= 3 {
+            b2 += x * (i - 1.0) * (i - 2.0) / ((nf - 1.0) * (nf - 2.0));
+        }
+        if n >= 4 {
+            b3 += x * (i - 1.0) * (i - 2.0) * (i - 3.0)
+                / ((nf - 1.0) * (nf - 2.0) * (nf - 3.0));
+        }
+    }
+    b0 /= nf;
+    b1 /= nf;
+    b2 /= nf;
+    b3 /= nf;
+
+    // L-moments from PWMs (Hosking 1990, Table 1):
+    let l1 = b0;
+    let l2 = 2.0 * b1 - b0;
+    let l3 = 6.0 * b2 - 6.0 * b1 + b0;
+    let l4 = 20.0 * b3 - 30.0 * b2 + 12.0 * b1 - b0;
+
+    [l1, l2, l3, l4]
+}
+
+/// L-moment ratios τ3 = L3/L2 (L-skewness) and τ4 = L4/L2 (L-kurtosis).
+///
+/// Returns `[f64::NAN, f64::NAN]` when L2 ≤ 0 or n < 4.
+pub fn lmoment_ratios(sorted: &[f64]) -> [f64; 2] {
+    let lm = lmoment(sorted);
+    if lm[0].is_nan() || lm[1] <= 0.0 {
+        return [f64::NAN; 2];
+    }
+    [lm[2] / lm[1], lm[3] / lm[1]]
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2257,5 +2411,141 @@ mod tests {
         let actual    = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let predicted = vec![5.0, 6.0];
         close(mase(&actual, &predicted, 1), 0.0, 1e-12, "mase_perfect");
+    }
+
+    // ── mode ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn mode_unique() {
+        // [1,1,2,3] → mode = 1
+        let v = vec![1.0, 1.0, 2.0, 3.0];
+        close(mode(&v), 1.0, 0.0, "mode_unique");
+    }
+
+    #[test]
+    fn mode_tie_returns_smallest() {
+        // [1,2,2,3,3] → tie between 2 and 3, return smaller = 2
+        let v = vec![1.0, 2.0, 2.0, 3.0, 3.0];
+        close(mode(&v), 2.0, 0.0, "mode_tie_smallest");
+    }
+
+    #[test]
+    fn mode_all_unique_returns_first_sorted() {
+        // every value appears once → mode = min (scipy statistics.mode behaviour)
+        let v = vec![5.0, 3.0, 1.0, 4.0, 2.0];
+        close(mode(&v), 1.0, 0.0, "mode_all_unique");
+    }
+
+    #[test]
+    fn mode_ignores_nan() {
+        let v = vec![f64::NAN, 2.0, 2.0, 3.0];
+        close(mode(&v), 2.0, 0.0, "mode_nan_ignored");
+    }
+
+    #[test]
+    fn mode_empty_returns_nan() {
+        assert!(mode(&[]).is_nan(), "mode of empty must be NaN");
+    }
+
+    // ── sem ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn sem_basic() {
+        // scipy.stats.sem([1,2,3,4,5]) = std/sqrt(5) where std is ddof=1 std
+        // std = sqrt(2.5) ≈ 1.5811, sem = 1.5811/sqrt(5) ≈ 0.7071
+        let v = vec![1.0_f64, 2.0, 3.0, 4.0, 5.0];
+        // exact: var(ddof=1) = 2.5, sem = sqrt(2.5)/sqrt(5) = sqrt(0.5)
+        close(sem(&v), (0.5_f64).sqrt(), 1e-12, "sem_basic");
+    }
+
+    #[test]
+    fn sem_one_element_is_nan() {
+        assert!(sem(&[42.0]).is_nan(), "sem of singleton must be NaN");
+    }
+
+    #[test]
+    fn sem_two_elements() {
+        // [0, 2]: mean=1, std(ddof=1)=sqrt(2), sem=sqrt(2)/sqrt(2)=1
+        close(sem(&[0.0, 2.0]), 1.0, 1e-12, "sem_two_elements");
+    }
+
+    // ── percentileofscore ─────────────────────────────────────────────
+
+    #[test]
+    fn percentileofscore_basic() {
+        // [1,2,3,4,5]: 3 values ≤ 3 → 3/5*100 = 60
+        let v = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        close(percentileofscore(&v, 3.0), 60.0, 1e-12, "pct_of_score");
+    }
+
+    #[test]
+    fn percentileofscore_above_all() {
+        let v = vec![1.0, 2.0, 3.0];
+        close(percentileofscore(&v, 10.0), 100.0, 1e-12, "pct_above_all");
+    }
+
+    #[test]
+    fn percentileofscore_below_all() {
+        let v = vec![2.0, 3.0, 4.0];
+        close(percentileofscore(&v, 0.0), 0.0, 1e-12, "pct_below_all");
+    }
+
+    #[test]
+    fn percentileofscore_empty_nan() {
+        assert!(percentileofscore(&[], 1.0).is_nan(), "empty must be NaN");
+    }
+
+    // ── lmoment ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn lmoment_standard_normal_approx() {
+        // For a standard-normal sample the L-moments are approximately:
+        // L1 ≈ 0, L2 ≈ 1/sqrt(π) ≈ 0.5642, τ3 ≈ 0, τ4 ≈ 0.1226
+        // Use a sorted quantile grid as a deterministic proxy.
+        // 100-point Gaussian quantile grid gives near-exact L-moments.
+        use std::f64::consts::PI;
+        let n = 1000usize;
+        // Probit approximation via the rational approximation (Beasley-Springer-Moro is complex;
+        // use the simple sorted-uniform approach with erf-inverse via a closed-form approx).
+        // Instead, use the known L-moment result for the exact normal distribution
+        // via the direct computation on a large sorted sample drawn deterministically.
+        // We verify with a tolerance of 0.01 (1%) — sufficient given finite n=1000.
+        let mut sorted: Vec<f64> = (0..n).map(|i| {
+            // Hazen plotting positions p_i = (i+0.5)/n, then quantile via approx
+            let p = (i as f64 + 0.5) / n as f64;
+            // Rational approximation to the normal quantile (Abramowitz & Stegun 26.2.17)
+            let t = if p < 0.5 {
+                (-2.0 * p.ln()).sqrt()
+            } else {
+                (-2.0 * (1.0 - p).ln()).sqrt()
+            };
+            let c0 = 2.515517; let c1 = 0.802853; let c2 = 0.010328;
+            let d1 = 1.432788; let d2 = 0.189269; let d3 = 0.001308;
+            let approx = t - (c0 + c1*t + c2*t*t) / (1.0 + d1*t + d2*t*t + d3*t*t*t);
+            if p < 0.5 { -approx } else { approx }
+        }).collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let lm = lmoment(&sorted);
+        // L1 (mean) ≈ 0
+        assert!(lm[0].abs() < 0.05, "L1 should be ≈ 0, got {}", lm[0]);
+        // L2 ≈ 1/sqrt(π)
+        let l2_target = 1.0 / PI.sqrt();
+        assert!((lm[1] - l2_target).abs() < 0.02,
+            "L2 should be ≈ {:.4}, got {:.4}", l2_target, lm[1]);
+
+        let ratios = lmoment_ratios(&sorted);
+        // τ3 ≈ 0 (symmetric)
+        assert!(ratios[0].abs() < 0.05, "L-skewness should be ≈ 0, got {}", ratios[0]);
+        // τ4 ≈ 0.1226
+        assert!((ratios[1] - 0.1226).abs() < 0.02,
+            "L-kurtosis should be ≈ 0.1226, got {:.4}", ratios[1]);
+    }
+
+    #[test]
+    fn lmoment_too_short_returns_nan() {
+        let short = vec![1.0, 2.0, 3.0];
+        let lm = lmoment(&short);
+        assert!(lm[0].is_nan(), "lmoment of n<4 must be NaN");
     }
 }

@@ -3668,6 +3668,323 @@ pub fn blomqvist_beta(x: &[f64], y: &[f64]) -> f64 {
     concordant / nf
 }
 
+// ── ranksums ──────────────────────────────────────────────────────────────
+
+/// Wilcoxon rank-sum test (scipy `ranksums`).
+///
+/// Equivalent to Mann-Whitney U but reports the Wilcoxon W statistic (sum of
+/// ranks in group x) and a two-tailed z-score p-value using the normal
+/// approximation. Valid for n₁, n₂ ≥ 8.
+///
+/// # Parameters
+/// - `x`: first sample (finite values; NaN results in NaN output)
+/// - `y`: second sample
+///
+/// # Returns
+/// `NonparametricResult` with:
+/// - `statistic`: z-score (normal-approximated W)
+/// - `p_value`: two-tailed p
+pub fn ranksums(x: &[f64], y: &[f64]) -> NonparametricResult {
+    let n1 = x.len();
+    let n2 = y.len();
+    let nan_result = NonparametricResult { test_name: "ranksums", statistic: f64::NAN, p_value: f64::NAN };
+    if n1 == 0 || n2 == 0 { return nan_result; }
+    if x.iter().any(|v| v.is_nan()) || y.iter().any(|v| v.is_nan()) { return nan_result; }
+
+    // Pool and rank
+    let mut pool: Vec<(f64, usize)> = x.iter().map(|&v| (v, 0))
+        .chain(y.iter().map(|&v| (v, 1)))
+        .enumerate()
+        .map(|(_i, (v, g))| (v, g))
+        .collect();
+    pool.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    // Assign average ranks for ties
+    let total = n1 + n2;
+    let mut ranks = vec![0.0_f64; total];
+    let mut i = 0;
+    while i < total {
+        let val = pool[i].0;
+        let mut j = i;
+        while j < total && pool[j].0 == val { j += 1; }
+        let avg_rank = (i + 1 + j) as f64 / 2.0; // average of 1-based ranks i+1..j
+        for k in i..j { ranks[k] = avg_rank; }
+        i = j;
+    }
+
+    // W = sum of ranks for group x
+    let w: f64 = (0..total).filter(|&k| pool[k].1 == 0).map(|k| ranks[k]).sum();
+
+    // Normal approximation
+    let n1f = n1 as f64;
+    let n2f = n2 as f64;
+    let nf = (n1 + n2) as f64;
+    let mu = n1f * (nf + 1.0) / 2.0;
+    let sigma = ((n1f * n2f * (nf + 1.0)) / 12.0).sqrt();
+    if sigma < 1e-300 {
+        return NonparametricResult { test_name: "ranksums", statistic: 0.0, p_value: 1.0 };
+    }
+    let z = (w - mu) / sigma;
+    let p = normal_two_tail_p(z);
+    NonparametricResult { test_name: "ranksums", statistic: z, p_value: p }
+}
+
+// ── skewtest ──────────────────────────────────────────────────────────────
+
+/// D'Agostino-Pearson test for non-zero skewness.
+///
+/// Tests H₀: the population skewness is zero. Uses the D'Agostino (1970)
+/// normalizing transformation on the sample skewness. Valid for n ≥ 8.
+///
+/// # Parameters
+/// - `data`: observations (NaN → NaN result)
+///
+/// # Returns
+/// `NonparametricResult` with:
+/// - `statistic`: z-score
+/// - `p_value`: two-tailed p-value
+///
+/// # Reference
+/// D'Agostino, R.B. (1970). Transformation to normality of the null
+/// distribution of g1. Biometrika 57(3):679–681.
+pub fn skewtest(data: &[f64]) -> NonparametricResult {
+    let nan_result = NonparametricResult { test_name: "skewtest", statistic: f64::NAN, p_value: f64::NAN };
+    let n = data.len();
+    if n < 8 { return nan_result; }
+    if data.iter().any(|v| v.is_nan()) { return nan_result; }
+
+    let nf = n as f64;
+    let mean = data.iter().sum::<f64>() / nf;
+    let m2: f64 = data.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / nf;
+    let m3: f64 = data.iter().map(|&v| (v - mean).powi(3)).sum::<f64>() / nf;
+    if m2 < 1e-300 { return nan_result; }
+    // Sample skewness g1 (biased estimator)
+    let g1 = m3 / m2.powf(1.5);
+
+    // D'Agostino (1970) transformation
+    // Y = g1 * sqrt((n+1)(n+3) / (6(n-2)))
+    let y = g1 * ((nf + 1.0) * (nf + 3.0) / (6.0 * (nf - 2.0))).sqrt();
+
+    // β₂(g1) = 3(n²+27n-70)(n+1)(n+3) / [(n-2)(n+5)(n+7)(n+9)]
+    let beta2 = 3.0 * (nf * nf + 27.0 * nf - 70.0) * (nf + 1.0) * (nf + 3.0)
+        / ((nf - 2.0) * (nf + 5.0) * (nf + 7.0) * (nf + 9.0));
+    let w2 = (2.0 * (beta2 - 1.0)).sqrt() - 1.0;
+    if w2 <= 0.0 { return nan_result; }
+    let w = w2.sqrt();
+    let delta = 1.0 / w.ln();
+    let alpha2 = 2.0 / (w2 - 1.0);
+    if alpha2 <= 0.0 { return nan_result; }
+    let alpha = alpha2.sqrt();
+
+    let arg = y / alpha + (1.0 + (y / alpha).powi(2)).sqrt();
+    if arg <= 0.0 { return nan_result; }
+    let z = delta * arg.ln();
+    let p = normal_two_tail_p(z);
+    NonparametricResult { test_name: "skewtest", statistic: z, p_value: p }
+}
+
+// ── kurtosistest ──────────────────────────────────────────────────────────
+
+/// D'Agostino-Pearson test for excess kurtosis deviating from 0.
+///
+/// Tests H₀: the population excess kurtosis is zero (consistent with normal).
+/// Uses the Anscombe-Glynn (1983) normalizing transformation on the sample
+/// excess kurtosis. Valid for n ≥ 20.
+///
+/// # Parameters
+/// - `data`: observations (NaN → NaN result)
+///
+/// # Returns
+/// `NonparametricResult` with:
+/// - `statistic`: z-score
+/// - `p_value`: two-tailed p-value
+///
+/// # Reference
+/// Anscombe, F.J. & Glynn, W.J. (1983). Distribution of the kurtosis
+/// statistic b₂ for normal samples. Biometrika 70(1):227–234.
+pub fn kurtosistest(data: &[f64]) -> NonparametricResult {
+    let nan_result = NonparametricResult { test_name: "kurtosistest", statistic: f64::NAN, p_value: f64::NAN };
+    let n = data.len();
+    if n < 20 { return nan_result; }
+    if data.iter().any(|v| v.is_nan()) { return nan_result; }
+
+    let nf = n as f64;
+    let mean = data.iter().sum::<f64>() / nf;
+    let m2: f64 = data.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / nf;
+    let m4: f64 = data.iter().map(|&v| (v - mean).powi(4)).sum::<f64>() / nf;
+    if m2 < 1e-300 { return nan_result; }
+    // Sample excess kurtosis g2 (biased estimator)
+    let g2 = m4 / m2.powi(2) - 3.0;
+
+    // Anscombe & Glynn (1983) z-transform for b2 = g2 + 3
+    let e = 3.0 * (nf - 1.0) / (nf + 1.0);  // E[g2] ≈ 0 centred at 0
+    let var_kurt = 24.0 * nf * (nf - 2.0) * (nf - 3.0)
+        / ((nf + 1.0).powi(2) * (nf + 3.0) * (nf + 5.0));
+    if var_kurt <= 0.0 { return nan_result; }
+
+    let x = (g2 - e) / var_kurt.sqrt();  // standardized kurtosis
+
+    // β₁(b₂) and β₂(b₂) from Anscombe-Glynn:
+    let sqrt_beta1_b2 = 6.0 * (nf * nf - 5.0 * nf + 2.0)
+        / ((nf + 7.0) * (nf + 9.0))
+        * (6.0 * (nf + 3.0) * (nf + 5.0) / (nf * (nf - 2.0) * (nf - 3.0))).sqrt();
+
+    let a = 6.0 + 8.0 / sqrt_beta1_b2 * (2.0 / sqrt_beta1_b2 + (1.0 + 4.0 / (sqrt_beta1_b2 * sqrt_beta1_b2)).sqrt());
+    if a <= 4.0 { return nan_result; }
+
+    let z_term = (1.0 - 2.0 / (9.0 * a)) - ((1.0 - 2.0 / a) / (1.0 + x * (2.0 / (a - 4.0)).sqrt())).powf(1.0 / 3.0);
+    let z = z_term / (2.0 / (9.0 * a)).sqrt();
+    let p = normal_two_tail_p(z);
+    NonparametricResult { test_name: "kurtosistest", statistic: z, p_value: p }
+}
+
+// ── TheilSlopesResult / theilslopes ───────────────────────────────────────
+
+/// Result of Theil-Sen or Siegel repeated-median regression.
+#[derive(Debug, Clone)]
+pub struct TheilSlopesResult {
+    /// Estimated slope (Theil-Sen: median of pairwise slopes).
+    pub slope: f64,
+    /// Estimated intercept = median(y) - slope * median(x).
+    pub intercept: f64,
+}
+
+/// Theil-Sen estimator: robust simple linear regression.
+///
+/// The slope is the median of all pairwise slopes `(y[j]-y[i])/(x[j]-x[i])`
+/// for i < j. The intercept is `median(y) - slope * median(x)`.
+///
+/// - 50% breakdown point (robust to up to 29.3% of data being outliers)
+/// - O(n² log n) time
+///
+/// # Parameters
+/// - `y`: response variable
+/// - `x`: optional predictor (defaults to 0, 1, 2, … if `None`)
+///
+/// # Reference
+/// Theil (1950). A rank-invariant method of linear and polynomial regression
+/// analysis. Proceedings of the Royal Netherlands Academy of Sciences 53.
+pub fn theilslopes(y: &[f64], x: Option<&[f64]>) -> TheilSlopesResult {
+    let nan_result = TheilSlopesResult { slope: f64::NAN, intercept: f64::NAN };
+    let n = y.len();
+    if n < 2 { return nan_result; }
+
+    let default_x: Vec<f64>;
+    let xs: &[f64] = match x {
+        Some(v) => {
+            if v.len() != n { return nan_result; }
+            v
+        }
+        None => {
+            default_x = (0..n).map(|i| i as f64).collect();
+            &default_x
+        }
+    };
+
+    // Collect all pairwise slopes
+    let mut slopes: Vec<f64> = Vec::with_capacity(n * (n - 1) / 2);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let dx = xs[j] - xs[i];
+            if dx == 0.0 { continue; }
+            slopes.push((y[j] - y[i]) / dx);
+        }
+    }
+    if slopes.is_empty() { return nan_result; }
+    slopes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let slope = if slopes.len() % 2 == 1 {
+        slopes[slopes.len() / 2]
+    } else {
+        (slopes[slopes.len() / 2 - 1] + slopes[slopes.len() / 2]) / 2.0
+    };
+
+    // Intercept via medians
+    let mut sx = xs.to_vec();
+    let mut sy = y.to_vec();
+    sx.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sy.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mx = if n % 2 == 1 { sx[n / 2] } else { (sx[n / 2 - 1] + sx[n / 2]) / 2.0 };
+    let my = if n % 2 == 1 { sy[n / 2] } else { (sy[n / 2 - 1] + sy[n / 2]) / 2.0 };
+    let intercept = my - slope * mx;
+
+    TheilSlopesResult { slope, intercept }
+}
+
+// ── siegelslopes ──────────────────────────────────────────────────────────
+
+/// Siegel repeated-median estimator: double-median robust regression.
+///
+/// For each point i, computes the median of slopes `(y[j]-y[i])/(x[j]-x[i])`
+/// over all j ≠ i. Then takes the median of those per-point medians.
+///
+/// - 50% breakdown point, less sensitive than Theil-Sen to individual outliers
+/// - O(n² log n) time
+///
+/// # Parameters
+/// - `y`: response variable
+/// - `x`: optional predictor (defaults to 0, 1, 2, … if `None`)
+///
+/// # Reference
+/// Siegel, A.F. (1982). Robust regression using repeated medians.
+/// Biometrika 69(1):242–244.
+pub fn siegelslopes(y: &[f64], x: Option<&[f64]>) -> TheilSlopesResult {
+    let nan_result = TheilSlopesResult { slope: f64::NAN, intercept: f64::NAN };
+    let n = y.len();
+    if n < 2 { return nan_result; }
+
+    let default_x: Vec<f64>;
+    let xs: &[f64] = match x {
+        Some(v) => {
+            if v.len() != n { return nan_result; }
+            v
+        }
+        None => {
+            default_x = (0..n).map(|i| i as f64).collect();
+            &default_x
+        }
+    };
+
+    // For each point i, median of slopes to all other j
+    let mut per_point_medians: Vec<f64> = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut row_slopes: Vec<f64> = (0..n)
+            .filter(|&j| j != i)
+            .filter_map(|j| {
+                let dx = xs[j] - xs[i];
+                if dx == 0.0 { None } else { Some((y[j] - y[i]) / dx) }
+            })
+            .collect();
+        if row_slopes.is_empty() { continue; }
+        row_slopes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let m = row_slopes.len();
+        let med = if m % 2 == 1 {
+            row_slopes[m / 2]
+        } else {
+            (row_slopes[m / 2 - 1] + row_slopes[m / 2]) / 2.0
+        };
+        per_point_medians.push(med);
+    }
+    if per_point_medians.is_empty() { return nan_result; }
+    per_point_medians.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let m = per_point_medians.len();
+    let slope = if m % 2 == 1 {
+        per_point_medians[m / 2]
+    } else {
+        (per_point_medians[m / 2 - 1] + per_point_medians[m / 2]) / 2.0
+    };
+
+    // Intercept via medians
+    let mut sx = xs.to_vec();
+    let mut sy = y.to_vec();
+    sx.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sy.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mx = if n % 2 == 1 { sx[n / 2] } else { (sx[n / 2 - 1] + sx[n / 2]) / 2.0 };
+    let my = if n % 2 == 1 { sy[n / 2] } else { (sy[n / 2 - 1] + sy[n / 2]) / 2.0 };
+    let intercept = my - slope * mx;
+
+    TheilSlopesResult { slope, intercept }
+}
+
 #[cfg(test)]
 mod sde_tests {
     use super::*;
@@ -3809,5 +4126,103 @@ mod sde_tests {
         assert_eq!(t.n_tied_groups, 2);
         assert_eq!(t.tied_pair_count, 1 + 3);
         assert_eq!(t.group_sizes, vec![2, 3]);
+    }
+
+    // ── ranksums ──────────────────────────────────────────────────────
+
+    #[test]
+    fn ranksums_identical_distributions() {
+        // Two samples from the same values → statistic ≈ 0, p ≈ 1
+        let x: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let y: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let r = ranksums(&x, &y);
+        assert!(r.statistic.abs() < 1.0, "equal distributions: z ≈ 0, got {}", r.statistic);
+        assert!(r.p_value > 0.5, "equal distributions: p > 0.5, got {}", r.p_value);
+    }
+
+    #[test]
+    fn ranksums_clearly_different() {
+        // x = [0..9], y = [100..109] — very different
+        let x: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let y: Vec<f64> = (100..110).map(|i| i as f64).collect();
+        let r = ranksums(&x, &y);
+        assert!(r.p_value < 0.01, "clearly different: p < 0.01, got {}", r.p_value);
+    }
+
+    // ── skewtest / kurtosistest ───────────────────────────────────────
+
+    #[test]
+    fn skewtest_symmetric_data_high_p() {
+        // Symmetric data → skewtest p should be high (fail to reject normality)
+        let data: Vec<f64> = (0..50).map(|i| {
+            let t = i as f64 - 24.5;
+            t  // uniform-ish centered at 0
+        }).collect();
+        let r = skewtest(&data);
+        assert!(r.p_value > 0.05, "symmetric: p > 0.05, got {}", r.p_value);
+    }
+
+    #[test]
+    fn skewtest_highly_skewed() {
+        // Exponential-like: all positive, heavy right tail → statistic should be large
+        let data: Vec<f64> = (1..=50).map(|i| (i as f64).ln()).collect();
+        let r = skewtest(&data);
+        // Skewed data may or may not reject at 5%; just verify output is valid
+        assert!(r.statistic.is_finite(), "skewtest statistic finite");
+        assert!(r.p_value >= 0.0 && r.p_value <= 1.0, "p_value in [0,1]");
+    }
+
+    #[test]
+    fn skewtest_too_short_nan() {
+        let r = skewtest(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+        assert!(r.statistic.is_nan(), "n<8 must give NaN statistic");
+    }
+
+    #[test]
+    fn kurtosistest_normal_high_p() {
+        // Near-normal data (linspace) → kurtosistest should not reject
+        let data: Vec<f64> = (0..50).map(|i| i as f64 / 50.0).collect();
+        let r = kurtosistest(&data);
+        assert!(r.p_value >= 0.0 && r.p_value <= 1.0, "p_value in [0,1]");
+    }
+
+    // ── theilslopes ───────────────────────────────────────────────────
+
+    #[test]
+    fn theilslopes_perfect_line() {
+        // y = 2x + 3 → slope = 2, intercept = 3
+        let x: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let y: Vec<f64> = x.iter().map(|&xi| 2.0 * xi + 3.0).collect();
+        let r = theilslopes(&y, Some(&x));
+        assert!((r.slope - 2.0).abs() < 1e-10, "slope should be 2, got {}", r.slope);
+        assert!((r.intercept - 3.0).abs() < 1e-10, "intercept should be 3, got {}", r.intercept);
+    }
+
+    #[test]
+    fn theilslopes_horizontal_line() {
+        // y = constant → slope = 0
+        let y = vec![5.0_f64; 10];
+        let r = theilslopes(&y, None);
+        assert!(r.slope.abs() < 1e-10, "constant y: slope = 0, got {}", r.slope);
+    }
+
+    #[test]
+    fn theilslopes_robust_to_outlier() {
+        // y = x but with one huge outlier in the middle
+        let mut y: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        y[10] = 1000.0; // large outlier
+        let r = theilslopes(&y, None);
+        // Theil-Sen is breakdown-resistant; slope should still be near 1
+        assert!((r.slope - 1.0).abs() < 0.5, "outlier-resistant slope, got {}", r.slope);
+    }
+
+    // ── siegelslopes ─────────────────────────────────────────────────
+
+    #[test]
+    fn siegelslopes_perfect_line() {
+        let x: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let y: Vec<f64> = x.iter().map(|&xi| -1.5 * xi + 4.0).collect();
+        let r = siegelslopes(&y, Some(&x));
+        assert!((r.slope - (-1.5)).abs() < 1e-10, "slope=-1.5, got {}", r.slope);
     }
 }

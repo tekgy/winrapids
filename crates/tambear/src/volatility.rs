@@ -546,18 +546,25 @@ pub fn tgarch11_fit(returns: &[f64], max_iter: usize) -> TgarchResult {
 
 /// EWMA conditional variance: σ²_t = λ·σ²_{t-1} + (1-λ)·r²_{t-1}.
 /// Default λ = 0.94 (RiskMetrics daily).
+///
+/// **Kingdom A** via affine semigroup prefix scan:
+/// The recurrence is `σ²_t = λ·σ²_{t-1} + (1-λ)·r²_{t-1}`, affine with
+/// `a_t = λ` and `b_t = (1-λ)·r²_{t-1}`. Delegates to `affine_prefix_scan`.
 pub fn ewma_variance(returns: &[f64], lambda: f64) -> Vec<f64> {
     let n = returns.len();
-    let mut sigma2 = Vec::with_capacity(n);
+    if n == 0 { return vec![]; }
     // Initialize with the first squared return (RiskMetrics convention).
     // Using the full-sample mean would introduce look-ahead bias because
     // returns[1..n-1] are not yet observed at t=0.
-    let var0: f64 = if n > 0 { returns[0].powi(2).max(1e-15) } else { 1e-15 };
-    sigma2.push(var0);
-    for t in 1..n {
-        let s = lambda * sigma2[t - 1] + (1.0 - lambda) * returns[t - 1].powi(2);
-        sigma2.push(s.max(1e-15));
-    }
+    let var0 = returns[0].powi(2).max(1e-15);
+    if n == 1 { return vec![var0]; }
+    // Build affine maps for t = 1..n: a_t = λ, b_t = (1-λ)·r²_{t-1}
+    let one_minus_lambda = 1.0 - lambda;
+    let a: Vec<f64> = vec![lambda; n - 1];
+    let b: Vec<f64> = returns[..n - 1].iter().map(|&r| one_minus_lambda * r * r).collect();
+    let mut sigma2 = vec![var0];
+    let scan = crate::signal_processing::affine_prefix_scan(&a, &b, var0);
+    sigma2.extend(scan.into_iter().map(|v| v.max(1e-15)));
     sigma2
 }
 

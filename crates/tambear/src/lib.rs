@@ -192,6 +192,8 @@ pub use descriptive::{
     PHI_CENTERED_CU, PHI_CENTERED_QU,
     // Forecast error metrics
     mae, rmse, mape, mase,
+    // Scipy gap closure (2026-04-10)
+    mode, sem, percentileofscore, lmoment, lmoment_ratios,
 };
 pub use tb_io::{TbFile, TbColumnWrite, write_tb};
 pub use special_functions::{
@@ -594,7 +596,7 @@ pub use signal_processing::{
     dct2, dct3,
     fir_lowpass, fir_highpass, fir_bandpass, fir_filter,
     Biquad, biquad_cascade, butterworth_lowpass_cascade,
-    moving_average, ema, savgol_filter,
+    affine_prefix_scan, moving_average, ema, ema_period, savgol_filter,
     hilbert, envelope, instantaneous_frequency,
     real_cepstrum,
     haar_dwt, haar_idwt, haar_wavedec, haar_waverec,

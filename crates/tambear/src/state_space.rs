@@ -610,7 +610,7 @@ where
         };
 
         // 3. Log-sum-exp normalisation
-        let max_lw = new_log_weights.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max_lw = new_log_weights.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
         let sum_exp: f64 = new_log_weights.iter().map(|&lw| (lw - max_lw).exp()).sum();
         let log_z = max_lw + sum_exp.ln();
         let norm_weights: Vec<f64> = new_log_weights.iter()
@@ -620,9 +620,9 @@ where
         // Track incremental likelihood
         if has_obs {
             log_likelihood += log_z - log_weights.iter()
-                .cloned().fold(f64::NEG_INFINITY, f64::max)
+                .cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max)
                 - {
-                    let prev_max = log_weights.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    let prev_max = log_weights.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
                     log_weights.iter().map(|&lw| (lw - prev_max).exp()).sum::<f64>().ln()
                 };
             // Simpler: just accumulate log(Σ unnorm_weights / N)
@@ -720,9 +720,9 @@ where
         };
 
         // Incremental LL contribution: log(Σ w_i) - log(N)
-        let max_lw = new_log_weights.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max_lw = new_log_weights.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
         let sum_exp: f64 = new_log_weights.iter().map(|&lw| (lw - max_lw).exp()).sum();
-        let prev_max = log_weights.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let prev_max = log_weights.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
         let prev_sum: f64 = log_weights.iter().map(|&lw| (lw - prev_max).exp()).sum();
 
         if has_obs {

@@ -3,9 +3,12 @@
 //! Supporting test suite for
 //! `docs/research/atomic-industrialization/erfc.md`
 //!
-//! **IMPORTANT**: This test suite documents a confirmed accuracy bug.
-//! Tests prefixed `erfc_bug_*` document the current broken behavior.
-//! Tests prefixed `erfc_*` assert correct behavior.
+//! Bug history:
+//! - Original boundary |x|<0.5: CF not converged in 200 iters at x=0.5 → 8e-9 error.
+//!   Fix: extended Taylor to |x|<1.5 (2026-04-10).
+//! - Boundary |x|<1.5: Taylor accumulates 82 ULP error at x=1.386 (e.g. Phi(-1.96)=62 ULP).
+//!   Fix: reduced Taylor boundary to |x|<1.0. CF converges in ≤188 iters above x=1.0.
+//! Current accuracy: ≤5 ULP (Taylor), ≤21 ULP (CF), max observed 14 ULP at x=-6.
 //!
 //! Oracle values computed via mpmath at 50 decimal digits.
 //! All relative errors verified against the mpmath reference.
@@ -224,8 +227,8 @@ fn erfc_range_is_zero_to_two() {
 /// at |x|=0.5 but required ~1000 iterations to converge there; the 200-iteration
 /// budget gave only ~8e-9 accuracy.
 ///
-/// **Fix**: extended Taylor series region from |x| < 0.5 to |x| < 1.5.
-/// Now: rel_err < 1e-15. Verified against mpmath 50dp.
+/// **Fix history**: Taylor boundary 0.5→1.5 (2026-04-10 first fix), then 1.5→1.0 (correct fix).
+/// At |x|<1.0, Taylor ≤5 ULP. At |x|≥1.0, CF ≤21 ULP.
 #[test]
 fn erfc_bug_boundary_x_0p5_accuracy_degraded() {
     let got = erfc(0.5);
@@ -256,16 +259,44 @@ fn erfc_bug_boundary_x_0p7_accuracy_degraded() {
     );
 }
 
-/// COMPARISON: x=1.0 — CF barely within machine precision (1.4e-15).
-/// This is the region where the bug transitions to acceptable accuracy.
+/// x=1.0 — boundary between Taylor (|x|<1.0) and CF (|x|≥1.0) regions.
+/// CF converges in 188 iterations here, giving ~8 ULP accuracy.
 #[test]
 fn erfc_x1p0_is_near_machine_precision() {
     let got = erfc(1.0);
     let oracle = 0.15729920705028513_f64;
     let rel_err = (got - oracle).abs() / oracle;
-    // At x=1.0, the CF converges (just barely) to ~1 ULP
     assert!(
-        rel_err < 3e-15,
-        "erfc(1.0): rel_err={:.2e}, expected < 3e-15", rel_err
+        rel_err < 2e-14,
+        "erfc(1.0): rel_err={:.2e}, expected < 2e-14 (CF region, ≤21 ULP)", rel_err
+    );
+}
+
+/// x=1.386 (erfc argument for normal_cdf(-1.96)) — formerly 82 ULP with Taylor,
+/// now ≤10 ULP via CF. This is the critical value for 95% confidence intervals.
+#[test]
+fn erfc_x1p386_ncdf_critical_value() {
+    // erfc(1.96/sqrt(2)) = erfc(1.38592929...)
+    let arg = 1.96_f64 / std::f64::consts::SQRT_2;
+    let got = erfc(arg);
+    let oracle = 0.04999579029644084_f64; // mpmath 50dp
+    let rel_err = (got - oracle).abs() / oracle;
+    assert!(
+        rel_err < 5e-15,
+        "erfc(1.386): rel_err={:.2e}, expected < 5e-15 (critical for normal_cdf(-1.96))",
+        rel_err
+    );
+}
+
+/// x=1.2 — formerly in [1.0, 1.5) Taylor range where error was up to 82 ULP.
+/// Now in CF region, should be ≤21 ULP.
+#[test]
+fn erfc_x1p2_cf_region_accuracy() {
+    let got = erfc(1.2);
+    let oracle = 0.08968602177036462_f64; // mpmath 50dp
+    let rel_err = (got - oracle).abs() / oracle;
+    assert!(
+        rel_err < 2e-14,
+        "erfc(1.2): rel_err={:.2e}, expected < 2e-14 (CF region)", rel_err
     );
 }

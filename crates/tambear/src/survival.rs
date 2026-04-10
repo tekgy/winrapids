@@ -5,9 +5,11 @@
 //! ## Architecture
 //!
 //! Survival = accumulate over ordered event times.
-//! Kaplan-Meier = prefix product of conditional survival probabilities.
-//! Cox PH = partial likelihood optimization.
-//! Kingdom B (sequential scan over event times).
+//! Kaplan-Meier = prefix product of conditional survival probabilities (Kingdom A).
+//! Multiplication is associative — KM is a parallel prefix product scan, not Kingdom B.
+//! Cox PH = partial likelihood optimization (Kingdom C).
+//! Prior label "Kingdom B (sequential scan)" was wrong; the sequential implementation
+//! is an artifact, not a structural constraint — the operation is associative.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Kaplan-Meier estimator

@@ -31,7 +31,7 @@
 //!
 //! ## Kingdom Classification
 //!
-//! - Step 1 (partial sums): Kingdom B — sequential scan (non-commutative, one-pass)
+//! - Step 1 (partial sums): Kingdom A — associative+commutative scan (Blelloch-parallelizable on GPU)
 //! - Step 2 (Aitken): Kingdom A — deterministic function of 3 consecutive values
 //! - Wynn's epsilon: **Kingdom BC** — non-commutative (order-dependent tableau)
 //!   + multi-pass (n-1 columns). First clean inhabitant of the (ρ=1, σ=1) cell.
@@ -59,7 +59,8 @@
 /// This IS `accumulate(terms, Prefix, Value, Add)` on CPU.
 ///
 /// Also known as `cumsum` (numpy/MATLAB/R convention).
-/// Kingdom B (prefix scan), but parallelizable via Blelloch scan on GPU.
+/// Kingdom A: addition is associative, so the prefix scan lifts to parallel via Blelloch scan.
+/// Sequential on CPU (no data dependencies), O(n log n) work-efficient parallel on GPU.
 pub fn partial_sums(terms: &[f64]) -> Vec<f64> {
     let mut sums = Vec::with_capacity(terms.len());
     let mut acc = 0.0;
@@ -75,7 +76,7 @@ pub fn partial_sums(terms: &[f64]) -> Vec<f64> {
 /// Universal name from numpy, MATLAB, R. Returns a vector where
 /// `result[i] = x[0] + x[1] + ... + x[i]`.
 ///
-/// Kingdom B (prefix scan). Standalone primitive used by:
+/// Kingdom A (prefix scan with associative+commutative op — parallelizable via Blelloch). Standalone primitive used by:
 /// - KPSS stationarity test (partial sums of residuals)
 /// - CUSUM changepoint detection
 /// - Empirical CDF construction

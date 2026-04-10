@@ -710,18 +710,53 @@ pub fn moving_average(data: &[f64], window: usize) -> Vec<f64> {
     result
 }
 
+/// Parallel prefix scan over real affine maps `(a, b)` with associative composition:
+///   `(a₁, b₁) ∘ (a₂, b₂) = (a₁·a₂, a₁·b₂ + b₁)`
+///
+/// Given parallel arrays `a` and `b` (same length) and initial state `s0`,
+/// computes `s[t] = a[t]·(... a[1]·(a[0]·s0 + b[0]) + b[1] ...) + b[t]`.
+///
+/// **Kingdom A**: the affine semigroup is associative, enabling Blelloch-style
+/// parallel prefix scan on GPU. The sequential implementation here is the correct
+/// CPU fallback; the GPU path replaces it without changing the observable contract.
+///
+/// Consumers: `ema`, `ema_period`, `ewma_variance`, any first-order linear recurrence.
+pub fn affine_prefix_scan(a: &[f64], b: &[f64], s0: f64) -> Vec<f64> {
+    assert_eq!(a.len(), b.len());
+    let n = a.len();
+    if n == 0 { return vec![]; }
+    let mut result = Vec::with_capacity(n);
+    let mut s = s0;
+    for i in 0..n {
+        s = a[i] * s + b[i];
+        result.push(s);
+    }
+    result
+}
+
 /// Exponential moving average (EMA).
 ///
 /// `alpha` is the smoothing factor (0 < alpha <= 1). Higher = less smoothing.
+///
+/// **Kingdom A** via affine semigroup prefix scan:
+/// `s_t = (1-α)·s_{t-1} + α·x_t` is an affine recurrence with constant map
+/// `a_t = (1-α)`, `b_t = α·x_t`. Delegates to `affine_prefix_scan`.
 pub fn ema(data: &[f64], alpha: f64) -> Vec<f64> {
     if data.is_empty() { return vec![]; }
-    let mut result = Vec::with_capacity(data.len());
-    result.push(data[0]);
-    for i in 1..data.len() {
-        let prev = result[i - 1];
-        result.push(alpha * data[i] + (1.0 - alpha) * prev);
-    }
+    let decay = 1.0 - alpha;
+    let a: Vec<f64> = vec![decay; data.len() - 1];
+    let b: Vec<f64> = data[1..].iter().map(|&x| alpha * x).collect();
+    let mut result = vec![data[0]];
+    result.extend(affine_prefix_scan(&a, &b, data[0]));
     result
+}
+
+/// EMA with period-based smoothing factor: `alpha = 2 / (period + 1)`.
+///
+/// Standard convention for MACD, RSI, and technical analysis EMA periods.
+pub fn ema_period(data: &[f64], period: usize) -> Vec<f64> {
+    let alpha = 2.0 / (period as f64 + 1.0);
+    ema(data, alpha)
 }
 
 /// Savitzky-Golay filter (polynomial smoothing).
@@ -1675,6 +1710,59 @@ mod tests {
         assert!(result[39] > 0.95, "EMA didn't converge: {}", result[39]);
     }
 
+    #[test]
+    fn ema_matches_sequential_formula() {
+        // Verify the affine_prefix_scan-based ema produces identical results to
+        // the reference sequential formula for a non-trivial series.
+        let data = vec![1.0, 3.0, 2.0, 5.0, 4.0, 6.0];
+        let alpha = 0.4;
+        let result = ema(&data, alpha);
+
+        // Compute reference sequentially inline
+        let mut reference = vec![data[0]];
+        for i in 1..data.len() {
+            reference.push(alpha * data[i] + (1.0 - alpha) * reference[i - 1]);
+        }
+
+        for (i, (&got, &expected)) in result.iter().zip(reference.iter()).enumerate() {
+            assert!((got - expected).abs() < 1e-12,
+                "ema[{}]: got {got} expected {expected}", i);
+        }
+    }
+
+    #[test]
+    fn ema_period_alpha_convention() {
+        // ema_period(data, 9) should equal ema(data, 2/10 = 0.2)
+        let data: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let by_period = ema_period(&data, 9);
+        let by_alpha = ema(&data, 2.0 / 10.0);
+        for (i, (&a, &b)) in by_period.iter().zip(by_alpha.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-12, "ema_period vs ema at [{i}]: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn affine_prefix_scan_identity_map() {
+        // a_t = 1, b_t = 0: should return s0 repeated
+        let a = vec![1.0; 5];
+        let b = vec![0.0; 5];
+        let result = affine_prefix_scan(&a, &b, 3.0);
+        for &v in &result {
+            assert!((v - 3.0).abs() < 1e-12, "identity map: {v}");
+        }
+    }
+
+    #[test]
+    fn affine_prefix_scan_constant_shift() {
+        // a_t = 0, b_t = c: result[t] = c for all t
+        let a = vec![0.0; 4];
+        let b = vec![7.0; 4];
+        let result = affine_prefix_scan(&a, &b, 999.0);
+        for &v in &result {
+            assert!((v - 7.0).abs() < 1e-12, "constant: {v}");
+        }
+    }
+
     // ── Median filter ──
 
     #[test]
@@ -2229,10 +2317,10 @@ pub fn fast_ica(x: &[f64], dim: usize, max_iter: usize) -> IcaResult {
 
     if negentropies.is_empty() { return IcaResult::nan(); }
 
-    let max_negentropy = negentropies.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let max_negentropy = negentropies.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     let mean_negentropy = negentropies.iter().sum::<f64>() / negentropies.len() as f64;
-    let kurt_max = kurtoses.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let kurt_min = kurtoses.iter().cloned().fold(f64::INFINITY, f64::min);
+    let kurt_max = kurtoses.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
+    let kurt_min = kurtoses.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
     let kurtosis_range = kurt_max - kurt_min;
 
     IcaResult { max_negentropy, mean_negentropy, kurtosis_range, convergence_iterations: total_iter }

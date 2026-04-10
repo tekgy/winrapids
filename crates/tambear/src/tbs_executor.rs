@@ -455,9 +455,12 @@ pub fn execute(
                 let x_binary = count_unique(&x) <= 2;
                 let y_binary = count_unique(&yv) <= 2;
 
-                // Normality test: SW for n < 5000, D'Agostino-Pearson for n ≥ 5000
+                // Normality test: SW for n < n_thresh, D'Agostino-Pearson for n ≥ n_thresh
+                let normality_alpha = using_bag.get_f64("normality_alpha").unwrap_or(0.05);
+                let n_thresh = using_bag.get_f64("normality_test_n_threshold")
+                    .map(|v| v as usize).unwrap_or(5000);
                 let normality = |col: &[f64]| -> (f64, &'static str) {
-                    if col.len() < 5000 {
+                    if col.len() < n_thresh {
                         let r = crate::nonparametric::shapiro_wilk(col);
                         (r.p_value, "Shapiro-Wilk")
                     } else {
@@ -489,8 +492,8 @@ pub fn execute(
                     } else {
                         let (px, tn_x) = normality(&x);
                         let (py, tn_y) = normality(&yv);
-                        let x_norm = px > 0.05;
-                        let y_norm = py > 0.05;
+                        let x_norm = px > normality_alpha;
+                        let y_norm = py > normality_alpha;
                         if x_norm && y_norm {
                             let r = crate::nonparametric::pearson_r(&x, &yv);
                             let adv = TbsStepAdvice::accepted("pearson",
@@ -597,8 +600,12 @@ pub fn execute(
                 let sy = crate::descriptive::moments_ungrouped(&yv);
 
                 // Normality
+                let normality_alpha = using_bag.get_f64("normality_alpha").unwrap_or(0.05);
+                let variance_alpha = using_bag.get_f64("variance_alpha").unwrap_or(0.05);
+                let n_thresh = using_bag.get_f64("normality_test_n_threshold")
+                    .map(|v| v as usize).unwrap_or(5000);
                 let normality = |col: &[f64]| -> (f64, &'static str) {
-                    if col.len() < 5000 {
+                    if col.len() < n_thresh {
                         let r = crate::nonparametric::shapiro_wilk(col);
                         (r.p_value, "Shapiro-Wilk")
                     } else {
@@ -608,8 +615,8 @@ pub fn execute(
                 };
                 let (px, tn_x) = normality(&x);
                 let (py, tn_y) = normality(&yv);
-                let x_norm = px > 0.05;
-                let y_norm = py > 0.05;
+                let x_norm = px > normality_alpha;
+                let y_norm = py > normality_alpha;
 
                 // Variance equality via Brown-Forsythe (Levene with median)
                 let levene_p = if x_norm && y_norm {
@@ -619,7 +626,7 @@ pub fn execute(
                     );
                     lev.p_value
                 } else { f64::NAN };
-                let equal_var = levene_p > 0.05;
+                let equal_var = levene_p > variance_alpha;
 
                 let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
 
@@ -752,9 +759,13 @@ pub fn execute(
                     })
                 } else {
                     // Normality check per group
+                    let normality_alpha = using_bag.get_f64("normality_alpha").unwrap_or(0.05);
+                    let variance_alpha = using_bag.get_f64("variance_alpha").unwrap_or(0.05);
+                    let n_thresh = using_bag.get_f64("normality_test_n_threshold")
+                        .map(|v| v as usize).unwrap_or(5000);
                     let normality = |col: &[f64]| -> (f64, &'static str) {
                         if col.len() < 3 { return (f64::NAN, "n<3"); }
-                        if col.len() < 5000 {
+                        if col.len() < n_thresh {
                             let r = crate::nonparametric::shapiro_wilk(col);
                             (r.p_value, "Shapiro-Wilk")
                         } else {
@@ -763,13 +774,13 @@ pub fn execute(
                         }
                     };
                     let norm_results: Vec<(f64, &str)> = group_vecs.iter().map(|g| normality(g)).collect();
-                    let all_normal = norm_results.iter().all(|(p, _)| *p > 0.05);
+                    let all_normal = norm_results.iter().all(|(p, _)| *p > normality_alpha);
 
                     // Levene's test for homoscedasticity
                     let group_slices: Vec<&[f64]> = group_vecs.iter().map(|v| v.as_slice()).collect();
                     let levene = crate::hypothesis::levene_test(
                         &group_slices, crate::hypothesis::LeveneCenter::Median);
-                    let equal_var = levene.p_value > 0.05;
+                    let equal_var = levene.p_value > variance_alpha;
 
                     let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
 
@@ -794,7 +805,7 @@ pub fn execute(
                         }
                     } else {
                         let non_normal: Vec<usize> = norm_results.iter().enumerate()
-                            .filter(|(_, (p, _))| *p <= 0.05).map(|(i, _)| i).collect();
+                            .filter(|(_, (p, _))| *p <= normality_alpha).map(|(i, _)| i).collect();
                         ("kruskal_wallis", format!(
                             "groups {:?} non-normal: Kruskal-Wallis H test",
                             non_normal))
@@ -1077,17 +1088,19 @@ pub fn execute(
                 let max_range = ranges.iter().cloned().fold(0.0_f64, f64::max);
                 let min_range = ranges.iter().cloned().fold(f64::INFINITY, f64::min);
                 let scale_ratio = if min_range > 1e-12 { max_range / min_range } else { 1.0 };
-                if scale_ratio > 10.0 {
+                let scale_ratio_thresh = using_bag.get_f64("scale_ratio_warn_threshold").unwrap_or(10.0);
+                if scale_ratio > scale_ratio_thresh {
                     lints.push(TbsLint {
                         code: "L202", step_index: Some(step_idx),
-                        message: format!("Column range ratio {scale_ratio:.1}x > 10: clustering may be dominated by large-scale features. Consider normalize() first."),
+                        message: format!("Column range ratio {scale_ratio:.1}x > {scale_ratio_thresh}: clustering may be dominated by large-scale features. Consider normalize() first."),
                         severity: LintSeverity::Warning,
                     });
                 }
 
                 // Hopkins statistic (clustering tendency)
                 let hopkins = crate::clustering::hopkins_statistic(&data, pn, pd, pn.min(10), 42);
-                let has_structure = hopkins > 0.5; // Hopkins > 0.5 suggests clusters
+                let hopkins_threshold = using_bag.get_f64("hopkins_threshold").unwrap_or(0.5);
+                let has_structure = hopkins > hopkins_threshold;
 
                 // Silhouette sweep
                 let engine = crate::kmeans::KMeansEngine::new()?;
@@ -1277,31 +1290,37 @@ pub fn execute(
                 let x_pred = crate::linear_algebra::Mat { rows: pn, cols: pd, data: data.to_vec() };
 
                 // VIF check
+                let vif_threshold = using_bag.get_f64("vif_threshold").unwrap_or(10.0);
+                let normality_alpha = using_bag.get_f64("normality_alpha").unwrap_or(0.05);
+                let variance_alpha = using_bag.get_f64("variance_alpha").unwrap_or(0.05);
+                let n_thresh = using_bag.get_f64("normality_test_n_threshold")
+                    .map(|v| v as usize).unwrap_or(5000);
                 let vif_vals = crate::multivariate::vif(&x_pred);
                 let max_vif = vif_vals.iter().cloned().fold(0.0_f64, f64::max);
-                let multicollinear = max_vif > 10.0;
+                let multicollinear = max_vif > vif_threshold;
 
                 // Residual normality
-                let norm_result = if pn < 5000 {
+                let norm_result = if pn < n_thresh {
                     crate::nonparametric::shapiro_wilk(&residuals)
                 } else {
                     crate::nonparametric::dagostino_pearson(&residuals)
                 };
                 let resid_norm_p = norm_result.p_value;
-                let resid_normal = resid_norm_p > 0.05;
+                let resid_normal = resid_norm_p > normality_alpha;
 
                 // Breusch-Pagan heteroscedasticity
                 let bp = crate::hypothesis::breusch_pagan(&x_aug, &residuals);
-                let heteroscedastic = bp.p_value < 0.05;
+                let heteroscedastic = bp.p_value < variance_alpha;
 
                 // Cook's distance
-                let influence = crate::hypothesis::cooks_distance(&x_aug, &residuals);
+                let influence_threshold = using_bag.get_f64("influence_threshold");
+                let influence = crate::hypothesis::cooks_distance_with_threshold(&x_aug, &residuals, influence_threshold);
                 let n_influential = influence.n_influential;
 
                 // Build advice
                 let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
                 let (auto_method, auto_reason) = if multicollinear {
-                    ("ridge", format!("max VIF={max_vif:.1} > 10 (multicollinearity detected): consider Ridge regression"))
+                    ("ridge", format!("max VIF={max_vif:.1} > {vif_threshold:.0} (multicollinearity detected): consider Ridge regression"))
                 } else if !resid_normal {
                     ("quantile", format!("residuals non-normal (p={resid_norm_p:.3}): consider quantile regression or robust OLS"))
                 } else if heteroscedastic {
@@ -1396,7 +1415,9 @@ pub fn execute(
 
                     let kmo = kb.kmo_overall;
                     let bartlett_p = kb.bartlett_p_value;
-                    let pca_viable = kmo >= 0.5 && bartlett_p < 0.05;
+                    let kmo_threshold = using_bag.get_f64("kmo_threshold").unwrap_or(0.5);
+                    let bartlett_alpha = using_bag.get_f64("bartlett_alpha").unwrap_or(0.05);
+                    let pca_viable = kmo >= kmo_threshold && bartlett_p < bartlett_alpha;
 
                     // 2. Run full PCA to get eigenvalues (singular_values² / (n-1))
                     let full_pca = crate::dim_reduction::pca(data, pn, pd, pd);
@@ -1412,16 +1433,16 @@ pub fn execute(
                     // 4. Build advice
                     let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
                     let (auto_method, auto_reason) = if !pca_viable {
-                        if kmo < 0.5 {
+                        if kmo < kmo_threshold {
                             ("pca_warn", format!(
-                                "KMO={kmo:.3} < 0.5: data may not be suitable for PCA (sampling inadequacy)"))
+                                "KMO={kmo:.3} < {kmo_threshold}: data may not be suitable for PCA (sampling inadequacy)"))
                         } else {
                             ("pca_warn", format!(
-                                "Bartlett p={bartlett_p:.3} ≥ 0.05: correlation matrix not significantly different from identity"))
+                                "Bartlett p={bartlett_p:.3} ≥ {bartlett_alpha}: correlation matrix not significantly different from identity"))
                         }
                     } else {
                         ("pca", format!(
-                            "KMO={kmo:.3} ≥ 0.5, Bartlett p={bartlett_p:.4} < 0.05: PCA viable; Kaiser criterion → {auto_k} components"))
+                            "KMO={kmo:.3} ≥ {kmo_threshold}, Bartlett p={bartlett_p:.4} < {bartlett_alpha}: PCA viable; Kaiser criterion → {auto_k} components"))
                     };
 
                     let adv = TbsStepAdvice::accepted(auto_method, auto_reason.clone())
@@ -1430,10 +1451,10 @@ pub fn execute(
                             else if kmo >= 0.8 { "meritorious" }
                             else if kmo >= 0.7 { "middling" }
                             else if kmo >= 0.6 { "mediocre" }
-                            else if kmo >= 0.5 { "miserable" }
+                            else if kmo >= kmo_threshold { "miserable" }
                             else { "unacceptable" })
                         .with_diagnostic("Bartlett", bartlett_p,
-                            if bartlett_p < 0.05 { "significant (correlations present)" } else { "not significant" });
+                            if bartlett_p < bartlett_alpha { "significant (correlations present)" } else { "not significant" });
 
                     let final_adv = if let Some(ref forced) = user_method {
                         let warn = if forced.as_str() != auto_method {
@@ -1605,15 +1626,22 @@ pub fn execute(
                     else if adf_rejects && kpss_rejects { "trend-stationary" }
                     else { "inconclusive" };
 
-                let max_lag = (col.len() / 4).min(20).max(1);
+                let max_lag = using_bag.get_f64("max_lag")
+                    .map(|v| v as usize)
+                    .unwrap_or_else(|| (col.len() / 4).min(20).max(1));
                 let acf_vals = crate::time_series::acf(&col, max_lag);
                 let sig = 2.0 / (col.len() as f64).sqrt();
                 let sig_acf: usize = (1..acf_vals.len()).filter(|&k| acf_vals[k].abs() > sig).count();
 
-                let arch_lags = 5.min(col.len() / 10).max(1);
+                let arch_lags_cap = using_bag.get_f64("arch_lags_cap")
+                    .map(|v| v as usize).unwrap_or(5);
+                let arch_lags_denom = using_bag.get_f64("arch_lags_fraction_denom")
+                    .map(|v| v as usize).unwrap_or(10);
+                let arch_lags = arch_lags_cap.min(col.len() / arch_lags_denom).max(1);
+                let arch_alpha = using_bag.get_f64("arch_alpha").unwrap_or(0.05);
                 let arch = crate::volatility::arch_lm_test(&col, arch_lags);
                 let arch_p = arch.as_ref().map_or(1.0, |a| a.p_value);
-                let has_arch = arch_p < 0.05;
+                let has_arch = arch_p < arch_alpha;
 
                 let rec = if !adf_rejects && kpss_rejects {
                     if has_arch { "difference + ARIMA-GARCH" } else { "difference + ARIMA" }
@@ -2246,14 +2274,21 @@ pub fn execute(
                 let col = extract_col(&pipeline.frame().data, pn, pd, c);
 
                 // ARCH-LM test
-                let arch_lags = 5.min(col.len() / 10).max(1);
+                let arch_lags_cap = using_bag.get_f64("arch_lags_cap")
+                    .map(|v| v as usize).unwrap_or(5);
+                let arch_lags_denom = using_bag.get_f64("arch_lags_fraction_denom")
+                    .map(|v| v as usize).unwrap_or(10);
+                let arch_lags = arch_lags_cap.min(col.len() / arch_lags_denom).max(1);
+                let arch_alpha = using_bag.get_f64("arch_alpha").unwrap_or(0.05);
                 let arch = crate::volatility::arch_lm_test(&col, arch_lags);
                 let arch_p = arch.as_ref().map_or(1.0, |a| a.p_value);
-                let has_arch = arch_p < 0.05;
+                let has_arch = arch_p < arch_alpha;
 
                 if has_arch {
                     // Fit GARCH(1,1)
-                    let garch = crate::volatility::garch11_fit(&col, 200);
+                    let garch_max_iter = using_bag.get_f64("garch_max_iter")
+                        .map(|v| v as usize).unwrap_or(200);
+                    let garch = crate::volatility::garch11_fit(&col, garch_max_iter);
                     let rec = if garch.near_igarch {
                         "GARCH(1,1) near-integrated (α+β > 0.99): consider IGARCH or long-memory model"
                     } else {
@@ -2274,7 +2309,8 @@ pub fn execute(
                         .with_diagnostic("ARCH-LM", arch_p, "no ARCH effects");
                     step_advice = Some(adv);
                     // Return EWMA as the simpler alternative
-                    let values = crate::volatility::ewma_variance(&col, 0.94);
+                    let ewma_lambda = using_bag.get_f64("ewma_lambda").unwrap_or(0.94);
+                    let values = crate::volatility::ewma_variance(&col, ewma_lambda);
                     TbsStepOutput::Vector { name: "ewma_variance", values }
                 }
             }

@@ -237,18 +237,20 @@ pub fn hard_swish_vec(x: &[f64]) -> Vec<f64> {
 }
 
 /// Softmax over a slice. Numerically stable (subtract max).
+/// NaN propagates: if any input is NaN the output contains NaN.
 pub fn softmax(x: &[f64]) -> Vec<f64> {
     if x.is_empty() { return vec![]; }
-    let max_val = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let max_val = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     let exps: Vec<f64> = x.iter().map(|&v| (v - max_val).exp()).collect();
     let sum: f64 = exps.iter().sum();
     exps.iter().map(|&e| e / sum).collect()
 }
 
 /// Log-softmax: log(softmax(x)), numerically stable via log-sum-exp.
+/// NaN propagates: if any input is NaN the output contains NaN.
 pub fn log_softmax(x: &[f64]) -> Vec<f64> {
     if x.is_empty() { return vec![]; }
-    let max_val = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let max_val = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     let lse = max_val + x.iter().map(|&v| (v - max_val).exp()).sum::<f64>().ln();
     x.iter().map(|&v| v - lse).collect()
 }
@@ -1384,6 +1386,15 @@ mod tests {
     }
 
     #[test]
+    fn test_softmax_nan_propagates() {
+        // NaN input must propagate through; softmax must not silently swallow it.
+        let x = vec![1.0, f64::NAN, 2.0];
+        let sm = softmax(&x);
+        assert!(sm.iter().any(|v| v.is_nan()),
+            "softmax should propagate NaN input, got {:?}", sm);
+    }
+
+    #[test]
     fn test_log_softmax() {
         let x = vec![1.0, 2.0, 3.0];
         let lsm = log_softmax(&x);
@@ -1391,6 +1402,14 @@ mod tests {
         for i in 0..3 {
             assert!(approx_eq(lsm[i], sm[i].ln(), 1e-10));
         }
+    }
+
+    #[test]
+    fn test_log_softmax_nan_propagates() {
+        let x = vec![1.0, f64::NAN, 2.0];
+        let lsm = log_softmax(&x);
+        assert!(lsm.iter().any(|v| v.is_nan()),
+            "log_softmax should propagate NaN input, got {:?}", lsm);
     }
 
     #[test]

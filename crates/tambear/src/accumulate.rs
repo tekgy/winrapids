@@ -132,6 +132,49 @@ pub enum Op {
     Distance,
 }
 
+impl Op {
+    /// The neutral element (identity) of this monoid.
+    ///
+    /// `identity ⊕ x = x ⊕ identity = x` for all x.
+    ///
+    /// Used to pad non-power-of-2 scans in Blelloch prefix trees.
+    /// MUST NOT be confused with `degenerate()` — padding with a degenerate
+    /// value (e.g. NaN for Max) corrupts every element it touches.
+    ///
+    /// | Op      | identity      | Rationale                        |
+    /// |---------|---------------|----------------------------------|
+    /// | Add     | 0.0           | additive identity                |
+    /// | Max     | -∞            | adding -∞ to a max leaves it unchanged |
+    /// | Min     | +∞            | adding +∞ to a min leaves it unchanged |
+    /// | ArgMin  | (+∞, MAX_IDX) | never beats a real minimum       |
+    /// | ArgMax  | (-∞, MAX_IDX) | never beats a real maximum       |
+    /// | DotProduct | 0.0        | additive identity of inner product |
+    /// | Distance   | 0.0        | additive identity of L2Sq sum    |
+    pub fn identity(&self) -> f64 {
+        match self {
+            Op::Add         => 0.0,
+            Op::Max         => f64::NEG_INFINITY,
+            Op::Min         => f64::INFINITY,
+            Op::ArgMin      => f64::INFINITY,      // sentinel: never wins argmin
+            Op::ArgMax      => f64::NEG_INFINITY,  // sentinel: never wins argmax
+            Op::DotProduct  => 0.0,
+            Op::Distance    => 0.0,
+        }
+    }
+
+    /// The degenerate (invalid/empty) value for this Op.
+    ///
+    /// Returned when the input is empty, all-NaN, or otherwise uncomputable.
+    /// Signals a computation failure — NOT a valid element of the monoid.
+    ///
+    /// MUST NOT be used for scan padding (use `identity()` instead).
+    /// Consumers check for degenerate by testing `is_nan()` (scalar ops)
+    /// or `value.is_nan()` (indexed ops).
+    pub fn degenerate(&self) -> f64 {
+        f64::NAN
+    }
+}
+
 /// Output of an accumulate call — shape depends on grouping.
 #[derive(Debug, Clone)]
 pub enum AccResult {
@@ -1261,6 +1304,74 @@ mod tests {
             let close = prices[bin_ends_minus_one[g]];
             assert!((open  - [100.0, 102.0, 106.0][g]).abs() < 1e-9, "O[{g}]={open}");
             assert!((close - [102.0, 106.0, 104.0][g]).abs() < 1e-9, "C[{g}]={close}");
+        }
+    }
+
+    // ── Op::identity() and Op::degenerate() ─────────────────────────
+    //
+    // These tests enforce the monoid laws that prevent scan padding bugs.
+    // Every scan over non-power-of-2 length pads with identity(), not degenerate().
+    // Padding Max with NaN (degenerate) would corrupt every element it touched.
+
+    #[test]
+    fn op_identity_values_are_correct() {
+        // Each identity must be the true neutral element.
+        assert_eq!(Op::Add.identity(), 0.0, "Add identity");
+        assert_eq!(Op::Max.identity(), f64::NEG_INFINITY, "Max identity");
+        assert_eq!(Op::Min.identity(), f64::INFINITY, "Min identity");
+        // ArgMin/ArgMax identities: sentinel values that never beat any real element.
+        assert_eq!(Op::ArgMin.identity(), f64::INFINITY, "ArgMin identity");
+        assert_eq!(Op::ArgMax.identity(), f64::NEG_INFINITY, "ArgMax identity");
+        assert_eq!(Op::DotProduct.identity(), 0.0, "DotProduct identity");
+        assert_eq!(Op::Distance.identity(), 0.0, "Distance identity");
+    }
+
+    #[test]
+    fn op_degenerate_is_nan() {
+        // degenerate() signals computation failure — always NaN for scalar ops.
+        for op in [Op::Add, Op::Max, Op::Min, Op::ArgMin, Op::ArgMax, Op::DotProduct, Op::Distance] {
+            assert!(op.degenerate().is_nan(), "{op:?}.degenerate() should be NaN");
+        }
+    }
+
+    #[test]
+    fn op_identity_and_degenerate_are_distinct() {
+        // The key invariant: identity is a valid element, degenerate is not.
+        // They must be different (identity must not be NaN for any Op).
+        for op in [Op::Add, Op::Max, Op::Min, Op::DotProduct, Op::Distance] {
+            let id = op.identity();
+            assert!(!id.is_nan(), "{op:?}.identity() must not be NaN");
+        }
+    }
+
+    /// Regression: Max over all-negative values padded to power-of-2 length.
+    ///
+    /// Before identity()/degenerate() distinction: padding used 0.0, causing
+    /// max([-3, -1, -2]) to return 0.0 (the padding value) instead of -1.0.
+    /// This test catches that class of bug.
+    #[test]
+    fn all_max_all_negative_values() {
+        let mut e = engine();
+        let values = vec![-3.0_f64, -1.0, -2.0]; // length 3 — non-power-of-2
+        match e.accumulate(&values, Grouping::All, Expr::Value, Op::Max).unwrap() {
+            AccResult::Scalar(s) => assert!((s - (-1.0)).abs() < 1e-9,
+                "max of all-negative should be -1, got {s}"),
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
+    /// Regression: Min over all-positive values padded to power-of-2 length.
+    ///
+    /// Before the fix: padding used 0.0, causing min([3, 1, 2]) to return 0.0
+    /// instead of 1.0. This test catches that class of bug.
+    #[test]
+    fn all_min_all_positive_values() {
+        let mut e = engine();
+        let values = vec![3.0_f64, 1.0, 2.0]; // length 3 — non-power-of-2
+        match e.accumulate(&values, Grouping::All, Expr::Value, Op::Min).unwrap() {
+            AccResult::Scalar(s) => assert!((s - 1.0).abs() < 1e-9,
+                "min of all-positive should be 1, got {s}"),
+            other => panic!("expected Scalar, got {other:?}"),
         }
     }
 }

@@ -272,7 +272,9 @@ pub fn ability_eap(items: &[ItemParams], responses: &[u8], n_quad: usize) -> f64
     }
 
     // Log-sum-exp trick: log(Σ exp(x_i)) = max(x) + log(Σ exp(x_i - max(x)))
-    let max_lw = log_weights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    // NaN-propagating max: if any log-weight is NaN, max_lw becomes NaN and the
+    // guard below returns 0.0 (safe fallback) rather than silently hiding the NaN.
+    let max_lw = log_weights.iter().copied().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     if max_lw == f64::NEG_INFINITY {
         return 0.0;
     }
@@ -512,5 +514,23 @@ mod tests {
         let se = sem(0.0, &[]);
         assert!(se.is_infinite() && se > 0.0,
             "SEM with no items should be +infinity, got {se}");
+    }
+
+    // ── NaN-propagation regression tests (Bug 2 fix) ─────────────────────
+
+    #[test]
+    fn ability_eap_stable_across_quadrature_range() {
+        // Regression: confirm EAP with log-sum-exp returns a sensible finite
+        // estimate and does not silently return 0.0 due to NaN in log-weights.
+        // Uses standard 2PL items spanning [-2, 2] difficulty range.
+        let items: Vec<ItemParams> = [-2.0, -1.0, 0.0, 1.0, 2.0].iter().map(|&b| {
+            ItemParams { discrimination: 1.0, difficulty: b }
+        }).collect();
+        // Mixed response — middle ability expected
+        let theta = ability_eap(&items, &[1, 1, 1, 0, 0], 41);
+        assert!(theta.is_finite(), "EAP returned non-finite: {theta}");
+        // Should be roughly in (-1, 1) for this balanced response pattern
+        assert!(theta > -2.0 && theta < 2.0,
+            "EAP out of expected range: {theta}");
     }
 }

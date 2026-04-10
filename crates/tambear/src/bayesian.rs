@@ -4,7 +4,11 @@
 //!
 //! ## Architecture
 //!
-//! MCMC = sequential sampling (Kingdom B).
+//! MCMC = sequential sampling (Kingdom B — genuinely non-parallelizable).
+//! The proposal distribution q(·|x_t) depends on the current state x_t,
+//! and the acceptance ratio α = min(1, π(x')q(x_t|x')/π(x_t)q(x'|x_t)) is
+//! nonlinear in x_t. The transition map cannot be formed without x_t — no
+//! data-driven semigroup structure exists. This is a true Fock boundary.
 //! Variational inference = optimization of ELBO (Kingdom C).
 //! Bayesian regression = conjugate update (Kingdom A — closed form).
 

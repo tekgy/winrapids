@@ -421,8 +421,8 @@ pub fn sweep_ar(
     // Agreement: how much does residual variance change across orders?
     // If it's stable → high agreement (more p doesn't help)
     let agreement = if residual_vars.len() >= 2 {
-        let max_rv = residual_vars.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let min_rv = residual_vars.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_rv = residual_vars.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
+        let min_rv = residual_vars.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
         if max_rv > 0.0 {
             1.0 - (max_rv - min_rv) / max_rv
         } else {

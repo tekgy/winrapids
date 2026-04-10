@@ -132,7 +132,7 @@ pub fn gaussian_nb_predict_proba(model: &GaussianNB, x: &[f64], n: usize) -> Vec
             log_probs[ci] = lp;
         }
         // Log-sum-exp for numerical stability
-        let max_lp = log_probs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max_lp = log_probs.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
         let sum_exp: f64 = log_probs.iter().map(|&lp| (lp - max_lp).exp()).sum();
         let log_sum = max_lp + sum_exp.ln();
         for ci in 0..k {

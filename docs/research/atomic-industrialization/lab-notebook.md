@@ -395,25 +395,26 @@ count in `--lib` runs.
 
 | Crate | Tests | Status |
 |-------|-------|--------|
-| tambear | **2,194** | **all green** |
+| tambear | **2,201** | **all green** (verified 2026-04-10) |
 | tambear-fintek | 279 | all green |
-| **Total** | **2,473** | **all green** |
+| **Total** | **2,480** | **all green** |
 
-`cargo check`: clean. `cargo test --lib` on both crates: clean.
+`cargo check`: clean (69 warnings, 0 errors). `cargo test --lib` tambear: 2,201 passed, 0 failed, 5 ignored.
 
 **Test count trajectory this session**:
 - Session start (c005fe0): 2,152 + 279 = 2,431
 - After adversarial gauntlet (f2655fd): 2,152 + 279 = 2,431 (external tests, not counted in --lib)
 - After wave 11 (7c4b54d): 2,190 + 279 = 2,469 (+38 lib tests, 1 FAILING)
-- After rigor fixes + wave 6 + waves 11-15 + phantom fixes (376bbd5 through ff13e63): **2,194 + 279 = 2,473** (all green)
+- After rigor fixes + wave 6 + waves 11-15 + phantom fixes (376bbd5 through ff13e63): 2,194 + 279 = 2,473 (all green)
+- After waves 17-19 + gap analysis + oracle tests (9738fb4 through 0f7cbcc): **2,201 + 279 = 2,480** (all green)
 
-**Net additions this session**: +42 lib tests in tambear. 0 regressions.
+**Net additions this session**: +49 lib tests in tambear. 0 regressions.
 
-**Public function count**: 1,287 pub fn (up from 1,257 at session start, +30 new primitives)
+**Public function count**: not re-measured (was 1,287 at ff13e63; volatility+causal families added since)
 
 ---
 
-### Commits in this session (21 total, c005fe0 → ff13e63)
+### Commits in this session (29 total, c005fe0 → 0f7cbcc)
 
 | Commit | Summary | Verified? |
 |--------|---------|-----------|
@@ -437,6 +438,16 @@ count in `--lib` runs.
 | 8069534 | Expose dim_reduction, factor_analysis, spectral_clustering, tda | crate surface |
 | 5227597 | Fix unused variable warning in family24_manifold | lint fix |
 | ff13e63 | TBS executor: 10 sig fix-ups + pinv relative rcond | **green, verified** |
+| 5bb7cff | Adversarial wave 16: davies_bouldin + hurst_rs NaN bugs | not individually re-run |
+| d5fc62d | Adversarial wave 17 (initial): norm_inf/norm_1/correlation_dim | superseded by 9738fb4 |
+| 9738fb4 | Wave 17 fixes + discover() superposition wiring (sweep_kmeans etc.) | **verified: norm_inf/norm_1 use nan_max; 2,201 tests green** |
+| f2f38fd | Adversarial wave 18: NaN-eating + wrong-identity in graph_laplacian | not individually checked |
+| cc541ab | Internal decomp scan wave 2 + adversarial waves 16-17 + pinv workup | not individually checked |
+| 3d3b029 | Adversarial wave 19: NaN-eating in nonparametric/physics/stochastic | **verified: bath_law/sde_estimate/cfl_timestep/ctmc fixes** |
+| e8ad287 | Add ULP-precision oracle tests for erfc and ncdf tail regions | workup infrastructure |
+| 514e457 | Add ncdf_oracle_full: ULP scan for normal_cdf vs scipy/statsmodels | oracle coverage advance |
+| 16aa3e8 | Gap analyses: biology, engineering, physics + team notes | gap landscape |
+| 0f7cbcc | Complete gap analysis: 9 scanners across all mathematics | **HEAD; 2,201 tests green** |
 
 ---
 
@@ -460,6 +471,12 @@ count in `--lib` runs.
 
 6. **Rigor gauntlet 8 original bugs** (0e9d42b): The 8 failures from f2655fd were fixed.
 
+7. **`renyi_entropy` alpha=Inf NaN-eating** (OPEN — observer-found, not yet committed):
+   `information_theory.rs:108` — `fold(0.0f64, f64::max)` in the `alpha == f64::INFINITY`
+   branch silently eats NaN in `probs`. Should be `fold(f64::NEG_INFINITY, nan_max)`.
+   Slipped through the wave sweeps because it's an early-return special case, not in the
+   main sum path. Reported to adversarial and math-researcher.
+
 ---
 
 ### Open disputed claims — resolved
@@ -478,6 +495,62 @@ count in `--lib` runs.
 
 2. **NaN-eating instances remaining**: `clustering.rs:666`, `complexity.rs:240-241`.
    Wave 16 adversarial tests targeting these. Not yet committed.
+
+---
+
+### Kingdom Classification Audit — Scout's GARCH Finding
+
+**GARCH(1,1) is Kingdom A, not Kingdom B.** (Scout claim, observer-verified.)
+
+State `s_t = (σ²_t, r²_t)`. Recurrence: `σ²_t = ω + α·r²_{t-1} + β·σ²_{t-1}`.
+Lift to affine map: `s_t = A·s_{t-1} + b_t` where `A = [[β, α], [0, 0]]` (constant) and
+`b_t = (ω, r²_t)` (data-dependent constant term). Affine maps compose associatively.
+The prefix scan runs over data-determined affine maps — Kingdom A. No GARCH primitive
+exists in tambear yet (only `garch_is_valid` validity predicate), so no mislabeling to fix.
+
+**Fock boundary clarification:**
+
+The genuine boundary between Kingdom A and Kingdom B is decision-dependent branching on
+current state:
+- Kingdom A: operation at step t is determined by EXTERNAL DATA (known upfront), even if
+  data-dependent. Prefix scan is parallelizable because all operations can be computed before
+  combining.
+- Kingdom B (genuine): operation at step t is determined by OUTPUT of step t-1. Cannot
+  precompute the semigroup elements because the selection depends on values generated mid-chain.
+
+**Canonical Kingdom B case (codebase):**
+`bayesian.rs:7` — "MCMC = sequential sampling (Kingdom B)." Metropolis-Hastings
+(`bayesian.rs:32`) — acceptance decision at step t depends on `log_target(current_sample)`.
+The proposed next state and whether it's accepted depend on the current state's value.
+Cannot precompute. Genuinely Kingdom B.
+
+**Kingdom B mislabelings found (confirmed):**
+
+1. `number_theory.rs:153` — `mod_pow` declared "sequential squaring chain (Kingdom B)."
+   Exponent bits are data, known before step 1. Could be expressed as: precompute all
+   squarings, gather where bit=1. Kingdom A. Sequential loop is implementation, not structure.
+
+2. `clustering.rs:684` — `silhouette_score` declared "Kingdom B (pairwise O(n²) inner loop)."
+   All pairs `sq_dist(i, j)` are independent — no sequential dependency between any pair.
+   This is Kingdom A (pairwise accumulate over n² edge set). O(n²) is cost, not kingdom.
+   Confuses parallelism class with kingdom class. 
+
+**GARCH Kingdom B label pre-corrected (already fixed):**
+`volatility.rs:7-14` already contains the right classification — the expedition corrected
+this before the scout's report. The file now correctly states: "GARCH filter = affine prefix
+scan (Kingdom A), NOT Kingdom B." Scout's garden entry was a recognition of something the
+code had already recognized.
+
+**HMM forward algorithm is Kingdom A (verified from first principles):**
+`α_t = O_t · T · α_{t-1}` where `O_t` is the observation matrix for symbol at time t.
+All `O_t` matrices are data-determined — the full observation sequence is input. Products
+are associative. Prefix scan is correct. Kingdom A, not Kingdom B.
+
+**Refined Fock boundary definition:**
+Kingdom B requires that the semigroup element at step t CANNOT BE DETERMINED before
+executing step t-1. In GARCH and HMM, all elements are data-determined (precomputable).
+In MCMC, elements depend on random samples generated mid-chain (not precomputable).
+O(n²) complexity ≠ Kingdom B. State-dependence of the operation selection = Kingdom B.
 
 3. **fintek family22/24 bridge**: `ccm`/`mfdfa`/`phase_transition` now at crate surface;
    bridges still reimplement them. Path B (delegate to `tambear::complexity`) is clean fix.
@@ -590,6 +663,36 @@ skipping blocks that should propagate NaN. In `hurst_rs:251`, NaN std causes sil
 block omission rather than NaN return. This conditional-skip pattern is distinct from
 the fold-eating pattern and may appear elsewhere.
 
-**Systemic fold NaN-eating in production code: eradicated.**
+**Systemic fold NaN-eating in production code: eradicated — except one.**
 
-*Last updated: 2026-04-10 by observer (waves 16/17 verification + remaining fold site audit)*
+`renyi_entropy:108` (`information_theory.rs`) — alpha=Inf branch uses `fold(0.0f64, f64::max)`.
+This is a live production bug, not a test helper. Reported to math-researcher and adversarial.
+
+---
+
+### Oracle Coverage Map — Inventory Clarification
+
+Math-researcher proposed three quality dimensions per primitive: paper-verification, oracle
+parity, adversarial coverage. Observer verified the claimed "paper-verified" primitives.
+
+**Distinction that matters for the coverage map:**
+
+| Level | Definition | Examples in codebase |
+|-------|------------|---------------------|
+| Citation-traced | Specific paper + section/table in docstring | `matrix_exp` (Higham 2005 §10.3 Table 10.4), `matrix_log` (Al-Mohy & Higham 2009), `matrix_sqrt` (Denman-Beavers) |
+| Formula-correct | Matches standard definition, verifiable by inspection, no citation | hellinger, total_variation, bhattacharyya, wasserstein_1d, MMD, energy_distance, renyi_entropy |
+| Oracle-tested | Output numerically verified against mpmath/SymPy at high precision | kendall_tau, pearson_r, inversion_count, incomplete_beta, erfc |
+| Adversarially-covered | Has stress tests for degenerate inputs (from waves 1-17) | ~30 primitives |
+
+**Key point**: a primitive can be formula-correct yet fail on edge cases. The Rényi alpha=Inf
+NaN bug demonstrates this — the entropy formula is textbook-correct; the IEEE 754 handling of
+NaN in the special branch is wrong. These are independent failure modes.
+
+**The Rényi/escort insight (math-researcher, verified):**
+`renyi_entropy` computes `Σ pᵢ^α` directly — this IS the partition function Z(α) without
+escort probabilities. The escort distribution `qᵢ = pᵢ^α / Z(α)` appears when computing
+gradients `dH_α/dα`, not for entropy values themselves. The accumulate+gather decomposition
+forced this to be named explicitly, revealing the simplification. Computationally correct;
+conceptually the escort is still the right frame for understanding the family.
+
+*Last updated: 2026-04-10 by observer (oracle coverage map inventory + renyi NaN bug)*

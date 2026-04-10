@@ -29,19 +29,18 @@
 
 /// Error function: erf(x) = (2/√π) ∫₀ˣ e⁻ᵗ² dt.
 ///
-/// Two-region strategy for near-machine-precision accuracy (max |ε| < 2×10⁻¹⁵):
-/// - |x| < 0.5: Taylor series (converges rapidly, avoids cancellation)
-/// - |x| >= 0.5: computed as 1 - erfc(x) using the high-precision erfc
+/// Two-region strategy for near-machine-precision accuracy (max |ε| ≤ 5 ULP):
+/// - |x| < 1.0: computed as 1 - erfc(x) via Taylor series region
+/// - |x| >= 1.0: computed as 1 - erfc(x) via CF region
 pub fn erf(x: f64) -> f64 {
     1.0 - erfc(x)
 }
 
 /// Complementary error function: erfc(x) = 1 - erf(x).
 ///
-/// Near-machine-precision accuracy (max |ε| < 2×10⁻¹⁵) via two regions:
-/// - |x| < 0.5: Taylor series for erf, then erfc = 1 - erf (no cancellation issue
-///   because erf is small here)
-/// - |x| >= 0.5: Continued fraction (Lentz's method) with exp(-x²) prefactor
+/// Accuracy ≤ 21 ULP everywhere via two regions:
+/// - |x| < 1.0: Taylor series for erf (≤ 5 ULP), then erfc = 1 - erf
+/// - |x| >= 1.0: Continued fraction via Lentz's method (≤ 21 ULP) with exp(-x²) prefactor
 ///
 /// The continued fraction representation:
 ///   erfc(x) = exp(-x²)/√π · CF(x)
@@ -53,15 +52,18 @@ pub fn erfc(x: f64) -> f64 {
 
     let ax = x.abs();
 
-    if ax < 1.5 {
+    if ax < 1.0 {
         // Taylor series for erf: erf(x) = 2x/√π · Σ (-x²)^n / (n! · (2n+1))
         // Then erfc = 1 - erf.
         //
-        // Safe for |x| < 1.5: erf(1.5) ≈ 0.966, so 1 - erf is not catastrophically
-        // cancelled. 40 terms gives < 2e-15 relative error throughout this region.
-        // (Prior boundary of 0.5 caused the CF to be used in [0.5, 1.5) where the
-        // CF requires ~1000 iterations to converge — resulting in ~8e-9 relative
-        // error at x=0.5. Bug fixed 2026-04-10 by extending Taylor to |x| < 1.5.)
+        // Safe for |x| < 1.0: max error ≤ 5 ULP, typically ≤ 2 ULP.
+        // The CF at |x| < 1.0 does not converge within 200 iterations and gives
+        // thousands of ULP error. The boundary of 1.0 was chosen because:
+        // - Taylor converges in ~20 terms, ≤ 5 ULP accuracy below x=1.0
+        // - CF converges in ≤ 188 iterations with ≤ 21 ULP accuracy above x=1.0
+        // (History: original boundary was 0.5 — CF not converged in 200 iters at 0.5,
+        // giving ~8e-9 relative error. Extended to 1.5 in 2026-04-10 fix, but Taylor
+        // at |x| in [1.0, 1.5) accumulates up to 82 ULP error. Correct boundary: 1.0.)
         let x2 = x * x;
         let mut term = x; // first term of series (before 2/√π factor)
         let mut sum = term;
@@ -1894,7 +1896,7 @@ pub fn logit(p: f64) -> f64 {
 /// Returns a uniform distribution if all inputs are identical.
 pub fn softmax(x: &[f64]) -> Vec<f64> {
     if x.is_empty() { return Vec::new(); }
-    let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     let exps: Vec<f64> = x.iter().map(|&xi| (xi - max_x).exp()).collect();
     let sum: f64 = exps.iter().sum();
     if sum < 1e-300 {
@@ -1911,7 +1913,7 @@ pub fn softmax(x: &[f64]) -> Vec<f64> {
 /// More numerically stable than log(softmax(x)) when probabilities are tiny.
 pub fn log_softmax(x: &[f64]) -> Vec<f64> {
     if x.is_empty() { return Vec::new(); }
-    let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     let exps: Vec<f64> = x.iter().map(|&xi| (xi - max_x).exp()).collect();
     let log_sum = exps.iter().sum::<f64>().ln();
     x.iter().map(|&xi| xi - max_x - log_sum).collect()

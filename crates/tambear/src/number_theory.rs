@@ -150,7 +150,9 @@ pub fn mul_mod(a: u64, b: u64, m: u64) -> u64 {
 }
 
 /// Modular exponentiation: a^e mod m.
-/// Accumulate: sequential squaring chain (Kingdom B).
+/// Kingdom A: the squaring chain base^{2^k} is data-independent (parallel-precomputable);
+/// the gather step multiplies selected powers where bit_k(e)=1. Bits of e are DATA, not state.
+/// Sequential implementation artifact — can be parallelized: precompute all powers, gather.
 pub fn mod_pow(mut base: u64, mut exp: u64, modulus: u64) -> u64 {
     if modulus == 1 { return 0; }
     let mut result = 1u64;

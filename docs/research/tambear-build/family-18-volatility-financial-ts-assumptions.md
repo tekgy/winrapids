@@ -3,7 +3,8 @@
 **Author**: Math Researcher
 **Date**: 2026-04-01
 **Status**: Pre-implementation reference. Read this BEFORE coding.
-**Kingdom**: Mixed — B (GARCH = Affine scan), C (GARCH MLE via F05 optimizer), A (realized measures = accumulates)
+**Kingdom**: Mixed — A (GARCH filter = affine prefix scan with constant linear coefficient), C (GARCH MLE via F05 optimizer), A (realized measures = accumulates)
+**Note (2026-04-10)**: GARCH was previously labeled Kingdom B. Corrected — see affine scan analysis below.
 
 ---
 
@@ -31,13 +32,26 @@ GARCH(1,1) (the workhorse, covers >90% of use cases):
 σ²_t = ω + α · ε²_{t-1} + β · σ²_{t-1}
 ```
 
-### As Affine Scan (Kingdom B)
-State = σ²_t. Input = ε²_t. Update:
+### As Affine Scan (Kingdom A — not B)
+State = σ²_t. Input = ε²_t = r²_{t-1} (KNOWN DATA, not state). Update:
 ```
 σ²_t = ω + α · ε²_{t-1} + β · σ²_{t-1}
-     = (ω + α · input) + β · state
+     = (ω + α · input_t) + β · state_{t-1}
 ```
-This is Affine(1,1): state' = β · state + (ω + α · input). Kingdom B.
+This is f_t(x) = β·x + b_t where b_t = ω + α·ε²_{t-1}.
+
+KEY: β is CONSTANT across all steps. Only the offset b_t varies, and it depends on DATA
+(the return at t-1), not the current state σ²_{t-1}. The linear coefficient β is fixed.
+
+Affine maps with constant linear coefficient compose as a semigroup:
+  (f_s ∘ f_t)(x) = β²·x + (β·b_t + b_s)
+The composition parameters depend only on the data sequence b_0, b_1, ..., not on the state.
+This makes GARCH a prefix product of data-determined maps — **Kingdom A**.
+
+Compare to true Kingdom B: an affine scan where a_t (the linear coefficient) itself
+varies per step as a function of the state. That would break the semigroup composition.
+
+**Corrected**: GARCH filter = Kingdom A. Only the MLE outer optimization loop = Kingdom C.
 
 ### Constraints
 - ω > 0, α ≥ 0, β ≥ 0

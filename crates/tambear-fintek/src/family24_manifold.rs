@@ -4,6 +4,8 @@
 //! - `ccm`      (K02P18C01R06F01) — Convergent Cross Mapping (Takens embedding + kNN)
 //! - `harmonic` (K02P18C01R07F01) — Harmonic statistics from singular value spacing
 
+use tambear::nonparametric::pearson_r;
+
 // ── CCM ───────────────────────────────────────────────────────────────────────
 
 const CCM_EMBED_DIM: usize = 3;
@@ -138,20 +140,8 @@ fn ccm_predict(embed: &[Vec<f64>], target: &[f64], lib_size: usize) -> f64 {
         y_pred.push(pred);
     }
 
-    pearson_corr(&y_true, &y_pred)
-}
-
-fn pearson_corr(x: &[f64], y: &[f64]) -> f64 {
-    let n = x.len();
-    if n < 2 { return f64::NAN; }
-    let nf = n as f64;
-    let mx = x.iter().sum::<f64>() / nf;
-    let my = y.iter().sum::<f64>() / nf;
-    let sxx: f64 = x.iter().map(|&v| (v - mx) * (v - mx)).sum();
-    let syy: f64 = y.iter().map(|&v| (v - my) * (v - my)).sum();
-    let sxy: f64 = x.iter().zip(y.iter()).map(|(&a, &b)| (a - mx) * (b - my)).sum();
-    if sxx < 1e-30 || syy < 1e-30 { return f64::NAN; }
-    (sxy / (sxx * syy).sqrt()).clamp(-1.0, 1.0)
+    if y_true.len() < 2 { return f64::NAN; }
+    pearson_r(&y_true, &y_pred)
 }
 
 // ── HARMONIC ──────────────────────────────────────────────────────────────────

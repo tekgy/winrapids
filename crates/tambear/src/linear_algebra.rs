@@ -966,6 +966,52 @@ pub fn ols_slope(x: &[f64], y: &[f64]) -> f64 {
     if denom.abs() < 1e-30 { f64::NAN } else { (nf * sxy - sx * sy) / denom }
 }
 
+/// Solve OLS via Cholesky on the normal equations X'X β = X'y.
+///
+/// # Arguments
+///
+/// - `x`: design matrix in row-major order (nobs × ncols).
+/// - `y`: response vector (length nobs).
+/// - `nobs`: number of observations (rows).
+/// - `ncols`: number of predictors including intercept (columns).
+///
+/// # Returns
+///
+/// `Some(beta)` of length `ncols` if X'X is positive definite.
+/// `None` if X'X is singular or nearly so (Cholesky fails).
+///
+/// # Applications
+///
+/// ADF regression (OLS on augmented Dickey-Fuller design matrix),
+/// Breusch-Godfrey auxiliary regression, any small-p OLS where
+/// building the normal equations is cheaper than QR on a dense matrix.
+///
+/// # Notes
+///
+/// For numerically sensitive problems prefer `qr_solve` (more stable).
+/// This function is appropriate when X'X is guaranteed well-conditioned
+/// (e.g., time-series auxiliary regressions with moderate lag counts).
+pub fn ols_normal_equations(x: &[f64], y: &[f64], nobs: usize, ncols: usize) -> Option<Vec<f64>> {
+    if nobs < ncols || x.len() != nobs * ncols || y.len() != nobs {
+        return None;
+    }
+    let mut xtx = vec![0.0_f64; ncols * ncols];
+    let mut xty = vec![0.0_f64; ncols];
+    for i in 0..nobs {
+        let xi = &x[i * ncols..(i + 1) * ncols];
+        let yi = y[i];
+        for j in 0..ncols {
+            xty[j] += xi[j] * yi;
+            for k in 0..ncols {
+                xtx[j * ncols + k] += xi[j] * xi[k];
+            }
+        }
+    }
+    let a = Mat::from_vec(ncols, ncols, xtx);
+    let l = cholesky(&a)?;
+    Some(cholesky_solve(&l, &xty))
+}
+
 /// Sigmoid (logistic) function: 1 / (1 + exp(-x)).
 ///
 /// Global primitive duplicated in irt.rs, causal.rs, hypothesis.rs.
@@ -978,6 +1024,42 @@ pub fn sigmoid(x: f64) -> f64 {
         let e = x.exp();
         e / (1.0 + e)
     }
+}
+
+/// Effective rank of a matrix from its singular values (Roy's criterion).
+///
+/// Computes `exp(H(p))` where `p_i = σ_i² / Σσ_j²` is the normalized
+/// squared singular value distribution and `H` is Shannon entropy. This
+/// equals the number of "effective" dimensions — the geometric mean of
+/// the squared SV distribution, normalized by its arithmetic mean.
+///
+/// A rank-1 matrix has effective rank 1.0. A matrix with all equal
+/// singular values has effective rank equal to its algebraic rank.
+/// Returns `NAN` if fewer than 2 positive singular values are present.
+///
+/// Reference: Roy, S.N. (1953); also used in Roy (1957) as a spectral
+/// dimension measure. The entropy form is from Vershynin (2018) §7.
+///
+/// # Parameters
+/// - `sv`: slice of singular values (need not be sorted; zeros ignored)
+///
+/// # Returns
+/// `exp(H(sv²/‖sv‖²))` — a real number in `[1, rank(A)]`.
+///
+/// # Consumers
+/// PCA rank selection, factor analysis, spectral embedding dimension choice,
+/// compression complexity measurement, any effective-dimension diagnostic.
+pub fn effective_rank_from_sv(sv: &[f64]) -> f64 {
+    let sv_sq: Vec<f64> = sv.iter().map(|&v| v * v).filter(|&v| v > 0.0).collect();
+    if sv_sq.len() < 2 { return f64::NAN; }
+    let total: f64 = sv_sq.iter().sum();
+    if total < 1e-30 { return f64::NAN; }
+    let mut h = 0.0f64;
+    for &s in &sv_sq {
+        let p = s / total;
+        if p > 0.0 { h -= p * p.ln(); }
+    }
+    h.exp()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

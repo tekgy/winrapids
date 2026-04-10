@@ -673,6 +673,118 @@ pub fn clustering_coefficient(g: &Graph) -> f64 {
     if triplets == 0 { 0.0 } else { triangles as f64 / triplets as f64 }
 }
 
+// ─── Dense matrix graph primitives ──────────────────────────────────
+
+/// Euclidean pairwise distance matrix for a set of points.
+///
+/// Points are given as a row-major matrix with `n` rows and `d` columns.
+/// Returns a flat `n×n` distance matrix (row-major), symmetric with zero diagonal.
+///
+/// # Arguments
+///
+/// - `mat`: row-major point matrix of shape n×d.
+/// - `n`: number of points (rows).
+/// - `d`: dimensionality (columns).
+///
+/// # Applications
+///
+/// Phase-space distance for correlation dimension and Lyapunov exponents,
+/// k-NN graph construction, recurrence plots, spectral embedding, diffusion maps.
+///
+/// # Complexity
+///
+/// O(n²·d) time, O(n²) space. For n > ~1000 consider approximate methods.
+pub fn pairwise_dists(mat: &[f64], n: usize, d: usize) -> Vec<f64> {
+    let mut dists = vec![0.0_f64; n * n];
+    for a in 0..n {
+        for b in (a + 1)..n {
+            let mut s = 0.0_f64;
+            for k in 0..d {
+                let diff = mat[a * d + k] - mat[b * d + k];
+                s += diff * diff;
+            }
+            let dist = s.sqrt();
+            dists[a * n + b] = dist;
+            dists[b * n + a] = dist;
+        }
+    }
+    dists
+}
+
+/// Build a symmetric k-NN Gaussian kernel adjacency matrix from pairwise distances.
+///
+/// For each point, finds its k nearest neighbors and assigns a Gaussian weight
+/// `exp(-dist² / (2·σ²))` where σ is the distance to the k-th neighbor.
+/// The adjacency is symmetrized: if a is in b's k-NN or vice versa, both get the weight.
+///
+/// # Arguments
+///
+/// - `dists`: flat n×n pairwise distance matrix (from `pairwise_dists`).
+/// - `n`: number of points.
+/// - `k`: number of nearest neighbors per point.
+///
+/// # Applications
+///
+/// Spectral embedding, diffusion maps, graph Laplacian construction,
+/// manifold learning, semi-supervised classification.
+pub fn knn_adjacency(dists: &[f64], n: usize, k: usize) -> Vec<f64> {
+    let mut adj = vec![0.0_f64; n * n];
+    for a in 0..n {
+        let mut row: Vec<(usize, f64)> = (0..n)
+            .filter(|&b| b != a)
+            .map(|b| (b, dists[a * n + b]))
+            .collect();
+        row.sort_unstable_by(|x, y| x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal));
+        let sigma = row.get(k.min(row.len()).saturating_sub(1))
+            .map(|r| r.1)
+            .unwrap_or(1.0)
+            .max(1e-30);
+        for &(b, dist) in row.iter().take(k) {
+            let w = (-dist * dist / (2.0 * sigma * sigma)).exp();
+            if w > adj[a * n + b] {
+                adj[a * n + b] = w;
+                adj[b * n + a] = w;
+            }
+        }
+    }
+    adj
+}
+
+/// Unnormalized graph Laplacian L = D − A.
+///
+/// Given a weighted adjacency matrix A (flat n×n, row-major), computes:
+/// - Degree matrix D: diagonal with D[i,i] = Σⱼ A[i,j].
+/// - Laplacian L = D − A.
+///
+/// # Returns
+///
+/// `(laplacian, degrees, max_degree)` where:
+/// - `laplacian`: flat n×n Laplacian matrix.
+/// - `degrees`: degree vector of length n.
+/// - `max_degree`: maximum degree value.
+///
+/// # Applications
+///
+/// Spectral clustering (Fiedler vector), spectral embedding, diffusion maps,
+/// graph partitioning, effective resistance computation.
+///
+/// For normalized Laplacian L_sym = D^{-1/2} L D^{-1/2}, scale the off-diagonal
+/// entries by 1/sqrt(d[i]*d[j]).
+pub fn graph_laplacian(adj: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, f64) {
+    let mut degrees = vec![0.0_f64; n];
+    for a in 0..n {
+        degrees[a] = (0..n).map(|b| adj[a * n + b]).sum();
+    }
+    let max_deg = degrees.iter().copied().fold(0.0_f64, f64::max);
+    let mut lap = vec![0.0_f64; n * n];
+    for a in 0..n {
+        for b in 0..n {
+            lap[a * n + b] = if a == b { degrees[a] } else { -adj[a * n + b] };
+        }
+    }
+    (lap, degrees, max_deg)
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]

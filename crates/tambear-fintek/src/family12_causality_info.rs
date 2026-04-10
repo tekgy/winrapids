@@ -9,6 +9,8 @@
 //! - coherence        (K02P17C01R02) — Spectral coherence: mean, max, peak freq, bandwidth
 //! - cross_correlation (K02P07C02R01) — CCF features: max_xcorr, lag, zero-lag, asymmetry, lead_lag_ratio
 
+use tambear::special_functions::erfc;
+
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
 /// O(n²) real DFT for a single segment (coherence / CCF use segments ≤ 256 pts).
@@ -42,21 +44,8 @@ fn f_survival(x: f64, df1: usize, df2: usize) -> f64 {
             / ((2.0 / (9.0 * d1))
                + (x * d1 / d2).powf(2.0 / 3.0) * 2.0 / (9.0 * d2))
               .sqrt();
-    // P(Z > z) ≈ erfc(z/√2)/2
-    erfc_approx(z / std::f64::consts::SQRT_2) * 0.5
-}
-
-fn erfc_approx(x: f64) -> f64 {
-    if x >= 6.0 { return 0.0; }
-    if x <= -6.0 { return 2.0; }
-    if x < 0.0 { return 2.0 - erfc_approx(-x); }
-    let t = 1.0 / (1.0 + 0.3275911 * x);
-    let poly = t * (0.254829592
-        + t * (-0.284496736
-        + t * (1.421413741
-        + t * (-1.453152027
-        + t * 1.061405429))));
-    poly * (-x * x).exp()
+    // P(Z > z) = erfc(z/√2)/2 — use higher-precision tambear primitive
+    erfc(z / std::f64::consts::SQRT_2) * 0.5
 }
 
 /// OLS residual sum of squares: regress `y` on design matrix `x` (row-major,

@@ -21,6 +21,8 @@
 //! returning NaN or a documented sentinel. Never panics. Never hardcodes
 //! alpha/threshold/tuning constants beyond numerical sentinels.
 
+use crate::descriptive::{median, moments_ungrouped};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // COUNTING FAMILY
 // ═══════════════════════════════════════════════════════════════════════════
@@ -158,13 +160,12 @@ pub fn count_outliers_iqr(x: &[f64], k: f64) -> usize {
 /// Count of outliers by the z-score rule: `|z| > threshold`.
 pub fn count_outliers_zscore(x: &[f64], threshold: f64) -> usize {
     let clean: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
-    let n = clean.len();
-    if n < 2 {
+    if clean.len() < 2 {
         return 0;
     }
-    let mean = clean.iter().sum::<f64>() / n as f64;
-    let var = clean.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64;
-    let sd = var.sqrt();
+    let s = moments_ungrouped(&clean);
+    let mean = s.mean();
+    let sd = s.variance(1).sqrt();
     if sd < 1e-300 {
         return 0;
     }
@@ -182,25 +183,17 @@ pub fn count_outliers_mad(x: &[f64], threshold: f64) -> usize {
         return 0;
     }
     clean.sort_by(|a, b| a.total_cmp(b));
-    let median = if n % 2 == 0 {
-        (clean[n / 2 - 1] + clean[n / 2]) / 2.0
-    } else {
-        clean[n / 2]
-    };
-    let mut abs_dev: Vec<f64> = clean.iter().map(|v| (v - median).abs()).collect();
+    let med = median(&clean);
+    let mut abs_dev: Vec<f64> = clean.iter().map(|v| (v - med).abs()).collect();
     abs_dev.sort_by(|a, b| a.total_cmp(b));
-    let mad = if n % 2 == 0 {
-        (abs_dev[n / 2 - 1] + abs_dev[n / 2]) / 2.0
-    } else {
-        abs_dev[n / 2]
-    };
+    let mad = median(&abs_dev);
     let scale = 1.4826 * mad;
     if scale < 1e-300 {
         return 0;
     }
     clean
         .iter()
-        .filter(|&&v| ((v - median) / scale).abs() > threshold)
+        .filter(|&&v| ((v - med) / scale).abs() > threshold)
         .count()
 }
 
@@ -239,13 +232,10 @@ pub fn count_ties(x: &[f64]) -> u64 {
 /// Sample standard deviation (ddof = 1) of finite values.
 pub fn sample_std(x: &[f64]) -> f64 {
     let clean: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
-    let n = clean.len();
-    if n < 2 {
+    if clean.len() < 2 {
         return f64::NAN;
     }
-    let m = clean.iter().sum::<f64>() / n as f64;
-    let v = clean.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1) as f64;
-    v.sqrt()
+    moments_ungrouped(&clean).variance(1).sqrt()
 }
 
 /// Raw median absolute deviation (no consistency constant).
@@ -256,18 +246,10 @@ pub fn mad_raw(x: &[f64]) -> f64 {
         return f64::NAN;
     }
     clean.sort_by(|a, b| a.total_cmp(b));
-    let med = if n % 2 == 0 {
-        (clean[n / 2 - 1] + clean[n / 2]) / 2.0
-    } else {
-        clean[n / 2]
-    };
+    let med = median(&clean);
     let mut abs_dev: Vec<f64> = clean.iter().map(|v| (v - med).abs()).collect();
     abs_dev.sort_by(|a, b| a.total_cmp(b));
-    if n % 2 == 0 {
-        (abs_dev[n / 2 - 1] + abs_dev[n / 2]) / 2.0
-    } else {
-        abs_dev[n / 2]
-    }
+    median(&abs_dev)
 }
 
 /// Normal-consistent MAD: `1.4826 · MAD`. Approximates σ for Gaussian data.
@@ -354,18 +336,14 @@ pub fn quartile_coefficient(x: &[f64]) -> f64 {
 /// Fisher-Pearson skewness: `m3 / m2^(3/2)`.
 pub fn skewness_fisher(x: &[f64]) -> f64 {
     let clean: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
-    let n = clean.len();
-    if n < 3 {
+    if clean.len() < 3 {
         return f64::NAN;
     }
-    let nf = n as f64;
-    let m = clean.iter().sum::<f64>() / nf;
-    let m2 = clean.iter().map(|v| (v - m).powi(2)).sum::<f64>() / nf;
-    let m3 = clean.iter().map(|v| (v - m).powi(3)).sum::<f64>() / nf;
-    if m2 < 1e-300 {
+    let s = moments_ungrouped(&clean);
+    if s.variance(0) < 1e-300 {
         return 0.0;
     }
-    m3 / m2.powf(1.5)
+    s.skewness(true)
 }
 
 /// Bowley quartile skewness: `(Q3 + Q1 − 2·median) / IQR`. Range `[-1, 1]`.
@@ -379,16 +357,12 @@ pub fn skewness_bowley(x: &[f64]) -> f64 {
     clean.sort_by(|a, b| a.total_cmp(b));
     let q1 = clean[n / 4];
     let q3 = clean[3 * n / 4];
-    let median = if n % 2 == 0 {
-        (clean[n / 2 - 1] + clean[n / 2]) / 2.0
-    } else {
-        clean[n / 2]
-    };
+    let med = median(&clean);
     let iqr_val = q3 - q1;
     if iqr_val < 1e-300 {
         return 0.0;
     }
-    (q3 + q1 - 2.0 * median) / iqr_val
+    (q3 + q1 - 2.0 * med) / iqr_val
 }
 
 /// Kelly skewness: `(P90 + P10 − 2·median) / (P90 − P10)`.
@@ -402,16 +376,12 @@ pub fn skewness_kelly(x: &[f64]) -> f64 {
     clean.sort_by(|a, b| a.total_cmp(b));
     let p10 = clean[n / 10];
     let p90 = clean[9 * n / 10];
-    let median = if n % 2 == 0 {
-        (clean[n / 2 - 1] + clean[n / 2]) / 2.0
-    } else {
-        clean[n / 2]
-    };
+    let med = median(&clean);
     let span = p90 - p10;
     if span < 1e-300 {
         return 0.0;
     }
-    (p90 + p10 - 2.0 * median) / span
+    (p90 + p10 - 2.0 * med) / span
 }
 
 /// Pearson's second skewness (median-based): `3·(mean − median) / std`.
@@ -425,32 +395,24 @@ pub fn skewness_pearson(x: &[f64]) -> f64 {
     let std = sample_std(&clean);
     let mut sorted = clean.clone();
     sorted.sort_by(|a, b| a.total_cmp(b));
-    let median = if n % 2 == 0 {
-        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
-    } else {
-        sorted[n / 2]
-    };
+    let med = median(&sorted);
     if std < 1e-300 {
         return 0.0;
     }
-    3.0 * (mean - median) / std
+    3.0 * (mean - med) / std
 }
 
 /// Excess kurtosis: `m4 / m2² − 3`. Zero for normal distribution.
 pub fn kurtosis_excess(x: &[f64]) -> f64 {
     let clean: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
-    let n = clean.len();
-    if n < 4 {
+    if clean.len() < 4 {
         return f64::NAN;
     }
-    let nf = n as f64;
-    let m = clean.iter().sum::<f64>() / nf;
-    let m2 = clean.iter().map(|v| (v - m).powi(2)).sum::<f64>() / nf;
-    let m4 = clean.iter().map(|v| (v - m).powi(4)).sum::<f64>() / nf;
-    if m2 < 1e-300 {
+    let s = moments_ungrouped(&clean);
+    if s.variance(0) < 1e-300 {
         return 0.0;
     }
-    m4 / (m2 * m2) - 3.0
+    s.kurtosis(true, true)
 }
 
 /// Crow-Siddiqui tail-weight kurtosis: `(P97.5 − P2.5) / (P75 − P25)`.

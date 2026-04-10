@@ -200,6 +200,8 @@ pub use hypothesis::{
     MediationResult, mediation,
     ModerationResult, moderation,
     BayesFactorResult, bayes_factor_t_one_sample, bayes_factor_correlation,
+    // Primitives (flat catalog)
+    interpret_bf,
 };
 pub use nonparametric::{
     rank, spearman, pearson_on_ranks, kendall_tau,
@@ -219,6 +221,8 @@ pub use nonparametric::{
     BathResult, bath_law,
     SdeResult, sde_estimate,
     inversion_count, inversion_count_mergesort,
+    // Primitives (flat catalog)
+    shapiro_wilk_coefficients,
 };
 pub use complexity::{
     sample_entropy, approx_entropy, permutation_entropy, normalized_permutation_entropy,
@@ -244,7 +248,9 @@ pub use linear_algebra::{
     tridiagonal_scan_element, tridiagonal_scan_compose,
     // Global primitives (flat catalog)
     SimpleRegressionResult, simple_linear_regression, ols_slope,
+    ols_normal_equations,
     forward_solve, back_solve_transpose,
+    effective_rank_from_sv,
 };
 pub use graph::{
     Edge, Graph, MstResult,
@@ -254,6 +260,8 @@ pub use graph::{
     degree_centrality, closeness_centrality, pagerank,
     label_propagation, modularity,
     max_flow, diameter, density, clustering_coefficient,
+    // Dense matrix graph primitives
+    pairwise_dists, knn_adjacency, graph_laplacian,
 };
 pub use optimization::{
     OptResult,
@@ -297,6 +305,13 @@ pub use multivariate::{
 pub mod causal;
 pub mod spectral;
 pub mod mixed_effects;
+pub use mixed_effects::{
+    LmeResult, lme_random_intercept,
+    icc_oneway, IccResult, icc_twoway_random, icc_twoway_mixed,
+    design_effect,
+    // Primitives (flat catalog)
+    twoway_anova_ms,
+};
 pub mod panel;
 pub mod survival;
 pub mod mixture;
@@ -310,6 +325,10 @@ pub use kalman::{
 };
 pub mod time_series;
 pub use time_series::{
+    // Toeplitz / Levinson primitives
+    levinson_durbin,
+    // Phase-space primitives
+    delay_embed,
     StlResult, stl_decompose,
     ArmaResult, arma_fit, ArimaResult, arima_fit, arima_forecast, auto_arima,
     undifference,
@@ -328,6 +347,8 @@ pub use time_series::{
     spectral_flux, spectral_decrease, spectral_contrast,
     dominant_frequency, dominant_frequency_power, peak_to_average_power_ratio,
     spectral_peak_count,
+    // Primitives (flat catalog)
+    arma_css_residuals, mackinnon_adf_critical_values,
 };
 pub mod volatility;
 pub mod factor_analysis;

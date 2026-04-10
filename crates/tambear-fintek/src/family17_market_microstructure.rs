@@ -6,6 +6,9 @@
 //! All functions are pure: `&[f64]` slices in, named result structs out.
 //! No dependency on fintek's Leaf trait or ExecutionContext.
 
+use tambear::time_series::rolling_variance_prefix;
+use tambear::special_functions::erfc;
+
 // ── OU process ───────────────────────────────────────────────────────────────
 
 /// Ornstein-Uhlenbeck process parameter estimates for a single bin.
@@ -298,25 +301,6 @@ impl VolRegimeResult {
     }
 }
 
-/// Compute rolling variance using prefix sums. Returns values starting at index window-1.
-fn rolling_variance_prefix(returns: &[f64], window: usize) -> Vec<f64> {
-    let n = returns.len();
-    if n < window { return Vec::new(); }
-    let mut cum = vec![0.0f64; n + 1];
-    let mut cum2 = vec![0.0f64; n + 1];
-    for i in 0..n {
-        cum[i + 1] = cum[i] + returns[i];
-        cum2[i + 1] = cum2[i] + returns[i] * returns[i];
-    }
-    let wf = window as f64;
-    (0..=(n - window)).map(|i| {
-        let s = cum[i + window] - cum[i];
-        let s2 = cum2[i + window] - cum2[i];
-        let mean = s / wf;
-        (s2 / wf - mean * mean).max(0.0)
-    }).collect()
-}
-
 /// Volatility regime features from log-returns.
 ///
 /// `returns`: log-returns (at least 120 required for reliable short+long windows).
@@ -410,23 +394,10 @@ impl VpinResult {
     }
 }
 
+/// Standard normal CDF Φ(x) using higher-precision tambear erfc primitive.
 fn standard_normal_cdf(x: f64) -> f64 {
-    0.5 * (1.0 + libm_erf(x / std::f64::consts::SQRT_2))
-}
-
-fn libm_erf(x: f64) -> f64 {
-    let sign = if x >= 0.0 { 1.0 } else { -1.0 };
-    let ax = x.abs();
-    const P: f64 = 0.3275911;
-    const A1: f64 = 0.254829592;
-    const A2: f64 = -0.284496736;
-    const A3: f64 = 1.421413741;
-    const A4: f64 = -1.453152027;
-    const A5: f64 = 1.061405429;
-    let t = 1.0 / (1.0 + P * ax);
-    let t2 = t * t; let t3 = t2 * t; let t4 = t3 * t; let t5 = t4 * t;
-    let y = 1.0 - (A1*t + A2*t2 + A3*t3 + A4*t4 + A5*t5) * (-ax * ax).exp();
-    sign * y
+    // Φ(x) = 1 - erfc(x/√2)/2
+    1.0 - erfc(x / std::f64::consts::SQRT_2) * 0.5
 }
 
 /// VPIN via Bulk Volume Classification.

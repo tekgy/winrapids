@@ -38,7 +38,7 @@
 //!
 //! All of these are used by the BINNED_METHODS_LIST validity requirements.
 
-use crate::descriptive::moments_ungrouped;
+use crate::descriptive::{median, moments_ungrouped};
 
 /// Count of finite (non-NaN) samples in the slice.
 ///
@@ -195,15 +195,11 @@ pub fn longest_gap_ratio(timestamps: &[u64]) -> f64 {
         .collect();
     let max_diff = diffs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     diffs.sort_by(|a, b| a.total_cmp(b));
-    let median = if diffs.len() % 2 == 0 {
-        (diffs[diffs.len() / 2 - 1] + diffs[diffs.len() / 2]) / 2.0
-    } else {
-        diffs[diffs.len() / 2]
-    };
-    if median < 1e-300 {
+    let med = median(&diffs);
+    if med < 1e-300 {
         return f64::INFINITY;
     }
-    max_diff / median
+    max_diff / med
 }
 
 /// Coverage ratio: observed samples relative to the expected count for
@@ -298,15 +294,11 @@ pub fn jump_ratio_proxy(returns: &[f64], k: f64) -> f64 {
         return 0.0;
     }
     abs_r.sort_by(|a, b| a.total_cmp(b));
-    let median = if n % 2 == 0 {
-        (abs_r[n / 2 - 1] + abs_r[n / 2]) / 2.0
-    } else {
-        abs_r[n / 2]
-    };
-    if median < 1e-300 {
+    let med = median(&abs_r);
+    if med < 1e-300 {
         return 0.0;
     }
-    let threshold = k * median;
+    let threshold = k * med;
     abs_r.iter().filter(|&&r| r > threshold).count() as f64 / n as f64
 }
 
@@ -1059,12 +1051,7 @@ pub fn iat_median(timestamps: &[u64]) -> f64 {
         return f64::NAN;
     }
     iats.sort_by(|a, b| a.total_cmp(b));
-    let n = iats.len();
-    if n % 2 == 0 {
-        (iats[n / 2 - 1] + iats[n / 2]) / 2.0
-    } else {
-        iats[n / 2]
-    }
+    median(&iats)
 }
 
 /// Sample variance of interarrival times (ddof=1).
@@ -1088,19 +1075,10 @@ pub fn iat_mad(timestamps: &[u64]) -> f64 {
         return f64::NAN;
     }
     iats.sort_by(|a, b| a.total_cmp(b));
-    let n = iats.len();
-    let median = if n % 2 == 0 {
-        (iats[n / 2 - 1] + iats[n / 2]) / 2.0
-    } else {
-        iats[n / 2]
-    };
-    let mut devs: Vec<f64> = iats.iter().map(|x| (x - median).abs()).collect();
+    let med = median(&iats);
+    let mut devs: Vec<f64> = iats.iter().map(|x| (x - med).abs()).collect();
     devs.sort_by(|a, b| a.total_cmp(b));
-    if n % 2 == 0 {
-        (devs[n / 2 - 1] + devs[n / 2]) / 2.0
-    } else {
-        devs[n / 2]
-    }
+    median(&devs)
 }
 
 /// Skewness of interarrival times (Fisher g1, biased).
@@ -1534,21 +1512,12 @@ pub fn count_outliers_mad(x: &[f64], k: Option<f64>) -> usize {
     if clean.is_empty() { return 0; }
     let mut sorted = clean.clone();
     sorted.sort_by(|a, b| a.total_cmp(b));
-    let n = sorted.len();
-    let median = if n % 2 == 0 {
-        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
-    } else {
-        sorted[n / 2]
-    };
-    let mut devs: Vec<f64> = sorted.iter().map(|&v| (v - median).abs()).collect();
+    let med = median(&sorted);
+    let mut devs: Vec<f64> = sorted.iter().map(|&v| (v - med).abs()).collect();
     devs.sort_by(|a, b| a.total_cmp(b));
-    let mad = if n % 2 == 0 {
-        (devs[n / 2 - 1] + devs[n / 2]) / 2.0
-    } else {
-        devs[n / 2]
-    };
+    let mad = median(&devs);
     if mad < 1e-300 { return 0; }
-    clean.iter().filter(|&&v| (v - median).abs() > k * mad).count()
+    clean.iter().filter(|&&v| (v - med).abs() > k * mad).count()
 }
 
 /// Count values more than `k` standard deviations from the mean (z-score outliers).
@@ -1773,20 +1742,12 @@ pub fn coefficient_of_dispersion(x: &[f64]) -> f64 {
     let n = clean.len();
     if n < 2 { return f64::NAN; }
     clean.sort_by(|a, b| a.total_cmp(b));
-    let median = if n % 2 == 0 {
-        (clean[n / 2 - 1] + clean[n / 2]) / 2.0
-    } else {
-        clean[n / 2]
-    };
-    if median.abs() < 1e-300 { return f64::NAN; }
-    let mut devs: Vec<f64> = clean.iter().map(|&v| (v - median).abs()).collect();
+    let med = median(&clean);
+    if med.abs() < 1e-300 { return f64::NAN; }
+    let mut devs: Vec<f64> = clean.iter().map(|&v| (v - med).abs()).collect();
     devs.sort_by(|a, b| a.total_cmp(b));
-    let mad = if n % 2 == 0 {
-        (devs[n / 2 - 1] + devs[n / 2]) / 2.0
-    } else {
-        devs[n / 2]
-    };
-    mad / median.abs()
+    let mad = median(&devs);
+    mad / med.abs()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

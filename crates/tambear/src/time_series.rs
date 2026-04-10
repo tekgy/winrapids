@@ -9,6 +9,110 @@
 //! Unit root tests = regression-based (ADF reuses F10 OLS).
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Levinson-Durbin recursion (general Toeplitz solver)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Levinson-Durbin recursion for symmetric positive-definite Toeplitz systems.
+///
+/// Solves the Yule-Walker system T·φ = r[1..p] where T is the p×p symmetric
+/// Toeplitz matrix built from r[0..p-1], using Durbin's recursion (O(p²)).
+///
+/// # Arguments
+///
+/// - `r`: autocorrelation sequence r[0], r[1], ..., r[p] where r[0] is the
+///   zero-lag autocovariance (or normalized so r[0]=1 for correlations).
+///   Must satisfy `r.len() >= 2` and `r[0] > 0`.
+///
+/// # Returns
+///
+/// `(phi, kappas, sigma2)` where:
+/// - `phi`: AR coefficients φ₁, ..., φₚ (length = `r.len() - 1`).
+/// - `kappas`: reflection coefficients κ₁, ..., κₚ. These ARE the partial
+///   autocorrelations (PACF values at lags 1..p).
+/// - `sigma2`: final prediction-error variance (= r[0] · ∏(1 - κₖ²)).
+///
+/// # Applications
+///
+/// - AR model fitting via Yule-Walker (see `ar_fit`)
+/// - Partial autocorrelation function computation (see `pacf`)
+/// - Linear prediction coding (speech/audio)
+/// - Burg's initialization, Wiener filter design
+///
+/// # Notes
+///
+/// The reflection coefficients satisfy |κₖ| < 1 for a stationary AR process.
+/// If |κₖ| ≥ 1 (non-stationary input), sigma2 is clamped to 0.
+pub fn levinson_durbin(r: &[f64]) -> (Vec<f64>, Vec<f64>, f64) {
+    let p = r.len().saturating_sub(1);
+    let mut phi = vec![0.0; p];
+    let mut kappas = vec![0.0; p];
+    let mut sigma2 = r[0];
+
+    if p == 0 || sigma2 < 1e-300 {
+        return (phi, kappas, sigma2.max(0.0));
+    }
+
+    let mut prev = vec![0.0; p];
+
+    for k in 0..p {
+        // Reflection coefficient κ_{k+1}
+        let mut num = r[k + 1];
+        for j in 0..k {
+            num -= prev[j] * r[k - j];
+        }
+        let kappa = num / sigma2;
+        kappas[k] = kappa;
+
+        // Update AR coefficients (Levinson update)
+        phi[k] = kappa;
+        for j in 0..k {
+            phi[j] = prev[j] - kappa * prev[k - 1 - j];
+        }
+
+        sigma2 *= 1.0 - kappa * kappa;
+        sigma2 = sigma2.max(0.0); // clamp for numerical stability
+        prev[..=k].copy_from_slice(&phi[..=k]);
+    }
+
+    (phi, kappas, sigma2)
+}
+
+/// Build delay-embedded trajectory matrix from a time series.
+///
+/// Implements Takens' delay embedding theorem: each row of the returned matrix
+/// is a phase-space point `[x[t], x[t+tau], x[t+2*tau], ..., x[t+(d-1)*tau]]`.
+///
+/// # Arguments
+///
+/// - `data`: input time series.
+/// - `dim`: embedding dimension `d` (number of coordinates per point).
+/// - `tau`: time delay in samples.
+///
+/// # Returns
+///
+/// Row-major matrix of shape (n_rows × dim) as `Vec<Vec<f64>>`. Returns empty
+/// vec if `data.len() < (dim-1)*tau + 1`.
+///
+/// # Applications
+///
+/// Phase-space reconstruction, correlation dimension, Lyapunov exponents,
+/// recurrence plots, convergent cross-mapping (CCM), FNN analysis.
+pub fn delay_embed(data: &[f64], dim: usize, tau: usize) -> Vec<Vec<f64>> {
+    let n = data.len();
+    let min_len = dim.saturating_sub(1) * tau + 1;
+    if n < min_len || dim == 0 {
+        return Vec::new();
+    }
+    let n_rows = n - (dim - 1) * tau;
+    let mut mat = Vec::with_capacity(n_rows);
+    for t in 0..n_rows {
+        let row: Vec<f64> = (0..dim).map(|d| data[t + d * tau]).collect();
+        mat.push(row);
+    }
+    mat
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // AR model (Yule-Walker)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -42,11 +146,9 @@ pub fn ar_fit(data: &[f64], p: usize) -> ArResult {
         r[lag] /= n as f64;
     }
 
-    // Levinson-Durbin
-    let mut phi = vec![0.0; p];
-    let mut sigma2 = r[0];
-    if sigma2 < 1e-15 {
-        // Constant series — zero variance, no AR structure
+    // Constant series guard
+    if r[0] < 1e-15 {
+        let phi = vec![0.0; p];
         let ll = -0.5 * n as f64 * (2.0 * std::f64::consts::PI * 1e-15_f64).ln() - n as f64 / 2.0;
         return ArResult {
             coefficients: phi,
@@ -54,36 +156,11 @@ pub fn ar_fit(data: &[f64], p: usize) -> ArResult {
             aic: -2.0 * ll + 2.0 * (p + 1) as f64,
         };
     }
-    if p == 0 {
-        let ll = -0.5 * n as f64 * (2.0 * std::f64::consts::PI * sigma2).ln() - n as f64 / 2.0;
-        return ArResult {
-            coefficients: phi,
-            sigma2,
-            aic: -2.0 * ll + 2.0,
-        };
-    }
 
-    let mut prev = vec![0.0; p];
+    // Levinson-Durbin recursion (delegate to public primitive)
+    let (phi, _kappas, sigma2) = levinson_durbin(&r);
 
-    for k in 0..p {
-        // Reflection coefficient
-        let mut num = r[k + 1];
-        for j in 0..k {
-            num -= prev[j] * r[k - j];
-        }
-        let kappa = num / sigma2;
-
-        // Update coefficients
-        phi[k] = kappa;
-        for j in 0..k {
-            phi[j] = prev[j] - kappa * prev[k - 1 - j];
-        }
-
-        sigma2 *= 1.0 - kappa * kappa;
-        prev[..=k].copy_from_slice(&phi[..=k]);
-    }
-
-    let ll = -0.5 * n as f64 * (2.0 * std::f64::consts::PI * sigma2).ln() - n as f64 / 2.0;
+    let ll = -0.5 * n as f64 * (2.0 * std::f64::consts::PI * sigma2.max(1e-300)).ln() - n as f64 / 2.0;
     let aic = -2.0 * ll + 2.0 * (p + 1) as f64;
 
     ArResult {
@@ -296,6 +373,39 @@ pub fn undifference(data: &[f64], initial: &[f64]) -> Vec<f64> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Rolling statistics via prefix sums
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute rolling population variance of `returns` over `window` observations using prefix sums.
+///
+/// Returns a vector of length `n - window + 1` where each entry is the population variance
+/// of the corresponding window (i..i+window). Returns an empty vector if `n < window`.
+///
+/// Uses the numerically stable two-pass prefix-sum form:
+/// `var = E[x²] - (E[x])²` computed from prefix sums in O(n) time.
+pub fn rolling_variance_prefix(returns: &[f64], window: usize) -> Vec<f64> {
+    let n = returns.len();
+    if n < window {
+        return Vec::new();
+    }
+    let mut cumsum = vec![0.0_f64; n + 1];
+    let mut cumsum2 = vec![0.0_f64; n + 1];
+    for i in 0..n {
+        cumsum[i + 1] = cumsum[i] + returns[i];
+        cumsum2[i + 1] = cumsum2[i] + returns[i] * returns[i];
+    }
+    let wf = window as f64;
+    (0..=(n - window))
+        .map(|i| {
+            let s = cumsum[i + window] - cumsum[i];
+            let s2 = cumsum2[i + window] - cumsum2[i];
+            let mean = s / wf;
+            (s2 / wf - mean * mean).max(0.0)
+        })
+        .collect()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ARMA(p,q) — conditional sum of squares estimation
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -323,12 +433,24 @@ pub struct ArmaResult {
     pub residuals: Vec<f64>,
 }
 
-/// Compute conditional residuals for ARMA(p,q).
+/// Compute conditional sum-of-squares residuals for ARMA(p,q).
 ///
-/// Uses zero-initialization for pre-sample residuals and values.
-/// `centered`: data already de-meaned.
-/// Returns residuals starting from index `max(p,q)`.
-fn arma_css_residuals(centered: &[f64], ar: &[f64], ma: &[f64]) -> Vec<f64> {
+/// General primitive for all ARMA-family methods. Pre-sample values and
+/// residuals are zero-initialized (conditional initialization). The full
+/// residual vector `ε[0..n]` is returned with `ε[t] = 0` for `t < max(p,q)`.
+///
+/// # Parameters
+/// - `centered`: de-meaned observation sequence (length n)
+/// - `ar`:  AR coefficients φ[1..p] in lag order (φ₁ first)
+/// - `ma`:  MA coefficients θ[1..q] in lag order (θ₁ first)
+///
+/// # Returns
+/// Residual vector of length `n`. Pre-sample entries are 0.0.
+///
+/// # Consumers
+/// ARMA, ARIMA, SARIMA, VARMA fit; Ljung-Box residual checking;
+/// impulse response functions; ARMA-GARCH joint estimation.
+pub fn arma_css_residuals(centered: &[f64], ar: &[f64], ma: &[f64]) -> Vec<f64> {
     let n = centered.len();
     let p = ar.len();
     let q = ma.len();
@@ -913,9 +1035,20 @@ pub fn adf_test(data: &[f64], n_lags: usize) -> AdfResult {
 
 /// MacKinnon (2010) finite-sample critical values for ADF "constant" model.
 ///
-/// Response surface: cv(n) = β_∞ + β_1/n + β_2/n²
-/// Coefficients from MacKinnon (2010, Journal of Applied Econometrics) Table 1.
-fn mackinnon_adf_critical_values(n: usize) -> (f64, f64, f64) {
+/// Response surface: `cv(n) = β_∞ + β_1/n + β_2/n²`
+/// Coefficients from MacKinnon (2010, *Journal of Applied Econometrics*) Table 1,
+/// case "c" (constant, no trend, 1 regressor).
+///
+/// # Parameters
+/// - `n`: number of observations
+///
+/// # Returns
+/// `(cv_1pct, cv_5pct, cv_10pct)` — critical values at 1%, 5%, 10% significance.
+///
+/// # Consumers
+/// ADF test, Phillips-Perron test, DF-GLS, KPSS comparison, any unit root
+/// test that needs finite-sample MacKinnon critical values.
+pub fn mackinnon_adf_critical_values(n: usize) -> (f64, f64, f64) {
     let nf = n as f64;
     let inv_n = 1.0 / nf;
     let inv_n2 = inv_n * inv_n;
@@ -960,14 +1093,18 @@ pub fn acf(data: &[f64], max_lag: usize) -> Vec<f64> {
 }
 
 /// Partial autocorrelation function via Levinson-Durbin.
+///
+/// The PACF at lag k is the reflection coefficient κₖ from the Levinson-Durbin
+/// recursion on the normalized autocorrelation sequence.
 pub fn pacf(data: &[f64], max_lag: usize) -> Vec<f64> {
     let n = data.len();
     let moments = crate::descriptive::moments_ungrouped(data);
     let mean = moments.mean();
+    let var = moments.variance(0);
     let centered: Vec<f64> = data.iter().map(|x| x - mean).collect();
 
+    // Build normalized autocorrelation sequence ρ[0..=max_lag]
     let mut r = vec![0.0; max_lag + 1];
-    let var = moments.variance(0);
     for lag in 0..=max_lag {
         r[lag] = centered[..n - lag]
             .iter()
@@ -983,23 +1120,10 @@ pub fn pacf(data: &[f64], max_lag: usize) -> Vec<f64> {
         return pacf_vals;
     }
 
-    let mut phi = vec![0.0; max_lag];
-    let mut sigma2 = 1.0; // r[lag] is normalized autocorrelation (ρ), so ρ[0] = 1
-
-    for k in 0..max_lag {
-        let mut num = r[k + 1];
-        for j in 0..k {
-            num -= phi[j] * r[k - j];
-        }
-        let kappa = num / sigma2;
+    // The reflection coefficients from Levinson-Durbin ARE the PACF values
+    let (_phi, kappas, _sigma2) = levinson_durbin(&r);
+    for (k, &kappa) in kappas.iter().enumerate() {
         pacf_vals[k + 1] = kappa;
-
-        let prev = phi[..k].to_vec();
-        phi[k] = kappa;
-        for j in 0..k {
-            phi[j] = prev[j] - kappa * prev[k - 1 - j];
-        }
-        sigma2 *= 1.0 - kappa * kappa;
     }
 
     pacf_vals
@@ -2221,21 +2345,10 @@ pub fn breusch_godfrey(
         return (0.0, 1.0, p);
     }
 
-    // Solve via normal equations
+    // Solve via normal equations (X'X β = X'y via Cholesky)
     let nc = n_aux_cols;
-    let mut xtx = vec![0.0; nc * nc];
-    let mut xty = vec![0.0; nc];
-    for i in 0..nobs {
-        for j in 0..nc {
-            xty[j] += x_aug[i * nc + j] * y_aux[i];
-            for l in 0..nc {
-                xtx[j * nc + l] += x_aug[i * nc + j] * x_aug[i * nc + l];
-            }
-        }
-    }
-    let a = crate::linear_algebra::Mat::from_vec(nc, nc, xtx);
-    let beta = match crate::linear_algebra::cholesky(&a) {
-        Some(l) => crate::linear_algebra::cholesky_solve(&l, &xty),
+    let beta = match crate::linear_algebra::ols_normal_equations(&x_aug, &y_aux, nobs, nc) {
+        Some(b) => b,
         None => return (f64::NAN, f64::NAN, p),
     };
 

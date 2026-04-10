@@ -1173,7 +1173,23 @@ pub struct BayesFactorResult {
     pub interpretation: &'static str,
 }
 
-fn interpret_bf(bf10: f64) -> &'static str {
+/// Jeffreys (1961) / Kass-Raftery (1995) verbal interpretation of BF₁₀.
+///
+/// Maps a Bayes factor `BF₁₀` to a qualitative strength-of-evidence label.
+/// Thresholds follow Jeffreys (1961) Table II as refined by Kass & Raftery
+/// (1995, *JASA* 90:773–795): decisive >100, very strong >30, strong >10,
+/// moderate >3, anecdotal >1; symmetric for evidence in favor of H0.
+///
+/// # Parameters
+/// - `bf10`: Bayes factor in the H1-favoring direction (BF₁₀ = P(data|H1)/P(data|H0))
+///
+/// # Returns
+/// A `'static` string label suitable for display or structured output.
+///
+/// # Consumers
+/// Bayesian t-tests, correlation BF, ANOVA BF, mixed-model BF, any function
+/// returning a `BayesFactorResult` that needs the `.interpretation` field filled.
+pub fn interpret_bf(bf10: f64) -> &'static str {
     let bf01 = 1.0 / bf10;
     if bf10 > 100.0 { "Extreme evidence for H1" }
     else if bf10 > 30.0 { "Very strong evidence for H1" }

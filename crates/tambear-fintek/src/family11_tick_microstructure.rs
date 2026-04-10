@@ -17,6 +17,8 @@
 //! - tick_ou        (K02P11C05R01)  — theta, half_life, sigma, mr_strength
 //! - tick_compression (K02P25C01)   — real_effective_rank, shuffled_effective_rank, compression_ratio, n_active_features
 
+use tambear::data_quality::lag1_autocorrelation;
+
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
 /// Shannon entropy of a histogram (nats).
@@ -40,21 +42,6 @@ fn histogram_entropy(values: &[f64], n_bins: usize) -> f64 {
         }
     }
     h
-}
-
-/// Lag-1 autocorrelation of a slice.
-fn lag1_autocorr(x: &[f64]) -> f64 {
-    let n = x.len();
-    if n < 3 { return f64::NAN; }
-    let mean: f64 = x.iter().sum::<f64>() / n as f64;
-    let mut cov = 0.0f64;
-    let mut var = 0.0f64;
-    for i in 0..n {
-        let d = x[i] - mean;
-        var += d * d;
-        if i + 1 < n { cov += d * (x[i + 1] - mean); }
-    }
-    if var > 1e-30 { (cov / var).clamp(-1.0, 1.0) } else { 0.0 }
 }
 
 /// Log returns from prices: ln(p[i+1]/p[i]).
@@ -434,7 +421,7 @@ pub fn tick_attractor(prices: &[f64]) -> TickAttractorResult {
     } else { f64::NAN };
 
     // Tick persistence: lag-1 autocorrelation of returns
-    let tick_persistence = lag1_autocorr(&returns);
+    let tick_persistence = lag1_autocorrelation(&returns);
 
     // Reversal rate: fraction of sign changes
     let reversal_rate = {
@@ -803,7 +790,7 @@ pub fn tick_space(prices: &[f64]) -> TickSpaceResult {
     let mode_concentration = max_count as f64 / nonzero_ticks.len() as f64;
 
     // Tick clustering: lag-1 ACF of |dp|
-    let tick_clustering = lag1_autocorr(&tick_sizes);
+    let tick_clustering = lag1_autocorrelation(&tick_sizes);
 
     // Regime persistence: mean run length of same-sign moves
     let signs: Vec<i8> = dp.iter().map(|&d| {
@@ -1351,17 +1338,10 @@ fn compression_column_stats(mat: &[f64], m: usize) -> (Vec<f64>, Vec<f64>, Vec<b
     (means, stds, active)
 }
 
+/// Effective rank from singular values — delegates to the tambear global primitive.
+#[inline]
 fn effective_rank_from_sv(sv: &[f64]) -> f64 {
-    let sv_sq: Vec<f64> = sv.iter().map(|&v| v * v).filter(|&v| v > 0.0).collect();
-    if sv_sq.len() < 2 { return f64::NAN; }
-    let total: f64 = sv_sq.iter().sum();
-    if total < 1e-30 { return f64::NAN; }
-    let mut h = 0.0f64;
-    for &s in &sv_sq {
-        let p = s / total;
-        if p > 0.0 { h -= p * p.ln(); }
-    }
-    h.exp()
+    tambear::linear_algebra::effective_rank_from_sv(sv)
 }
 
 fn matrix_effective_rank(mat: &[f64], m: usize) -> (f64, usize) {

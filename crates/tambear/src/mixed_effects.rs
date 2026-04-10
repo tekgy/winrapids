@@ -248,9 +248,27 @@ pub struct IccResult {
     pub ms_error: f64,
 }
 
-/// Two-way ANOVA decomposition for ICC.
-/// `data`: n_subjects × n_raters matrix (row-major).
-fn twoway_anova_ms(data: &[f64], n_subjects: usize, n_raters: usize) -> (f64, f64, f64) {
+/// Two-way ANOVA mean squares for balanced repeated-measures designs.
+///
+/// Decomposes the total sum of squares into subject (between-rows),
+/// rater/condition (between-columns), and error (residual) components,
+/// then divides by the respective degrees of freedom to produce mean squares.
+/// This is the core decomposition for all ICC variants (Shrout & Fleiss 1979).
+///
+/// # Parameters
+/// - `data`: `n_subjects × n_raters` matrix in row-major order
+/// - `n_subjects`: number of rows (subjects / targets)
+/// - `n_raters`: number of columns (raters / conditions / time points)
+///
+/// # Returns
+/// `(MS_subjects, MS_raters, MS_error)` — mean squares for subjects,
+/// raters, and residual error.
+///
+/// # Consumers
+/// ICC(1,1), ICC(2,1), ICC(3,1), ICC(2,k), ICC(3,k); MANOVA within-subjects;
+/// any method requiring the two-way ANOVA decomposition of a balanced
+/// n × k matrix.
+pub fn twoway_anova_ms(data: &[f64], n_subjects: usize, n_raters: usize) -> (f64, f64, f64) {
     let n = n_subjects;
     let k = n_raters;
     let nk = (n * k) as f64;

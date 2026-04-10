@@ -8,6 +8,7 @@ use tambear::volatility::{
     garch11_fit, garch11_forecast, realized_variance, bipower_variation,
     jump_test_bns, roll_spread, GarchResult,
 };
+use tambear::time_series::rolling_variance_prefix;
 
 /// GARCH(1,1) fit result.
 #[derive(Debug, Clone)]
@@ -238,21 +239,6 @@ impl VolRegimeResult {
         Self { n_vol_regimes: f64::NAN, vol_ratio_range: f64::NAN,
                high_vol_fraction: f64::NAN, regime_switching_rate: f64::NAN }
     }
-}
-
-fn rolling_variance_prefix(returns: &[f64], window: usize) -> Vec<f64> {
-    let n = returns.len();
-    if n < window { return Vec::new(); }
-    let mut cumsum = vec![0.0_f64; n + 1];
-    let mut cumsum2 = vec![0.0_f64; n + 1];
-    for i in 0..n { cumsum[i+1] = cumsum[i] + returns[i]; cumsum2[i+1] = cumsum2[i] + returns[i]*returns[i]; }
-    let wf = window as f64;
-    (0..=(n-window)).map(|i| {
-        let s = cumsum[i+window] - cumsum[i];
-        let s2 = cumsum2[i+window] - cumsum2[i];
-        let mean = s / wf;
-        (s2/wf - mean*mean).max(0.0)
-    }).collect()
 }
 
 /// Compute volatility regime features from bin returns.

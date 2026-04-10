@@ -882,13 +882,24 @@ pub fn jarque_bera(data: &[f64]) -> NonparametricResult {
     NonparametricResult { test_name: "Jarque-Bera", statistic: jb, p_value: p }
 }
 
-/// Shapiro-Wilk coefficients.
+/// Expected normal order statistics (coefficients) for the Shapiro-Wilk W test.
 ///
-/// For n <= 5: tabled exact values (Shapiro & Wilk 1965).
-/// For n >= 6: normalized Blom expected order statistics (m_i / ||m||).
-/// This gives the correct W statistic — the Royston corrections
-/// only affect the p-value approximation, not the W computation.
-fn shapiro_wilk_coefficients(n: usize) -> Vec<f64> {
+/// For `n ≤ 5`: tabled exact values (Shapiro & Wilk 1965).
+/// For `n ≥ 6`: Blom (1958) approximation `Φ⁻¹((i − 3/8)/(n + 1/4))` normalized
+/// so `‖a‖ = 1`. The Royston (1995) corrections only affect the p-value
+/// approximation; the W computation uses these coefficients directly.
+///
+/// # Parameters
+/// - `n`: sample size (must be ≥ 3 for meaningful output)
+///
+/// # Returns
+/// Vector of length `n` containing the ordered a-coefficients a[1..n].
+///
+/// # Consumers
+/// Shapiro-Wilk test (W = (Σ a_i x_(i))² / SS), Shapiro-Francia variant,
+/// any normality test based on correlation of order statistics with expected
+/// normal order statistics.
+pub fn shapiro_wilk_coefficients(n: usize) -> Vec<f64> {
     use crate::special_functions::normal_quantile;
 
     match n {

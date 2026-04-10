@@ -13,78 +13,51 @@
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
-/// Build delay-embedded trajectory matrix rows.
-/// Returns (matrix flattened row-major, n_rows) or empty on failure.
+/// Build delay-embedded trajectory matrix, with optional downsampling to max_pts.
+///
+/// Delegates to `tambear::delay_embed` for the core embedding, then applies
+/// uniform downsampling to cap the number of points at `max_pts` (for
+/// production performance in large bins). Returns (flat row-major matrix, n_rows).
 fn delay_embed(returns: &[f64], d: usize, tau: usize, max_pts: usize) -> (Vec<f64>, usize) {
-    let n = returns.len();
-    if n < d * tau + 1 { return (Vec::new(), 0); }
-    let n_raw = n.saturating_sub((d - 1) * tau);
+    // Use the tambear global primitive for the embedding
+    let embedded = tambear::time_series::delay_embed(returns, d, tau);
+    let n_raw = embedded.len();
+    if n_raw < 2 { return (Vec::new(), 0); }
+
+    // Apply uniform downsampling if needed
     let step = if n_raw > max_pts { n_raw / max_pts } else { 1 };
     let rows: Vec<usize> = (0..n_raw).step_by(step.max(1)).collect();
     let n_rows = rows.len();
     if n_rows < 2 { return (Vec::new(), 0); }
+
     let mut mat = Vec::with_capacity(n_rows * d);
     for &t in &rows {
-        for dim in 0..d {
-            mat.push(returns[t + dim * tau]);
+        for &val in &embedded[t] {
+            mat.push(val);
         }
     }
     (mat, n_rows)
 }
 
 /// Pairwise Euclidean distance matrix for (n × d) row-major matrix.
+/// Delegates to tambear::graph::pairwise_dists.
+#[inline]
 fn pairwise_dists(mat: &[f64], n: usize, d: usize) -> Vec<f64> {
-    let mut dists = vec![0.0f64; n * n];
-    for a in 0..n {
-        for b in (a + 1)..n {
-            let mut s = 0.0f64;
-            for k in 0..d {
-                let diff = mat[a * d + k] - mat[b * d + k];
-                s += diff * diff;
-            }
-            let dist = s.sqrt();
-            dists[a * n + b] = dist;
-            dists[b * n + a] = dist;
-        }
-    }
-    dists
+    tambear::graph::pairwise_dists(mat, n, d)
 }
 
 /// Build symmetric k-NN Gaussian kernel adjacency from pairwise distances.
+/// Delegates to tambear::graph::knn_adjacency.
+#[inline]
 fn knn_adjacency(dists: &[f64], n: usize, k: usize) -> Vec<f64> {
-    let mut adj = vec![0.0f64; n * n];
-    for a in 0..n {
-        let mut row: Vec<(usize, f64)> = (0..n)
-            .filter(|&b| b != a)
-            .map(|b| (b, dists[a * n + b]))
-            .collect();
-        row.sort_unstable_by(|x, y| x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal));
-        let sigma = row.get(k.min(row.len()) - 1).map(|r| r.1).unwrap_or(1.0).max(1e-30);
-        for &(b, dist) in row.iter().take(k) {
-            let w = (-dist * dist / (2.0 * sigma * sigma)).exp();
-            if w > adj[a * n + b] {
-                adj[a * n + b] = w;
-                adj[b * n + a] = w;
-            }
-        }
-    }
-    adj
+    tambear::graph::knn_adjacency(dists, n, k)
 }
 
 /// Degree-normalized graph Laplacian L = D - A. Returns (lap, degrees, max_degree).
+/// Delegates to tambear::graph::graph_laplacian.
+#[inline]
 fn graph_laplacian(adj: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, f64) {
-    let mut degrees = vec![0.0f64; n];
-    for a in 0..n {
-        degrees[a] = (0..n).map(|b| adj[a * n + b]).sum();
-    }
-    let max_deg = degrees.iter().copied().fold(0.0f64, f64::max);
-    let mut lap = vec![0.0f64; n * n];
-    for a in 0..n {
-        for b in 0..n {
-            lap[a * n + b] = if a == b { degrees[a] } else { -adj[a * n + b] };
-        }
-    }
-    (lap, degrees, max_deg)
+    tambear::graph::graph_laplacian(adj, n)
 }
 
 /// Compute smallest k eigenvalues of a symmetric matrix via tambear sym_eigen.

@@ -9,6 +9,7 @@ use tambear::volatility::{
     jump_test_bns, roll_spread, GarchResult,
 };
 use tambear::time_series::rolling_variance_prefix;
+use tambear::{ols_slope, lag1_autocorrelation};
 
 /// GARCH(1,1) fit result.
 #[derive(Debug, Clone)]
@@ -325,19 +326,15 @@ pub fn vol_dynamics(returns: &[f64]) -> VolDynamicsResult {
     if m < 3 { return VolDynamicsResult::nan(); }
 
     // OLS slope of rv vs time
-    let mean_x = (m - 1) as f64 / 2.0;
-    let mean_y: f64 = rv.iter().sum::<f64>() / m as f64;
-    let mut cov = 0.0_f64; let mut var_x = 0.0_f64;
-    for i in 0..m { let dx = i as f64 - mean_x; cov += dx * (rv[i] - mean_y); var_x += dx * dx; }
-    let vol_trend = if var_x > 1e-30 { cov / var_x } else { f64::NAN };
+    let t_index: Vec<f64> = (0..m).map(|i| i as f64).collect();
+    let vol_trend = ols_slope(&t_index, &rv);
 
     // Vol-of-vol = std of rv
+    let mean_y: f64 = rv.iter().sum::<f64>() / m as f64;
     let vol_of_vol = (rv.iter().map(|v| (v - mean_y).powi(2)).sum::<f64>() / m as f64).sqrt();
 
     // Lag-1 autocorr of rv
-    let mut s01 = 0.0_f64; let mut sv = 0.0_f64;
-    for t in 1..m { s01 += (rv[t] - mean_y) * (rv[t-1] - mean_y); sv += (rv[t-1] - mean_y).powi(2); }
-    let vol_autocorr = if sv > 1e-30 { (s01 / sv).clamp(-1.0, 1.0) } else { f64::NAN };
+    let vol_autocorr = lag1_autocorrelation(&rv).clamp(-1.0, 1.0);
 
     // Mean reversion speed = 1 - AR(1) coefficient
     let mean_reversion_speed = if vol_autocorr.is_finite() { (1.0 - vol_autocorr).max(0.0) } else { f64::NAN };

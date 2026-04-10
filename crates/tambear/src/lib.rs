@@ -180,6 +180,8 @@ pub use special_functions::{
     // Random matrix theory
     marchenko_pastur_pdf, marchenko_pastur_bounds, marchenko_pastur_classify,
     chebyshev_outlier,
+    // Logistic family
+    logistic, logit,
 };
 pub use hypothesis::{
     TestResult, AnovaResult, ChiSquareResult, HypothesisEngine,
@@ -216,6 +218,7 @@ pub use nonparametric::{
     OmoriResult, omori_fit,
     BathResult, bath_law,
     SdeResult, sde_estimate,
+    inversion_count, inversion_count_mergesort,
 };
 pub use complexity::{
     sample_entropy, approx_entropy, permutation_entropy, normalized_permutation_entropy,
@@ -239,6 +242,8 @@ pub use linear_algebra::{
     cond, solve, solve_spd,
     solve_tridiagonal, solve_tridiagonal_scan,
     tridiagonal_scan_element, tridiagonal_scan_compose,
+    // Global primitives (flat catalog)
+    SimpleRegressionResult, simple_linear_regression, ols_slope,
 };
 pub use graph::{
     Edge, Graph, MstResult,
@@ -297,12 +302,19 @@ pub use time_series::{
     undifference,
     // Stationarity / unit root
     PhillipsPerronResult, phillips_perron_test,
+    // HAC / long-run variance
+    newey_west_lrv,
     // White noise / dependence
     box_pierce,
+    // White noise / serial dependence
+    breusch_godfrey, turning_point_test, rank_von_neumann_ratio,
     // Spectral post-processing
     spectral_flatness, spectral_rolloff, spectral_centroid, spectral_bandwidth,
     spectral_skewness, spectral_kurtosis, spectral_crest, spectral_slope,
     spectral_fwhm, spectral_q_factor,
+    spectral_flux, spectral_decrease, spectral_contrast,
+    dominant_frequency, dominant_frequency_power, peak_to_average_power_ratio,
+    spectral_peak_count,
 };
 pub mod volatility;
 pub mod factor_analysis;

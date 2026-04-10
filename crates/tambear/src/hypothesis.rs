@@ -1608,7 +1608,7 @@ impl LogisticRegressionResult {
 }
 
 fn sigmoid(z: f64) -> f64 {
-    1.0 / (1.0 + (-z).exp())
+    crate::special_functions::logistic(z)
 }
 
 /// Fit binary logistic regression via Iteratively Reweighted Least Squares (IRLS).

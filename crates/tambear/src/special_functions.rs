@@ -1790,6 +1790,75 @@ pub fn chebyshev_outlier(x: f64, mean: f64, std: f64) -> (f64, f64) {
     (k, p_bound)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Logistic family — sigmoid, logit, softmax
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Logistic (sigmoid) function: σ(x) = 1 / (1 + exp(-x)).
+///
+/// Maps any real number to (0, 1). The canonical link function for Bernoulli
+/// GLMs and the activation function for binary classification.
+///
+/// Numerically stable: uses the standard form which avoids overflow for large
+/// positive x (exp(-x) → 0 naturally) and for large negative x
+/// (exp(-x) → ∞ but the denominator dominates gracefully in f64).
+///
+/// # Examples
+/// - σ(0) = 0.5
+/// - σ(∞) → 1.0
+/// - σ(-∞) → 0.0
+/// - σ(-x) = 1 - σ(x)
+pub fn logistic(x: f64) -> f64 {
+    // Delegate to the numerically stable version in neural.rs which
+    // branches on sign(x) to avoid exp overflow for large |x|.
+    crate::neural::sigmoid(x)
+}
+
+/// Logit function: logit(p) = ln(p / (1-p)) — the inverse of logistic.
+///
+/// Maps (0, 1) → ℝ. Returns ±∞ for p=0 or p=1 (correct boundary behavior).
+/// Returns NaN for p outside [0, 1].
+///
+/// The canonical link for logistic regression (the log-odds).
+pub fn logit(p: f64) -> f64 {
+    if p <= 0.0 || p >= 1.0 {
+        if p == 0.0 { return f64::NEG_INFINITY; }
+        if p == 1.0 { return f64::INFINITY; }
+        return f64::NAN;
+    }
+    (p / (1.0 - p)).ln()
+}
+
+/// Numerically stable softmax: converts a vector of log-odds to probabilities.
+///
+/// Subtracts max(x) before exponentiating to prevent overflow.
+/// Returns a probability vector summing to 1.0.
+/// Returns a uniform distribution if all inputs are identical.
+pub fn softmax(x: &[f64]) -> Vec<f64> {
+    if x.is_empty() { return Vec::new(); }
+    let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let exps: Vec<f64> = x.iter().map(|&xi| (xi - max_x).exp()).collect();
+    let sum: f64 = exps.iter().sum();
+    if sum < 1e-300 {
+        // Degenerate: return uniform
+        let n = x.len() as f64;
+        return vec![1.0 / n; x.len()];
+    }
+    exps.iter().map(|&e| e / sum).collect()
+}
+
+/// Log-softmax: log(softmax(x)) computed stably.
+///
+/// Returns ln(σ_i(x)) = x_i - max(x) - ln(Σ exp(x_j - max(x))).
+/// More numerically stable than log(softmax(x)) when probabilities are tiny.
+pub fn log_softmax(x: &[f64]) -> Vec<f64> {
+    if x.is_empty() { return Vec::new(); }
+    let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let exps: Vec<f64> = x.iter().map(|&xi| (xi - max_x).exp()).collect();
+    let log_sum = exps.iter().sum::<f64>().ln();
+    x.iter().map(|&xi| xi - max_x - log_sum).collect()
+}
+
 #[cfg(test)]
 mod orthogonal_bessel_rmt_tests {
     use super::*;
@@ -1960,5 +2029,99 @@ mod orthogonal_bessel_rmt_tests {
         let (k, p_bound) = chebyshev_outlier(110.0, 100.0, 5.0);
         assert!((k - 2.0).abs() < 1e-10, "k = 2 standard deviations");
         assert!((p_bound - 0.25).abs() < 1e-10, "P-bound = 1/4");
+    }
+
+    // ── Logistic family ──────────────────────────────────────────────────
+
+    #[test]
+    fn logistic_at_zero_is_half() {
+        assert!((logistic(0.0) - 0.5).abs() < 1e-15);
+    }
+
+    #[test]
+    fn logistic_symmetry() {
+        // σ(-x) = 1 - σ(x)
+        for x in [0.1, 1.0, 3.0, 10.0] {
+            let diff = logistic(-x) + logistic(x) - 1.0;
+            assert!(diff.abs() < 1e-15, "σ(-{x}) + σ({x}) should be 1, diff = {diff}");
+        }
+    }
+
+    #[test]
+    fn logistic_monotone() {
+        let vals: Vec<f64> = (-50..=50).map(|i| logistic(i as f64 * 0.2)).collect();
+        for w in vals.windows(2) {
+            assert!(w[1] >= w[0]);
+        }
+    }
+
+    #[test]
+    fn logistic_range() {
+        // Should always be in [0, 1]; for moderate values strictly (0, 1)
+        for x in [-10.0, -1.0, 0.0, 1.0, 10.0] {
+            let s = logistic(x);
+            assert!(s > 0.0 && s < 1.0, "logistic({x}) = {s} out of (0,1)");
+        }
+        // Large |x| saturates to 0 or 1 in f64 — that's the correct behavior
+        assert!(logistic(1000.0) <= 1.0);
+        assert!(logistic(-1000.0) >= 0.0);
+    }
+
+    #[test]
+    fn logit_inverse_of_logistic() {
+        for x in [-3.0, -1.0, 0.0, 1.0, 3.0] {
+            let roundtrip = logit(logistic(x));
+            assert!((roundtrip - x).abs() < 1e-12,
+                "logit(logistic({x})) = {roundtrip}, expected {x}");
+        }
+    }
+
+    #[test]
+    fn logit_boundaries() {
+        assert_eq!(logit(0.0), f64::NEG_INFINITY);
+        assert_eq!(logit(1.0), f64::INFINITY);
+        assert!(logit(-0.1).is_nan());
+        assert!(logit(1.1).is_nan());
+    }
+
+    #[test]
+    fn softmax_sums_to_one() {
+        let x = vec![1.0, 2.0, 3.0, 4.0];
+        let s = softmax(&x);
+        assert_eq!(s.len(), 4);
+        let sum: f64 = s.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-14, "softmax sum = {sum}");
+    }
+
+    #[test]
+    fn softmax_argmax_preserved() {
+        let x = vec![0.1, 5.0, 0.3, 0.2];
+        let s = softmax(&x);
+        // Largest logit → largest probability
+        let argmax = s.iter().enumerate().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).unwrap().0;
+        assert_eq!(argmax, 1);
+    }
+
+    #[test]
+    fn softmax_shift_invariance() {
+        // softmax(x) = softmax(x + c) for any constant c
+        let x = vec![1.0, 2.0, 3.0];
+        let s1 = softmax(&x);
+        let x_shifted: Vec<f64> = x.iter().map(|&v| v + 100.0).collect();
+        let s2 = softmax(&x_shifted);
+        for (a, b) in s1.iter().zip(s2.iter()) {
+            assert!((a - b).abs() < 1e-12, "softmax should be shift-invariant");
+        }
+    }
+
+    #[test]
+    fn log_softmax_matches_log_softmax() {
+        let x = vec![1.0, 2.0, 3.0];
+        let ls = log_softmax(&x);
+        let s = softmax(&x);
+        for (ls_i, s_i) in ls.iter().zip(s.iter()) {
+            assert!((ls_i - s_i.ln()).abs() < 1e-12,
+                "log_softmax vs log(softmax): {ls_i} vs {}", s_i.ln());
+        }
     }
 }

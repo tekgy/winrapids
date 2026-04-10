@@ -820,6 +820,109 @@ pub fn lstsq(a: &Mat, b: &[f64]) -> Vec<f64> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Bivariate OLS — the primitive that 6+ methods duplicate privately
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of simple (bivariate) linear regression y = slope*x + intercept + e.
+#[derive(Debug, Clone)]
+pub struct SimpleRegressionResult {
+    pub slope: f64,
+    pub intercept: f64,
+    pub r_squared: f64,
+    pub residuals: Vec<f64>,
+    /// Standard error of the slope.
+    pub se_slope: f64,
+    /// Standard error of the intercept.
+    pub se_intercept: f64,
+    /// Residual standard error (sqrt of MSE).
+    pub residual_se: f64,
+}
+
+/// Simple (bivariate) OLS regression: y = a + b*x.
+///
+/// This is the GLOBAL primitive for the operation that `ols_1d`, `ols_simple`,
+/// `ols_slope`, and `ols_subset` all duplicate privately. Every method that
+/// needs a bivariate regression should call this.
+///
+/// Returns slope, intercept, R², residuals, and standard errors.
+/// For n < 3 or constant x, returns NaN fields.
+pub fn simple_linear_regression(x: &[f64], y: &[f64]) -> SimpleRegressionResult {
+    let nan_result = || SimpleRegressionResult {
+        slope: f64::NAN, intercept: f64::NAN, r_squared: f64::NAN,
+        residuals: vec![], se_slope: f64::NAN, se_intercept: f64::NAN,
+        residual_se: f64::NAN,
+    };
+    let n = x.len();
+    if n != y.len() || n < 2 { return nan_result(); }
+
+    let nf = n as f64;
+    let mut sx = 0.0_f64; let mut sy = 0.0_f64;
+    let mut sxx = 0.0_f64; let mut sxy = 0.0_f64; let mut syy = 0.0_f64;
+    for i in 0..n {
+        sx += x[i]; sy += y[i];
+        sxx += x[i] * x[i]; sxy += x[i] * y[i]; syy += y[i] * y[i];
+    }
+    let denom = nf * sxx - sx * sx;
+    if denom.abs() < 1e-30 { return nan_result(); }
+
+    let slope = (nf * sxy - sx * sy) / denom;
+    let intercept = (sy - slope * sx) / nf;
+
+    let mut residuals = Vec::with_capacity(n);
+    let mut ss_res = 0.0_f64;
+    let mean_y = sy / nf;
+    let mut ss_tot = 0.0_f64;
+    for i in 0..n {
+        let r = y[i] - slope * x[i] - intercept;
+        residuals.push(r);
+        ss_res += r * r;
+        ss_tot += (y[i] - mean_y).powi(2);
+    }
+    let r_squared = if ss_tot > 1e-30 { 1.0 - ss_res / ss_tot } else { f64::NAN };
+
+    let df = (n as f64 - 2.0).max(1.0);
+    let mse = ss_res / df;
+    let residual_se = mse.sqrt();
+    let se_slope = (mse * nf / denom).sqrt();
+    let se_intercept = (mse * sxx / denom).sqrt();
+
+    SimpleRegressionResult { slope, intercept, r_squared, residuals, se_slope, se_intercept, residual_se }
+}
+
+/// Slope-only bivariate regression (convenience wrapper).
+///
+/// For cases where only the slope is needed. Avoids allocating the residual
+/// vector. This is the primitive that `complexity::ols_slope` and
+/// `nonparametric::ols_slope` duplicate.
+pub fn ols_slope(x: &[f64], y: &[f64]) -> f64 {
+    let n = x.len();
+    if n != y.len() || n < 2 { return f64::NAN; }
+    let nf = n as f64;
+    let mut sx = 0.0_f64; let mut sy = 0.0_f64;
+    let mut sxx = 0.0_f64; let mut sxy = 0.0_f64;
+    for i in 0..n {
+        sx += x[i]; sy += y[i];
+        sxx += x[i] * x[i]; sxy += x[i] * y[i];
+    }
+    let denom = nf * sxx - sx * sx;
+    if denom.abs() < 1e-30 { f64::NAN } else { (nf * sxy - sx * sy) / denom }
+}
+
+/// Sigmoid (logistic) function: 1 / (1 + exp(-x)).
+///
+/// Global primitive duplicated in irt.rs, causal.rs, hypothesis.rs.
+/// Numerically stable: for x < -709 returns 0, for x > 709 returns 1.
+pub fn sigmoid(x: f64) -> f64 {
+    if x >= 0.0 {
+        let e = (-x).exp();
+        1.0 / (1.0 + e)
+    } else {
+        let e = x.exp();
+        e / (1.0 + e)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tridiagonal solver — Thomas algorithm + 3×3 prefix-scan formulation
 // ═══════════════════════════════════════════════════════════════════════════
 //
@@ -1509,4 +1612,52 @@ mod tests {
         assert!(solve_tridiagonal(&lower, &main, &upper, &rhs).is_none());
     }
 
+    // ── Global primitive tests ──────────────────────────────────────────
+
+    #[test]
+    fn simple_regression_known_line() {
+        // y = 2x + 3 exactly
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = vec![5.0, 7.0, 9.0, 11.0, 13.0];
+        let r = simple_linear_regression(&x, &y);
+        assert!((r.slope - 2.0).abs() < 1e-10, "slope={}", r.slope);
+        assert!((r.intercept - 3.0).abs() < 1e-10, "intercept={}", r.intercept);
+        assert!((r.r_squared - 1.0).abs() < 1e-10, "r2={}", r.r_squared);
+        assert_eq!(r.residuals.len(), 5);
+        for e in &r.residuals { assert!(e.abs() < 1e-10); }
+    }
+
+    #[test]
+    fn simple_regression_noisy() {
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = vec![2.1, 3.9, 6.2, 7.8, 10.1];
+        let r = simple_linear_regression(&x, &y);
+        assert!((r.slope - 2.0).abs() < 0.5, "slope={}", r.slope);
+        assert!(r.r_squared > 0.95);
+        assert!(r.se_slope.is_finite() && r.se_slope > 0.0);
+    }
+
+    #[test]
+    fn simple_regression_constant_x_nan() {
+        let r = simple_linear_regression(&[5.0; 10], &(0..10).map(|i| i as f64).collect::<Vec<_>>());
+        assert!(r.slope.is_nan());
+    }
+
+    #[test]
+    fn ols_slope_matches_regression() {
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = vec![5.0, 7.0, 9.0, 11.0, 13.0];
+        let slope = ols_slope(&x, &y);
+        let full = simple_linear_regression(&x, &y);
+        assert!((slope - full.slope).abs() < 1e-12);
+    }
+
+    #[test]
+    fn sigmoid_boundary_values() {
+        assert!((sigmoid(0.0) - 0.5).abs() < 1e-12);
+        assert!(sigmoid(100.0) > 0.999);
+        assert!(sigmoid(-100.0) < 0.001);
+        assert!(sigmoid(710.0).is_finite()); // no overflow
+        assert!(sigmoid(-710.0).is_finite());
+    }
 }

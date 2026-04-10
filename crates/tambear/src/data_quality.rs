@@ -1567,29 +1567,14 @@ pub fn count_outliers_zscore(x: &[f64], k: Option<f64>) -> usize {
 
 /// Count of inversions: pairs (i, j) with i < j but x[i] > x[j].
 ///
-/// Counts inversions via merge sort in O(n log n).
+/// Counts inversions in `x` via merge sort. O(n log n).
 /// Range [0, n*(n-1)/2]. 0 = sorted, max = reverse-sorted.
-/// This is the foundation of Kendall's tau.
+///
+/// Delegates to `nonparametric::inversion_count` — the canonical global primitive.
+/// NaN/inf values are excluded before counting.
 pub fn count_inversions(x: &[f64]) -> usize {
-    fn merge_count(arr: &mut Vec<f64>) -> usize {
-        let n = arr.len();
-        if n <= 1 { return 0; }
-        let mid = n / 2;
-        let mut left = arr[..mid].to_vec();
-        let mut right = arr[mid..].to_vec();
-        let mut count = merge_count(&mut left) + merge_count(&mut right);
-        let (mut i, mut j, mut k) = (0, 0, 0);
-        while i < left.len() && j < right.len() {
-            if left[i] <= right[j] { arr[k] = left[i]; i += 1; }
-            else { arr[k] = right[j]; j += 1; count += left.len() - i; }
-            k += 1;
-        }
-        while i < left.len() { arr[k] = left[i]; i += 1; k += 1; }
-        while j < right.len() { arr[k] = right[j]; j += 1; k += 1; }
-        count
-    }
-    let mut arr: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
-    merge_count(&mut arr)
+    let finite: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
+    crate::nonparametric::inversion_count(&finite).max(0) as usize
 }
 
 /// Count of ties: pairs of equal values (after rounding to `precision` decimal places).

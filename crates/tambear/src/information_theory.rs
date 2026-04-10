@@ -756,6 +756,105 @@ pub fn transfer_entropy(x: &[f64], y: &[f64], n_bins: usize) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// TF-IDF and cosine similarity
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// TF-IDF result: weighted term-document matrix.
+#[derive(Debug, Clone)]
+pub struct TfidfResult {
+    /// TF-IDF matrix (n_docs × n_terms, row-major).
+    pub matrix: Vec<f64>,
+    /// Number of documents.
+    pub n_docs: usize,
+    /// Number of terms.
+    pub n_terms: usize,
+    /// IDF weights per term.
+    pub idf: Vec<f64>,
+}
+
+/// Compute TF-IDF from a term-document count matrix.
+///
+/// `counts`: n_docs × n_terms matrix (row-major) of raw term counts.
+/// `smooth_idf`: add 1 to document frequencies to prevent zero IDF (default true).
+/// `sublinear_tf`: use 1 + log(tf) instead of raw tf (default false).
+pub fn tfidf(
+    counts: &[f64], n_docs: usize, n_terms: usize,
+    smooth_idf: bool, sublinear_tf: bool,
+) -> TfidfResult {
+    assert_eq!(counts.len(), n_docs * n_terms);
+
+    // Document frequency: df[j] = number of docs where term j appears
+    let mut df = vec![0.0f64; n_terms];
+    for i in 0..n_docs {
+        for j in 0..n_terms {
+            if counts[i * n_terms + j] > 0.0 { df[j] += 1.0; }
+        }
+    }
+
+    // IDF: log((1 + n) / (1 + df)) + 1 if smooth, else log(n / df)
+    let nf = n_docs as f64;
+    let idf: Vec<f64> = df.iter().map(|&d| {
+        if smooth_idf {
+            ((1.0 + nf) / (1.0 + d)).ln() + 1.0
+        } else {
+            if d > 0.0 { (nf / d).ln() } else { 0.0 }
+        }
+    }).collect();
+
+    // TF-IDF = tf * idf
+    let mut matrix = vec![0.0f64; n_docs * n_terms];
+    for i in 0..n_docs {
+        for j in 0..n_terms {
+            let tf = if sublinear_tf {
+                let raw = counts[i * n_terms + j];
+                if raw > 0.0 { 1.0 + raw.ln() } else { 0.0 }
+            } else {
+                counts[i * n_terms + j]
+            };
+            matrix[i * n_terms + j] = tf * idf[j];
+        }
+    }
+
+    TfidfResult { matrix, n_docs, n_terms, idf }
+}
+
+/// Cosine similarity between two vectors.
+///
+/// cos(a, b) = (a · b) / (||a|| · ||b||). Returns 0 if either vector is zero.
+pub fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let na: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let nb: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if na < 1e-300 || nb < 1e-300 { 0.0 } else { dot / (na * nb) }
+}
+
+/// Cosine similarity matrix for n vectors of dimension d.
+///
+/// `data`: n × d matrix (row-major). Returns n × n similarity matrix.
+pub fn cosine_similarity_matrix(data: &[f64], n: usize, d: usize) -> Vec<f64> {
+    assert_eq!(data.len(), n * d);
+    let mut sim = vec![0.0f64; n * n];
+    // Precompute norms
+    let norms: Vec<f64> = (0..n).map(|i| {
+        data[i * d..(i + 1) * d].iter().map(|x| x * x).sum::<f64>().sqrt()
+    }).collect();
+
+    for i in 0..n {
+        sim[i * n + i] = 1.0;
+        for j in (i + 1)..n {
+            let dot: f64 = (0..d).map(|k| data[i * d + k] * data[j * d + k]).sum();
+            let s = if norms[i] > 1e-300 && norms[j] > 1e-300 {
+                dot / (norms[i] * norms[j])
+            } else { 0.0 };
+            sim[i * n + j] = s;
+            sim[j * n + i] = s;
+        }
+    }
+    sim
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1124,5 +1223,52 @@ mod tests {
         assert!(fi_norm.is_finite() && fi_bi.is_finite(), "both should be finite");
         // Bimodal has more structure → higher Fisher-Rao distance from Gaussian
         assert!(fd_bi >= fd_norm - 0.1, "bimodal should have >= Fisher distance: norm={fd_norm} bi={fd_bi}");
+    }
+
+    // ── TF-IDF ──
+
+    #[test]
+    fn tfidf_basic() {
+        // 3 docs, 4 terms. Term 0 appears in all docs (low IDF), term 3 in one (high IDF).
+        let counts = vec![
+            1.0, 2.0, 0.0, 0.0, // doc 0
+            1.0, 0.0, 3.0, 0.0, // doc 1
+            1.0, 0.0, 0.0, 1.0, // doc 2
+        ];
+        let result = tfidf(&counts, 3, 4, true, false);
+        assert_eq!(result.n_docs, 3);
+        assert_eq!(result.n_terms, 4);
+        // Term 0 appears in all 3 docs → lowest IDF
+        // Term 3 appears in 1 doc → highest IDF
+        assert!(result.idf[0] < result.idf[3],
+            "term in all docs should have lower IDF than term in one doc");
+        // TF-IDF for term 3 in doc 2 should be high (rare term, present)
+        assert!(result.matrix[2 * 4 + 3] > 0.0);
+        // TF-IDF for term 3 in doc 0 should be 0 (not present)
+        assert_eq!(result.matrix[0 * 4 + 3], 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_identical() {
+        let a = vec![1.0, 2.0, 3.0];
+        let s = cosine_similarity(&a, &a);
+        assert!((s - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cosine_similarity_orthogonal() {
+        let a = vec![1.0, 0.0];
+        let b = vec![0.0, 1.0];
+        let s = cosine_similarity(&a, &b);
+        assert!(s.abs() < 1e-10);
+    }
+
+    #[test]
+    fn cosine_similarity_matrix_diagonal_is_one() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2 vectors of dim 3
+        let sim = cosine_similarity_matrix(&data, 2, 3);
+        assert!((sim[0] - 1.0).abs() < 1e-10); // sim[0,0]
+        assert!((sim[3] - 1.0).abs() < 1e-10); // sim[1,1]
+        assert!((sim[1] - sim[2]).abs() < 1e-10); // symmetric
     }
 }

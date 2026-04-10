@@ -29,7 +29,7 @@ pub fn prob_3pl(theta: f64, discrimination: f64, difficulty: f64, guessing: f64)
 }
 
 fn logistic(x: f64) -> f64 {
-    1.0 / (1.0 + (-x).exp())
+    crate::special_functions::logistic(x)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -126,7 +126,7 @@ pub fn fit_2pl(responses: &[u8], n_persons: usize, n_items: usize, max_iter: usi
 }
 
 fn logit(p: f64) -> f64 {
-    (p / (1.0 - p)).ln()
+    crate::special_functions::logit(p)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

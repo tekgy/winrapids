@@ -207,47 +207,9 @@ pub fn count_outliers_mad(x: &[f64], threshold: f64) -> usize {
 /// Count of inversions: pairs `(i, j)` with `i < j` but `x[i] > x[j]`.
 ///
 /// O(n log n) via merge sort. Foundation of Kendall's tau.
+/// Delegates to `nonparametric::inversion_count` — the canonical global primitive.
 pub fn count_inversions(x: &[f64]) -> u64 {
-    let mut arr: Vec<f64> = x.to_vec();
-    let n = arr.len();
-    if n == 0 {
-        return 0;
-    }
-    let mut tmp = vec![0.0; n];
-    merge_sort_count(&mut arr, &mut tmp, 0, n)
-}
-
-fn merge_sort_count(arr: &mut [f64], tmp: &mut [f64], lo: usize, hi: usize) -> u64 {
-    if hi - lo <= 1 {
-        return 0;
-    }
-    let mid = (lo + hi) / 2;
-    let mut inv = merge_sort_count(arr, tmp, lo, mid);
-    inv += merge_sort_count(arr, tmp, mid, hi);
-    let (mut i, mut j, mut k) = (lo, mid, lo);
-    while i < mid && j < hi {
-        if arr[i] <= arr[j] {
-            tmp[k] = arr[i];
-            i += 1;
-        } else {
-            tmp[k] = arr[j];
-            j += 1;
-            inv += (mid - i) as u64;
-        }
-        k += 1;
-    }
-    while i < mid {
-        tmp[k] = arr[i];
-        i += 1;
-        k += 1;
-    }
-    while j < hi {
-        tmp[k] = arr[j];
-        j += 1;
-        k += 1;
-    }
-    arr[lo..hi].copy_from_slice(&tmp[lo..hi]);
-    inv
+    crate::nonparametric::inversion_count(x).max(0) as u64
 }
 
 /// Count of tied pairs `(i, j)` with `i < j` and `x[i] == x[j]`. O(n log n).

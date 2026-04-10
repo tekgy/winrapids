@@ -618,6 +618,76 @@ pub fn fixed_point(g: impl Fn(f64) -> f64, x0: f64, tol: f64, max_iter: usize) -
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Numerical primitives — standalone atoms used by many methods
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Numerically stable log-sum-exp: `log(Σ exp(x_i))`.
+///
+/// Uses the max-shift trick: `max(x) + log(Σ exp(x_i - max(x)))`.
+/// This avoids overflow for large x_i and underflow for small x_i.
+///
+/// Kingdom A: single-pass accumulate (find max, then sum shifted exps).
+///
+/// Consumers: Cox PH partial likelihood, softmax normalization,
+/// log-partition functions, mixture model log-likelihoods,
+/// Bayesian model evidence, any log-space computation.
+///
+/// Returns `f64::NEG_INFINITY` for empty input (log of empty sum = -inf).
+pub fn log_sum_exp(x: &[f64]) -> f64 {
+    if x.is_empty() { return f64::NEG_INFINITY; }
+    let max = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if max.is_infinite() { return max; }
+    max + x.iter().map(|&v| (v - max).exp()).sum::<f64>().ln()
+}
+
+/// Weighted arithmetic mean: `Σ(w_i * x_i) / Σ(w_i)`.
+///
+/// Kingdom A: two-pass or fused accumulate (sum of products, sum of weights).
+///
+/// Consumers: Welch ANOVA (inverse-variance weighting), GLS/WLS regression,
+/// kernel regression (Nadaraya-Watson), importance sampling, EM algorithm
+/// weighted sufficient statistics, any weighted estimation.
+///
+/// Returns NaN if weights sum to zero or input is empty.
+/// Negative weights are allowed (for signed importance weights).
+pub fn weighted_mean(x: &[f64], w: &[f64]) -> f64 {
+    if x.is_empty() || w.is_empty() { return f64::NAN; }
+    let n = x.len().min(w.len());
+    let mut sum_wx = 0.0;
+    let mut sum_w = 0.0;
+    for i in 0..n {
+        sum_wx += w[i] * x[i];
+        sum_w += w[i];
+    }
+    if sum_w.abs() < 1e-300 { return f64::NAN; }
+    sum_wx / sum_w
+}
+
+/// Weighted variance: `Σ(w_i * (x_i - μ_w)²) / Σ(w_i)`.
+///
+/// Population weighted variance (divides by sum of weights, not n-1).
+/// For frequency weights with Bessel correction, use
+/// `Σ(w_i * (x_i - μ_w)²) / (Σ(w_i) - 1)` — pass `bessel=true`.
+///
+/// Returns NaN if weights sum to zero, input is empty, or only one
+/// non-zero weight (when bessel=true).
+pub fn weighted_variance(x: &[f64], w: &[f64], bessel: bool) -> f64 {
+    if x.is_empty() || w.is_empty() { return f64::NAN; }
+    let n = x.len().min(w.len());
+    let mu = weighted_mean(x, w);
+    if mu.is_nan() { return f64::NAN; }
+    let mut sum_w = 0.0;
+    let mut sum_wsq_dev = 0.0;
+    for i in 0..n {
+        sum_w += w[i];
+        sum_wsq_dev += w[i] * (x[i] - mu) * (x[i] - mu);
+    }
+    let denom = if bessel { sum_w - 1.0 } else { sum_w };
+    if denom.abs() < 1e-300 { return f64::NAN; }
+    sum_wsq_dev / denom
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -808,5 +878,59 @@ mod tests {
         let r = fixed_point(|x| (x + 2.0 / x) / 2.0, 1.0, 1e-12, 50);
         assert!(r.converged);
         assert!(approx(r.root, std::f64::consts::SQRT_2, 1e-10));
+    }
+
+    #[test]
+    fn log_sum_exp_basic() {
+        let x = [1.0, 2.0, 3.0];
+        let lse = super::log_sum_exp(&x);
+        let naive = x.iter().map(|v| v.exp()).sum::<f64>().ln();
+        assert!(approx(lse, naive, 1e-12));
+    }
+
+    #[test]
+    fn log_sum_exp_large_values() {
+        // Without stabilization, exp(1000) overflows
+        let x = [1000.0, 1001.0, 999.0];
+        let lse = super::log_sum_exp(&x);
+        assert!(lse.is_finite());
+        assert!(lse > 1000.0 && lse < 1002.0);
+    }
+
+    #[test]
+    fn log_sum_exp_empty() {
+        assert_eq!(super::log_sum_exp(&[]), f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn log_sum_exp_single() {
+        assert_eq!(super::log_sum_exp(&[42.0]), 42.0);
+    }
+
+    #[test]
+    fn weighted_mean_uniform_weights() {
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let w = [1.0; 5];
+        assert!(approx(super::weighted_mean(&x, &w), 3.0, 1e-12));
+    }
+
+    #[test]
+    fn weighted_mean_skewed_weights() {
+        // Weight entirely on last element
+        let x = [1.0, 2.0, 3.0];
+        let w = [0.0, 0.0, 1.0];
+        assert!(approx(super::weighted_mean(&x, &w), 3.0, 1e-12));
+    }
+
+    #[test]
+    fn weighted_mean_zero_weights() {
+        let x = [1.0, 2.0, 3.0];
+        let w = [0.0, 0.0, 0.0];
+        assert!(super::weighted_mean(&x, &w).is_nan());
+    }
+
+    #[test]
+    fn weighted_mean_empty() {
+        assert!(super::weighted_mean(&[], &[]).is_nan());
     }
 }

@@ -58,7 +58,7 @@ impl LogisticModel {
 }
 
 fn sigmoid(z: f64) -> f64 {
-    1.0 / (1.0 + (-z).exp())
+    crate::neural::sigmoid(z)
 }
 
 /// Fit logistic regression using GPU-accelerated gradient descent.

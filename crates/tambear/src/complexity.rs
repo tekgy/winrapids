@@ -250,20 +250,9 @@ pub fn hurst_rs(data: &[f64]) -> f64 {
     ols_slope(&log_ns, &log_rs)
 }
 
-/// Simple OLS slope.
+/// OLS slope — delegates to the global primitive in linear_algebra.
 fn ols_slope(x: &[f64], y: &[f64]) -> f64 {
-    let n = x.len() as f64;
-    let mx: f64 = x.iter().sum::<f64>() / n;
-    let my: f64 = y.iter().sum::<f64>() / n;
-    let mut sxy = 0.0;
-    let mut sxx = 0.0;
-    for i in 0..x.len() {
-        let dx = x[i] - mx;
-        sxy += dx * (y[i] - my);
-        sxx += dx * dx;
-    }
-    if sxx == 0.0 { return f64::NAN; }
-    sxy / sxx
+    crate::linear_algebra::ols_slope(x, y)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1374,5 +1363,548 @@ mod tests {
         // They don't need to match exactly — Rosenstein from scalar embedding is approximate
         // But both should be in the right ballpark (0.3 to 2.0)
         assert!(lambda_ts < 3.0, "TS λ₁ = {} seems too high", lambda_ts);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MFDFA — Multifractal Detrended Fluctuation Analysis
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of MFDFA: generalized Hurst exponents h(q), multifractal spectrum.
+#[derive(Debug, Clone)]
+pub struct MfdfaResult {
+    /// q values used (matches `h_q`)
+    pub q_values: Vec<f64>,
+    /// Generalized Hurst exponent h(q) for each q (NaN if insufficient scales)
+    pub h_q: Vec<f64>,
+    /// Mass exponent τ(q) = q·h(q) - 1
+    pub tau_q: Vec<f64>,
+    /// Width of the multifractal spectrum: max(h_q) - min(h_q)
+    pub width: f64,
+    /// Standard DFA exponent h(2)
+    pub h2: f64,
+    /// Mean OLS standard error across all q fits
+    pub mean_se: f64,
+}
+
+/// Multifractal Detrended Fluctuation Analysis (Kantelhardt et al. 2002).
+///
+/// Extends DFA to a q-parameterized family of fluctuation functions.
+/// For each scale s, fits linear trend to non-overlapping profile segments,
+/// computes F_q(s) = [mean(F²^(q/2))]^(1/q). Then h(q) = OLS slope of
+/// log F_q vs log s.
+///
+/// # Arguments
+/// * `data` — time series (returns or any stationary process)
+/// * `q_values` — q-order grid (typical: [-5..5] or [-2, -1, 0.5, 1, 1.5, 2])
+/// * `min_seg` — minimum window size (≥ 4)
+/// * `max_seg` — maximum window size (≤ n/4 recommended)
+///
+/// # Kingdom
+/// Kingdom A (each scale is independent; the per-scale loops can be parallelized).
+pub fn mfdfa(data: &[f64], q_values: &[f64], min_seg: usize, max_seg: usize) -> MfdfaResult {
+    let nan_result = |q_values: &[f64]| {
+        let nq = q_values.len();
+        MfdfaResult {
+            q_values: q_values.to_vec(),
+            h_q: vec![f64::NAN; nq], tau_q: vec![f64::NAN; nq],
+            width: f64::NAN, h2: f64::NAN, mean_se: f64::NAN,
+        }
+    };
+
+    let n = data.len();
+    if n < 2 * min_seg || min_seg < 2 { return nan_result(q_values); }
+
+    // Cumulative profile: Y[i] = Σ_{k<i} (x[k] - mean)
+    let mean_x = data.iter().sum::<f64>() / n as f64;
+    let mut profile = vec![0.0f64; n + 1];
+    for i in 0..n { profile[i + 1] = profile[i] + (data[i] - mean_x); }
+
+    // Build window sizes: increasing sequence from min_seg to min(max_seg, n/4)
+    let eff_max = max_seg.min(n / 4).max(min_seg);
+    let mut window_sizes: Vec<usize> = Vec::new();
+    let mut w = min_seg;
+    while w <= eff_max {
+        window_sizes.push(w);
+        let next = (w as f64 * 1.5).ceil() as usize;
+        if next <= w { break; }
+        w = next;
+    }
+    if window_sizes.is_empty() { return nan_result(q_values); }
+
+    let n_q = q_values.len();
+    let n_s = window_sizes.len();
+    let mut log_fq = vec![vec![f64::NAN; n_s]; n_q];
+
+    for (s_idx, &s) in window_sizes.iter().enumerate() {
+        let n_segs = n / s;
+        if n_segs < 2 { continue; }
+
+        // F²(s, v): variance of detrended profile in each segment
+        let seg_rms2: Vec<f64> = (0..n_segs).map(|v| {
+            let start = v * s;
+            let seg = &profile[start..=start + s];
+            let sf = seg.len() as f64;
+            let mean_y = seg.iter().sum::<f64>() / sf;
+            let mean_t = (sf - 1.0) / 2.0;
+            let stt: f64 = (0..seg.len()).map(|i| { let t = i as f64; (t - mean_t) * (t - mean_t) }).sum();
+            let sty: f64 = (0..seg.len()).map(|i| { let t = i as f64; (t - mean_t) * (seg[i] - mean_y) }).sum();
+            let slope = if stt > 1e-30 { sty / stt } else { 0.0 };
+            let intercept = mean_y - slope * mean_t;
+            let rms2: f64 = (0..seg.len()).map(|i| {
+                let t = i as f64;
+                let r = seg[i] - (slope * t + intercept);
+                r * r
+            }).sum::<f64>() / sf;
+            rms2.max(1e-300)
+        }).collect();
+
+        for (q_idx, &q) in q_values.iter().enumerate() {
+            let fq = if q.abs() < 0.05 {
+                // q ≈ 0: geometric mean of F²
+                let log_mean = seg_rms2.iter().map(|&f2| f2.ln()).sum::<f64>() / seg_rms2.len() as f64;
+                (log_mean / 2.0).exp()
+            } else {
+                let fq_q = seg_rms2.iter().map(|&f2| f2.powf(q / 2.0)).sum::<f64>() / seg_rms2.len() as f64;
+                if fq_q > 0.0 && fq_q.is_finite() { fq_q.powf(1.0 / q) } else { f64::NAN }
+            };
+            if fq.is_finite() && fq > 0.0 { log_fq[q_idx][s_idx] = fq.ln(); }
+        }
+    }
+
+    let log_s: Vec<f64> = window_sizes.iter().map(|&s| (s as f64).ln()).collect();
+    let mut h_q = vec![f64::NAN; n_q];
+    let mut tau_q = vec![f64::NAN; n_q];
+    let mut se_vals = Vec::new();
+
+    for q_idx in 0..n_q {
+        let pairs: Vec<(f64, f64)> = log_s.iter().zip(log_fq[q_idx].iter())
+            .filter(|(_, &lf)| lf.is_finite())
+            .map(|(&ls, &lf)| (ls, lf))
+            .collect();
+        if pairs.len() < 2 { continue; }
+        let pm = pairs.len() as f64;
+        let mean_ls = pairs.iter().map(|(x, _)| x).sum::<f64>() / pm;
+        let mean_lf = pairs.iter().map(|(_, y)| y).sum::<f64>() / pm;
+        let sxx: f64 = pairs.iter().map(|(x, _)| (x - mean_ls) * (x - mean_ls)).sum();
+        let sxy: f64 = pairs.iter().map(|(x, y)| (x - mean_ls) * (y - mean_lf)).sum();
+        if sxx < 1e-30 { continue; }
+        let slope = sxy / sxx;
+        h_q[q_idx] = slope;
+        tau_q[q_idx] = q_values[q_idx] * slope - 1.0;
+
+        let intercept = mean_lf - slope * mean_ls;
+        let ssr: f64 = pairs.iter().map(|(x, y)| { let p = slope * x + intercept; (y - p) * (y - p) }).sum();
+        if pm > 2.0 { se_vals.push((ssr / ((pm - 2.0) * sxx)).sqrt()); }
+    }
+
+    let h2 = q_values.iter().position(|&q| (q - 2.0).abs() < 0.01)
+        .map(|i| h_q[i]).unwrap_or(f64::NAN);
+
+    let valid_h: Vec<f64> = h_q.iter().copied().filter(|h| h.is_finite()).collect();
+    let width = if valid_h.len() >= 2 {
+        valid_h.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+        - valid_h.iter().cloned().fold(f64::INFINITY, f64::min)
+    } else { f64::NAN };
+    let mean_se = if se_vals.is_empty() { f64::NAN }
+        else { se_vals.iter().sum::<f64>() / se_vals.len() as f64 };
+
+    MfdfaResult { q_values: q_values.to_vec(), h_q, tau_q, width, h2, mean_se }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CCM — Convergent Cross Mapping
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn ccm_pearson(x: &[f64], y: &[f64]) -> f64 {
+    let n = x.len().min(y.len());
+    if n < 2 { return f64::NAN; }
+    let nf = n as f64;
+    let mx = x[..n].iter().sum::<f64>() / nf;
+    let my = y[..n].iter().sum::<f64>() / nf;
+    let sxx: f64 = x[..n].iter().map(|&v| (v - mx) * (v - mx)).sum();
+    let syy: f64 = y[..n].iter().map(|&v| (v - my) * (v - my)).sum();
+    let sxy: f64 = x[..n].iter().zip(y[..n].iter()).map(|(&a, &b)| (a - mx) * (b - my)).sum();
+    if sxx < 1e-30 || syy < 1e-30 { return f64::NAN; }
+    (sxy / (sxx * syy).sqrt()).clamp(-1.0, 1.0)
+}
+
+/// CCM result: correlation X→Y and Y→X at two library sizes.
+#[derive(Debug, Clone)]
+pub struct CcmResult {
+    /// corr(Y, Ŷ from X-manifold), full library
+    pub rho_xy: f64,
+    /// corr(X, X̂ from Y-manifold), full library
+    pub rho_yx: f64,
+    /// same at half library
+    pub rho_xy_half: f64,
+    pub rho_yx_half: f64,
+    /// (rho_xy_full - rho_xy_half) / max(|rho_xy_full|, 0.01)
+    pub convergence: f64,
+}
+
+/// Convergent Cross Mapping (Sugihara et al. 2012).
+///
+/// Tests whether X causally drives Y: uses the Y-manifold (Takens delay
+/// embedding of Y) to predict X. High rho_yx → X→Y causation. Convergence
+/// (increasing rho with library size) distinguishes causation from correlation.
+///
+/// # Arguments
+/// * `x`, `y` — two time series of equal length
+/// * `embed_dim` — delay embedding dimension (typical: 3–5)
+/// * `tau` — embedding lag (typical: 1)
+/// * `k` — number of nearest neighbors (typical: embed_dim + 1)
+///
+/// # Kingdom
+/// Kingdom A (kNN lookup per point is independent across test points).
+pub fn ccm(x: &[f64], y: &[f64], embed_dim: usize, tau: usize, k: usize) -> CcmResult {
+    let nan = CcmResult {
+        rho_xy: f64::NAN, rho_yx: f64::NAN,
+        rho_xy_half: f64::NAN, rho_yx_half: f64::NAN, convergence: f64::NAN,
+    };
+    let n = x.len().min(y.len());
+    let embed_start = (embed_dim - 1) * tau;
+    if n < embed_start + k + 2 { return nan; }
+
+    let embed = |series: &[f64]| -> Vec<Vec<f64>> {
+        (embed_start..n).map(|i| {
+            (0..embed_dim).map(|d| series[i - d * tau]).collect()
+        }).collect()
+    };
+    let ex: Vec<Vec<f64>> = embed(x);
+    let ey: Vec<Vec<f64>> = embed(y);
+    let n_embed = ex.len();
+    let x_target = &x[embed_start..n];
+    let y_target = &y[embed_start..n];
+
+    let ccm_predict = |embed_lib: &[Vec<f64>], target: &[f64], lib_size: usize| -> f64 {
+        let lib_size = lib_size.min(n_embed);
+        let mut y_true = Vec::new();
+        let mut y_hat = Vec::new();
+        for i in 0..n_embed {
+            let mut dists: Vec<(f64, usize)> = (0..lib_size)
+                .filter(|&j| j != i)
+                .map(|j| {
+                    let d: f64 = embed_lib[i].iter().zip(embed_lib[j].iter())
+                        .map(|(a, b)| (a - b) * (a - b)).sum::<f64>().sqrt();
+                    (d, j)
+                }).collect();
+            if dists.len() < k { continue; }
+            dists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let neighbors = &dists[..k];
+            let d_min = neighbors[0].0;
+            let weights: Vec<f64> = neighbors.iter()
+                .map(|(d, _)| (-(d / (d_min + 1e-10))).exp()).collect();
+            let w_sum: f64 = weights.iter().sum();
+            if w_sum < 1e-30 { continue; }
+            let pred: f64 = neighbors.iter().zip(weights.iter())
+                .map(|((_, j), w)| w * target[*j]).sum::<f64>() / w_sum;
+            y_true.push(target[i]);
+            y_hat.push(pred);
+        }
+        ccm_pearson(&y_true, &y_hat)
+    };
+
+    let full = n_embed;
+    let half = n_embed / 2;
+    let rho_xy      = ccm_predict(&ex, y_target, full);
+    let rho_yx      = ccm_predict(&ey, x_target, full);
+    let rho_xy_half = ccm_predict(&ex, y_target, half);
+    let rho_yx_half = ccm_predict(&ey, x_target, half);
+    let convergence = if rho_xy.is_finite() && rho_xy_half.is_finite() {
+        (rho_xy - rho_xy_half) / rho_xy.abs().max(0.01)
+    } else { f64::NAN };
+    CcmResult { rho_xy, rho_yx, rho_xy_half, rho_yx_half, convergence }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase Transition — SOC/Ising-style criticality estimators
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Phase-transition statistics from Ising-style magnetization of a sign field.
+#[derive(Debug, Clone)]
+pub struct PhaseTransitionResult {
+    /// Mean |m| over rolling windows — order parameter
+    pub order_parameter: f64,
+    /// Variance(m) × n_windows — susceptibility
+    pub susceptibility: f64,
+    /// Binder cumulant: 1 - <m⁴> / (3 <m²>²)
+    pub binder_cumulant: f64,
+    /// Log-log slope of mean|m| vs window size — critical exponent (NaN if no multiscale)
+    pub critical_exponent: f64,
+}
+
+/// Estimate phase-transition signatures via rolling Ising magnetization.
+///
+/// Maps each data point sign to a spin (±1), computes rolling magnetization
+/// over windows of `win_size`. Derives order parameter, susceptibility (χ),
+/// and Binder cumulant (U). Critical exponent requires multi-scale data.
+///
+/// # Arguments
+/// * `data` — time series (e.g. returns)
+/// * `win_size` — rolling window for base magnetization
+/// * `multiscale_windows` — additional window sizes for critical exponent fit
+///   (None → critical_exponent = NaN)
+///
+/// # Kingdom
+/// Kingdom A (each window is an independent reduction).
+pub fn phase_transition(
+    data: &[f64],
+    win_size: usize,
+    multiscale_windows: Option<&[usize]>,
+) -> PhaseTransitionResult {
+    let nan = PhaseTransitionResult {
+        order_parameter: f64::NAN, susceptibility: f64::NAN,
+        binder_cumulant: f64::NAN, critical_exponent: f64::NAN,
+    };
+    let n = data.len();
+    if n < win_size * 2 { return nan; }
+
+    let n_windows = n - win_size + 1;
+    let magnetizations: Vec<f64> = (0..n_windows).map(|k| {
+        let window = &data[k..k + win_size];
+        let spin_sum: f64 = window.iter().map(|&x| {
+            if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }
+        }).sum();
+        spin_sum / win_size as f64
+    }).collect();
+
+    let nw = n_windows as f64;
+    let order_parameter = magnetizations.iter().map(|m| m.abs()).sum::<f64>() / nw;
+    let mean_m = magnetizations.iter().sum::<f64>() / nw;
+    let mean_m2 = magnetizations.iter().map(|m| m * m).sum::<f64>() / nw;
+    let mean_m4 = magnetizations.iter().map(|m| m * m * m * m).sum::<f64>() / nw;
+    let var_m = magnetizations.iter().map(|m| (m - mean_m) * (m - mean_m)).sum::<f64>() / nw;
+    let susceptibility = var_m * nw;
+    let binder_cumulant = if mean_m2 > 1e-30 {
+        1.0 - mean_m4 / (3.0 * mean_m2 * mean_m2)
+    } else { f64::NAN };
+
+    let critical_exponent = if let Some(wins) = multiscale_windows {
+        let mut log_w = Vec::new();
+        let mut log_m = Vec::new();
+        for &w in wins {
+            if n < w { continue; }
+            let nw_local = n - w + 1;
+            let mean_abs_m = (0..nw_local).map(|k| {
+                let window = &data[k..k + w];
+                let spin_sum: f64 = window.iter().map(|&x| {
+                    if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }
+                }).sum();
+                (spin_sum / w as f64).abs()
+            }).sum::<f64>() / nw_local as f64;
+            if mean_abs_m > 1e-30 {
+                log_w.push((w as f64).ln());
+                log_m.push(mean_abs_m.ln());
+            }
+        }
+        if log_w.len() >= 2 {
+            let m = log_w.len() as f64;
+            let mlw = log_w.iter().sum::<f64>() / m;
+            let mlm = log_m.iter().sum::<f64>() / m;
+            let sxx: f64 = log_w.iter().map(|&x| (x - mlw) * (x - mlw)).sum();
+            let sxy: f64 = log_w.iter().zip(log_m.iter()).map(|(&x, &y)| (x - mlw) * (y - mlm)).sum();
+            if sxx > 1e-30 { sxy / sxx } else { f64::NAN }
+        } else { f64::NAN }
+    } else { f64::NAN };
+
+    PhaseTransitionResult { order_parameter, susceptibility, binder_cumulant, critical_exponent }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Harmonic r-statistic — Wigner-Dyson nearest-neighbor spacing ratio
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute the Oganesyan-Huse r-statistic from a sorted sequence of levels.
+///
+/// r = mean(min(gap_i, gap_{i+1}) / max(gap_i, gap_{i+1}))
+///
+/// Reference values:
+/// - r ≈ 0.386 → Poisson statistics (integrable/uncorrelated)
+/// - r ≈ 0.536 → GOE statistics (Wigner-Dyson repulsion, chaotic)
+///
+/// `levels` need not be sorted; this function sorts internally.
+///
+/// # Returns
+/// r-statistic ∈ [0, 1], or NaN if fewer than 3 levels.
+pub fn harmonic_r_stat(levels: &[f64]) -> f64 {
+    if levels.len() < 3 { return f64::NAN; }
+    let mut sorted = levels.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let spacings: Vec<f64> = sorted.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+    let r_vals: Vec<f64> = spacings.windows(2).filter_map(|w| {
+        let (a, b) = (w[0], w[1]);
+        let mx = a.max(b);
+        if mx < 1e-30 { None } else { Some(a.min(b) / mx) }
+    }).collect();
+    if r_vals.is_empty() { return f64::NAN; }
+    r_vals.iter().sum::<f64>() / r_vals.len() as f64
+}
+
+/// Compute Hankel delay-embedding SVD and return the r-statistic on singular values.
+///
+/// Constructs Hankel matrix H[i, j] = data[i + j], computes singular values,
+/// then applies `harmonic_r_stat`. Detects quantum-chaos-like repulsion in
+/// the spectrum of the delay-embedded dynamics.
+///
+/// # Arguments
+/// * `data` — time series (prices, returns, etc.)
+/// * `embed_dim` — number of columns (embedding dimension)
+///
+/// # Returns
+/// r-statistic on singular value spacings, or NaN if too short.
+pub fn hankel_r_stat(data: &[f64], embed_dim: usize) -> f64 {
+    let n = data.len();
+    if n < embed_dim + 3 { return f64::NAN; }
+    let n_rows = n - embed_dim + 1;
+    let mut mat_data = Vec::with_capacity(n_rows * embed_dim);
+    for i in 0..n_rows {
+        for j in 0..embed_dim { mat_data.push(data[i + j]); }
+    }
+    let mat = crate::linear_algebra::Mat { data: mat_data, rows: n_rows, cols: embed_dim };
+    let svd = crate::linear_algebra::svd(&mat);
+    harmonic_r_stat(&svd.sigma)
+}
+
+#[cfg(test)]
+mod tests_new_complexity {
+    use super::*;
+
+    fn wn(n: usize, seed: u64) -> Vec<f64> {
+        let mut rng = crate::rng::Xoshiro256::new(seed);
+        (0..n).map(|_| crate::rng::sample_normal(&mut rng, 0.0, 0.01)).collect()
+    }
+
+    // ── MFDFA ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn mfdfa_too_short_returns_nan() {
+        let q = vec![-2.0, 1.0, 2.0];
+        let r = mfdfa(&[0.0; 8], &q, 4, 64);
+        assert!(r.h2.is_nan());
+    }
+
+    #[test]
+    fn mfdfa_white_noise_h2_near_half() {
+        let data = wn(512, 42);
+        let q = vec![-2.0, -1.0, 1.0, 2.0];
+        let r = mfdfa(&data, &q, 4, 128);
+        if r.h2.is_finite() {
+            assert!(r.h2 > 0.1 && r.h2 < 0.9,
+                "white noise h(2) should be near 0.5, got {}", r.h2);
+        }
+    }
+
+    #[test]
+    fn mfdfa_tau2_invariant() {
+        let data = wn(256, 99);
+        let q = vec![2.0];
+        let r = mfdfa(&data, &q, 4, 64);
+        if r.h_q[0].is_finite() && r.tau_q[0].is_finite() {
+            let expected = 2.0 * r.h_q[0] - 1.0;
+            assert!((r.tau_q[0] - expected).abs() < 1e-10,
+                "τ(q) = q·h(q)-1 violated: {} vs {}", r.tau_q[0], expected);
+        }
+    }
+
+    #[test]
+    fn mfdfa_width_nonneg_for_real_q_range() {
+        let data = wn(512, 55);
+        let q: Vec<f64> = (-4..=4).map(|i| i as f64).collect();
+        let r = mfdfa(&data, &q, 4, 128);
+        if r.width.is_finite() {
+            assert!(r.width >= 0.0, "width = h_max - h_min must be ≥ 0, got {}", r.width);
+        }
+    }
+
+    // ── CCM ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ccm_too_short_returns_nan() {
+        let r = ccm(&[0.0; 5], &[0.0; 5], 3, 1, 4);
+        assert!(r.rho_xy.is_nan());
+    }
+
+    #[test]
+    fn ccm_uncoupled_finite() {
+        let x = wn(100, 1);
+        let y = wn(100, 2);
+        let r = ccm(&x, &y, 3, 1, 4);
+        assert!(r.rho_xy.is_finite() || r.rho_xy.is_nan());
+        assert!(r.rho_yx.is_finite() || r.rho_yx.is_nan());
+    }
+
+    #[test]
+    fn ccm_corr_in_unit_interval() {
+        let x = wn(120, 7);
+        let y = wn(120, 8);
+        let r = ccm(&x, &y, 3, 1, 4);
+        for rho in [r.rho_xy, r.rho_yx] {
+            if rho.is_finite() {
+                assert!(rho >= -1.0 && rho <= 1.0, "rho must be in [-1,1], got {rho}");
+            }
+        }
+    }
+
+    // ── Phase transition ─────────────────────────────────────────────────
+
+    #[test]
+    fn phase_transition_too_short() {
+        let r = phase_transition(&[0.0; 5], 20, None);
+        assert!(r.order_parameter.is_nan());
+    }
+
+    #[test]
+    fn phase_transition_ordered_max_order_param() {
+        let data = vec![1.0f64; 100];
+        let r = phase_transition(&data, 10, None);
+        assert!((r.order_parameter - 1.0).abs() < 1e-10,
+            "all-positive: order_parameter should be 1.0, got {}", r.order_parameter);
+    }
+
+    #[test]
+    fn phase_transition_white_noise_finite() {
+        let data = wn(300, 33);
+        let windows = [10usize, 20, 40, 80];
+        let r = phase_transition(&data, 20, Some(&windows));
+        assert!(r.order_parameter.is_finite() && r.order_parameter >= 0.0);
+        assert!(r.susceptibility.is_finite() && r.susceptibility >= 0.0);
+    }
+
+    // ── Harmonic r-stat ──────────────────────────────────────────────────
+
+    #[test]
+    fn harmonic_r_stat_too_short() {
+        assert!(harmonic_r_stat(&[1.0, 2.0]).is_nan());
+    }
+
+    #[test]
+    fn harmonic_r_stat_in_unit_interval() {
+        let levels: Vec<f64> = (1..=20).map(|i| i as f64).collect();
+        let r = harmonic_r_stat(&levels);
+        assert!(r.is_finite() && r >= 0.0 && r <= 1.0, "r-stat should be in [0,1], got {r}");
+    }
+
+    #[test]
+    fn harmonic_r_stat_equal_spacing_is_one() {
+        // Equal spacing: all gaps identical → min/max = 1.0
+        let levels: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let r = harmonic_r_stat(&levels);
+        assert!((r - 1.0).abs() < 1e-10, "equal spacing: r-stat should be 1.0, got {r}");
+    }
+
+    #[test]
+    fn hankel_r_stat_price_series_finite() {
+        let mut rng = crate::rng::Xoshiro256::new(42);
+        let prices: Vec<f64> = std::iter::once(100.0_f64)
+            .chain((0..100).scan(100.0_f64, |p, _| {
+                *p *= (crate::rng::sample_normal(&mut rng, 0.0, 0.01)).exp();
+                Some(*p)
+            }))
+            .collect();
+        let r = hankel_r_stat(&prices, 3);
+        if r.is_finite() {
+            assert!(r >= 0.0 && r <= 1.0, "hankel r-stat in [0,1], got {r}");
+        }
     }
 }

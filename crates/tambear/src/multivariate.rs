@@ -23,19 +23,31 @@ use crate::special_functions::{f_right_tail_p, chi2_right_tail_p, normal_two_tai
 
 /// Compute sample covariance matrix (Bessel-corrected) from n×p data matrix.
 /// Each row is an observation, each column is a variable.
-fn covariance_matrix(x: &Mat) -> Mat {
+/// Sample covariance matrix of an n×p data matrix.
+///
+/// Returns a p×p symmetric matrix where entry (j,k) is the covariance
+/// between columns j and k. Uses Bessel correction by default (divides
+/// by n-1 for unbiased estimation).
+///
+/// # Parameters
+/// - `x`: n×p data matrix (n observations, p variables)
+/// - `ddof`: delta degrees of freedom for the denominator.
+///   `None` → default 1 (sample covariance, divides by n-1).
+///   `Some(0)` → population covariance (divides by n).
+///   `Some(k)` → divides by n-k.
+///
+/// # Consumers
+/// PCA, factor analysis, LDA, Mahalanobis distance, mixed effects,
+/// multivariate tests, CCA, portfolio optimization. Any method that
+/// needs the second-moment structure of multivariate data.
+///
+/// Kingdom A: single-pass accumulate over rows.
+pub fn covariance_matrix(x: &Mat, ddof: Option<usize>) -> Mat {
     let n = x.rows;
     let p = x.cols;
-    // Column means
-    let mut means = vec![0.0; p];
-    for i in 0..n {
-        for j in 0..p {
-            means[j] += x.get(i, j);
-        }
-    }
-    for j in 0..p { means[j] /= n as f64; }
+    let means = col_means(x);
+    let ddof = ddof.unwrap_or(1);
 
-    // Centered cross-products
     let mut cov = Mat::zeros(p, p);
     for i in 0..n {
         for j in 0..p {
@@ -48,7 +60,7 @@ fn covariance_matrix(x: &Mat) -> Mat {
             }
         }
     }
-    let denom = (n - 1) as f64;
+    let denom = (n.saturating_sub(ddof)).max(1) as f64;
     for j in 0..p {
         for k in 0..p {
             cov.set(j, k, cov.get(j, k) / denom);
@@ -58,7 +70,13 @@ fn covariance_matrix(x: &Mat) -> Mat {
 }
 
 /// Column means of an n×p matrix.
-fn col_means(x: &Mat) -> Vec<f64> {
+///
+/// Returns a vector of length p where entry j is the arithmetic mean
+/// of column j. Standalone primitive — used by covariance_matrix,
+/// centering, PCA preprocessing, any column-wise summary.
+///
+/// Kingdom A: single-pass accumulate over rows.
+pub fn col_means(x: &Mat) -> Vec<f64> {
     let n = x.rows as f64;
     let mut m = vec![0.0; x.cols];
     for i in 0..x.rows {
@@ -149,7 +167,7 @@ pub fn hotelling_one_sample(x: &Mat, mu0: &[f64]) -> HotellingResult {
     }
 
     let means = col_means(x);
-    let cov = covariance_matrix(x);
+    let cov = covariance_matrix(x, None);
     let l = match cholesky(&cov) {
         Some(l) => l,
         None => return HotellingResult { t2: f64::NAN, f_statistic: f64::NAN, df1: p as f64, df2: f64::NAN, p_value: f64::NAN },
@@ -183,8 +201,8 @@ pub fn hotelling_two_sample(x1: &Mat, x2: &Mat) -> HotellingResult {
 
     let m1 = col_means(x1);
     let m2 = col_means(x2);
-    let s1 = covariance_matrix(x1);
-    let s2 = covariance_matrix(x2);
+    let s1 = covariance_matrix(x1, None);
+    let s2 = covariance_matrix(x2, None);
 
     // Pooled covariance: S_p = ((n1-1)*S1 + (n2-1)*S2) / (n1+n2-2)
     let sp = {
@@ -446,8 +464,8 @@ pub fn cca(x: &Mat, y: &Mat) -> CcaResult {
     let s = p.min(q);
 
     // Covariance subblocks from the joint [X, Y] matrix
-    let cov_xx = covariance_matrix(x);
-    let cov_yy = covariance_matrix(y);
+    let cov_xx = covariance_matrix(x, None);
+    let cov_yy = covariance_matrix(y, None);
 
     // Cross-covariance Σ_XY
     let mx = col_means(x);
@@ -545,7 +563,7 @@ pub fn mardia_normality(x: &Mat) -> MardiaNormalityResult {
     let pf = p as f64;
 
     let means = col_means(x);
-    let cov = covariance_matrix(x);
+    let cov = covariance_matrix(x, None);
     let l = cholesky(&cov).expect("covariance not positive definite");
 
     // Compute Mahalanobis distances: d_ij = (x_i - x̄)' S⁻¹ (x_j - x̄)

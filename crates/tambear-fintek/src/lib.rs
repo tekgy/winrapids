@@ -31,10 +31,11 @@
 //! - [`family18_decomposition`] — stl, sde, hmm, savgol, fir_bandpass, seismic, scale_freeness
 //! - [`family19_shape`] — shape (21 combinatorial features: monotonicity, extrema, gradient, curvature)
 //! - [`family20_visibility_graphs`] — nvg (natural visibility graph), hvg (horizontal visibility graph)
+//! - [`family20_visibility_graphs`] — nvg, hvg
+//! - [`family21_changepoint`] — pelt, bocpd (exact + Bayesian changepoint detection)
+//! - [`family22_criticality`] — phase_transition, mfdfa (SOC criticality + multifractal DFA)
 //! - [`family23_taylor_fold`] — taylor_fold (8-feature polynomial divergence diagnostics)
-//!
-//! GAP leaves (new tambear primitives needed): pelt, bocpd, ccm, mfdfa,
-//! phase_transition, harmonic (r-stat).
+//! - [`family24_manifold`] — ccm (convergent cross mapping), harmonic (singular value spacing r-stat)
 
 pub mod family1_distribution;
 pub mod family2_transforms;
@@ -56,7 +57,10 @@ pub mod family17_market_microstructure;
 pub mod family18_decomposition;
 pub mod family19_shape;
 pub mod family20_visibility_graphs;
+pub mod family21_changepoint;
+pub mod family22_criticality;
 pub mod family23_taylor_fold;
+pub mod family24_manifold;
 
 /// Data quality primitives re-exported from tambear::data_quality.
 ///

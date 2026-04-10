@@ -18,4 +18,5 @@
 
 pub mod linear;
 pub mod logistic;
+pub mod naive_bayes;
 mod cholesky;

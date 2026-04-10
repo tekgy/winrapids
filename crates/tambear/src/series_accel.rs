@@ -57,6 +57,9 @@
 
 /// Compute partial sums of a series: S_n = Σ_{k=0}^n a_k.
 /// This IS `accumulate(terms, Prefix, Value, Add)` on CPU.
+///
+/// Also known as `cumsum` (numpy/MATLAB/R convention).
+/// Kingdom B (prefix scan), but parallelizable via Blelloch scan on GPU.
 pub fn partial_sums(terms: &[f64]) -> Vec<f64> {
     let mut sums = Vec::with_capacity(terms.len());
     let mut acc = 0.0;
@@ -65,6 +68,22 @@ pub fn partial_sums(terms: &[f64]) -> Vec<f64> {
         sums.push(acc);
     }
     sums
+}
+
+/// Cumulative sum — alias for [`partial_sums`].
+///
+/// Universal name from numpy, MATLAB, R. Returns a vector where
+/// `result[i] = x[0] + x[1] + ... + x[i]`.
+///
+/// Kingdom B (prefix scan). Standalone primitive used by:
+/// - KPSS stationarity test (partial sums of residuals)
+/// - CUSUM changepoint detection
+/// - Empirical CDF construction
+/// - Random walk simulation analysis
+/// - Running totals in financial accounting
+#[inline]
+pub fn cumsum(x: &[f64]) -> Vec<f64> {
+    partial_sums(x)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

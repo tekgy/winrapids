@@ -114,6 +114,14 @@ impl Expr<'_> {
 }
 
 /// HOW to combine accumulators.
+///
+/// Each variant specifies a semiring over which the accumulation runs:
+/// - `Add`/`Max`/`Min` inhabit the real-number semirings.
+/// - `DotProduct`/`Distance` inhabit the matrix (bilinear) semiring.
+/// - Future: `TropicalMinPlus` would inhabit the min-plus semiring (add=min, mul=+),
+///   enabling Viterbi, PELT (unpruned), and all-pairs shortest-path as Kingdom A
+///   computations. Its identity is (+∞, 0) — (additive identity, multiplicative identity).
+///   Gap noted 2026-04-10 from tropical semiring analysis of PELT/Viterbi structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     /// Additive monoid (ℝ, +). Maps to atomicAdd. The default.

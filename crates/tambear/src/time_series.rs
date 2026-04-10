@@ -5,7 +5,12 @@
 //! ## Architecture
 //!
 //! AR/MA fitting = Yule-Walker (Kingdom A: Toeplitz solve from autocorrelation).
-//! ARIMA = difference + ARMA. Exponential smoothing = sequential scan (Kingdom B).
+//! ARIMA = difference + ARMA.
+//! Exponential smoothing = Kingdom A via affine semigroup prefix scan (see signal_processing::affine_prefix_scan).
+//! Prior label "Kingdom B" for exponential smoothing was wrong — the map a=(1-α), b=α·x_t
+//! is data-determined and affine maps compose with bounded representation.
+//! ARMA(p,q) filter = Kingdom B when q > 0 (MA residual chain is state-dependent).
+//! Pure AR(p) = Kingdom A (companion matrix prefix scan).
 //! Unit root tests = regression-based (ADF reuses F10 OLS).
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -494,7 +499,10 @@ pub fn arma_css_residuals(centered: &[f64], ar: &[f64], ma: &[f64]) -> Vec<f64> 
 /// `ArmaResult` with fitted coefficients, intercept, sigma2, AIC/BIC, residuals.
 ///
 /// # Kingdom
-/// Kingdom B (sequential inner loop for residual computation).
+/// Kingdom B when q > 0 (MA terms): the residual ε_t = y_t - ŷ_t depends on
+/// previous residuals, making each step's map state-dependent. The MA chain
+/// genuinely cannot be expressed as a data-determined prefix scan.
+/// Kingdom A when q = 0 (pure AR): companion matrix prefix scan over observations.
 pub fn arma_fit(data: &[f64], p: usize, q: usize, max_iter: usize) -> ArmaResult {
     let n = data.len();
     let start = p.max(q);
@@ -3761,7 +3769,12 @@ pub fn pelt_segment_cost(cumsum: &[f64], cumsum2: &[f64], start: usize, end: usi
 /// Sorted vector of changepoint positions in `1..n-1` (empty if no breaks).
 ///
 /// # Kingdom
-/// Kingdom B (sequential DP with pruning; cannot be parallelized across t).
+/// The unpruned DP `F(t) = min_τ [F(τ) + C(τ,t) + β]` is Kingdom A in the min-plus
+/// (tropical) semiring — tropical matrix-vector product, O(n²) per step.
+/// The PELT pruning (discarding τ where F(τ) + C(τ,t) > F(t) + β) is state-dependent
+/// (the pruning set depends on F[t]), making the efficient O(n) algorithm Kingdom B.
+/// We label the implementation Kingdom B. The tropical semiring structure is real —
+/// Op::TropicalMinPlus would unlock the O(n²) parallel version.
 pub fn pelt(data: &[f64], min_seg: usize, penalty: Option<f64>) -> Vec<usize> {
     let n = data.len();
     if n < 2 * min_seg {

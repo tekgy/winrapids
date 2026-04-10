@@ -402,33 +402,6 @@ pub enum IntermediateTag {
     /// Cluster label assignments.
     ClusterLabels { data_id: DataId },
 
-    /// Cluster centroids (k x d).
-    Centroids { data_id: DataId, k: usize },
-
-    /// Top-k nearest neighbors per point.
-    TopKNeighbors { k: usize, metric: Metric, data_id: DataId },
-
-    /// Embedding vectors (n x dim).
-    Embedding { dim: usize, data_id: DataId },
-
-    /// Distance matrix computed under a specific Manifold geometry.
-    ///
-    /// Parallel to `DistanceMatrix` (which uses `Metric`), but parameterized by
-    /// a full `Manifold` — allowing hyperbolic, spherical, and learned distances
-    /// to be cached independently alongside Euclidean ones.
-    ///
-    /// The `manifold_name` is a stable string from `Manifold::name()` — used instead
-    /// of the full `Manifold` type to avoid a dependency cycle between `intermediates.rs`
-    /// and `manifold.rs` (which already depends on `intermediates.rs`).
-    ManifoldDistanceMatrix { manifold_name: String, data_id: DataId },
-
-    /// Distance matrix produced by a `ManifoldMixture` — a weighted combination
-    /// of component distance matrices.
-    ///
-    /// `mix_id` is the content hash of the mixture specification (manifolds + weights),
-    /// computed via `ManifoldMixture::mix_id()`.
-    ManifoldMixtureDistance { mix_id: DataId, data_id: DataId },
-
     /// Moment statistics for an ungrouped numeric array: {count, sum, min, max, m2, m3, m4}.
     ///
     /// This is the minimum sufficient representation (MSR) for all moment-based
@@ -473,6 +446,37 @@ pub enum IntermediateTag {
     /// instead of rebuilding — distinct-count queries, set-membership
     /// probes, heavy-hitter lookups, union-of-streams merges.
     Sketch { kind: SketchKind, precision: u32, data_id: DataId },
+
+    /// Pairwise distance matrix computed under a named manifold geometry
+    /// (Poincaré, spherical geodesic, etc.). `manifold_name` is the
+    /// string key returned by `TiledOp::params_key()`.
+    ///
+    /// Distinct from `DistanceMatrix` (which uses a `Metric` discriminant)
+    /// because manifold geometries are parameterised by a free-form string
+    /// rather than an enum variant, and their caching contract differs.
+    ///
+    /// Produced by: KNN, DBSCAN, and clustering pipelines that accept a
+    /// `ManifoldSpec`. Consumed by any subsequent analysis step over the
+    /// same manifold + data pair.
+    ManifoldDistanceMatrix { manifold_name: String, data_id: DataId },
+
+    /// Weighted mixture of manifold distance matrices.
+    /// `mix_id` is the content-hash of the mixture specification
+    /// (manifold names + weights), distinct from `data_id`.
+    ///
+    /// Produced by: `ClusteringEngine::discover_clusters_manifold_mixture`.
+    /// Consumed by: downstream clustering steps that received the same
+    /// mixture configuration over the same data.
+    ManifoldMixtureDistance { mix_id: DataId, data_id: DataId },
+
+    /// K-means centroid assignment (cluster labels for each row).
+    /// `k` is the number of clusters requested; together with `data_id`
+    /// it uniquely identifies one run of KMeans on this dataset.
+    ///
+    /// Produced by: `ClusteringPipeline::kmeans`.
+    /// Consumed by: any step in the same pipeline that requires the label
+    /// vector — silhouette scoring, group-stats extraction, etc.
+    Centroids { data_id: DataId, k: usize },
 }
 
 /// Which streaming sketch family a `Sketch` intermediate represents.

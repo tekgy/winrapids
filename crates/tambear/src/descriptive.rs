@@ -1294,7 +1294,7 @@ mod tests {
 
     fn close(a: f64, b: f64, tol: f64, msg: &str) {
         if a.is_nan() && b.is_nan() { return; }
-        assert!((a - b).abs() < tol,
+        assert!((a - b).abs() <= tol,
             "{}: expected {}, got {} (diff {})", msg, b, a, (a - b).abs());
     }
 

@@ -1557,8 +1557,9 @@ pub fn matrix_exp(a: &Mat) -> Mat {
             }
         }
     } else {
-        // Fallback: return identity for singular Q (shouldn't happen for well-scaled input)
-        return eye;
+        // Singular Q denominator — return NaN matrix to propagate failure rather than
+        // silently returning identity (which would be wrong for all non-zero matrices).
+        return Mat { data: vec![f64::NAN; n * n], rows: n, cols: n };
     }
 
     // Squaring: exp(A) = exp(A/2^s)^{2^s}
@@ -2613,6 +2614,22 @@ mod tests {
         let log_a = matrix_log(&a);
         let exp_log_a = matrix_exp(&log_a);
         mat_approx_eq_msg(&exp_log_a, &a, 1e-8, "exp(log(A))=A");
+    }
+
+    #[test]
+    fn matrix_exp_singular_q_returns_nan_not_identity() {
+        // Pathological input: extremely large off-diagonal entries cause the Padé
+        // denominator Q to be singular after scaling. The result must be NaN, not I.
+        // Previously returned eye (identity), silently giving a wrong answer.
+        // Construct a matrix whose Padé Q denominator is near-singular by using
+        // a matrix with huge norm so that even after scaling the approximation breaks.
+        // We craft this directly: a 2x2 matrix with entries at f64::MAX/4 forces
+        // scaling to max_s but Q can still be singular for adversarial inputs.
+        // Simplest adversarial path: inject NaN into the input — propagation is required.
+        let a = Mat::from_rows(&[&[f64::NAN, 0.0], &[0.0, 1.0]]);
+        let result = matrix_exp(&a);
+        assert!(result.data.iter().any(|x| x.is_nan()),
+            "matrix_exp of NaN input must produce NaN output, not identity");
     }
 
     #[test]

@@ -144,3 +144,94 @@ representation that encodes what to build first.
 ---
 
 *The scipy gap analysis found the territory. The dependency topology is the map.*
+
+---
+
+## Additional Proposals — julia/matlab gap scan role, 2026-04-10 (later session)
+
+### 5. `verification-oracle-manifest` — HIGH (rigor infrastructure)
+
+**What:** Machine-readable coverage manifest making the oracle gap visible without grep work.
+Every primitive registers theorems + adversarial cases at creation time. CI reports
+"5% oracle, 47% adversarial" not "1390 tests green."
+
+Full spec at:
+`campsites/industrialization/rigor/20260410144156-adversarial-coverage/observer/verification-oracle-manifest.md`
+
+Key new idea: **dependency-weighted prioritization**. `regularized_incomplete_gamma` uncovered
+is a different risk than a leaf primitive uncovered — 10+ downstream p-value functions inherit
+the gap. The manifest makes this visible automatically.
+
+Smallest viable: `verification_manifest.toml` + `cargo verify-coverage`. No proc-macros needed.
+**Owner:** pathmaker (infrastructure) + observer (populate initial entries).
+
+---
+
+### 6. `special-functions-workup-wave` — HIGH (closes root oracle gaps)
+
+Six primitives with zero oracle AND zero adversarial coverage. One workup per primitive,
+closing both gaps simultaneously:
+
+1. `regularized_incomplete_gamma` — `P(a,x) + Q(a,x) = 1` is the fundamental theorem.
+   Series/continued-fraction branch transition is the accuracy risk.
+2. `digamma` + `trigamma` family — reflection formula + recurrence + pole tests. One file.
+3. `matrix_exp` — three theorems: `exp(t·I) = e^t·I`, `exp(A)·exp(-A) = I`,
+   `d/dt exp(tA)|_{t=0} = A`. These catch the full Padé failure class.
+4. `mutual_information` / `entropy` — `-0.3·log(0.3) - 0.7·log(0.7)` is analytically exact.
+   `KL(p||p) = 0` is a theorem. Neither asserted anywhere.
+
+**Connects to:** scipy-gap-scan's `log-gamma-negative-domain` fix (same special functions tree).
+**Owner:** math-researcher (theorems) + adversarial (pole/boundary cases).
+
+---
+
+### 7. `tropical-semiring-op-variants` — MEDIUM (architecture unlock)
+
+**What:** Add `Op::TropicalMinPlus` and `Op::TropicalMaxPlus` to the Op enum with correct
+identities: (+∞, +∞) and (-∞, -∞) respectively.
+
+**Why:** The kingdom classification theorem established today shows PELT, Viterbi, all-pairs
+shortest paths, and CTC decoding are Kingdom A in the tropical semiring. Without these Op
+variants, they remain sequential when they could be GPU-parallel.
+
+**Concrete unlock:** PELT's `F(t) = min_τ [F(τ) + C(τ,t) + β]` becomes an `accumulate` call
+over `Grouping::Prefix + Op::TropicalMinPlus`. GPU-parallel changepoint detection follows.
+
+**Dependency:** requires `Grouping::Prefix` to be wired first (currently `todo!()`).
+Variants can be defined now; they sit idle until Prefix exists.
+
+---
+
+### 8. `julia-gap-p0-primitives` — MEDIUM (new math, no scipy equivalent)
+
+From today's Julia/MATLAB gap analysis. Four P0 items with no scipy equivalent:
+
+1. **Milstein SDE** (`RKMil` diagonal noise) — strong order 1.0 vs EM's 0.5. For diagonal
+   noise (most financial SDEs), no Lévy area needed. Straightforward gap.
+2. **MUSIC spectral estimation** — subspace method resolving below Rayleigh limit.
+   Decomposes into existing primitives: `eigendecompose(Rxx)` + `signal_noise_partition(K)`
+   + `music_pseudospectrum`. The assembly is what's missing.
+3. **Wishart distribution** — `bartlett_decomposition_sample` + `wishart_logpdf`. Needed for
+   Bayesian multivariate analysis. No current matrix-variate distribution support.
+4. **Characteristic function option pricing** — `cf_heston(u, params) → ℂ` + Carr-Madan FFT.
+   One primitive unlocks all affine stochastic volatility models.
+
+Full analysis: `docs/research/math-industrialization/julia-matlab-gap-analysis.md`
+
+---
+
+### 9. `kingdom-classification-audit` — LOW effort, HIGH leverage
+
+**What:** Apply the three-condition theorem to every current Kingdom B label in the codebase.
+Most will dissolve. Each mislabeled Kingdom B is a computation that *could* be GPU-parallel
+but is scheduled sequentially — a direct performance cost.
+
+Theorem: Kingdom A iff (1) data-determined map, (2) semigroup closure, (3) bounded state
+dimension.
+
+Confirmed mislabeled (already corrected): GARCH filter, EMA.
+Likely mislabeled: AR(p) filter, Holt-Winters exponential smoothing, rolling mean, cumsum.
+
+**Deliverable:** Audit file + corrected Kingdom labels + documentation of genuinely-B cases
+with the specific violated condition.
+**Owner:** aristotle (developed the theorem).

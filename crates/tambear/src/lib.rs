@@ -272,6 +272,9 @@ pub use nonparametric::{
     shapiro_wilk_coefficients,
     // Missing flavors (added 2026-04-10)
     hoeffdings_d, blomqvist_beta,
+    // Scipy gap closure (2026-04-10)
+    ranksums, skewtest, kurtosistest,
+    TheilSlopesResult, theilslopes, siegelslopes,
     // Correlation primitives (flat catalog)
     phi_coefficient, point_biserial, biserial_correlation, rank_biserial,
     tetrachoric, cramers_v, eta_squared, distance_correlation, concordance_correlation,
@@ -518,6 +521,16 @@ pub use number_theory::{
     partition_count, euler_product_approx, basel_sum_exact,
     rsa_keygen, rsa_encrypt, rsa_decrypt, dh_public_key, dh_shared_secret,
     LinearRecurrenceStep, compose_steps,
+    // Combinatorial atoms (Section 10)
+    log_binomial, binomial_coeff, multinomial_coeff, log_multinomial,
+    catalan_number, log_catalan,
+    stirling1, stirling1_row, stirling2,
+    bell_number,
+    fibonacci, lucas_number,
+    derangement,
+    falling_factorial, rising_factorial,
+    harmonic_number, harmonic_number_r,
+    double_factorial, log_double_factorial,
 };
 pub mod physics;
 pub use physics::{
@@ -677,7 +690,7 @@ pub use irt::{
     rasch_prob, prob_2pl, prob_3pl,
     ItemParams, IrtFitConfig, fit_2pl,
     ability_mle, ability_eap,
-    item_information, test_information, sem,
+    item_information, test_information, sem as irt_sem,
     mantel_haenszel_dif,
 };
 

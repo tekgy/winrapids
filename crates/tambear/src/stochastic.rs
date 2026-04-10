@@ -599,6 +599,194 @@ pub fn ito_lemma_verification(path: &[f64], _dt: f64) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// SECTION 10 — SDE Stepping Primitives (Euler-Maruyama, Milstein, Langevin)
+//
+// Kingdom A: each step is an affine map (a_t, b_t) applied to the current
+// state — BUT the map coefficients depend on the state x_t, making these
+// Kingdom B (state-dependent maps). The Fock boundary holds: the drift f(x)
+// and diffusion g(x) at step t require x_t, which requires x_{t-1}, etc.
+//
+// Single-step primitives (euler_maruyama_step, milstein_step) are the
+// composable atoms. The full path integrators compose them sequentially.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Euler-Maruyama step for SDE: dX = f(X,t)dt + g(X,t)dW.
+/// X_{t+dt} = X_t + f(X_t, t)·dt + g(X_t, t)·√dt·Z, Z ~ N(0,1).
+/// Strong order 0.5, weak order 1.0.
+pub fn euler_maruyama_step(
+    x: f64,
+    t: f64,
+    dt: f64,
+    drift: impl Fn(f64, f64) -> f64,
+    diffusion: impl Fn(f64, f64) -> f64,
+    z: f64,  // pre-sampled N(0,1) variate
+) -> f64 {
+    x + drift(x, t) * dt + diffusion(x, t) * dt.sqrt() * z
+}
+
+/// Milstein step for SDE with Itô correction for multiplicative noise.
+/// X_{t+dt} = X_t + f·dt + g·√dt·Z + ½g·g'·dt·(Z²-1).
+/// Strong order 1.0 (vs Euler-Maruyama's 0.5) for scalar SDEs.
+/// `diffusion_deriv`: ∂g/∂x at (X_t, t).
+pub fn milstein_step(
+    x: f64,
+    t: f64,
+    dt: f64,
+    drift: impl Fn(f64, f64) -> f64,
+    diffusion: impl Fn(f64, f64) -> f64,
+    diffusion_deriv: impl Fn(f64, f64) -> f64,
+    z: f64,  // pre-sampled N(0,1) variate
+) -> f64 {
+    let f = drift(x, t);
+    let g = diffusion(x, t);
+    let gp = diffusion_deriv(x, t);
+    let sqrt_dt = dt.sqrt();
+    // Milstein correction: ½ g g' (dW² - dt) where dW² ≈ dt·Z²
+    x + f * dt + g * sqrt_dt * z + 0.5 * g * gp * dt * (z * z - 1.0)
+}
+
+/// Full path integration of a general scalar SDE using Euler-Maruyama.
+/// Returns (times, states).
+/// `drift(x, t)` and `diffusion(x, t)` are the SDE coefficients.
+pub fn euler_maruyama_path(
+    x0: f64,
+    t_end: f64,
+    n_steps: usize,
+    drift: impl Fn(f64, f64) -> f64,
+    diffusion: impl Fn(f64, f64) -> f64,
+    seed: u64,
+) -> (Vec<f64>, Vec<f64>) {
+    let dt = t_end / n_steps as f64;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
+    let mut times = Vec::with_capacity(n_steps + 1);
+    let mut states = Vec::with_capacity(n_steps + 1);
+    times.push(0.0);
+    states.push(x0);
+    let mut x = x0;
+    for i in 0..n_steps {
+        let t = i as f64 * dt;
+        let z = crate::rng::sample_normal(&mut rng, 0.0, 1.0);
+        x = euler_maruyama_step(x, t, dt, &drift, &diffusion, z);
+        times.push((i + 1) as f64 * dt);
+        states.push(x);
+    }
+    (times, states)
+}
+
+/// Full path integration of a scalar SDE using Milstein's method.
+/// Returns (times, states).
+pub fn milstein_path(
+    x0: f64,
+    t_end: f64,
+    n_steps: usize,
+    drift: impl Fn(f64, f64) -> f64,
+    diffusion: impl Fn(f64, f64) -> f64,
+    diffusion_deriv: impl Fn(f64, f64) -> f64,
+    seed: u64,
+) -> (Vec<f64>, Vec<f64>) {
+    let dt = t_end / n_steps as f64;
+    let mut rng = crate::rng::Xoshiro256::new(seed);
+    let mut times = Vec::with_capacity(n_steps + 1);
+    let mut states = Vec::with_capacity(n_steps + 1);
+    times.push(0.0);
+    states.push(x0);
+    let mut x = x0;
+    for i in 0..n_steps {
+        let t = i as f64 * dt;
+        let z = crate::rng::sample_normal(&mut rng, 0.0, 1.0);
+        x = milstein_step(x, t, dt, &drift, &diffusion, &diffusion_deriv, z);
+        times.push((i + 1) as f64 * dt);
+        states.push(x);
+    }
+    (times, states)
+}
+
+/// Langevin dynamics for a particle in potential V(x).
+/// dX = -γX dt + σ dW  (linear damping / harmonic well case).
+/// More generally: dX = -V'(X)dt + σ dW.
+/// The stationary distribution is the Gibbs measure exp(-2V(x)/σ²) / Z.
+/// Returns (positions, velocities) if velocity tracking enabled, else just positions.
+///
+/// This is the overdamped Langevin equation (no inertia term).
+/// `force`: -∂V/∂x = the force on the particle.
+pub fn langevin_overdamped(
+    x0: f64,
+    t_end: f64,
+    n_steps: usize,
+    force: impl Fn(f64) -> f64,
+    sigma: f64,
+    seed: u64,
+) -> Vec<f64> {
+    // Overdamped Langevin = Euler-Maruyama with drift = force(x), diffusion = σ
+    euler_maruyama_path(
+        x0,
+        t_end,
+        n_steps,
+        |x, _t| force(x),
+        |_x, _t| sigma,
+        seed,
+    ).1
+}
+
+/// Underdamped Langevin dynamics with explicit momentum.
+/// dx = v dt;  dv = (-γv + F(x)/m)dt + σ dW.
+/// Returns (positions, velocities).
+pub fn langevin_underdamped(
+    x0: f64,
+    v0: f64,
+    mass: f64,
+    gamma: f64,   // friction coefficient
+    sigma: f64,   // noise amplitude (σ² = 2γk_BT/m by fluctuation-dissipation)
+    t_end: f64,
+    n_steps: usize,
+    force: impl Fn(f64) -> f64,
+    seed: u64,
+) -> (Vec<f64>, Vec<f64>) {
+    let dt = t_end / n_steps as f64;
+    let sqrt_dt = dt.sqrt();
+    let mut rng = crate::rng::Xoshiro256::new(seed);
+    let mut positions = Vec::with_capacity(n_steps + 1);
+    let mut velocities = Vec::with_capacity(n_steps + 1);
+    positions.push(x0);
+    velocities.push(v0);
+    let mut x = x0;
+    let mut v = v0;
+    for _ in 0..n_steps {
+        let z = crate::rng::sample_normal(&mut rng, 0.0, 1.0);
+        let f = force(x);
+        // Euler-Maruyama for the (x, v) system
+        let v_new = v + (-gamma * v + f / mass) * dt + sigma * sqrt_dt * z;
+        let x_new = x + v * dt;
+        x = x_new;
+        v = v_new;
+        positions.push(x);
+        velocities.push(v);
+    }
+    (positions, velocities)
+}
+
+/// Runge-Kutta 4th order step for a vector-valued ODE: dX/dt = f(X, t).
+/// Single step primitive — compose via euler_maruyama_path for SDEs.
+/// For deterministic ODEs (no noise), this is the standard RK4 stepper.
+/// `state`: current state vector; returns next state.
+pub fn rk4_step_vec(
+    state: &[f64],
+    t: f64,
+    dt: f64,
+    f: impl Fn(&[f64], f64) -> Vec<f64>,
+) -> Vec<f64> {
+    let n = state.len();
+    let k1 = f(state, t);
+    let s2: Vec<f64> = (0..n).map(|i| state[i] + 0.5 * dt * k1[i]).collect();
+    let k2 = f(&s2, t + 0.5 * dt);
+    let s3: Vec<f64> = (0..n).map(|i| state[i] + 0.5 * dt * k2[i]).collect();
+    let k3 = f(&s3, t + 0.5 * dt);
+    let s4: Vec<f64> = (0..n).map(|i| state[i] + dt * k3[i]).collect();
+    let k4 = f(&s4, t + dt);
+    (0..n).map(|i| state[i] + dt / 6.0 * (k1[i] + 2.0*k2[i] + 2.0*k3[i] + k4[i])).collect()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -884,5 +1072,104 @@ mod tests {
         let err = ito_lemma_verification(&w, dt);
         // Discretization error is O(dt) = O(10⁻³), allow 10× margin
         assert!(err < 0.01, "Itô d(W²) verification error={err} should be near 0");
+    }
+
+    // ── Section 10: SDE Stepping Primitives ─────────────────────────────
+
+    #[test]
+    fn euler_maruyama_gbm_drift() {
+        // GBM with mu=0.1, sigma=0.2: E[X(T)] = X0 exp(mu*T)
+        // Average over many paths to check mean drift.
+        let (mu, sigma, x0, t_end, n_steps) = (0.1_f64, 0.2_f64, 100.0_f64, 1.0, 1000);
+        let n_paths = 500;
+        let mut sum = 0.0;
+        for seed in 0..n_paths as u64 {
+            let (_, path) = euler_maruyama_path(
+                x0, t_end, n_steps,
+                |x, _t| mu * x,
+                |x, _t| sigma * x,
+                seed,
+            );
+            sum += path.last().unwrap();
+        }
+        let mean_x = sum / n_paths as f64;
+        let expected = x0 * (mu * t_end).exp();
+        close_rel(mean_x, expected, 0.05, "EM GBM mean");
+    }
+
+    #[test]
+    fn milstein_gbm_same_mean_as_em() {
+        // For GBM g(x)=sigma*x: g'=sigma. Milstein and EM should give same mean.
+        let (mu, sigma, x0) = (0.05_f64, 0.2_f64, 100.0_f64);
+        let (t_end, n_steps) = (0.1, 100);
+        let n_paths = 500;
+        let mut em_sum = 0.0;
+        let mut mil_sum = 0.0;
+        for seed in 0..n_paths as u64 {
+            let (_, em) = euler_maruyama_path(
+                x0, t_end, n_steps,
+                |x, _t| mu * x,
+                |x, _t| sigma * x,
+                seed,
+            );
+            let (_, mil) = milstein_path(
+                x0, t_end, n_steps,
+                |x, _t| mu * x,
+                |x, _t| sigma * x,
+                |_x, _t| sigma,
+                seed,
+            );
+            em_sum += em.last().unwrap();
+            mil_sum += mil.last().unwrap();
+        }
+        let em_mean = em_sum / n_paths as f64;
+        let mil_mean = mil_sum / n_paths as f64;
+        let expected = x0 * (mu * t_end).exp();
+        close_rel(em_mean, expected, 0.05, "EM GBM mean");
+        close_rel(mil_mean, expected, 0.05, "Milstein GBM mean");
+    }
+
+    #[test]
+    fn langevin_overdamped_harmonic_stationary() {
+        // Overdamped Langevin in V(x)=0.5*x^2: force=-x, sigma=1.
+        // Stationary dist: p(x) ~ exp(-x^2) => std ~ 1/sqrt(2) ~ 0.707.
+        let (x0, t_end, n_steps, sigma) = (5.0_f64, 50.0, 100_000, 1.0_f64);
+        let path = langevin_overdamped(x0, t_end, n_steps, |x| -x, sigma, 42);
+        let start = n_steps / 5;
+        let vals = &path[start..];
+        let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+        let var = vals.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+        let std = var.sqrt();
+        assert!(std > 0.5 && std < 1.2, "Langevin stationary std={std:.3}, expected ~0.707");
+        assert!(mean.abs() < 0.2, "Langevin stationary mean={mean:.3} should be ~0");
+    }
+
+    #[test]
+    fn langevin_underdamped_energy_dissipates() {
+        // No noise (sigma=0): underdamped Langevin should lose energy due to friction.
+        let (x0, v0, mass, gamma) = (1.0_f64, 0.0_f64, 1.0_f64, 0.5_f64);
+        let (pos, vel) = langevin_underdamped(x0, v0, mass, gamma, 0.0, 5.0, 5000, |x| -x, 42);
+        let e0 = 0.5 * mass * v0 * v0 + 0.5 * x0 * x0;
+        let x_end = pos.last().unwrap();
+        let v_end = vel.last().unwrap();
+        let e_end = 0.5 * mass * v_end * v_end + 0.5 * x_end * x_end;
+        assert!(e_end < e0, "Energy dissipates: {e_end:.4} < {e0:.4}");
+    }
+
+    #[test]
+    fn rk4_step_harmonic_oscillator() {
+        // RK4 on SHO: x(pi/omega) = cos(pi) = -1 for x0=1, v0=0.
+        let omega = 2.0_f64;
+        let dt = 0.01;
+        let f = |s: &[f64], _t: f64| vec![s[1], -omega * omega * s[0]];
+        let mut state = vec![1.0_f64, 0.0];
+        let t_end = std::f64::consts::PI / omega;
+        let n_steps = (t_end / dt).ceil() as usize;
+        for i in 0..n_steps {
+            state = rk4_step_vec(&state, i as f64 * dt, dt, &f);
+        }
+        close(state[0], -1.0, 0.01, "RK4 SHO half-period x=-1");
+        let energy = 0.5 * (state[1].powi(2) + omega.powi(2) * state[0].powi(2));
+        close_rel(energy, 0.5 * omega.powi(2), 1e-4, "RK4 SHO energy conserved");
     }
 }

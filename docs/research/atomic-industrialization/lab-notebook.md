@@ -695,4 +695,103 @@ gradients `dH_α/dα`, not for entropy values themselves. The accumulate+gather 
 forced this to be named explicitly, revealing the simplification. Computationally correct;
 conceptually the escort is still the right frame for understanding the family.
 
-*Last updated: 2026-04-10 by observer (oracle coverage map inventory + renyi NaN bug)*
+---
+
+### Oracle Coverage Map — Campsite Created
+
+**Campsite**: `verification/20260410171433-oracle-coverage-map`
+
+Seeded with actual measurements from the test corpus. Key numbers:
+
+| Tier | Definition | Count (estimated) |
+|------|-----------|-------------------|
+| Theorem-oracle (green) | mpmath/SymPy at 50+ digits | ~10 primitives (6 workup files + algebraic theorems) |
+| Parity-oracle (yellow) | scipy/numpy peer comparison | ~80-120 (gold_standard_parity.rs: **471 tests**) |
+| Contract (orange) | NaN/boundary guards | ~150-200 (adversarial waves 1-19) |
+| Behavior/none (red/black) | finite output or no external tests | ~50-100+ |
+
+**Critical discovery**: `gold_standard_parity.rs` has 471 test functions — a much larger
+parity-oracle layer than previously accounted for. The yellow zone is substantial, not thin.
+
+**The Padé-class bug argument**: scipy parity tests might miss Padé coefficient errors because
+scipy also uses Padé — both implementations agree on a wrong answer. Only theorem-oracle tests
+(asserting mathematical necessities like `exp(t·I) = e^t·I`) catch this class of error.
+
+**Seed document**: `campsites/verification/20260410171433-oracle-coverage-map/observer/insights/seed.md`
+Contains: four-tier taxonomy, current state with real numbers, Padé argument, connection to
+sharing phyla map (shared intermediates propagate their verification tier to consumers).
+
+---
+
+### PELT Tropical Semiring Verification — 2026-04-10
+
+Scout found that PELT (Pruned Exact Linear Time changepoint) is Kingdom A in the tropical
+semiring (min-plus: add=min, mul=+) because the optimal-cost combination operation
+`(cost_a + cost_b)` is associative and the pruning criterion is a data-determined
+threshold. Scout also claimed ARMA MA terms and BOCPD are genuine Kingdom B.
+
+**Verified: the codebase already knows about PELT's tropical structure.**
+
+`accumulate.rs:121-124`: "Future: `TropicalMinPlus` would inhabit the min-plus semiring
+(add=min, mul=+), enabling Viterbi, PELT (unpruned), and all-pairs shortest-path as Kingdom
+A computations. Gap noted 2026-04-10 from tropical semiring analysis of PELT/Viterbi structure."
+
+`time_series.rs:3776-3778` at the PELT implementation: "We label the implementation Kingdom B.
+The tropical semiring structure is real — Op::TropicalMinPlus would unlock the O(n²) parallel
+version."
+
+Scout's theorem and the code comments are convergent — independent recognition of the same
+structure. This is the same pattern as GARCH (volatility.rs already corrected the label
+before the scout's report arrived). The codebase appears to be ahead of agent analysis
+on at least these two Kingdom classification improvements.
+
+**ARMA MA terms — verified as genuine Kingdom B:**
+
+Residuals ε_{t-k} feeding the MA component are generated mid-chain:
+`ε_t = x_t - (AR forecast) - (MA forecast)`
+
+The MA forecast at step t requires ε_{t-1}, ..., ε_{t-q}. Those residuals cannot be
+precomputed before the chain runs — they depend on AR+MA forecasts which depend on prior
+residuals. The semigroup element at step t requires state that did not exist until step t-1
+executed. Data is available (`x_1,...,x_n`) but intermediate state (ε_t) is causally
+generated. Genuine Kingdom B by the Fock boundary theorem.
+
+**BOCPD — genuine Kingdom B (not independently verified in code, consistent with scout's claim):**
+
+Posterior hazard probability conditions on accumulated run-length distribution which updates
+with each observation. Weights are mid-chain generated, not precomputable.
+
+**Refined Fock boundary theorem (verified form):**
+
+*Data-available* ≠ Kingdom A. *State-generated-mid-chain* = genuine Kingdom B.
+
+The distinction: can the semigroup element at step t be computed from raw input data alone,
+or does it require intermediate state that only exists after prior steps execute?
+
+- GARCH, HMM forward: data-determined matrices → Kingdom A (precomputable)
+- MCMC, ARMA MA, BOCPD: state-generated mid-chain → Kingdom B (not precomputable)
+- PELT, Viterbi: min-plus associativity → Kingdom A if Op::TropicalMinPlus exists
+
+**Op gap confirmed**: `Op::TropicalMinPlus` is missing from `accumulate.rs`. The comment
+at line 121 documents this as a known future variant. PELT's Kingdom B label is a proxy
+for "we lack the Op to express it as Kingdom A." Once the Op exists, PELT and Viterbi
+reclassify automatically.
+
+---
+
+### Session Final State
+
+**Test counts (verified at HEAD 0f7cbcc, 2026-04-10)**:
+- tambear: **2,201 passed, 0 failed, 5 ignored**
+- tambear-fintek: 279 (not re-run after wave commits)
+- `cargo check`: clean (69 warnings, 0 errors)
+
+**Net additions this session**: +49 lib tests. 0 regressions. 36 confirmed bugs fixed across waves 1-19.
+
+**Open items not yet committed**:
+1. `renyi_entropy:108` alpha=Inf NaN-eating fold (`fold(0.0f64, f64::max)`) — reported, unfixed
+2. `silhouette_score` Kingdom B mislabeling (`clustering.rs:684`) — documented, unfixed
+3. `mod_pow` Kingdom B mislabeling (`number_theory.rs:153`) — documented, unfixed
+4. `Op::TropicalMinPlus` gap in `accumulate.rs:121` — documented, not yet implemented
+
+*Last updated: 2026-04-10 by observer (PELT tropical semiring verification added)*

@@ -53,24 +53,34 @@ What appeared to be Kingdom A/B with a fuzzy boundary is actually:
 GARCH, EMA, EWMA, AR(p), Kalman, HMM forward, Kaplan-Meier, LogSumExp
 
 **Kingdom A (data-determined, tropical semiring):**
-PELT changepoint, Viterbi decoding, Bellman-Ford, Dijkstra, Floyd-Warshall, DTW
+Viterbi decoding, Bellman-Ford, Dijkstra, Floyd-Warshall, DTW,
+PELT underlying DP recurrence (O(n²) work, O(log n) depth on GPU)
 
 **Genuine Kingdom B (self-referential maps only):**
-ARMA MA terms (residuals are computed state, not data),
+ARMA MA terms CSS implementation (but Kalman formulation = Kingdom A math),
 BOCPD (transition matrix grows with t),
 EGARCH (z_t = r_t/σ_t couples map to state),
 TAR (branch selection is state-dependent),
-MCMC (proposal and acceptance are state-dependent)
+MCMC (proposal and acceptance are state-dependent),
+PELT pruning optimization (uses f[t] to adapt candidate set — adds Kingdom B for O(n) CPU)
 
-Kingdom B is defined by self-reference: the map depends on its own output. This is
-a small set. Most "sequential" algorithms are Kingdom A over a non-standard semiring.
+**PELT GPU/CPU trade-off** (r-gap-scan): the pruning that gives PELT O(n) complexity
+is a Kingdom B element added to a Kingdom A computation. Different hardware wants
+different regimes:
+- GPU: accept O(n²) work, get O(log n) depth — use tropical Kingdom A prefix scan
+- CPU: accept sequential, get O(n) work — use PELT pruning (Kingdom B structure)
+
+Same algorithm, different execution regime for different targets. TAM can choose
+based on hardware: tropical scan on GPU, PELT pruning on CPU.
 
 **The Fock boundary compresses:**
 - Old statement: "sequential vs parallel"
-- New statement: "self-referential vs data-determined"
+- New statement: "self-referential vs data-determined" (plus: finitely-representable semigroup)
 
-Self-referential = genuinely small. Data-determined = most of statistics and
-dynamic programming, parallelizable once the correct semiring is identified.
+Self-referential = genuinely small. Data-determined + finitely-representable semigroup =
+most of statistics and dynamic programming, parallelizable once the correct semiring
+is identified. The "finitely-representable" condition catches floor-affine, logistic map,
+and scaled sine — data-determined maps that still fail to be Kingdom A.
 
 ---
 

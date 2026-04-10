@@ -42,7 +42,9 @@ use crate::special_functions::{f_right_tail_p, chi2_right_tail_p, normal_two_tai
 /// multivariate tests, CCA, portfolio optimization. Any method that
 /// needs the second-moment structure of multivariate data.
 ///
-/// Kingdom A: single-pass accumulate over rows.
+/// Kingdom A: two-pass accumulate — first pass computes col_means, second pass
+/// accumulates centered cross-products. The two-pass structure gives shift
+/// invariance at large magnitudes (verified: stable at 1e9 column offsets).
 pub fn covariance_matrix(x: &Mat, ddof: Option<usize>) -> Mat {
     let n = x.rows;
     let p = x.cols;

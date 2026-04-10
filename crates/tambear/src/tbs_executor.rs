@@ -2133,10 +2133,13 @@ pub fn execute(
                 let positive = bool_arg(step, "positive", 3, false);
                 let (x, y) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
                 let n = x.len().min(y.len());
-                let min_x = x.iter().cloned().fold(f64::INFINITY, f64::min);
-                let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                let min_y = y.iter().cloned().fold(f64::INFINITY, f64::min);
-                let max_y = y.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let min_x = x.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
+                let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
+                let min_y = y.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
+                let max_y = y.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
+                if min_x.is_nan() || max_x.is_nan() || min_y.is_nan() || max_y.is_nan() {
+                    return Ok(TbsStepOutput::Matrix { name: "pmi", data: vec![f64::NAN], rows: 1, cols: 1 });
+                }
                 let range_x = (max_x - min_x).max(1e-15);
                 let range_y = (max_y - min_y).max(1e-15);
                 let mut counts = vec![0.0f64; n_bins * n_bins];

@@ -476,6 +476,8 @@ pub fn lempel_ziv_complexity(data: &[f64]) -> f64 {
 ///
 /// Embedding: m-dimensional vectors with time delay τ.
 pub fn correlation_dimension(data: &[f64], m: usize, tau: usize) -> f64 {
+    // NaN or Inf in data → embedding vectors contain NaN → distances undefined
+    if data.iter().any(|v| !v.is_finite()) { return f64::NAN; }
     // Use canonical delay_embed primitive — Takens' theorem embedding
     let vectors = crate::time_series::delay_embed(data, m, tau);
     let n_vectors = vectors.len();
@@ -489,7 +491,7 @@ pub fn correlation_dimension(data: &[f64], m: usize, tau: usize) -> f64 {
     for i in 0..n_vectors {
         for j in (i + 1)..n_vectors {
             let d: f64 = (0..m).map(|k| (flat[i * m + k] - flat[j * m + k]).abs())
-                .fold(0.0, f64::max);
+                .fold(f64::NEG_INFINITY, crate::numerical::nan_max);
             distances.push(d);
         }
     }

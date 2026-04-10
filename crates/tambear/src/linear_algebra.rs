@@ -118,14 +118,14 @@ impl Mat {
     pub fn norm_inf(&self) -> f64 {
         (0..self.rows).map(|i| {
             (0..self.cols).map(|j| self.get(i, j).abs()).sum::<f64>()
-        }).fold(0.0_f64, f64::max)
+        }).fold(f64::NEG_INFINITY, crate::numerical::nan_max)
     }
 
     /// L1 norm (max column sum).
     pub fn norm_1(&self) -> f64 {
         (0..self.cols).map(|j| {
             (0..self.rows).map(|i| self.get(i, j).abs()).sum::<f64>()
-        }).fold(0.0_f64, f64::max)
+        }).fold(f64::NEG_INFINITY, crate::numerical::nan_max)
     }
 
     /// Check if square.

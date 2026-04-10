@@ -265,6 +265,7 @@ pub fn execute(
     let mut logistic_model: Option<LogisticModel> = None;
     let mut outputs: Vec<TbsStepOutput> = Vec::with_capacity(chain.steps.len());
     let mut advice: Vec<Option<TbsStepAdvice>> = Vec::with_capacity(chain.steps.len());
+    let mut superpositions_vec: Vec<Option<crate::superposition::Superposition>> = Vec::with_capacity(chain.steps.len());
     let mut using_bag = crate::using::UsingBag::new();
 
     // Track state for science linting
@@ -277,6 +278,7 @@ pub fn execute(
         let (pn, pd) = (fr.n, fr.d);
 
         let mut step_advice: Option<TbsStepAdvice> = None;
+        let mut step_superposition: Option<crate::superposition::Superposition> = None;
         let output = match step.name.as_str() {
             // ══════════════════════════════════════════════════════════════
             // Preprocessing
@@ -1146,6 +1148,58 @@ pub fn execute(
                 let min_samples = usize_req(step, "min_samples", 1)?;
                 pipeline = pipeline.discover_clusters(epsilon, min_samples);
                 TbsStepOutput::Transform
+            }
+
+            // sweep_kmeans: run kmeans at k_req and neighborhood; return superposition.
+            // modal_value = most-supported k across the sweep.
+            // sensitivity() tells you how much k choice matters.
+            ("sweep_kmeans", None) | ("discover_kmeans", None) => {
+                let k = usize_arg(step, "k", 0, 3);
+                let max_iter = usize_arg(step, "max_iter", 1, 100);
+                let data = pipeline.frame().data.clone();
+                let sup = crate::superposition::sweep_kmeans(&data, pn, pd, k, max_iter);
+                let modal_k = sup.modal_value;
+                step_superposition = Some(sup);
+                TbsStepOutput::Scalar { name: "sweep_kmeans_k", value: modal_k }
+            }
+
+            // sweep_two_sample: run all two-sample tests in superposition.
+            // collapsed() = the view with the most-agreed test decision.
+            // modal_value = fraction of tests that rejected H0.
+            ("sweep_two_sample", None) | ("discover_two_sample", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let alpha = f64_arg(step, "alpha", 2, 0.05);
+                let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                let sup = crate::superposition::sweep_two_sample_tests_alpha(&x, &yv, alpha);
+                // modal_value = fraction of tests that rejected H0
+                let rejection_rate = sup.modal_value;
+                step_superposition = Some(sup);
+                TbsStepOutput::Scalar { name: "sweep_two_sample_rejection_rate", value: rejection_rate }
+            }
+
+            // sweep_ar: run AR at order p and neighbors; return superposition.
+            // modal_value = modal AR order by minimum residual variance.
+            ("sweep_ar", None) | ("discover_ar", None) => {
+                let c = col_arg(step, 0);
+                let p = usize_arg(step, "p", 1, 2);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let sup = crate::superposition::sweep_ar(&col, p);
+                let modal_p = sup.modal_value;
+                step_superposition = Some(sup);
+                TbsStepOutput::Scalar { name: "sweep_ar_order", value: modal_p }
+            }
+
+            // sweep_moving_average: run MA at window size and neighbors.
+            // modal_value = modal window with smallest out-of-sample residual variance.
+            ("sweep_moving_average", None) | ("sweep_ma", None) | ("discover_ma", None) => {
+                let c = col_arg(step, 0);
+                let window = usize_arg(step, "window", 1, 5);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let sup = crate::superposition::sweep_moving_average(&col, window);
+                let modal_win = sup.modal_value;
+                step_superposition = Some(sup);
+                TbsStepOutput::Scalar { name: "sweep_ma_window", value: modal_win }
             }
 
             ("kmeans", None) => {
@@ -3397,6 +3451,7 @@ pub fn execute(
 
         outputs.push(output);
         advice.push(step_advice);
+        superpositions_vec.push(step_superposition);
     }
 
     // ── Post-chain science lints ──────────────────────────────────────────
@@ -3411,8 +3466,7 @@ pub fn execute(
         });
     }
 
-    let superpositions = vec![None; outputs.len()];
-    Ok(TbsResult { pipeline, linear_model, logistic_model, outputs, lints, superpositions, advice })
+    Ok(TbsResult { pipeline, linear_model, logistic_model, outputs, lints, superpositions: superpositions_vec, advice })
 }
 
 // ---------------------------------------------------------------------------

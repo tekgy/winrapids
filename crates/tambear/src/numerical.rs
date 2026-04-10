@@ -621,6 +621,30 @@ pub fn fixed_point(g: impl Fn(f64) -> f64, x0: f64, tol: f64, max_iter: usize) -
 // Numerical primitives — standalone atoms used by many methods
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// NaN-propagating min: returns NaN if either operand is NaN.
+///
+/// Unlike `f64::min`, which follows IEEE 754-2008 minNum semantics (returns the
+/// non-NaN operand), this function propagates NaN to signal invalid input.
+///
+/// Use when folding over raw (user-provided) data that may contain NaN.
+/// Do NOT use when input is pre-filtered (f64::min is faster in that case).
+#[inline]
+pub fn nan_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() { f64::NAN } else { a.min(b) }
+}
+
+/// NaN-propagating max: returns NaN if either operand is NaN.
+///
+/// Unlike `f64::max`, which follows IEEE 754-2008 maxNum semantics (returns the
+/// non-NaN operand), this function propagates NaN to signal invalid input.
+///
+/// Use when folding over raw (user-provided) data that may contain NaN.
+/// Do NOT use when input is pre-filtered (f64::max is faster in that case).
+#[inline]
+pub fn nan_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() { f64::NAN } else { a.max(b) }
+}
+
 /// Numerically stable log-sum-exp: `log(Σ exp(x_i))`.
 ///
 /// Uses the max-shift trick: `max(x) + log(Σ exp(x_i - max(x)))`.

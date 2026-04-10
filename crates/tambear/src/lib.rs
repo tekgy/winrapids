@@ -178,6 +178,7 @@ pub use descriptive::{
     DescriptiveEngine, DescriptiveResult, MomentStats, GroupedMomentStats,
     moments_ungrouped, moments_session, quantile, median, quartiles, iqr,
     geometric_mean, harmonic_mean, trimmed_mean, winsorized_mean,
+    coefficient_of_variation,
     sorted_nan_free, mad, gini, bowley_skewness, pearson_first_skewness,
     QuantileMethod,
     PHI_CENTERED_CU, PHI_CENTERED_QU,
@@ -280,6 +281,8 @@ pub use numerical::{
     derivative_central, derivative2_central, derivative_richardson,
     simpson, gauss_legendre_5, adaptive_simpson, trapezoid,
     OdeSolution, euler, rk4, rk45, rk4_system,
+    // NaN-propagating min/max (use for folds over raw/unfiltered data)
+    nan_min, nan_max,
     // Geometry
     stereographic_project, stereographic_project_inverse,
     // Dynamical systems

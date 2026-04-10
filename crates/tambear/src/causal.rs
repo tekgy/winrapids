@@ -78,7 +78,7 @@ pub fn propensity_scores(x: &Mat, treatment: &[f64]) -> Vec<f64> {
     }).collect()
 }
 
-fn sigmoid(z: f64) -> f64 { 1.0 / (1.0 + (-z).exp()) }
+fn sigmoid(z: f64) -> f64 { crate::neural::sigmoid(z) }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Propensity Score Matching

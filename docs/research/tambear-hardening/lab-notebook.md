@@ -450,3 +450,27 @@ Of the 7 still-firing:
 - The other 5 are real edge-case defects that need input guards
 
 **Impact**: The adversarial bug situation is 88% resolved. The stale `CONFIRMED BUG` markers should be cleaned up or converted to `FIXED:` markers.
+
+### Entry 13: 2026-04-09 -- Primitive count tracking (architectural directive)
+
+New metric per flat-catalog directive: track public function count as proxy for primitive catalog size.
+
+**Primitive catalog metrics**:
+- Baseline (2026-04-08): ~450 public functions
+- Checkpoint 6 (2026-04-09): **1,166 public functions** across 95 modules
+- Lib tests: **2,051 passed**, 0 failed, 5 ignored
+- Integration tests: ~900 additional (unchanged structure)
+
+**Primitive extraction candidates**: 20 functions over 100 lines that likely embed sub-operations. Top candidates for decomposition:
+- `cluster_validation` (146 lines) → silhouette + calinski_harabasz + davies_bouldin (3 primitives)
+- `tsne` (148 lines) → pairwise_distances + perplexity_calibrate + tsne_gradient + position_update
+- `logistic_regression` (143 lines) → sigmoid + cross_entropy_ll + irls_step
+- `lme_random_intercept` (132 lines) → cholesky_solve + henderson_equations + em_variance_update
+- `gmm_em` (128 lines) → gaussian_log_pdf + e_step_responsibilities + m_step_parameters
+- `glm_fit` (168 lines) → link_function + irls_iteration + deviance
+
+**Known duplicated primitives** (from garden audit):
+- `sigmoid` in 3 modules → should be 1 in special_functions.rs
+- `ols_simple` in 3 modules → should be 1 in linear_algebra.rs
+- `inversion_count` in data_quality.rs + data_quality_catalog.rs → should be 1 global primitive
+- `covariance_matrix` PRIVATE in multivariate.rs → should be public

@@ -142,7 +142,7 @@ pub use clustering::{
     bic_score, aic_score,
     kmeans_f64,
 };
-pub use intermediates::{DistanceMatrix, Metric, SufficientStatistics, IntermediateTag, TamSession, DataId};
+pub use intermediates::{DistanceMatrix, Metric, SufficientStatistics, IntermediateTag, TamSession, DataId, NormalityMethod, SketchKind};
 pub use reduce_op::ReduceOp;
 #[cfg(feature = "legacy-cudarc")]
 pub use scatter_jit::{ScatterJit, PHI_SUM, PHI_SUM_SQ, PHI_CENTERED_SUM, PHI_CENTERED_SUM_SQ, PHI_COUNT};
@@ -288,7 +288,8 @@ pub use nonparametric::{
 pub use complexity::{
     sample_entropy, approx_entropy, permutation_entropy, normalized_permutation_entropy,
     hurst_rs, dfa, higuchi_fd, lempel_ziv_complexity,
-    correlation_dimension, largest_lyapunov,
+    correlation_dimension, correlation_dimension_session,
+    largest_lyapunov, largest_lyapunov_session,
     LyapunovSpectrum, lyapunov_spectrum,
     // Nonlinear/structural complexity
     RqaResult, rqa, MfdfaResult, mfdfa, CcmResult, ccm,
@@ -531,6 +532,11 @@ pub use number_theory::{
     falling_factorial, rising_factorial,
     harmonic_number, harmonic_number_r,
     double_factorial, log_double_factorial,
+    // Polynomial algebra (Section 11)
+    poly_eval, poly_add, poly_sub, poly_mul, poly_scale, poly_normalize,
+    poly_divmod, poly_deriv, poly_integ, poly_compose,
+    poly_gcd, poly_interpolate, poly_interp_eval,
+    ntt, intt, poly_mul_ntt, NTT_PRIME, NTT_PRIME_ROOT,
 };
 pub mod physics;
 pub use physics::{
@@ -743,7 +749,7 @@ pub use tda::{
 
 // Volatility estimation and market microstructure
 pub use volatility::{
-    GarchResult, garch11_fit, garch11_forecast,
+    GarchResult, garch11_filter, garch11_log_likelihood, garch11_fit, garch11_forecast,
     EgarchResult, egarch11_fit,
     GjrGarchResult, gjr_garch11_fit,
     TgarchResult, tgarch11_fit,

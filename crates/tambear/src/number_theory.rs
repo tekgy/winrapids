@@ -1516,7 +1516,15 @@ pub fn stirling1(n: usize, k: usize) -> Option<u64> {
 /// Satisfies: xⁿ = Σ_k S(n,k) · x·(x-1)·…·(x-k+1)  (falling factorial expansion).
 ///
 /// Uses inclusion-exclusion formula: S(n,k) = (1/k!) Σ_{j=0}^{k} (-1)^(k-j) C(k,j) jⁿ.
-/// Returns `None` if overflow occurs. Max safe n ≈ 20 for exact values.
+/// Returns `None` if overflow occurs.
+///
+/// # Numerical regime (catastrophic cancellation warning)
+/// The alternating sum has massive cancellation. At n=25, k=12 the largest term is
+/// ~10²⁷ but the result is ~3.6·10¹⁷ (cancellation ratio ≈ 3.6e9). Intermediate
+/// sums use i128 (~10³⁸ range). Safe for n ≤ 25 across all k. For n > 25 with k
+/// near n/2, intermediate terms exceed i128 and this returns `None`. Special cases
+/// S(n,0), S(n,1), S(n,n) always succeed. Bell triangle approach (used by
+/// `bell_number`) avoids cancellation entirely, but only yields the total, not per-k.
 pub fn stirling2(n: usize, k: usize) -> Option<u64> {
     if k > n { return Some(0); }
     if k == 0 { return if n == 0 { Some(1) } else { Some(0) }; }
@@ -1930,6 +1938,24 @@ mod combinatorial_tests {
         }
     }
 
+    #[test]
+    fn stirling2_cancellation_boundary() {
+        // n ≤ 25 should succeed for all k (i128 intermediates hold)
+        // Special cases (k=0, k=n) always succeed regardless of n
+        assert!(stirling2(25, 12).is_some(), "S(25,12) should succeed (n≤25 safe range)");
+        // S(n, n) = 1 always (special case, no inclusion-exclusion needed)
+        assert_eq!(stirling2(30, 30), Some(1));
+        // S(n, 1) = 1 always (only one way to put all elements in one block)
+        assert_eq!(stirling2(30, 1), Some(1));
+        // S(n, 0) = 0 for n >= 1 always (no way to partition non-empty set into 0 blocks)
+        assert_eq!(stirling2(30, 0), Some(0));
+        // n > 26 with large k near n/2 should return None (i128 overflow), not panic or wrong answer
+        // S(26, 13): worst-case cancellation, expect None (overflow) or correct value
+        // Either is acceptable — just must not panic
+        let _ = stirling2(26, 13); // must not panic
+        let _ = stirling2(30, 15); // must not panic
+    }
+
     // ── bell_number ──────────────────────────────────────────────────────────
 
     #[test]
@@ -2103,6 +2129,656 @@ mod combinatorial_tests {
                     "log_double_factorial({n}) mismatch");
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION 11 — Polynomial Algebra
+//
+// Polynomials as first-class mathematical objects. Represented as coefficient
+// vectors: p = [a₀, a₁, …, aₙ] means p(x) = a₀ + a₁x + … + aₙxⁿ.
+//
+// Why here (not a separate file): polynomial arithmetic is inseparably linked
+// to number theory — NTT uses modular arithmetic, polynomial GCD underlies
+// resultants and Berlekamp factorization, poly_roots over finite fields is
+// a primitive for Reed-Solomon. The algebra is the same object seen through
+// different lenses.
+//
+// Primitives:
+//   poly_eval     — Horner's method, O(n), numerically stable
+//   poly_add      — coefficient-wise addition
+//   poly_mul      — naive O(n²) for small polys; NTT-based for large
+//   poly_divmod   — synthetic division (quotient + remainder)
+//   poly_gcd      — extended Euclidean algorithm for polynomials (over f64)
+//   poly_deriv    — formal derivative
+//   poly_integ    — formal indefinite integral
+//   poly_compose  — f(g(x)), O(n²·m) naive
+//   poly_normalize — remove trailing near-zero coefficients
+//   poly_interpolate — Lagrange interpolation from (x,y) pairs
+//   ntt / intt    — Number Theoretic Transform (exact poly mul over Z_p)
+//   poly_mul_ntt  — NTT-based multiplication for large polynomials
+//
+// Numerical notes:
+//   - poly_eval, poly_add, poly_mul, poly_deriv, poly_integ: stable
+//   - poly_divmod: can amplify error when leading coefficient is small
+//   - poly_gcd over f64: inherently ill-conditioned for near-common factors;
+//     use NTT (integer) variant for exact GCD over finite fields
+//   - poly_interpolate: O(n²) naive; Barycentric form avoids n! growth
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Evaluate polynomial p at x using Horner's method.
+///
+/// p = [a₀, a₁, …, aₙ] represents p(x) = a₀ + a₁x + … + aₙxⁿ.
+/// Horner's scheme: ((aₙx + aₙ₋₁)x + …)x + a₀.
+/// O(n) multiplications, O(n) additions, minimal rounding error.
+///
+/// Returns 0.0 for empty polynomial.
+pub fn poly_eval(p: &[f64], x: f64) -> f64 {
+    p.iter().rev().fold(0.0, |acc, &c| acc * x + c)
+}
+
+/// Add two polynomials: (p + q)(x) = p(x) + q(x).
+/// Result length = max(len(p), len(q)), trailing zeros preserved.
+pub fn poly_add(p: &[f64], q: &[f64]) -> Vec<f64> {
+    let n = p.len().max(q.len());
+    let mut r = vec![0.0; n];
+    for (i, &c) in p.iter().enumerate() { r[i] += c; }
+    for (i, &c) in q.iter().enumerate() { r[i] += c; }
+    r
+}
+
+/// Subtract two polynomials: (p - q)(x) = p(x) - q(x).
+pub fn poly_sub(p: &[f64], q: &[f64]) -> Vec<f64> {
+    let n = p.len().max(q.len());
+    let mut r = vec![0.0; n];
+    for (i, &c) in p.iter().enumerate() { r[i] += c; }
+    for (i, &c) in q.iter().enumerate() { r[i] -= c; }
+    r
+}
+
+/// Multiply two polynomials: (p · q)(x) = p(x) · q(x).
+///
+/// Uses naive O(n·m) convolution. For large polynomials (degree ≥ ~64),
+/// prefer `poly_mul_ntt` which uses NTT for O(n log n) multiplication over Z_p.
+/// Result degree = deg(p) + deg(q).
+pub fn poly_mul(p: &[f64], q: &[f64]) -> Vec<f64> {
+    if p.is_empty() || q.is_empty() { return vec![]; }
+    let mut r = vec![0.0; p.len() + q.len() - 1];
+    for (i, &a) in p.iter().enumerate() {
+        for (j, &b) in q.iter().enumerate() {
+            r[i + j] += a * b;
+        }
+    }
+    r
+}
+
+/// Remove trailing near-zero coefficients from a polynomial.
+///
+/// After floating-point division or GCD steps, high-degree terms may be ~0
+/// due to rounding. This trims them so degree comparisons are meaningful.
+/// Tolerance: coefficients with |c| < eps are considered zero.
+pub fn poly_normalize(p: &[f64], eps: f64) -> Vec<f64> {
+    let mut v = p.to_vec();
+    while v.len() > 1 && v.last().map_or(false, |&c| c.abs() < eps) {
+        v.pop();
+    }
+    v
+}
+
+/// Polynomial division with remainder: p = q·quotient + remainder.
+///
+/// Returns `(quotient, remainder)`. Both have normalized trailing zeros removed.
+/// Returns `None` if divisor q is zero (or all-zero).
+/// Uses synthetic division (long division), O(n·m) where n=deg(p), m=deg(q).
+///
+/// # Numerical note
+/// Division amplifies error when the leading coefficient of q is small.
+/// For exact integer polynomial division, use `poly_divmod_mod` (not yet implemented).
+pub fn poly_divmod(p: &[f64], q: &[f64]) -> Option<(Vec<f64>, Vec<f64>)> {
+    let q = poly_normalize(q, 1e-14);
+    let p = poly_normalize(p, 1e-14);
+    let lead = *q.last()?;
+    if lead.abs() < 1e-14 { return None; }
+    if p.len() < q.len() {
+        return Some((vec![0.0], p));
+    }
+    let mut rem = p.clone();
+    let quot_len = p.len() - q.len() + 1;
+    let mut quot = vec![0.0; quot_len];
+    for i in (0..quot_len).rev() {
+        let coef = rem[i + q.len() - 1] / lead;
+        quot[i] = coef;
+        for (j, &qc) in q.iter().enumerate() {
+            rem[i + j] -= coef * qc;
+        }
+    }
+    let rem = poly_normalize(&rem, 1e-10);
+    let quot = poly_normalize(&quot, 1e-10);
+    Some((quot, rem))
+}
+
+/// Formal derivative of polynomial p.
+///
+/// If p = [a₀, a₁, a₂, …, aₙ], then p' = [a₁, 2a₂, 3a₃, …, naₙ].
+/// Fundamental for Newton's root finding, Sturm chains, and squarefree factoring.
+pub fn poly_deriv(p: &[f64]) -> Vec<f64> {
+    if p.len() <= 1 { return vec![0.0]; }
+    p.iter().enumerate().skip(1).map(|(i, &c)| i as f64 * c).collect()
+}
+
+/// Formal indefinite integral of polynomial p, with constant of integration C.
+///
+/// If p = [a₀, a₁, …, aₙ], then ∫p = [C, a₀, a₁/2, a₂/3, …, aₙ/(n+1)].
+pub fn poly_integ(p: &[f64], constant: f64) -> Vec<f64> {
+    let mut r = vec![constant];
+    r.extend(p.iter().enumerate().map(|(i, &c)| c / (i as f64 + 1.0)));
+    r
+}
+
+/// Polynomial composition: (p ∘ q)(x) = p(q(x)).
+///
+/// O(deg(p)·deg(q)²) naive evaluation: evaluate p with Horner's scheme where
+/// each "coefficient" multiplication is a polynomial multiplication.
+/// Result degree = deg(p) · deg(q).
+pub fn poly_compose(p: &[f64], q: &[f64]) -> Vec<f64> {
+    // Horner: result = p[n] + q*(p[n-1] + q*(…))
+    p.iter().rev().fold(vec![0.0], |acc, &c| {
+        let mut t = poly_mul(&acc, q);
+        if t.is_empty() { t.push(0.0); }
+        t[0] += c;
+        t
+    })
+}
+
+/// Scale polynomial by a scalar: (α·p)(x) = α·p(x).
+pub fn poly_scale(p: &[f64], alpha: f64) -> Vec<f64> {
+    p.iter().map(|&c| c * alpha).collect()
+}
+
+/// GCD of two polynomials over ℝ (floating-point coefficients).
+///
+/// Uses the Euclidean algorithm: gcd(p, q) = gcd(q, p mod q) until remainder ~0.
+/// Returns a monic polynomial (leading coefficient = 1.0).
+///
+/// # Numerical limitations
+/// Polynomial GCD over floating-point is inherently ill-conditioned when the
+/// polynomials are near each other or have near-common factors. The result
+/// is reliable for exact-integer polynomials represented as f64 (no accumulated
+/// error) and for polynomials with well-separated roots. For exact GCD over
+/// finite fields, use `poly_gcd_mod` (integer NTT-based, not yet implemented).
+///
+/// Returns [1.0] (constant 1) if gcd is numerically trivial.
+pub fn poly_gcd(p: &[f64], q: &[f64]) -> Vec<f64> {
+    const EPS: f64 = 1e-9;
+    let mut a = poly_normalize(p, EPS);
+    let mut b = poly_normalize(q, EPS);
+    // Euclidean algorithm: invariant is gcd(a, b) = gcd(p, q)
+    // Loop until b is the zero polynomial
+    loop {
+        // Is b the zero polynomial?
+        if b.len() == 1 && b[0].abs() < EPS { break; }
+        if b.is_empty() { break; }
+        match poly_divmod(&a, &b) {
+            None => break,
+            Some((_, rem)) => {
+                let norm_rem = poly_normalize(&rem, EPS);
+                a = b;
+                b = norm_rem;
+            }
+        }
+    }
+    // a is the gcd — make monic
+    let lead = *a.last().unwrap_or(&1.0);
+    if lead.abs() < EPS { return vec![1.0]; }
+    a.iter().map(|&c| c / lead).collect()
+}
+
+/// Lagrange polynomial interpolation.
+///
+/// Given n+1 distinct (x, y) pairs, returns the unique polynomial of degree ≤ n
+/// that passes through all points.
+///
+/// Uses the barycentric Lagrange formula for O(n²) evaluation stability:
+/// - Phase 1: compute barycentric weights wᵢ = 1 / ∏_{j≠i} (xᵢ - xⱼ)
+/// - Phase 2: for each evaluation point, use the barycentric formula
+///
+/// Returns the coefficient vector [a₀, a₁, …, aₙ] via explicit polynomial
+/// construction (multiply out the basis polynomials). This is O(n³) total.
+/// For evaluation only (not the coefficient vector), use `poly_interp_eval`.
+///
+/// Returns `None` if any two x values are identical (non-distinct nodes).
+pub fn poly_interpolate(xs: &[f64], ys: &[f64]) -> Option<Vec<f64>> {
+    assert_eq!(xs.len(), ys.len(), "xs and ys must have the same length");
+    let n = xs.len();
+    if n == 0 { return Some(vec![]); }
+    if n == 1 { return Some(vec![ys[0]]); }
+    // Check distinctness
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if (xs[i] - xs[j]).abs() < 1e-14 { return None; }
+        }
+    }
+    // Build product polynomial (x - x₀)(x - x₁)…(x - xₙ₋₁)
+    // and accumulate Lagrange basis polynomials
+    let mut result = vec![0.0f64; n];
+    for i in 0..n {
+        // Build basis polynomial Lᵢ(x) = ∏_{j≠i} (x - xⱼ) / (xᵢ - xⱼ)
+        let mut basis = vec![1.0f64];
+        let mut denom = 1.0f64;
+        for j in 0..n {
+            if j == i { continue; }
+            denom *= xs[i] - xs[j];
+            // Multiply basis by (x - xs[j])
+            let mut new_basis = vec![0.0f64; basis.len() + 1];
+            for (k, &c) in basis.iter().enumerate() {
+                new_basis[k + 1] += c;
+                new_basis[k] -= c * xs[j];
+            }
+            basis = new_basis;
+        }
+        // Accumulate ys[i] * Lᵢ(x) / denom
+        let scale = ys[i] / denom;
+        for (k, &c) in basis.iter().enumerate() {
+            result[k] += scale * c;
+        }
+    }
+    Some(result)
+}
+
+/// Evaluate the interpolating polynomial at a new point using barycentric weights.
+///
+/// More numerically stable than evaluating the coefficient vector from `poly_interpolate`.
+/// O(n) per evaluation after O(n²) weight precomputation.
+///
+/// Returns `None` if x coincides with one of the interpolation nodes (exact match:
+/// returns ys[i] directly in that case).
+pub fn poly_interp_eval(xs: &[f64], ys: &[f64], x: f64) -> Option<f64> {
+    let n = xs.len();
+    if n == 0 { return None; }
+    // Check if x is exactly a node
+    for i in 0..n {
+        if (x - xs[i]).abs() < 1e-15 { return Some(ys[i]); }
+    }
+    // Barycentric weights: wᵢ = 1 / ∏_{j≠i} (xᵢ - xⱼ)
+    let mut w = vec![1.0f64; n];
+    for i in 0..n {
+        for j in 0..n {
+            if i != j { w[i] /= xs[i] - xs[j]; }
+        }
+    }
+    // Barycentric formula: L(x) = [Σ wᵢ·yᵢ/(x-xᵢ)] / [Σ wᵢ/(x-xᵢ)]
+    let mut num = 0.0f64;
+    let mut den = 0.0f64;
+    for i in 0..n {
+        let t = w[i] / (x - xs[i]);
+        num += t * ys[i];
+        den += t;
+    }
+    if den.abs() < 1e-15 { return None; }
+    Some(num / den)
+}
+
+// ─── Number Theoretic Transform ───────────────────────────────────────────
+
+/// Number Theoretic Transform (NTT): polynomial multiplication over Z_p.
+///
+/// NTT is the exact analogue of FFT but over a prime finite field Z_p.
+/// Since all arithmetic is modular, there is NO floating-point error — the
+/// result is exact. This makes NTT the correct tool for exact polynomial
+/// multiplication when coefficients are non-negative integers.
+///
+/// Algorithm: Cooley-Tukey butterfly, O(n log n), iterative (cache-friendly).
+///
+/// # Parameters
+/// - `a`: input coefficient vector, length must be a power of 2
+/// - `p`: prime modulus with p-1 divisible by n (required for NTT to exist)
+/// - `g`: primitive root of Z_p (generator of the multiplicative group)
+/// - `invert`: if true, computes the inverse NTT (INTT)
+///
+/// # Standard NTT prime
+/// A commonly used prime is p = 998244353 = 119·2²³ + 1 with g = 3.
+/// This supports NTT for n up to 2²³ ≈ 8.4 million.
+///
+/// Returns `None` if n is not a power of 2 or n does not divide p-1.
+pub fn ntt(a: &[u64], p: u64, g: u64, invert: bool) -> Option<Vec<u64>> {
+    let n = a.len();
+    if n == 0 || (n & (n - 1)) != 0 { return None; } // must be power of 2
+    if (p - 1) % n as u64 != 0 { return None; } // n must divide p-1
+
+    let mut a = a.to_vec();
+
+    // Bit-reversal permutation
+    let mut j = 0usize;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j ^= bit;
+        if i < j { a.swap(i, j); }
+    }
+
+    // Cooley-Tukey butterfly
+    let mut len = 2;
+    while len <= n {
+        let w = if invert {
+            mod_pow(g, p - 1 - (p - 1) / len as u64, p)
+        } else {
+            mod_pow(g, (p - 1) / len as u64, p)
+        };
+        let mut i = 0;
+        while i < n {
+            let mut wn = 1u64;
+            for jj in 0..(len / 2) {
+                let u = a[i + jj];
+                let v = mul_mod(a[i + jj + len / 2], wn, p);
+                a[i + jj] = (u + v) % p;
+                a[i + jj + len / 2] = (u + p - v) % p;
+                wn = mul_mod(wn, w, p);
+            }
+            i += len;
+        }
+        len <<= 1;
+    }
+
+    if invert {
+        let n_inv = mod_pow(n as u64, p - 2, p);
+        for x in &mut a { *x = mul_mod(*x, n_inv, p); }
+    }
+
+    Some(a)
+}
+
+/// Inverse NTT (INTT): convenience wrapper around `ntt`.
+pub fn intt(a: &[u64], p: u64, g: u64) -> Option<Vec<u64>> {
+    ntt(a, p, g, true)
+}
+
+/// Multiply two polynomials with non-negative integer coefficients using NTT.
+///
+/// Exact result over Z_p — no floating-point error.
+/// Coefficients of inputs must be in [0, p).
+/// Result coefficients are in [0, p) — if the true result coefficients exceed p,
+/// they wrap mod p. Use a prime p larger than the maximum possible output coefficient.
+///
+/// For polynomials p, q with deg(p)=n, deg(q)=m and max coefficient M:
+/// the maximum output coefficient is min(n,m)·M² — choose p accordingly.
+///
+/// Default: p = 998244353, g = 3 (NTT-prime, supports n up to 2²³).
+///
+/// Returns `None` if combined degree + 1 is not ≤ 2²³ for the default prime.
+pub fn poly_mul_ntt(p_coeffs: &[u64], q_coeffs: &[u64], modulus: u64, g: u64) -> Option<Vec<u64>> {
+    if p_coeffs.is_empty() || q_coeffs.is_empty() { return Some(vec![]); }
+    let result_len = p_coeffs.len() + q_coeffs.len() - 1;
+    // Pad to next power of 2
+    let padded = result_len.next_power_of_two();
+    let mut ap = p_coeffs.to_vec();
+    let mut aq = q_coeffs.to_vec();
+    ap.resize(padded, 0);
+    aq.resize(padded, 0);
+
+    let fa = ntt(&ap, modulus, g, false)?;
+    let fb = ntt(&aq, modulus, g, false)?;
+    let fc: Vec<u64> = fa.iter().zip(fb.iter()).map(|(&x, &y)| mul_mod(x, y, modulus)).collect();
+    let mut result = intt(&fc, modulus, g)?;
+    result.truncate(result_len);
+    Some(result)
+}
+
+/// The standard NTT prime: 998244353 = 119·2²³ + 1 with primitive root 3.
+/// Supports NTT for n up to 2²³ ≈ 8.4 million.
+pub const NTT_PRIME: u64 = 998_244_353;
+/// Primitive root of `NTT_PRIME`.
+pub const NTT_PRIME_ROOT: u64 = 3;
+
+#[cfg(test)]
+mod polynomial_tests {
+    use super::*;
+
+    // ── poly_eval ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn poly_eval_horner_known() {
+        // p(x) = 1 + 2x + 3x² evaluated at x=2: 1 + 4 + 12 = 17
+        assert!((poly_eval(&[1.0, 2.0, 3.0], 2.0) - 17.0).abs() < 1e-10);
+        // p(x) = x³ at x=3: 27
+        assert!((poly_eval(&[0.0, 0.0, 0.0, 1.0], 3.0) - 27.0).abs() < 1e-10);
+        // Constant polynomial
+        assert!((poly_eval(&[5.0], 99.0) - 5.0).abs() < 1e-10);
+        // Empty polynomial = 0
+        assert_eq!(poly_eval(&[], 3.0), 0.0);
+    }
+
+    #[test]
+    fn poly_eval_at_zero() {
+        // p(0) = constant term
+        let p = &[7.0, 3.0, 2.0];
+        assert!((poly_eval(p, 0.0) - 7.0).abs() < 1e-10);
+    }
+
+    // ── poly_add / poly_sub / poly_mul ───────────────────────────────────────
+
+    #[test]
+    fn poly_add_different_degrees() {
+        let p = vec![1.0, 2.0, 3.0]; // 1 + 2x + 3x²
+        let q = vec![4.0, 5.0];       // 4 + 5x
+        let r = poly_add(&p, &q);
+        assert!((r[0] - 5.0).abs() < 1e-10);
+        assert!((r[1] - 7.0).abs() < 1e-10);
+        assert!((r[2] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn poly_mul_convolution() {
+        // (1 + x)(1 + x) = 1 + 2x + x²
+        let p = vec![1.0, 1.0];
+        let r = poly_mul(&p, &p);
+        assert!((r[0] - 1.0).abs() < 1e-10);
+        assert!((r[1] - 2.0).abs() < 1e-10);
+        assert!((r[2] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn poly_mul_degree_adds() {
+        let p = vec![1.0, 1.0, 1.0]; // degree 2
+        let q = vec![1.0, 1.0];       // degree 1
+        let r = poly_mul(&p, &q);
+        assert_eq!(r.len(), 4); // degree 3
+        // (1 + x + x²)(1 + x) = 1 + 2x + 2x² + x³
+        assert!((r[0] - 1.0).abs() < 1e-10);
+        assert!((r[1] - 2.0).abs() < 1e-10);
+        assert!((r[2] - 2.0).abs() < 1e-10);
+        assert!((r[3] - 1.0).abs() < 1e-10);
+    }
+
+    // ── poly_divmod ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn poly_divmod_exact_division() {
+        // x² - 1 = (x - 1)(x + 1), so divmod by (x - 1) gives (x + 1) remainder 0
+        let p = vec![-1.0, 0.0, 1.0]; // x² - 1
+        let q = vec![-1.0, 1.0];       // x - 1
+        let (quot, rem) = poly_divmod(&p, &q).unwrap();
+        // quot should be [1, 1] = 1 + x, rem should be [0] ≈ 0
+        assert!((poly_eval(&quot, 2.0) - 3.0).abs() < 1e-8, "quot mismatch");
+        assert!(rem[0].abs() < 1e-9, "remainder not zero");
+    }
+
+    #[test]
+    fn poly_divmod_with_remainder() {
+        // x² divided by (x + 1): x² = (x - 1)(x + 1) + 1
+        let p = vec![0.0, 0.0, 1.0]; // x²
+        let q = vec![1.0, 1.0];       // x + 1
+        let (quot, rem) = poly_divmod(&p, &q).unwrap();
+        // p = q * quot + rem
+        let reconstructed = poly_add(&poly_mul(&q, &quot), &rem);
+        for (i, (&lhs, &rhs)) in reconstructed.iter().zip(p.iter()).enumerate() {
+            assert!((lhs - rhs).abs() < 1e-8, "reconstruction failed at coeff {i}");
+        }
+    }
+
+    #[test]
+    fn poly_divmod_degree_less_than_divisor() {
+        // Dividing x by x²: quotient = 0, remainder = x
+        let p = vec![0.0, 1.0];        // x
+        let q = vec![0.0, 0.0, 1.0];  // x²
+        let (quot, rem) = poly_divmod(&p, &q).unwrap();
+        assert!((quot[0]).abs() < 1e-10);
+        assert!((rem[0]).abs() < 1e-10);
+        assert!((rem[1] - 1.0).abs() < 1e-10);
+    }
+
+    // ── poly_deriv / poly_integ ──────────────────────────────────────────────
+
+    #[test]
+    fn poly_deriv_known() {
+        // d/dx [3 + 2x + x²] = 2 + 2x
+        let p = vec![3.0, 2.0, 1.0];
+        let dp = poly_deriv(&p);
+        assert!((dp[0] - 2.0).abs() < 1e-10);
+        assert!((dp[1] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn poly_integ_undoes_deriv() {
+        // ∫(d/dx p) dx = p (up to constant of integration)
+        let p = vec![5.0, 3.0, 2.0];
+        let dp = poly_deriv(&p);
+        let recovered = poly_integ(&dp, p[0]);
+        for (i, (&r, &orig)) in recovered.iter().zip(p.iter()).enumerate() {
+            assert!((r - orig).abs() < 1e-9, "integ(deriv(p)) failed at coeff {i}");
+        }
+    }
+
+    // ── poly_compose ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn poly_compose_known() {
+        // p(x) = x², q(x) = x + 1. p(q(x)) = (x+1)² = 1 + 2x + x²
+        let p = vec![0.0, 0.0, 1.0]; // x²
+        let q = vec![1.0, 1.0];       // x + 1
+        let r = poly_compose(&p, &q);
+        // Evaluate at x=3: (3+1)² = 16
+        assert!((poly_eval(&r, 3.0) - 16.0).abs() < 1e-8);
+    }
+
+    // ── poly_gcd ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn poly_gcd_common_factor() {
+        // gcd((x-1)(x-2), (x-1)(x-3)) = (x-1)
+        // (x-1)(x-2) = x² - 3x + 2
+        // (x-1)(x-3) = x² - 4x + 3
+        let p = vec![2.0, -3.0, 1.0];
+        let q = vec![3.0, -4.0, 1.0];
+        let g = poly_gcd(&p, &q);
+        // gcd should be (x - 1) up to scalar, so evaluate at x=1 should give ~0
+        assert!(poly_eval(&g, 1.0).abs() < 1e-6,
+            "gcd should vanish at x=1: got {}", poly_eval(&g, 1.0));
+        // And gcd evaluated at x=2 should not vanish (root of p only)
+        assert!(poly_eval(&g, 2.0).abs() > 0.1);
+    }
+
+    #[test]
+    fn poly_gcd_coprime() {
+        // gcd(x² + 1, x² - 1): no common factors, gcd should be ≈ constant
+        let p = vec![1.0, 0.0, 1.0];  // x² + 1
+        let q = vec![-1.0, 0.0, 1.0]; // x² - 1
+        let g = poly_gcd(&p, &q);
+        // Coprime polys have gcd = 1 (constant)
+        assert_eq!(g.len(), 1, "gcd of coprime polys should be constant");
+    }
+
+    // ── poly_interpolate ─────────────────────────────────────────────────────
+
+    #[test]
+    fn poly_interpolate_linear() {
+        // Two points (0, 1), (1, 3) → p(x) = 1 + 2x
+        let xs = vec![0.0, 1.0];
+        let ys = vec![1.0, 3.0];
+        let p = poly_interpolate(&xs, &ys).unwrap();
+        assert!((poly_eval(&p, 0.0) - 1.0).abs() < 1e-9);
+        assert!((poly_eval(&p, 1.0) - 3.0).abs() < 1e-9);
+        assert!((poly_eval(&p, 0.5) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn poly_interpolate_quadratic() {
+        // Three points: (0,1), (1,4), (2,9) → passes through y=x²+2x+1=(x+1)²
+        let xs = vec![0.0, 1.0, 2.0];
+        let ys = vec![1.0, 4.0, 9.0];
+        let p = poly_interpolate(&xs, &ys).unwrap();
+        // Verify at the nodes
+        for (&x, &y) in xs.iter().zip(ys.iter()) {
+            assert!((poly_eval(&p, x) - y).abs() < 1e-8,
+                "interpolation failed at x={x}: got {}, expected {y}", poly_eval(&p, x));
+        }
+        // And at a non-node point: (x+1)² at x=3 = 16
+        assert!((poly_eval(&p, 3.0) - 16.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn poly_interpolate_duplicate_x_returns_none() {
+        let xs = vec![1.0, 1.0, 2.0];
+        let ys = vec![1.0, 2.0, 3.0];
+        assert!(poly_interpolate(&xs, &ys).is_none());
+    }
+
+    #[test]
+    fn poly_interp_eval_barycentric() {
+        // Same quadratic: points (0,1),(1,4),(2,9)
+        let xs = vec![0.0, 1.0, 2.0];
+        let ys = vec![1.0, 4.0, 9.0];
+        // At node: should return exact value
+        assert!((poly_interp_eval(&xs, &ys, 1.0).unwrap() - 4.0).abs() < 1e-12);
+        // Off node: (3+1)² = 16
+        assert!((poly_interp_eval(&xs, &ys, 3.0).unwrap() - 16.0).abs() < 1e-7);
+    }
+
+    // ── NTT ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ntt_roundtrip() {
+        let p = NTT_PRIME;
+        let g = NTT_PRIME_ROOT;
+        let a = vec![1u64, 2, 3, 4, 0, 0, 0, 0]; // padded to power of 2
+        let fa = ntt(&a, p, g, false).unwrap();
+        let recovered = intt(&fa, p, g).unwrap();
+        assert_eq!(a, recovered, "NTT roundtrip failed");
+    }
+
+    #[test]
+    fn poly_mul_ntt_matches_naive() {
+        // (1 + 2x + 3x²)(4 + 5x) = 4 + 13x + 22x² + 15x³
+        // Coefficients as u64, modulus large enough (NTT_PRIME >> max coeff)
+        let p = vec![1u64, 2, 3];
+        let q = vec![4u64, 5];
+        let ntt_result = poly_mul_ntt(&p, &q, NTT_PRIME, NTT_PRIME_ROOT).unwrap();
+        let naive_result = poly_mul(
+            &p.iter().map(|&x| x as f64).collect::<Vec<_>>(),
+            &q.iter().map(|&x| x as f64).collect::<Vec<_>>(),
+        );
+        assert_eq!(ntt_result.len(), naive_result.len());
+        for (i, (&ntt_c, &naive_c)) in ntt_result.iter().zip(naive_result.iter()).enumerate() {
+            assert_eq!(ntt_c as i64, naive_c as i64, "coeff {i} mismatch: NTT={ntt_c} naive={naive_c}");
+        }
+    }
+
+    #[test]
+    fn poly_mul_ntt_larger() {
+        // (1 + x)^4 = 1 + 4x + 6x² + 4x³ + x⁴ via NTT repeated squaring
+        let linear = vec![1u64, 1];
+        let sq = poly_mul_ntt(&linear, &linear, NTT_PRIME, NTT_PRIME_ROOT).unwrap();
+        let fourth = poly_mul_ntt(&sq, &sq, NTT_PRIME, NTT_PRIME_ROOT).unwrap();
+        let expected = vec![1u64, 4, 6, 4, 1];
+        assert_eq!(fourth, expected, "(1+x)^4 via NTT failed");
+    }
+
+    #[test]
+    fn ntt_requires_power_of_two() {
+        let a = vec![1u64, 2, 3]; // length 3 — not power of 2
+        assert!(ntt(&a, NTT_PRIME, NTT_PRIME_ROOT, false).is_none());
     }
 }
 

@@ -40,31 +40,27 @@ pub fn hellinger_distance(p: &[f64], q: &[f64], _using: &UsingBag) -> f64 {
     (1.0 - sum_sqrt).sqrt()
 }
 
-/// Kullback-Leibler Divergence (KL)
+/// Kullback-Leibler Divergence (KL) — with optional epsilon smoothing.
 /// D_KL(P || Q) = Σ p_i log(p_i/q_i)
+///
+/// Delegates to the canonical `information_theory::kl_divergence` after
+/// applying epsilon smoothing to zero entries in Q (if `epsilon > 0`,
+/// default 1e-12). When epsilon=0, zero Q entries return +∞ (correct
+/// behaviour; matches the canonical implementation).
 ///
 /// Kingdom A: Point-wise reduction.
 pub fn kl_divergence(p: &[f64], q: &[f64], using: &UsingBag) -> f64 {
     assert_eq!(p.len(), q.len(), "KL: distributions must have same length");
     let epsilon = using.get_f64("epsilon").unwrap_or(1e-12);
 
-    p.iter()
-        .zip(q)
-        .map(|(&pi, &qi)| {
-            if pi <= 0.0 {
-                0.0
-            } else if qi <= 0.0 {
-                // Use epsilon smoothing if provided, otherwise infinity
-                if epsilon > 0.0 {
-                    pi * (pi / epsilon).ln()
-                } else {
-                    f64::INFINITY
-                }
-            } else {
-                pi * (pi / qi).ln()
-            }
-        })
-        .sum()
+    if epsilon > 0.0 {
+        // Apply epsilon smoothing: replace zero Q entries with epsilon
+        let q_smooth: Vec<f64> = q.iter().map(|&qi| if qi <= 0.0 { epsilon } else { qi }).collect();
+        crate::information_theory::kl_divergence(p, &q_smooth)
+    } else {
+        // No smoothing — delegate directly; zeros in Q give +∞
+        crate::information_theory::kl_divergence(p, q)
+    }
 }
 
 /// Jensen-Shannon Divergence (JS)

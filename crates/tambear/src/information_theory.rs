@@ -486,6 +486,33 @@ pub fn entropy_histogram(values: &[f64], n_bins: usize) -> f64 {
     shannon_entropy(&probs) + bin_width.ln()
 }
 
+/// Shannon entropy from a fixed-width histogram of raw data (alias for [`entropy_histogram`]).
+///
+/// Builds a histogram of `n_bins` equal-width bins over the range [min, max] of
+/// `data`, normalizes to probabilities, and returns H = −Σ p·log(p) + log(bin_width)
+/// (the differential entropy correction for fixed-width bins).
+///
+/// # Parameters
+/// - `data`: raw data values (NaN excluded)
+/// - `n_bins`: number of histogram bins (must be > 0)
+///
+/// # Returns
+/// Entropy in nats. Returns 0 for constant data, NaN for empty data.
+///
+/// # Note
+/// This function is an alias for [`entropy_histogram`] provided for TBS
+/// namespace symmetry (catalog name "histogram_entropy" is more natural from
+/// the consumer side; "entropy_histogram" follows the "noun_verb" convention
+/// of other primitives). Both names resolve to the same computation.
+///
+/// # Consumers
+/// Fintek family-08 information-theoretic bridges, manifold complexity estimates,
+/// symbolic diversity analysis, regime-detection entropy features.
+#[inline]
+pub fn histogram_entropy(data: &[f64], n_bins: usize) -> f64 {
+    entropy_histogram(data, n_bins)
+}
+
 /// Miller-Madow bias correction for mutual information from contingency table.
 ///
 /// The naive plug-in estimator MI = H(X) + H(Y) - H(X,Y) is biased upward.

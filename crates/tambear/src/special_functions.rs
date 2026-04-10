@@ -413,6 +413,58 @@ fn gamma_cf(a: f64, x: f64) -> f64 {
 // Distribution CDFs
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Normal PDF
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Normal probability density function: f(x; μ, σ) = (1/(σ√(2π))) exp(-½((x-μ)/σ)²).
+///
+/// # Parameters
+/// - `x`: evaluation point
+/// - `mu`: mean (location parameter)
+/// - `sigma`: standard deviation (scale parameter, must be > 0)
+///
+/// # Returns
+/// Density value ≥ 0. Returns NaN if `sigma` ≤ 0 or inputs are NaN.
+///
+/// # Formula
+/// f(x; μ, σ) = (1/(σ√(2π))) · exp(−½·((x−μ)/σ)²)
+///
+/// # Consumers
+/// Logistic regression gradients, KDE Gaussian kernel, EM algorithm for GMMs,
+/// Gaussian likelihood contributions, normal mixture density evaluation.
+///
+/// # Examples
+/// ```
+/// use tambear::normal_pdf;
+/// // PDF at the mean equals 1/(σ√(2π))
+/// let at_mean = normal_pdf(0.0, 0.0, 1.0);
+/// assert!((at_mean - 1.0 / (2.0_f64 * std::f64::consts::PI).sqrt()).abs() < 1e-14);
+/// ```
+pub fn normal_pdf(x: f64, mu: f64, sigma: f64) -> f64 {
+    if sigma <= 0.0 { return f64::NAN; }
+    let z = (x - mu) / sigma;
+    let inv_sqrt_2pi = 1.0 / (2.0 * std::f64::consts::PI).sqrt();
+    (inv_sqrt_2pi / sigma) * (-0.5 * z * z).exp()
+}
+
+/// Standard normal PDF: f(x) = (1/√(2π)) exp(−½x²).
+///
+/// Convenience wrapper for `normal_pdf(x, 0.0, 1.0)`.
+///
+/// # Parameters
+/// - `x`: evaluation point
+///
+/// # Returns
+/// Density value in [0, 1/√(2π)].
+///
+/// # Consumers
+/// Score functions, Fisher information, probit model gradients, importance sampling.
+pub fn normal_pdf_standard(x: f64) -> f64 {
+    let inv_sqrt_2pi = 1.0 / (2.0 * std::f64::consts::PI).sqrt();
+    inv_sqrt_2pi * (-0.5 * x * x).exp()
+}
+
 /// Standard normal CDF: Φ(x) = P(Z ≤ x) where Z ~ N(0,1).
 ///
 /// Φ(x) = ½ erfc(-x/√2).
@@ -2112,6 +2164,33 @@ mod orthogonal_bessel_rmt_tests {
         for (a, b) in s1.iter().zip(s2.iter()) {
             assert!((a - b).abs() < 1e-12, "softmax should be shift-invariant");
         }
+    }
+
+    #[test]
+    fn normal_pdf_at_mean() {
+        // f(μ; μ, σ) = 1/(σ√(2π))
+        let inv_sqrt_2pi = 1.0 / (2.0_f64 * std::f64::consts::PI).sqrt();
+        assert!((normal_pdf(0.0, 0.0, 1.0) - inv_sqrt_2pi).abs() < 1e-14);
+        assert!((normal_pdf(5.0, 5.0, 2.0) - inv_sqrt_2pi / 2.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn normal_pdf_integrates_to_one() {
+        // Numerical integration over [-8, 8] should be ≈ 1
+        let n = 10_000;
+        let lo = -8.0_f64; let hi = 8.0_f64;
+        let dx = (hi - lo) / n as f64;
+        let integral: f64 = (0..n).map(|i| {
+            let x = lo + (i as f64 + 0.5) * dx;
+            normal_pdf_standard(x)
+        }).sum::<f64>() * dx;
+        assert!((integral - 1.0).abs() < 1e-5, "integral = {integral}");
+    }
+
+    #[test]
+    fn normal_pdf_standard_equals_general_at_01() {
+        let x = 1.5;
+        assert!((normal_pdf_standard(x) - normal_pdf(x, 0.0, 1.0)).abs() < 1e-15);
     }
 
     #[test]

@@ -1096,65 +1096,6 @@ pub fn cooks_distance_with_threshold(
     InfluenceResult { cooks_distance, leverage, n_influential }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Weighted Least Squares (WLS)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Result of weighted least squares regression.
-#[derive(Debug, Clone)]
-pub struct WlsResult {
-    /// Coefficients β (length p, includes intercept if X has intercept column).
-    pub coefficients: Vec<f64>,
-    /// Weighted residual sum of squares.
-    pub weighted_rss: f64,
-    /// Weighted R² = 1 - WRSS / WTSS.
-    pub r_squared: f64,
-}
-
-/// Weighted least squares: β = (X'WX)⁻¹ X'Wy.
-///
-/// Equivalent to OLS on (√w_i · x_i, √w_i · y_i).
-///
-/// `x`: n×p design matrix (row-major, include intercept column if desired).
-/// `y`: response vector (length n).
-/// `weights`: observation weights (length n, all > 0).
-pub fn wls(x: &crate::linear_algebra::Mat, y: &[f64], weights: &[f64]) -> WlsResult {
-    let n = x.rows;
-    let p = x.cols;
-    assert_eq!(y.len(), n);
-    assert_eq!(weights.len(), n);
-
-    // Transform: X_w = diag(√w) X, y_w = diag(√w) y
-    let mut x_w = vec![0.0; n * p];
-    let mut y_w = vec![0.0; n];
-    for i in 0..n {
-        let sw = weights[i].max(0.0).sqrt();
-        y_w[i] = sw * y[i];
-        for j in 0..p {
-            x_w[i * p + j] = sw * x.get(i, j);
-        }
-    }
-
-    let x_mat = crate::linear_algebra::Mat::from_vec(n, p, x_w);
-    let coefficients = crate::linear_algebra::qr_solve(&x_mat, &y_w);
-
-    // Weighted residuals and R²
-    let mut wrss = 0.0;
-    let w_y_mean = {
-        let sw: f64 = weights.iter().sum();
-        if sw > 0.0 { weights.iter().zip(y.iter()).map(|(w, yi)| w * yi).sum::<f64>() / sw } else { 0.0 }
-    };
-    let mut wtss = 0.0;
-    for i in 0..n {
-        let fitted: f64 = (0..p).map(|j| x.get(i, j) * coefficients[j]).sum();
-        let resid = y[i] - fitted;
-        wrss += weights[i] * resid * resid;
-        wtss += weights[i] * (y[i] - w_y_mean) * (y[i] - w_y_mean);
-    }
-    let r_squared = if wtss > 1e-300 { (1.0 - wrss / wtss).clamp(0.0, 1.0) } else { 0.0 };
-
-    WlsResult { coefficients, weighted_rss: wrss, r_squared }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Bayes factors (Rouder et al. 2009, Wagenmakers 2007)

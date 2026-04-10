@@ -837,7 +837,7 @@ pub fn qq_normal(data: &[f64]) -> (Vec<f64>, Vec<f64>) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Forecast accuracy metrics
+// Forecast accuracy bundle
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Forecast accuracy metrics.
@@ -851,36 +851,31 @@ pub struct ForecastMetrics {
 
 /// Compute forecast accuracy metrics.
 ///
+/// Bundles the four standard accuracy metrics by composing the standalone
+/// primitives: [`mae`], [`rmse`], [`mape`] (defined later in this module), and
+/// a simple random-walk MASE via [`mase`] with `seasonal_period = 1`.
+///
 /// `actual`: observed values. `predicted`: forecast values. `naive_mae`: MAE of naive
 /// forecast (e.g., random walk) for MASE denominator. Pass `None` to compute
 /// from one-step naive (actual[t-1] predicts actual[t]).
 pub fn forecast_metrics(actual: &[f64], predicted: &[f64], naive_mae: Option<f64>) -> ForecastMetrics {
     assert_eq!(actual.len(), predicted.len());
     let n = actual.len();
-    let nf = n as f64;
 
-    let errors: Vec<f64> = actual.iter().zip(predicted.iter()).map(|(a, p)| a - p).collect();
-
-    let mae = errors.iter().map(|e| e.abs()).sum::<f64>() / nf;
-    let rmse = (errors.iter().map(|e| e * e).sum::<f64>() / nf).sqrt();
-
-    // MAPE: skip zeros in actual to avoid division by zero
-    let mape = {
-        let valid: Vec<f64> = actual.iter().zip(predicted.iter())
-            .filter(|(&a, _)| a.abs() > 1e-15)
-            .map(|(&a, &p)| ((a - p) / a).abs())
-            .collect();
-        if valid.is_empty() { f64::NAN } else { valid.iter().sum::<f64>() / valid.len() as f64 }
-    };
-
-    // MASE: MAE / naive_MAE
+    // MASE: use caller-supplied denominator or compute random-walk baseline.
     let naive = naive_mae.unwrap_or_else(|| {
         if n < 2 { return 1.0; }
         actual.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>() / (n - 1) as f64
     });
-    let mase = if naive > 1e-15 { mae / naive } else { f64::NAN };
+    let mae_val = mae(actual, predicted);
+    let mase_val = if naive > 1e-15 { mae_val / naive } else { f64::NAN };
 
-    ForecastMetrics { mae, rmse, mape, mase }
+    ForecastMetrics {
+        mae: mae_val,
+        rmse: rmse(actual, predicted),
+        mape: mape(actual, predicted),
+        mase: mase_val,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -961,6 +956,153 @@ pub fn box_cox_fit(y: &[f64], lambda_min: Option<f64>, lambda_max: Option<f64>) 
     let transformed = box_cox_transform(y, lambda);
 
     BoxCoxResult { lambda, transformed, log_likelihood: ll }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Forecast error metrics
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Mean Absolute Error: MAE = (1/n) Σ |actual − predicted|.
+///
+/// # Parameters
+/// - `actual`: observed values (length n)
+/// - `predicted`: model predictions (length n, must match `actual`)
+///
+/// # Returns
+/// MAE ≥ 0. Returns NaN if inputs are empty or have different lengths.
+///
+/// # Properties
+/// Scale-dependent. Penalizes all errors equally regardless of direction.
+/// Robust to outliers relative to MSE/RMSE (linear rather than quadratic penalty).
+///
+/// # Consumers
+/// Model evaluation, forecast comparison, loss function approximation,
+/// MASE computation (MAE as numerator).
+pub fn mae(actual: &[f64], predicted: &[f64]) -> f64 {
+    if actual.len() != predicted.len() || actual.is_empty() { return f64::NAN; }
+    let n = actual.len() as f64;
+    actual.iter().zip(predicted.iter())
+        .map(|(&a, &p)| (a - p).abs())
+        .sum::<f64>() / n
+}
+
+/// Root Mean Squared Error: RMSE = sqrt((1/n) Σ (actual − predicted)²).
+///
+/// # Parameters
+/// - `actual`: observed values (length n)
+/// - `predicted`: model predictions (length n, must match `actual`)
+///
+/// # Returns
+/// RMSE ≥ 0, in the same units as `actual`. Returns NaN if inputs are empty
+/// or have different lengths.
+///
+/// # Properties
+/// Scale-dependent. Quadratic penalty emphasizes large errors more than MAE.
+/// Differentiable everywhere, making it suitable as a gradient-based loss.
+///
+/// # Consumers
+/// Model selection, hyperparameter tuning, regression diagnostic suites,
+/// comparison against MAE (ratio MAE/RMSE indicates distribution of residuals).
+pub fn rmse(actual: &[f64], predicted: &[f64]) -> f64 {
+    if actual.len() != predicted.len() || actual.is_empty() { return f64::NAN; }
+    let n = actual.len() as f64;
+    let mse = actual.iter().zip(predicted.iter())
+        .map(|(&a, &p)| { let e = a - p; e * e })
+        .sum::<f64>() / n;
+    mse.sqrt()
+}
+
+/// Mean Absolute Percentage Error: MAPE = (100/n) Σ |actual − predicted| / |actual|.
+///
+/// # Parameters
+/// - `actual`: observed values (length n). Zeros in `actual` produce infinite
+///   relative errors; such pairs are excluded from the mean with a count warning
+///   (the excluded fraction is indicated by the return behavior: if ALL actuals
+///   are zero, returns NaN).
+/// - `predicted`: model predictions (length n, must match `actual`)
+///
+/// # Returns
+/// MAPE in percent [0, ∞). Pairs where |actual| < 1e-14 are excluded to avoid
+/// division by zero. Returns NaN if inputs are empty, lengths mismatch, or all
+/// actuals are zero.
+///
+/// # Properties
+/// Scale-independent, interpretable as "percent off on average." Heavily biased
+/// for near-zero actuals; use sMAPE or MASE when actuals can be near zero.
+///
+/// # Consumers
+/// Forecast evaluation for positive time series (sales, prices, demand).
+/// Not suitable for series that contain or approach zero.
+pub fn mape(actual: &[f64], predicted: &[f64]) -> f64 {
+    if actual.len() != predicted.len() || actual.is_empty() { return f64::NAN; }
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for (&a, &p) in actual.iter().zip(predicted.iter()) {
+        let abs_a = a.abs();
+        if abs_a < 1e-14 { continue; } // skip near-zero actuals
+        sum += (a - p).abs() / abs_a;
+        count += 1;
+    }
+    if count == 0 { return f64::NAN; }
+    100.0 * sum / count as f64
+}
+
+/// Mean Absolute Scaled Error: MASE = MAE(forecast) / MAE(naïve seasonal).
+///
+/// Scales the MAE by the in-sample naïve seasonal forecast MAE so the metric is
+/// scale-independent and interpretable across series. A MASE < 1 means the
+/// forecast beats the seasonal naïve baseline.
+///
+/// # Parameters
+/// - `actual`: full in-sample + out-of-sample observed values (length n).
+///   The in-sample portion is `actual[0..(n - n_forecast)]`.
+/// - `predicted`: out-of-sample predictions (length `n_forecast`).
+///   Matched against `actual[(n - n_forecast)..]`.
+/// - `seasonal_period`: the seasonality period m (1 = non-seasonal / random walk naïve).
+///   The naïve seasonal forecast for observation t is `actual[t - m]`.
+///
+/// # Returns
+/// MASE ≥ 0 (dimensionless). Returns NaN if inputs are empty, mismatched, or
+/// `actual.len() ≤ seasonal_period` (not enough in-sample data to compute baseline).
+///
+/// # Formula
+/// naïve_mae = (1/(n − m)) Σ_{t=m+1}^{n} |actual[t] − actual[t − m]|
+/// mase      = MAE(out-of-sample) / naïve_mae
+///
+/// # Reference
+/// Hyndman & Koehler (2006), "Another look at measures of forecast accuracy."
+/// International Journal of Forecasting, 22(4), 679–688.
+///
+/// # Consumers
+/// M-competition evaluation, intermittent demand forecasting, multi-series
+/// benchmarking where series have different scales.
+pub fn mase(actual: &[f64], predicted: &[f64], seasonal_period: usize) -> f64 {
+    if actual.is_empty() || predicted.is_empty() { return f64::NAN; }
+    let n = actual.len();
+    let n_fc = predicted.len();
+    let m = seasonal_period.max(1);
+
+    if n <= m || n_fc > n { return f64::NAN; }
+
+    // In-sample portion: actual[0..(n - n_fc)]
+    let in_sample_end = n - n_fc;
+    if in_sample_end <= m { return f64::NAN; }
+
+    // Naïve seasonal baseline MAE over in-sample
+    let baseline_mae = {
+        let denom = (in_sample_end - m) as f64;
+        let sum: f64 = (m..in_sample_end)
+            .map(|t| (actual[t] - actual[t - m]).abs())
+            .sum();
+        sum / denom
+    };
+    if baseline_mae < 1e-300 { return f64::NAN; }
+
+    // Out-of-sample MAE
+    let out_actual = &actual[(n - n_fc)..];
+    let out_mae = mae(out_actual, predicted);
+
+    out_mae / baseline_mae
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2039,5 +2181,56 @@ mod tests {
         let y = vec![1.0, 2.0, -0.5, 3.0];
         let result = box_cox_fit(&y, None, None);
         assert!(result.lambda.is_nan());
+    }
+
+    // ── Forecast error metrics ────────────────────────────────────────────
+
+    #[test]
+    fn mae_perfect_forecast_is_zero() {
+        let y = vec![1.0, 2.0, 3.0];
+        close(mae(&y, &y), 0.0, 1e-15, "mae_perfect");
+    }
+
+    #[test]
+    fn mae_basic() {
+        // |1-2|+|2-2|+|3-4| = 1+0+1 = 2 → MAE = 2/3
+        let actual    = vec![1.0, 2.0, 3.0];
+        let predicted = vec![2.0, 2.0, 4.0];
+        close(mae(&actual, &predicted), 2.0 / 3.0, 1e-12, "mae_basic");
+    }
+
+    #[test]
+    fn rmse_known_value() {
+        // errors = [1,0,1] → MSE = 2/3 → RMSE = sqrt(2/3)
+        let actual    = vec![1.0, 2.0, 3.0];
+        let predicted = vec![2.0, 2.0, 4.0];
+        close(rmse(&actual, &predicted), (2.0_f64 / 3.0).sqrt(), 1e-12, "rmse_known");
+    }
+
+    #[test]
+    fn mape_known_value() {
+        // actual=[100,200], predicted=[110,180]
+        // |10|/100 + |20|/200 = 0.1 + 0.1 → MAPE = 0.2/2 * 100 = 10%
+        let actual    = vec![100.0, 200.0];
+        let predicted = vec![110.0, 180.0];
+        close(mape(&actual, &predicted), 10.0, 1e-10, "mape_known");
+    }
+
+    #[test]
+    fn mape_skips_zero_actual() {
+        // Only second pair is valid: |200-180|/200 = 0.1 → MAPE = 10%
+        let actual    = vec![0.0, 200.0];
+        let predicted = vec![10.0, 180.0];
+        close(mape(&actual, &predicted), 10.0, 1e-10, "mape_zero_actual");
+    }
+
+    #[test]
+    fn mase_non_seasonal_naive() {
+        // actual = [1,2,3,4,5,6], predicted = [5,6] (last 2 out of sample)
+        // in_sample = [1,2,3,4], m=1: naïve diffs = [1,1,1] → baseline_mae = 1
+        // forecast errors = |5-5|+|6-6| = 0 → MASE = 0
+        let actual    = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let predicted = vec![5.0, 6.0];
+        close(mase(&actual, &predicted, 1), 0.0, 1e-12, "mase_perfect");
     }
 }

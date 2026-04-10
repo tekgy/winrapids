@@ -489,16 +489,39 @@ pub struct ClusterValidation {
     pub davies_bouldin: f64,
 }
 
-/// Compute cluster validation metrics from raw data and cluster assignments.
+// ── Shared centroid computation ───────────────────────────────────────────
+
+/// Prepared cluster geometry: sizes, per-cluster centroids, and the compact
+/// label-to-index map. Produced by `cluster_centroids` and consumed by the
+/// three standalone validation primitives so the centroid pass runs only once.
 ///
-/// `data`: n×d row-major matrix (n points, d dimensions).
-/// `labels`: length-n cluster labels (noise/outliers should use label = -1 or
-///   any value < 0; these points are excluded from silhouette computation
-///   but included in CH/DB).
-/// `n_dims`: d (number of dimensions per point).
+/// This struct is the minimum sufficient representation shared by
+/// `calinski_harabasz_score`, `davies_bouldin_score`, and `silhouette_score`.
+#[derive(Debug, Clone)]
+pub struct ClusterCentroids {
+    /// Number of clusters k (noise-free labels only).
+    pub k: usize,
+    /// Number of dimensions d.
+    pub n_dims: usize,
+    /// Cluster sizes (length k).
+    pub sizes: Vec<usize>,
+    /// Row-major k×d centroid matrix (length k × n_dims).
+    pub centroids: Vec<f64>,
+    /// Map from original label value → compact index in [0, k).
+    pub id_to_idx: std::collections::HashMap<i32, usize>,
+}
+
+/// Compute cluster centroids from raw data and integer labels.
 ///
-/// Returns `None` if < 2 clusters or insufficient data.
-pub fn cluster_validation(data: &[f64], labels: &[i32], n_dims: usize) -> Option<ClusterValidation> {
+/// Labels < 0 are treated as noise and ignored. Returns `None` if fewer than
+/// 2 valid clusters exist.
+///
+/// **Primitive**: shared intermediate for all cluster validation metrics.
+/// Called once per validation pass; all three score primitives consume the
+/// result rather than recomputing centroids independently.
+///
+/// Kingdom A: single linear pass over data and labels, O(n·d).
+pub fn cluster_centroids(data: &[f64], labels: &[i32], n_dims: usize) -> Option<ClusterCentroids> {
     let n = labels.len();
     assert_eq!(data.len(), n * n_dims);
 
@@ -513,7 +536,7 @@ pub fn cluster_validation(data: &[f64], labels: &[i32], n_dims: usize) -> Option
     let id_to_idx: std::collections::HashMap<i32, usize> =
         cluster_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
-    // Cluster sizes and centroids
+    // Accumulate cluster sums → divide by size to get centroids
     let mut sizes = vec![0usize; k];
     let mut centroids = vec![0.0_f64; k * n_dims];
     for i in 0..n {
@@ -530,26 +553,58 @@ pub fn cluster_validation(data: &[f64], labels: &[i32], n_dims: usize) -> Option
         }
     }
 
-    // Global centroid (for CH index)
-    let n_clustered = sizes.iter().sum::<usize>() as f64;
-    let mut global_centroid = vec![0.0_f64; n_dims];
-    for ci in 0..k {
-        for d in 0..n_dims {
-            global_centroid[d] += sizes[ci] as f64 * centroids[ci * n_dims + d];
-        }
-    }
-    for d in 0..n_dims { global_centroid[d] /= n_clustered; }
+    Some(ClusterCentroids { k, n_dims, sizes, centroids, id_to_idx })
+}
 
-    // Euclidean distance helper (squared)
+// ── Standalone validation score primitives ───────────────────────────────
+
+/// Calinski-Harabász index for a clustering.
+///
+/// CH = [SS_B / (k−1)] / [SS_W / (n−k)]
+/// where SS_B = Σ_c nₓ ‖centroid_c − global_centroid‖² (between-cluster scatter)
+/// and   SS_W = Σ_c Σ_{i in c} ‖xᵢ − centroid_c‖²     (within-cluster scatter)
+///
+/// Higher is better. Returns `f64::INFINITY` when SS_W = 0 (perfect clusters)
+/// and NaN for degenerate input (< 2 clusters).
+///
+/// # Parameters
+/// - `data`: n×d row-major data matrix
+/// - `labels`: cluster labels (negative = noise, excluded)
+/// - `n_dims`: d
+/// - `cc`: pre-computed centroids from [`cluster_centroids`], or `None` to
+///   compute internally (use `None` when calling this primitive standalone;
+///   pass `Some` when sharing with other score primitives)
+///
+/// **Primitive**: exists independently of the validation bundle. Kingdom A.
+pub fn calinski_harabasz_score(
+    data: &[f64], labels: &[i32], n_dims: usize,
+    cc: Option<&ClusterCentroids>,
+) -> f64 {
+    let owned;
+    let cc = match cc {
+        Some(c) => c,
+        None => {
+            owned = cluster_centroids(data, labels, n_dims);
+            match owned.as_ref() { Some(c) => c, None => return f64::NAN }
+        }
+    };
+    let ClusterCentroids { k, n_dims, sizes, centroids, id_to_idx } = cc;
+    let n = labels.len();
+
     let sq_dist = |a: &[f64], b: &[f64]| -> f64 {
         a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum()
     };
 
-    // ── Calinski-Harabasz ─────────────────────────────────────────────────
-    // CH = [SS_B / (k-1)] / [SS_W / (n-k)]
-    // SS_B = Σ_c n_c · ‖centroid_c - global_centroid‖²
-    // SS_W = Σ_c Σ_{i in c} ‖x_i - centroid_c‖²
-    let ss_b: f64 = (0..k)
+    let n_clustered = sizes.iter().sum::<usize>() as f64;
+    let mut global_centroid = vec![0.0_f64; *n_dims];
+    for ci in 0..*k {
+        for d in 0..*n_dims {
+            global_centroid[d] += sizes[ci] as f64 * centroids[ci * n_dims + d];
+        }
+    }
+    for d in 0..*n_dims { global_centroid[d] /= n_clustered; }
+
+    let ss_b: f64 = (0..*k)
         .map(|ci| sizes[ci] as f64 * sq_dist(&centroids[ci*n_dims..(ci+1)*n_dims], &global_centroid))
         .sum();
     let mut ss_w = 0.0_f64;
@@ -558,37 +613,95 @@ pub fn cluster_validation(data: &[f64], labels: &[i32], n_dims: usize) -> Option
             ss_w += sq_dist(&data[i*n_dims..(i+1)*n_dims], &centroids[ci*n_dims..(ci+1)*n_dims]);
         }
     }
-    let n_k = n_clustered - k as f64;
-    let calinski_harabasz = if ss_w < 1e-300 || n_k <= 0.0 {
+    let n_k = n_clustered - *k as f64;
+    if ss_w < 1e-300 || n_k <= 0.0 {
         f64::INFINITY
     } else {
-        (ss_b / (k as f64 - 1.0)) / (ss_w / n_k)
+        (ss_b / (*k as f64 - 1.0)) / (ss_w / n_k)
+    }
+}
+
+/// Davies-Bouldin index for a clustering.
+///
+/// DB = (1/k) Σᵢ max_{j≠i} (sᵢ + sⱼ) / d(cᵢ, cⱼ)
+/// where sᵢ = mean intra-cluster Euclidean distance to cluster i's centroid.
+///
+/// Lower is better. Returns 0 for perfect (tight, well-separated) clusters.
+///
+/// # Parameters
+/// Same as [`calinski_harabasz_score`] — pass `Some(&cc)` to share centroids.
+///
+/// **Primitive**: exists independently. Kingdom A.
+pub fn davies_bouldin_score(
+    data: &[f64], labels: &[i32], n_dims: usize,
+    cc: Option<&ClusterCentroids>,
+) -> f64 {
+    let owned;
+    let cc = match cc {
+        Some(c) => c,
+        None => {
+            owned = cluster_centroids(data, labels, n_dims);
+            match owned.as_ref() { Some(c) => c, None => return f64::NAN }
+        }
+    };
+    let ClusterCentroids { k, n_dims, sizes, centroids, id_to_idx } = cc;
+    let n = labels.len();
+
+    let sq_dist = |a: &[f64], b: &[f64]| -> f64 {
+        a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum()
     };
 
-    // ── Davies-Bouldin ────────────────────────────────────────────────────
-    // DB = (1/k) Σ_i max_{j≠i} (s_i + s_j) / d(c_i, c_j)
-    // s_i = mean intra-cluster distance to centroid
-    let mut s = vec![0.0_f64; k]; // mean intra-cluster distance
+    let mut s = vec![0.0_f64; *k]; // mean intra-cluster distance to centroid
     for i in 0..n {
         if let Some(&ci) = id_to_idx.get(&labels[i]) {
             s[ci] += sq_dist(&data[i*n_dims..(i+1)*n_dims], &centroids[ci*n_dims..(ci+1)*n_dims]).sqrt();
         }
     }
-    for ci in 0..k { if sizes[ci] > 0 { s[ci] /= sizes[ci] as f64; } }
+    for ci in 0..*k { if sizes[ci] > 0 { s[ci] /= sizes[ci] as f64; } }
 
-    let db_sum: f64 = (0..k).map(|i| {
-        (0..k).filter(|&j| j != i).map(|j| {
+    let db_sum: f64 = (0..*k).map(|i| {
+        (0..*k).filter(|&j| j != i).map(|j| {
             let d_ij = sq_dist(&centroids[i*n_dims..(i+1)*n_dims], &centroids[j*n_dims..(j+1)*n_dims]).sqrt();
             if d_ij < 1e-300 { 0.0 } else { (s[i] + s[j]) / d_ij }
         }).fold(0.0_f64, f64::max)
     }).sum();
-    let davies_bouldin = db_sum / k as f64;
+    db_sum / *k as f64
+}
 
-    // ── Silhouette ────────────────────────────────────────────────────────
-    // a(i) = mean distance to points in same cluster
-    // b(i) = min over other clusters: mean distance to points in cluster j
-    // s(i) = (b(i) - a(i)) / max(a(i), b(i))
-    // Only computed for non-noise points with cluster size >= 2 for a(i).
+/// Mean silhouette coefficient for a clustering.
+///
+/// s(i) = (b(i) − a(i)) / max(a(i), b(i))
+/// where a(i) = mean distance to own cluster, b(i) = min mean distance to any
+/// other cluster. Mean taken over all non-noise points in clusters of size ≥ 2.
+///
+/// Range [−1, 1]. Values > 0.5 indicate well-separated clusters.
+/// Returns 0.0 if no valid points exist.
+///
+/// # Parameters
+/// - `data`, `labels`, `n_dims`: raw inputs (centroids are not needed — silhouette
+///   uses pairwise distances to actual points, not centroid approximations)
+///
+/// **Primitive**: exists independently. Kingdom B (pairwise O(n²) inner loop).
+pub fn silhouette_score(data: &[f64], labels: &[i32], n_dims: usize) -> f64 {
+    let n = labels.len();
+    assert_eq!(data.len(), n * n_dims);
+
+    // Build id_to_idx and sizes (minimal centroid computation — sizes only)
+    let mut cluster_ids: Vec<i32> = labels.iter().copied().filter(|&l| l >= 0).collect();
+    cluster_ids.sort_unstable();
+    cluster_ids.dedup();
+    let k = cluster_ids.len();
+    if k < 2 { return 0.0; }
+
+    let id_to_idx: std::collections::HashMap<i32, usize> =
+        cluster_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let mut sizes = vec![0usize; k];
+    for &l in labels { if let Some(&ci) = id_to_idx.get(&l) { sizes[ci] += 1; } }
+
+    let sq_dist = |a: &[f64], b: &[f64]| -> f64 {
+        a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum()
+    };
+
     let mut sil_sum = 0.0_f64;
     let mut sil_count = 0usize;
 
@@ -599,7 +712,7 @@ pub fn cluster_validation(data: &[f64], labels: &[i32], n_dims: usize) -> Option
         };
         if sizes[ci] < 2 { continue; }
 
-        // a(i): mean distance to other points in same cluster
+        // a(i): mean distance to other points in the same cluster
         let a = {
             let mut sum = 0.0;
             let mut cnt = 0usize;
@@ -615,7 +728,7 @@ pub fn cluster_validation(data: &[f64], labels: &[i32], n_dims: usize) -> Option
             if cnt == 0 { 0.0 } else { sum / cnt as f64 }
         };
 
-        // b(i): min mean distance to any other cluster
+        // b(i): min mean distance to points in any other cluster
         let b = {
             let mut min_b = f64::INFINITY;
             for cj in 0..k {
@@ -641,7 +754,34 @@ pub fn cluster_validation(data: &[f64], labels: &[i32], n_dims: usize) -> Option
         sil_count += 1;
     }
 
-    let silhouette = if sil_count == 0 { 0.0 } else { sil_sum / sil_count as f64 };
+    if sil_count == 0 { 0.0 } else { sil_sum / sil_count as f64 }
+}
+
+// ── Validation bundle ─────────────────────────────────────────────────────
+
+/// Compute cluster validation metrics from raw data and cluster assignments.
+///
+/// Bundles three standalone score primitives — [`calinski_harabasz_score`],
+/// [`davies_bouldin_score`], and [`silhouette_score`] — computing shared
+/// centroids once via [`cluster_centroids`] and passing them to each primitive.
+///
+/// `data`: n×d row-major matrix (n points, d dimensions).
+/// `labels`: length-n cluster labels (noise/outliers should use label = -1 or
+///   any value < 0; these points are excluded from silhouette computation
+///   but included in CH/DB).
+/// `n_dims`: d (number of dimensions per point).
+///
+/// Returns `None` if < 2 clusters or insufficient data.
+pub fn cluster_validation(data: &[f64], labels: &[i32], n_dims: usize) -> Option<ClusterValidation> {
+    // Compute shared centroids once.
+    let cc = cluster_centroids(data, labels, n_dims)?;
+
+    // Each score primitive receives the shared ClusterCentroids.
+    // Silhouette uses pairwise distances (not centroids), so it computes
+    // its own id_to_idx + sizes from labels directly — no centroid needed.
+    let calinski_harabasz = calinski_harabasz_score(data, labels, n_dims, Some(&cc));
+    let davies_bouldin = davies_bouldin_score(data, labels, n_dims, Some(&cc));
+    let silhouette = silhouette_score(data, labels, n_dims);
 
     Some(ClusterValidation { silhouette, calinski_harabasz, davies_bouldin })
 }

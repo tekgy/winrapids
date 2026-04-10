@@ -112,42 +112,27 @@ pub fn kendall_tau(x: &[f64], y: &[f64]) -> f64 {
     let n = x.len();
     if n < 2 { return f64::NAN; }
 
-    // Sort pairs by x, breaking ties by y (stable sort preserves relative
-    // order of y within x-tied groups, which is what Knight's algorithm needs).
+    // Step 1: Sort pairs by x, breaking ties by y.
+    // Stable sort on x preserves the y-order within x-tied groups — required
+    // by Knight's algorithm so the merge-sort inversion count is correct.
     let mut pairs: Vec<(f64, f64)> = x.iter().zip(y.iter()).map(|(&a, &b)| (a, b)).collect();
     pairs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
 
-    // Count tie contributions from x-ties and y-ties.
-    // n_x(t) = number of tied pairs within each x-group of size t: C(t, 2) = t(t-1)/2
-    let mut ties_x_total: i64 = 0;
-    {
-        let mut i = 0;
-        while i < n {
-            let mut j = i + 1;
-            while j < n && pairs[j].0 == pairs[i].0 { j += 1; }
-            let t = (j - i) as i64;
-            ties_x_total += t * (t - 1) / 2;
-            i = j;
-        }
-    }
+    // Step 2: Count x-ties using the tie_count primitive.
+    // tie_count requires a sorted slice; project x-values from sorted pairs.
+    let x_sorted: Vec<f64> = pairs.iter().map(|p| p.0).collect();
+    let tx = tie_count(&x_sorted);
+    let ties_x_total = tx.tied_pair_count;
 
-    // For y-ties, we need to count pairs with same y regardless of x.
-    // Sort a copy by y and count run lengths.
+    // Step 3: Count y-ties — sort y independently and call tie_count.
     let mut y_sorted: Vec<f64> = pairs.iter().map(|p| p.1).collect();
     y_sorted.sort_by(|a, b| a.total_cmp(b));
-    let mut ties_y_total: i64 = 0;
-    {
-        let mut i = 0;
-        while i < n {
-            let mut j = i + 1;
-            while j < n && y_sorted[j] == y_sorted[i] { j += 1; }
-            let t = (j - i) as i64;
-            ties_y_total += t * (t - 1) / 2;
-            i = j;
-        }
-    }
+    let ty = tie_count(&y_sorted);
+    let ties_y_total = ty.tied_pair_count;
 
-    // Joint ties: pairs with same x AND same y. Count from the sorted-by-x array.
+    // Step 4: Count joint ties (same x AND same y) via a linear scan of
+    // the x-sorted pairs. This is not reducible to two independent tie_count
+    // calls — it requires looking at both coordinates simultaneously.
     let mut joint_ties: i64 = 0;
     {
         let mut i = 0;
@@ -160,17 +145,15 @@ pub fn kendall_tau(x: &[f64], y: &[f64]) -> f64 {
         }
     }
 
-    // Knight's merge-sort: count swaps (= discordant pairs) when merge-sorting
-    // the y-values of the x-sorted pairs. Total pairs = n(n-1)/2.
-    // discordant = number of inversions in the y-permutation.
-    // concordant = total_pairs - discordant - ties_x - ties_y + joint_ties
+    // Step 5: Knight's merge-sort — count inversions in the y-permutation.
+    // discordant = inversions; concordant derived from total pairs.
     let y_vals: Vec<f64> = pairs.iter().map(|p| p.1).collect();
-    let n_swaps = kendall_merge_sort_count(&y_vals);
+    let discordant = inversion_count(&y_vals);
     let total_pairs = n as i64 * (n as i64 - 1) / 2;
-    let discordant = n_swaps;
     let concordant = total_pairs - discordant - ties_x_total - ties_y_total + joint_ties;
 
-    // tau-b denominator uses (C+D+Tx_only)(C+D+Ty_only)
+    // Step 6: tau-b formula.
+    // denominator = sqrt((C+D+Tx_only)(C+D+Ty_only))
     // where Tx_only = ties_x_total - joint_ties, Ty_only = ties_y_total - joint_ties
     let n0 = concordant + discordant;
     let denom_x = (n0 + ties_x_total - joint_ties) as f64;
@@ -237,6 +220,86 @@ fn kt_merge_count(arr: &mut [f64], tmp: &mut [f64], lo: usize, hi: usize) -> i64
 /// Pearson correlation computed on pre-ranked data.
 ///
 /// This is the core computational step inside Spearman's ρ: given ranks
+// ═══════════════════════════════════════════════════════════════════════════
+// Tie counting
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of a tie analysis on a sorted array.
+///
+/// Returned by `tie_count`. Every rank-based test that adjusts for ties
+/// consumes this struct rather than re-deriving the tie structure.
+///
+/// # Fields overview
+/// - `n_tied_groups` / `group_sizes`: structural description (who is tied)
+/// - `tied_pair_count`: Kendall's tau-b denominator correction
+/// - `cubic_sum`: Mann-Whitney U and Dunn's test variance correction (Σ t³-t)
+/// - `wilcoxon_sum`: Wilcoxon signed-rank variance correction (Σ t(t-1)(t+1))
+#[derive(Debug, Clone, Default)]
+pub struct TieInfo {
+    /// Number of distinct tied groups (groups with size ≥ 2).
+    pub n_tied_groups: usize,
+    /// Total number of tied pairs: Σ tₖ(tₖ−1)/2 over all tie groups of size tₖ.
+    /// This is the "C" correction term in Kendall's tau-b denominator.
+    pub tied_pair_count: i64,
+    /// Sizes of each tie group (only groups with size ≥ 2).
+    pub group_sizes: Vec<usize>,
+    /// Cubic correction term Σ(tₖ³ − tₖ) used by Mann-Whitney U and Dunn's test.
+    /// Equal to 6 × Σ C(tₖ, 3).
+    pub cubic_sum: f64,
+    /// Correction term Σ tₖ(tₖ−1)(tₖ+1) used by Wilcoxon signed-rank.
+    pub wilcoxon_sum: f64,
+}
+
+/// Count tied groups in a **sorted** slice.
+///
+/// Input MUST be sorted (ascending). Equal consecutive values form a tie group.
+/// NaN values at the end of a sorted array are excluded from tie counting
+/// (NaN != NaN, so they never form a tie group themselves).
+///
+/// A single pass accumulates all five fields of [`TieInfo`], covering every
+/// rank-based correction term in the tambear catalog.
+///
+/// # Parameters
+/// - `sorted`: sorted slice of f64, ascending order. Equal consecutive values
+///   form a tie group. NaN values should be at the end (sort_by with total_cmp
+///   places them last); they are excluded.
+///
+/// # Returns
+/// [`TieInfo`] with all tie correction terms populated.
+///
+/// # Consumers
+/// - `kendall_tau`: uses `tied_pair_count` for T_x and T_y denominators
+/// - `mann_whitney_u`: uses `cubic_sum` in the variance formula
+/// - `wilcoxon_signed_rank`: uses `wilcoxon_sum` in the variance formula
+/// - `dunn_test`: uses `cubic_sum` as the global tie correction
+/// - Any rank-based test that uses the tie correction
+///
+/// **Primitive**: exists independently of any single test. Kingdom A — O(n).
+pub fn tie_count(sorted: &[f64]) -> TieInfo {
+    let mut info = TieInfo::default();
+
+    let mut i = 0;
+    while i < sorted.len() {
+        let v = sorted[i];
+        if v.is_nan() { break; } // NaN → skip remainder (sorted → all NaN at end)
+        let mut j = i + 1;
+        while j < sorted.len() && sorted[j] == v { j += 1; }
+        let t = j - i;
+        if t >= 2 {
+            info.n_tied_groups += 1;
+            let t64 = t as i64;
+            info.tied_pair_count += t64 * (t64 - 1) / 2;
+            info.group_sizes.push(t);
+            let tf = t as f64;
+            info.cubic_sum += tf * tf * tf - tf;                // t³ - t
+            info.wilcoxon_sum += tf * (tf - 1.0) * (tf + 1.0); // t(t-1)(t+1)
+        }
+        i = j;
+    }
+
+    info
+}
+
 /// (or any pre-transformed values) for two series, compute the product-moment
 /// correlation. Exposed as a standalone primitive so callers can reuse ranks
 /// from other computations without re-ranking.
@@ -436,42 +499,32 @@ pub fn mann_whitney_u(x: &[f64], y: &[f64]) -> NonparametricResult {
         };
     }
 
-    // Combine and rank
+    // Step 1: Combine both samples, rank jointly (average ties).
     let mut combined: Vec<f64> = Vec::with_capacity(n1 + n2);
     combined.extend_from_slice(x);
     combined.extend_from_slice(y);
     let ranks = rank(&combined);
 
-    // Sum of ranks for group 1
+    // Step 2: U statistic from rank sum of group 1.
     let r1: f64 = ranks[..n1].iter().sum();
     let u1 = r1 - (n1 * (n1 + 1)) as f64 / 2.0;
     let u2 = (n1 * n2) as f64 - u1;
     let u = u1.min(u2); // Use smaller U for two-tailed test
 
-    // Normal approximation with tie correction
+    // Step 3: Normal approximation with tie correction.
+    // σ² = n1·n2/12 × [(N+1) - Σ(tᵢ³-tᵢ)/(N(N-1))]
+    // Use tie_count primitive on the sorted combined sample.
     let n1f = n1 as f64;
     let n2f = n2 as f64;
     let nf = n1f + n2f;
     let mu = n1f * n2f / 2.0;
 
-    // Tie correction: σ² = n1·n2/12 × [(N+1) - Σ(tᵢ³-tᵢ)/(N(N-1))]
     let mut sorted_combined = combined.clone();
     sorted_combined.sort_by(|a, b| a.total_cmp(b));
-    let mut tie_sum = 0.0;
-    let mut ti = 0;
-    while ti < sorted_combined.len() {
-        let mut t = 1usize;
-        while ti + t < sorted_combined.len() && sorted_combined[ti + t] == sorted_combined[ti] {
-            t += 1;
-        }
-        if t > 1 {
-            let tf = t as f64;
-            tie_sum += tf * tf * tf - tf;
-        }
-        ti += t;
-    }
-    let sigma = (n1f * n2f / 12.0 * ((nf + 1.0) - tie_sum / (nf * (nf - 1.0)))).sqrt();
+    let ties = tie_count(&sorted_combined);
+    let sigma = (n1f * n2f / 12.0 * ((nf + 1.0) - ties.cubic_sum / (nf * (nf - 1.0)))).sqrt();
 
+    // Step 4: z-score and two-tailed p-value.
     let z = if sigma > 0.0 { (u - mu) / sigma } else { 0.0 };
     let p = normal_two_tail_p(z);
 
@@ -515,26 +568,15 @@ pub fn wilcoxon_signed_rank(differences: &[f64]) -> NonparametricResult {
         .map(|(_, &r)| r)
         .sum();
 
-    // Tie correction: subtract Σ t_j(t_j-1)(t_j+1)/48 from variance
+    // Tie correction: subtract Σ t_j(t_j-1)(t_j+1)/48 from variance.
+    // Use tie_count primitive on sorted |differences|.
     let mut sorted_abs = abs_vals.clone();
     sorted_abs.sort_by(|a, b| a.total_cmp(b));
-    let mut tie_correction = 0.0;
-    let mut ti = 0;
-    while ti < sorted_abs.len() {
-        let mut t = 1usize;
-        while ti + t < sorted_abs.len() && sorted_abs[ti + t] == sorted_abs[ti] {
-            t += 1;
-        }
-        if t > 1 {
-            let tf = t as f64;
-            tie_correction += tf * (tf - 1.0) * (tf + 1.0);
-        }
-        ti += t;
-    }
+    let ties = tie_count(&sorted_abs);
 
     let nf = n as f64;
     let mu = nf * (nf + 1.0) / 4.0;
-    let sigma = (nf * (nf + 1.0) * (2.0 * nf + 1.0) / 24.0 - tie_correction / 48.0).sqrt();
+    let sigma = (nf * (nf + 1.0) * (2.0 * nf + 1.0) / 24.0 - ties.wilcoxon_sum / 48.0).sqrt();
 
     let z = if sigma > 0.0 { (w_plus - mu) / sigma } else { 0.0 };
     let p = normal_two_tail_p(z);
@@ -628,26 +670,17 @@ pub fn dunn_test(data: &[f64], group_sizes: &[usize]) -> Vec<DunnComparison> {
     let k = group_sizes.len();
     let nf = n as f64;
 
-    // Global ranks (average ranks for ties)
+    // Step 1: Global ranks (average ranks for ties).
     let ranks = rank(data);
 
-    // Tie correction: C = Σ (t³ - t) / (12 * (N-1))
-    // where the sum is over tied groups of size t
+    // Step 2: Tie correction C = Σ(t³-t) / (12*(N-1)).
+    // Use tie_count primitive on sorted data.
     let mut sorted_data: Vec<f64> = data.to_vec();
     sorted_data.sort_by(|a, b| a.total_cmp(b));
-    let mut tie_correction = 0.0;
-    let mut i = 0;
-    while i < n {
-        let val = sorted_data[i];
-        let mut j = i + 1;
-        while j < n && sorted_data[j] == val { j += 1; }
-        let t = (j - i) as f64;
-        if t > 1.0 { tie_correction += t * t * t - t; }
-        i = j;
-    }
-    tie_correction /= 12.0 * (nf - 1.0);
+    let ties = tie_count(&sorted_data);
+    let tie_correction = ties.cubic_sum / (12.0 * (nf - 1.0));
 
-    // Mean rank per group
+    // Step 3: Mean rank per group
     let mut mean_ranks = Vec::with_capacity(k);
     let mut offset = 0;
     for &gs in group_sizes {
@@ -865,21 +898,20 @@ pub fn dagostino_pearson(data: &[f64]) -> NonparametricResult {
 ///
 /// The simplest normality test — O(1) from MomentStats. Less powerful than
 /// Shapiro-Wilk for small n but valid for all n ≥ 8.
+///
+/// Delegates to `hypothesis::jarque_bera` (canonical implementation) after
+/// computing MomentStats from `data`. For callers with pre-computed stats,
+/// call `hypothesis::jarque_bera` directly.
 pub fn jarque_bera(data: &[f64]) -> NonparametricResult {
     let clean: Vec<f64> = data.iter().copied().filter(|x| !x.is_nan()).collect();
-    let n = clean.len();
-    if n < 8 {
+    if clean.len() < 8 {
         return NonparametricResult {
             test_name: "Jarque-Bera", statistic: f64::NAN, p_value: f64::NAN,
         };
     }
     let moments = crate::descriptive::moments_ungrouped(&clean);
-    let skew = moments.skewness(false); // bias-corrected
-    let kurt = moments.kurtosis(true, false); // bias-corrected excess kurtosis
-    let nf = n as f64;
-    let jb = (nf / 6.0) * (skew * skew + kurt * kurt / 4.0);
-    let p = 1.0 - crate::special_functions::chi2_cdf(jb, 2.0);
-    NonparametricResult { test_name: "Jarque-Bera", statistic: jb, p_value: p }
+    let r = crate::hypothesis::jarque_bera(&moments);
+    NonparametricResult { test_name: "Jarque-Bera", statistic: r.statistic, p_value: r.p_value }
 }
 
 /// Expected normal order statistics (coefficients) for the Shapiro-Wilk W test.
@@ -3483,5 +3515,34 @@ mod sde_tests {
         assert!(r.drift_mean.is_finite());
         assert!(r.diffusion_mean.is_finite() && r.diffusion_mean >= 0.0);
         assert!(r.drift_diffusion_corr.abs() <= 1.0 + 1e-10);
+    }
+
+    #[test]
+    fn tie_count_no_ties() {
+        let sorted = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let t = tie_count(&sorted);
+        assert_eq!(t.n_tied_groups, 0);
+        assert_eq!(t.tied_pair_count, 0);
+        assert!(t.group_sizes.is_empty());
+    }
+
+    #[test]
+    fn tie_count_all_tied() {
+        // 4 identical values → 1 group, C(4,2)=6 pairs
+        let sorted = vec![3.0, 3.0, 3.0, 3.0];
+        let t = tie_count(&sorted);
+        assert_eq!(t.n_tied_groups, 1);
+        assert_eq!(t.tied_pair_count, 6);
+        assert_eq!(t.group_sizes, vec![4]);
+    }
+
+    #[test]
+    fn tie_count_multiple_groups() {
+        // [1,1,2,3,3,3] → two groups: size 2 (1 pair) + size 3 (3 pairs) = 4
+        let sorted = vec![1.0, 1.0, 2.0, 3.0, 3.0, 3.0];
+        let t = tie_count(&sorted);
+        assert_eq!(t.n_tied_groups, 2);
+        assert_eq!(t.tied_pair_count, 1 + 3);
+        assert_eq!(t.group_sizes, vec![2, 3]);
     }
 }

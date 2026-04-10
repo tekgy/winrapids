@@ -4057,6 +4057,48 @@ pub fn bocpd(data: &[f64], max_run: usize, hazard: f64, threshold: Option<f64>) 
     changepoints
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Log returns primitive
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute log returns from a price series.
+///
+/// r_i = ln(p_{i+1} / p_i) for i = 0 .. n−2.
+///
+/// Log returns are preferred over simple returns for financial time-series
+/// analysis because they are time-additive, approximately normally distributed
+/// for short intervals, and well-defined for volatility modelling.
+///
+/// # Parameters
+/// - `prices`: price series, length n. All values must be strictly positive.
+///   Non-positive prices produce NaN for the corresponding return.
+///
+/// # Returns
+/// Vector of log returns with length `prices.len() - 1`.
+/// Returns empty Vec if `prices.len() < 2`.
+///
+/// # Formula
+/// r_i = ln(p_{i+1}) − ln(p_i)   (numerically stable: no division, no cancellation)
+///
+/// # Properties
+/// - r_i > −∞ for p_i > 0, p_{i+1} > 0
+/// - Σ r_i = ln(p_n / p_0): multi-period log return = sum of single-period log returns
+/// - For small r: log return ≈ simple return (r ≈ ΔP/P)
+///
+/// # Consumers
+/// GARCH fitting (requires log returns as input), volatility estimation,
+/// Brownian motion calibration, IAT spectral analysis (family-17 bridges),
+/// any fintek bridge that starts from raw prices.
+pub fn log_returns(prices: &[f64]) -> Vec<f64> {
+    if prices.len() < 2 { return vec![]; }
+    prices.windows(2)
+        .map(|w| {
+            if w[0] <= 0.0 || w[1] <= 0.0 { f64::NAN }
+            else { (w[1] / w[0]).ln() }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests_bocpd {
     use super::*;
@@ -4106,5 +4148,37 @@ mod tests_bocpd {
                 "posterior must sum to 1, got {sum}"
             );
         }
+    }
+
+    #[test]
+    fn log_returns_length() {
+        let prices = vec![100.0, 101.0, 102.0, 103.0];
+        let r = log_returns(&prices);
+        assert_eq!(r.len(), 3, "length should be n-1");
+    }
+
+    #[test]
+    fn log_returns_constant_price_is_zero() {
+        let prices = vec![50.0; 5];
+        let r = log_returns(&prices);
+        for &ri in &r { assert!(ri.abs() < 1e-15, "log return = {ri}"); }
+    }
+
+    #[test]
+    fn log_returns_additive() {
+        // Σ log returns = ln(p_last / p_first)
+        let prices = vec![100.0, 110.0, 121.0, 133.1];
+        let r = log_returns(&prices);
+        let total: f64 = r.iter().sum();
+        let expected = (133.1_f64 / 100.0).ln();
+        assert!((total - expected).abs() < 1e-10, "total={total}, expected={expected}");
+    }
+
+    #[test]
+    fn log_returns_nonpositive_price_is_nan() {
+        let prices = vec![100.0, 0.0, 110.0];
+        let r = log_returns(&prices);
+        assert!(r[0].is_nan(), "r[0] from p=100->0 should be NaN");
+        assert!(r[1].is_nan(), "r[1] from p=0->110 should be NaN");
     }
 }

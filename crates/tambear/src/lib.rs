@@ -130,7 +130,13 @@ pub use filter_jit::{
 };
 pub use gather_op::GatherOp;
 pub use accumulate::{AccumulateEngine, Grouping, Expr, Op, AccResult};
-pub use clustering::{ClusteringEngine, ClusterResult, uf_new, uf_find, uf_union};
+pub use clustering::{
+    ClusteringEngine, ClusterResult, uf_new, uf_find, uf_union,
+    // Cluster validation primitives
+    ClusterCentroids, ClusterValidation,
+    cluster_centroids, cluster_validation,
+    calinski_harabasz_score, davies_bouldin_score, silhouette_score,
+};
 pub use intermediates::{DistanceMatrix, Metric, SufficientStatistics, IntermediateTag, TamSession, DataId};
 pub use reduce_op::ReduceOp;
 #[cfg(feature = "legacy-cudarc")]
@@ -146,6 +152,7 @@ pub use information_theory::{
     mutual_info_score, normalized_mutual_info_score, adjusted_mutual_info_score,
     entropy_histogram,
     mutual_info_miller_madow, fisher_information_histogram,
+    histogram_entropy,
 };
 pub use descriptive::{
     DescriptiveEngine, DescriptiveResult, MomentStats, GroupedMomentStats,
@@ -154,6 +161,8 @@ pub use descriptive::{
     sorted_nan_free, mad, gini, bowley_skewness, pearson_first_skewness,
     QuantileMethod,
     PHI_CENTERED_CU, PHI_CENTERED_QU,
+    // Forecast error metrics
+    mae, rmse, mape, mase,
 };
 pub use tb_io::{TbFile, TbColumnWrite, write_tb};
 pub use special_functions::{
@@ -182,6 +191,8 @@ pub use special_functions::{
     chebyshev_outlier,
     // Logistic family
     logistic, logit,
+    // Normal PDF
+    normal_pdf, normal_pdf_standard,
 };
 pub use hypothesis::{
     TestResult, AnovaResult, ChiSquareResult, HypothesisEngine,
@@ -194,7 +205,6 @@ pub use hypothesis::{
     bonferroni, holm, benjamini_hochberg,
     BreuschPaganResult, breusch_pagan,
     InfluenceResult, cooks_distance,
-    WlsResult, wls,
     TukeyComparison, tukey_hsd,
     LogisticRegressionResult, logistic_regression,
     MediationResult, mediation,
@@ -222,6 +232,8 @@ pub use nonparametric::{
     SdeResult, sde_estimate,
     inversion_count, inversion_count_mergesort,
     pearson_r,
+    // Tie counting primitive
+    TieInfo, tie_count,
     // Primitives (flat catalog)
     shapiro_wilk_coefficients,
 };
@@ -249,7 +261,7 @@ pub use linear_algebra::{
     tridiagonal_scan_element, tridiagonal_scan_compose,
     // Global primitives (flat catalog)
     SimpleRegressionResult, simple_linear_regression, ols_slope,
-    ols_normal_equations,
+    ols_normal_equations, ols_residuals,
     forward_solve, back_solve_transpose,
     effective_rank_from_sv,
 };
@@ -302,6 +314,8 @@ pub use multivariate::{
     MardiaNormalityResult, mardia_normality,
     vif, mahalanobis_distances,
     RegularizedResult, ridge, lasso, elastic_net,
+    // Weighted least squares (canonical: beta/wrss/r2 field names)
+    WlsResult, wls,
 };
 pub mod causal;
 pub mod spectral;
@@ -350,6 +364,7 @@ pub use time_series::{
     spectral_peak_count,
     // Primitives (flat catalog)
     arma_css_residuals, mackinnon_adf_critical_values,
+    log_returns,
 };
 pub mod volatility;
 pub mod factor_analysis;

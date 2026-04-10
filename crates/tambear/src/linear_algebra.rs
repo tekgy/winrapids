@@ -1068,16 +1068,11 @@ pub fn ols_normal_equations(x: &[f64], y: &[f64], nobs: usize, ncols: usize) -> 
 
 /// Sigmoid (logistic) function: 1 / (1 + exp(-x)).
 ///
-/// Global primitive duplicated in irt.rs, causal.rs, hypothesis.rs.
+/// Delegates to the canonical implementation in `neural::sigmoid`.
 /// Numerically stable: for x < -709 returns 0, for x > 709 returns 1.
+#[inline]
 pub fn sigmoid(x: f64) -> f64 {
-    if x >= 0.0 {
-        let e = (-x).exp();
-        1.0 / (1.0 + e)
-    } else {
-        let e = x.exp();
-        e / (1.0 + e)
-    }
+    crate::neural::sigmoid(x)
 }
 
 /// Effective rank of a matrix from its singular values (Roy's criterion).
@@ -1304,6 +1299,42 @@ pub fn solve_tridiagonal_scan(
     }
 
     Some(x)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// OLS residuals primitive
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute OLS residuals: e = y − ŷ = y − (intercept + slope·x).
+///
+/// Fits a simple bivariate regression y = α + βx via [`simple_linear_regression`]
+/// and returns the vector of residuals e_i = y_i − ŷ_i.
+///
+/// This is a standalone primitive because residuals are a fundamental output
+/// consumed by many downstream analyses that don't need the slope/intercept
+/// themselves: heteroskedasticity tests (Breusch-Pagan), autocorrelation tests
+/// (Durbin-Watson, Breusch-Godfrey), robust regression diagnostics,
+/// Cook's distance, and leverage computations.
+///
+/// # Parameters
+/// - `x`: predictor values (length n)
+/// - `y`: response values (length n, must match `x`)
+///
+/// # Returns
+/// Residual vector of length n, or an empty Vec if n < 2 or x is constant.
+///
+/// # Formula
+/// ŷ_i = intercept + slope · x_i
+/// e_i = y_i − ŷ_i
+///
+/// # Consumers
+/// `breusch_pagan` (tests residuals for heteroskedasticity),
+/// `cooks_distance` (measures influence via residuals),
+/// any two-stage procedure where residuals become new observations.
+pub fn ols_residuals(x: &[f64], y: &[f64]) -> Vec<f64> {
+    let r = simple_linear_regression(x, y);
+    if r.slope.is_nan() { return vec![]; }
+    r.residuals
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────
@@ -1844,6 +1875,32 @@ mod tests {
         let slope = ols_slope(&x, &y);
         let full = simple_linear_regression(&x, &y);
         assert!((slope - full.slope).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ols_residuals_perfect_fit() {
+        // y = 2x + 1 exactly → residuals all zero
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let y: Vec<f64> = x.iter().map(|&xi| 2.0 * xi + 1.0).collect();
+        let res = ols_residuals(&x, &y);
+        assert_eq!(res.len(), 5);
+        for &e in &res { assert!(e.abs() < 1e-10, "residual = {e}"); }
+    }
+
+    #[test]
+    fn ols_residuals_sum_to_zero() {
+        // OLS residuals always sum to 0 when intercept is included
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = vec![2.1, 3.9, 6.2, 7.8, 10.1];
+        let res = ols_residuals(&x, &y);
+        let sum: f64 = res.iter().sum();
+        assert!(sum.abs() < 1e-10, "residual sum = {sum}");
+    }
+
+    #[test]
+    fn ols_residuals_constant_x_empty() {
+        let r = ols_residuals(&[5.0; 5], &[1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert!(r.is_empty(), "should be empty for constant x");
     }
 
     #[test]

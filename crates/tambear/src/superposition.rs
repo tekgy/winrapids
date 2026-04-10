@@ -233,14 +233,25 @@ pub fn sweep_pca(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Run all applicable two-sample tests on the same pair of columns.
-/// Agreement = fraction of tests that agree on reject/fail-to-reject at alpha=0.05.
+/// Agreement = fraction of tests that agree on reject/fail-to-reject at `alpha`.
+///
+/// `alpha`: significance level for reject/fail-to-reject decisions.
+/// Default 0.05 if `None`.
 pub fn sweep_two_sample_tests(
     x: &[f64],
     y: &[f64],
 ) -> Superposition {
+    sweep_two_sample_tests_alpha(x, y, 0.05)
+}
+
+/// Like [`sweep_two_sample_tests`] but with an explicit alpha parameter.
+pub fn sweep_two_sample_tests_alpha(
+    x: &[f64],
+    y: &[f64],
+    alpha: f64,
+) -> Superposition {
     let sx = crate::descriptive::moments_ungrouped(x);
     let sy = crate::descriptive::moments_ungrouped(y);
-    let alpha = 0.05;
 
     let mut views = Vec::new();
     let mut decisions: Vec<bool> = Vec::new(); // true = reject

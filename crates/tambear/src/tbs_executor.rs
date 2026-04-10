@@ -1141,8 +1141,8 @@ pub fn execute(
                 // Scale check: warn if any column range >> another
                 let ranges: Vec<f64> = (0..pd).map(|j| {
                     let col: Vec<f64> = (0..pn).map(|i| data[i * pd + j]).collect();
-                    let min = col.iter().cloned().fold(f64::INFINITY, f64::min);
-                    let max = col.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    let min = col.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
+                    let max = col.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
                     max - min
                 }).collect();
                 let max_range = ranges.iter().cloned().fold(0.0_f64, f64::max);
@@ -2014,8 +2014,11 @@ pub fn execute(
                 let c = usize_arg(step, "col", 0, 0);
                 let col = extract_col(&pipeline.frame().data, pn, pd, c);
                 let n_bins = usize_arg(step, "n_bins", 1, 10);
-                let min_v = col.iter().cloned().fold(f64::INFINITY, f64::min);
-                let max_v = col.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let min_v = col.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
+                let max_v = col.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
+                if min_v.is_nan() || max_v.is_nan() {
+                    return Ok(TbsStepOutput::Scalar { name: "mutual_info", value: f64::NAN });
+                }
                 let range = (max_v - min_v).max(1e-15);
                 let binned: Vec<i32> = col.iter().map(|&v| ((v - min_v) / range * (n_bins as f64 - 1.0)).round() as i32).collect();
                 TbsStepOutput::Scalar {
@@ -2092,10 +2095,13 @@ pub fn execute(
                 let n_bins = usize_arg(step, "n_bins", 1, 10);
                 let (x, y) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
                 let n = x.len().min(y.len());
-                let min_x = x.iter().cloned().fold(f64::INFINITY, f64::min);
-                let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                let min_y = y.iter().cloned().fold(f64::INFINITY, f64::min);
-                let max_y = y.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let min_x = x.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
+                let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
+                let min_y = y.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
+                let max_y = y.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
+                if min_x.is_nan() || max_x.is_nan() || min_y.is_nan() || max_y.is_nan() {
+                    return Ok(TbsStepOutput::Matrix { name: "joint_entropy", data: vec![f64::NAN], rows: 1, cols: 1 });
+                }
                 let range_x = (max_x - min_x).max(1e-15);
                 let range_y = (max_y - min_y).max(1e-15);
                 // Build flat joint count table (n_bins × n_bins)

@@ -207,19 +207,22 @@ is resolved by extending the Taylor series region to |x| < 1.5.
 |---------|---------|----------|----------------------|
 | scipy | 1.x | `scipy.special.erfc` | < 1.3e-16 (≤ 1 ULP) |
 | mpmath | 1.3.0 | `mpmath.erfc` (50 dp) | reference |
-| tambear | post-fix | `erfc` | **< 1 ULP** (8.58e-16 max) |
+| tambear | post-fix | `erfc` | ≤ 21 ULP (x=1.0, CF boundary); ≤ 5 ULP elsewhere |
 
 scipy achieves ≤ 1 ULP accuracy across the full range using Cody (1969)'s
-rational Chebyshev approximation, not a continued fraction. Tambear is
-several orders of magnitude worse in the 0.5–1.0 range.
+rational Chebyshev approximation, not a continued fraction. Tambear uses
+Lentz CF with ≤ 21 ULP max. The 21 ULP at x=1.0 is the CF convergence limit.
 
 ### 6.2 Discrepancies found
 
-**None after the fix.** All tested cases agree to ≤ 1 ULP with mpmath.
+**None for the main oracle suite.** All tested cases agree to ≤ 21 ULP with mpmath.
 
-**Historical**: before 2026-04-10, tambear had relative error 8.37e-9 at
-x=0.5. This propagated to `normal_cdf` (error at z ≈ −0.7), and all
-derived p-values. Fixed by extending Taylor series to |x| < 1.5.
+**Historical bugs**:
+- Before 2026-04-10 Fix 1: 8.37e-9 rel err at x=0.5 (CF didn't converge in 200 iters).
+  Fixed by Taylor boundary 0.5→1.5.
+- Before 2026-04-10 Fix 2: 82 ULP at x=1.386 (Taylor cancellation). normal_cdf(-1.96)
+  was 62 ULP, destroying the critical 95% CI value.
+  Fixed by Taylor boundary 1.5→1.0. CF handles [1.0, 27] in ≤ 188 iters.
 
 ---
 
@@ -229,7 +232,7 @@ derived p-values. Fixed by extending Taylor series to |x| < 1.5.
 - [x] x = 0 → 1.0 (exact)
 - [x] Large positive x > 27 → 0.0 (flush to 0, subnormal range)
 - [x] Large negative x < −27 → 2.0 (reflected flush)
-- [x] x in [0.5, 1.0] → **BUG: error up to 8.37e-9** (documented)
+- [x] x in [0.5, 1.0] → FIXED: ≤ 21 ULP (CF region, converges in ≤ 188 iters)
 - [x] Range [0, 2] inclusive confirmed (erfc(x) returns exactly 2.0 for x ≈ -7 where erfc(7) underflows to 0)
 - [ ] x = ±∞ → check behavior (likely 0/2 via the ax > 27 path, but not tested)
 - [ ] x = ±f64::MAX → may or may not hit the ax > 27 guard

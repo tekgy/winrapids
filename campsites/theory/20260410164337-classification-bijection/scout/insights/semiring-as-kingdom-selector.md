@@ -121,7 +121,7 @@ Logistic map: `x_t = r · x_{t-1} · (1 - x_{t-1})`. Data-determined (r fixed pa
 Composition after n steps = degree-2ⁿ polynomial. Representation is exponential in n.
 Not Kingdom A despite bounded state.
 
-**The finitely-representable semigroup table (pure-math-scan)**:
+**The finitely-representable semigroup table (pure-math-scan + r-gap-scan)**:
 
 | Map type | Closes under composition? | Kingdom |
 |----------|--------------------------|---------|
@@ -129,9 +129,16 @@ Not Kingdom A despite bounded state.
 | Min-plus `min(x + d, c)` from data | Yes — tropical scalar monoid, O(1) | A |
 | Logistic `r·x·(1-x)` | No — degree doubles, O(2ⁿ) | B |
 | Scaled sine `d·sin(x)` | No — transcendental nesting, unbounded | B |
+| Floor-affine `floor(a·x + b)` | No — floor breaks distributivity; compose ≠ floor of linear | B |
 | Branching `x>0 ? ax+b : cx+d` | No — needs intermediate sign to compose | B |
-| ARMA MA residuals | No — residuals are state | B |
+| ARMA MA residuals (CSS) | No — residuals are state (but Kalman formulation = A) | B impl / A math |
 | BOCPD run-length stats | No — state-dependent accumulation target | B |
+
+**Floor-affine counter-example** (r-gap-scan): `f_t(x) = floor(a_t·x + b_t)`.
+Data-determined (a_t, b_t from input). Fixed type (ℤ or ℝ). But composition:
+`f_t(f_{t-1}(x)) = floor(a_t·floor(a_{t-1}·x + b_{t-1}) + b_t)`
+≠ `floor((a_t·a_{t-1})·x + (a_t·b_{t-1} + b_t))` because floor doesn't distribute
+over the outer multiplication. Fails closure. Kingdom B despite data-determined maps.
 
 Algorithms that appear sequential but are genuinely Kingdom A:
 - Data-determined maps + finitely-representable semigroup exists → Kingdom A

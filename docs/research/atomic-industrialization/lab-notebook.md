@@ -883,14 +883,18 @@ r-gap-scan added the second axis to the coverage map: claim type. The full map i
 
 **Priority by fan-out × gap:**
 
-`covariance_matrix` is the highest-leverage workup not yet written:
-- Fan-out: 8 consumers (pca, lda, cca, manova, mahalanobis, ridge, vif, factor_analysis)
-- Type 1 coverage: **BLACK** — no symmetry test, no shift invariance, no PSD check, no scale covariance
-- Type 2 coverage: **BLACK** — not in workup files, not in gold_standard_parity.rs
-- Type 3 coverage: **ORANGE** — tested indirectly through downstream Hotelling/MANOVA tests
+`covariance_matrix` — workup written and passing (2026-04-10):
 
-One `workup_covariance_matrix.rs` with 4 Type 1 theorem tests + mpmath oracle propagates
-green-tier confidence to 8 downstream methods simultaneously.
+`crates/tambear/tests/workup_covariance_matrix.rs` — **10 tests, all green**.
+
+Coverage:
+- Type 1 (formula): symmetry, diagonal=variance, shift invariance, scale covariance, Bessel ratio — all green
+- Type 2 (oracle): exact rational oracle cases (linear data, orthogonal columns) — all green
+- Type 3 (robustness): constant data → zero matrix, single row → finite, NaN input → NaN propagation — all green
+
+**Observer self-correction**: first version of `uncorrelated_is_zero_off_diagonal` had a wrong oracle — claimed cross products cancel for `[[1,-1],[2,1],...]` but they sum to 2/3. Test correctly failed, forcing construction of the orthogonal sign-pattern dataset `[[1,1],[-1,1],[1,-1],[-1,-1]]` where cross products provably cancel. The workup mechanism worked as intended: theorem test failed on wrong oracle, not on wrong code.
+
+NaN propagation verified: the two-pass implementation propagates NaN correctly through the deviation computation. Shift invariance holds at 1e9 scale (same two-pass stability as pearson_r).
 
 **`gold_standard_parity.rs` corrected count**: 826 tests (not 471 — grew during waves 16-23).
 Updated in table above.

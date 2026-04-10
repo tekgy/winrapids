@@ -51,7 +51,7 @@ found the right algebraic form — the branch selection IS the self-reference.
 | garch11_filter | data (r²_t external) | — | A |
 | egarch11_filter | state (z_t = r_t/σ_t couples state) | Yes | B |
 | ewma_variance | data (r²_{t-1} external) | — | A |
-| arma_css_residuals | state (MA residuals ε_{t-j} are computed state values, not data) | Yes | B |
+| arma_css_residuals | B implementation of A math: CSS residual chain is sequential; Kalman formulation is Kingdom A (affine) + Kingdom C (outer MLE) | Yes (CSS) / — (Kalman) | B impl / A math |
 | tar_model | state (branch selection: a vs b depends on x_{t-1}) | Yes | B — canonical |
 | smc_particle_filter | state (resampling depends on accumulated history) | No | D |
 | bocpd | state (per-run-length stats shift and extend each step; map not data-determined) | Yes (growing) | B |

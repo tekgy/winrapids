@@ -555,4 +555,41 @@ Workup proposal is correct.
 
 ---
 
-*Last updated: 2026-04-10 by observer (product landscape verification + math-researcher claim audit)*
+---
+
+### Waves 16 + 17 Verification — 2026-04-10
+
+Adversarial reported bugs in `davies_bouldin_score`, `hurst_rs`, `norm_inf`, `norm_1`,
+`correlation_dimension`. Independently verified all five fold sites in the current working tree.
+
+**All five are already fixed:**
+- `clustering.rs:666` → `crate::numerical::nan_max`
+- `complexity.rs:240-241` (hurst_rs range) → `nan_max` / `nan_min`
+- `linear_algebra.rs:121` (norm_inf) → `nan_max`
+- `linear_algebra.rs:128` (norm_1) → `nan_max`
+- `complexity.rs:494` (correlation_dimension L∞) → `nan_max`
+- `graph.rs:779` (flagged as next wave 18 target) → already `nan_max`
+
+Fixes landed before or as part of the wave commits. Wave 16/17 test binaries test against
+code that was already corrected — tests asserting NaN-propagation should now pass.
+
+**Remaining raw `f64::min`/`max` fold sites — classified:**
+
+| File | Lines | Classification | Reason |
+|------|-------|----------------|--------|
+| `data_quality_catalog.rs` | 280-292 | Safe | `clean` pre-filtered `is_finite()` |
+| `data_quality.rs` | 108-109 | Safe | `clean` pre-filtered `is_finite()` |
+| `complexity.rs` | 1535-1536 | Safe | `valid_h` pre-filtered `is_finite()` |
+| `experiment0/1/2.rs` | various | Safe | softmax max-shift, caller pathology if NaN |
+| `bigfloat.rs` | 1587-1588 | Test helper | not production |
+| `numerical.rs` | 1172-1173 | Test helper | `unstable_simulation_oscillates` |
+| `hypothesis.rs` | 2818-2819 | Test helper | `moment_stats_from_slice` — low priority |
+
+**New NaN-eating pattern identified**: `if std > 0.0` returns false for NaN, silently
+skipping blocks that should propagate NaN. In `hurst_rs:251`, NaN std causes silent
+block omission rather than NaN return. This conditional-skip pattern is distinct from
+the fold-eating pattern and may appear elsewhere.
+
+**Systemic fold NaN-eating in production code: eradicated.**
+
+*Last updated: 2026-04-10 by observer (waves 16/17 verification + remaining fold site audit)*

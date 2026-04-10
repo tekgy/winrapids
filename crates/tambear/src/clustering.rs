@@ -1007,6 +1007,66 @@ pub struct GapStatisticResult {
     pub optimal_k: Option<usize>,
 }
 
+/// CPU-side f64 k-means (Lloyd's algorithm, k-means++ initialization not required).
+///
+/// Uses random initialization from the data points (seeded for reproducibility).
+/// Stops when assignments stop changing or `max_iter` is reached.
+///
+/// Distinct from `KMeansEngine` (which is GPU/f32). This version is CPU-native
+/// f64 for use in statistical procedures that need double precision (gap statistic,
+/// bootstrap-based clustering, etc.).
+///
+/// # Parameters
+/// - `data`: n×d row-major matrix
+/// - `n`: number of points
+/// - `d`: number of dimensions
+/// - `k`: number of clusters (clamped to `[1, n]`)
+/// - `max_iter`: maximum Lloyd iterations (100 is typical)
+/// - `seed`: RNG seed for reproducibility
+///
+/// # Returns
+/// Label vector of length n with cluster indices in `[0, k)`.
+pub fn kmeans_f64(data: &[f64], n: usize, d: usize, k: usize, max_iter: usize, seed: u64) -> Vec<i32> {
+    assert_eq!(data.len(), n * d, "kmeans_f64: data.len() must equal n × d");
+    let k = k.min(n).max(1);
+    let mut rng = crate::rng::Xoshiro256::new(seed);
+    let init_idx = crate::rng::sample_without_replacement(&mut rng, n, k);
+    let mut centroids: Vec<f64> = init_idx.iter()
+        .flat_map(|&i| data[i * d..(i + 1) * d].iter().copied())
+        .collect();
+    let mut labels = vec![0i32; n];
+    for _ in 0..max_iter {
+        let mut changed = false;
+        for i in 0..n {
+            let mut best = 0usize;
+            let mut best_d2 = f64::INFINITY;
+            for ci in 0..k {
+                let d2: f64 = (0..d).map(|dim|
+                    (data[i * d + dim] - centroids[ci * d + dim]).powi(2)
+                ).sum();
+                if d2 < best_d2 { best_d2 = d2; best = ci; }
+            }
+            if labels[i] != best as i32 { changed = true; }
+            labels[i] = best as i32;
+        }
+        if !changed { break; }
+        let mut new_c = vec![0.0_f64; k * d];
+        let mut counts = vec![0usize; k];
+        for i in 0..n {
+            let ci = labels[i] as usize;
+            counts[ci] += 1;
+            for dim in 0..d { new_c[ci * d + dim] += data[i * d + dim]; }
+        }
+        for ci in 0..k {
+            if counts[ci] > 0 {
+                for dim in 0..d { new_c[ci * d + dim] /= counts[ci] as f64; }
+            }
+        }
+        centroids = new_c;
+    }
+    labels
+}
+
 /// Gap statistic for optimal k selection (Tibshirani, Walther & Hastie 2001).
 ///
 /// Compares the within-cluster log-dispersion of the observed data to that
@@ -1061,48 +1121,6 @@ pub fn gap_statistic(
         }
     }
 
-    // ── Inline CPU k-means (Lloyd's algorithm, f64) ──────────────────────
-    // The kmeans.rs crate uses f32 GPU paths; we need f64 CPU k-means here.
-    let kmeans_cpu_f64 = |pts: &[f64], k: usize, max_iter: usize, init_seed: u64| -> Vec<i32> {
-        let k = k.min(n).max(1);
-        let mut rng_init = crate::rng::Xoshiro256::new(init_seed);
-        let init_idx = crate::rng::sample_without_replacement(&mut rng_init, n, k);
-        let mut centroids: Vec<f64> = init_idx.iter()
-            .flat_map(|&i| pts[i * d..(i + 1) * d].iter().copied())
-            .collect();
-        let mut labels = vec![0i32; n];
-        for _iter in 0..max_iter {
-            let mut changed = false;
-            for i in 0..n {
-                let mut best = 0usize;
-                let mut best_d2 = f64::INFINITY;
-                for ci in 0..k {
-                    let d2: f64 = (0..d).map(|dim|
-                        (pts[i * d + dim] - centroids[ci * d + dim]).powi(2)
-                    ).sum();
-                    if d2 < best_d2 { best_d2 = d2; best = ci; }
-                }
-                if labels[i] != best as i32 { changed = true; }
-                labels[i] = best as i32;
-            }
-            if !changed { break; }
-            let mut new_c = vec![0.0_f64; k * d];
-            let mut counts = vec![0usize; k];
-            for i in 0..n {
-                let ci = labels[i] as usize;
-                counts[ci] += 1;
-                for dim in 0..d { new_c[ci * d + dim] += pts[i * d + dim]; }
-            }
-            for ci in 0..k {
-                if counts[ci] > 0 {
-                    for dim in 0..d { new_c[ci * d + dim] /= counts[ci] as f64; }
-                }
-            }
-            centroids = new_c;
-        }
-        labels
-    };
-
     // ── Helper: within-cluster dispersion Wₖ for a given labeling ────────
     // W_k = Σ_r (1 / nᵣ) Σ_{i in r} ‖xᵢ - centroid_r‖²
     let within_cluster_dispersion = |pts: &[f64], labels: &[i32], k: usize| -> f64 {
@@ -1136,7 +1154,7 @@ pub fn gap_statistic(
     // ── Observed dispersions ─────────────────────────────────────────────
     let mut log_w_obs = vec![0.0_f64; n_k];
     for (ki, &k) in k_values.iter().enumerate() {
-        let labels = kmeans_cpu_f64(data, k, 100, seed.wrapping_add(ki as u64 * 13));
+        let labels = kmeans_f64(data, n, d, k, 100, seed.wrapping_add(ki as u64 * 13));
         let w = within_cluster_dispersion(data, &labels, k);
         // Zero dispersion (constant data): use 0.0 instead of -Inf to avoid gap=Inf.
         log_w_obs[ki] = if w > 0.0 { w.ln() } else { 0.0 };
@@ -1159,8 +1177,8 @@ pub fn gap_statistic(
             }
         }
         for (ki, &k) in k_values.iter().enumerate() {
-            let ref_labels = kmeans_cpu_f64(
-                &ref_data, k, 100,
+            let ref_labels = kmeans_f64(
+                &ref_data, n, d, k, 100,
                 seed.wrapping_add(ref_idx as u64 * 997 + ki as u64 * 31),
             );
             let w = within_cluster_dispersion(&ref_data, &ref_labels, k);
@@ -1905,5 +1923,41 @@ mod tests {
         let labels = vec![0i32, 0, 0, 0];
         let bic = bic_score(&data, &labels, 1, 1);
         assert!(bic.is_finite(), "BIC(k=1) should be a valid finite baseline, got {bic}");
+    }
+
+    #[test]
+    fn kmeans_f64_two_separable_clusters() {
+        // 6 points: first 3 near origin, last 3 near (10,10)
+        let data = vec![
+            0.0, 0.0,   0.1, 0.1,   0.2, 0.0,
+            9.9, 9.9,  10.1, 10.0,  10.0, 9.8,
+        ];
+        let labels = kmeans_f64(&data, 6, 2, 2, 100, 42);
+        assert_eq!(labels.len(), 6);
+        // First 3 should share a cluster, last 3 another
+        assert_ne!(labels[0], labels[3], "Separated clusters should have different labels");
+        assert_eq!(labels[0], labels[1], "Close points should share cluster");
+        assert_eq!(labels[0], labels[2], "Close points should share cluster");
+        assert_eq!(labels[3], labels[4], "Close points should share cluster");
+        assert_eq!(labels[3], labels[5], "Close points should share cluster");
+    }
+
+    #[test]
+    fn kmeans_f64_k1_returns_all_same() {
+        let data = vec![1.0, 2.0,  3.0, 4.0,  5.0, 6.0];
+        let labels = kmeans_f64(&data, 3, 2, 1, 100, 42);
+        assert!(labels.iter().all(|&l| l == 0), "k=1 should assign everything to cluster 0");
+    }
+
+    #[test]
+    fn kmeans_f64_n_equals_k() {
+        // Each point is its own cluster
+        let data = vec![0.0, 0.0,  5.0, 5.0,  10.0, 10.0];
+        let labels = kmeans_f64(&data, 3, 2, 3, 100, 42);
+        // All labels distinct
+        let mut label_set = labels.clone();
+        label_set.sort();
+        label_set.dedup();
+        assert_eq!(label_set.len(), 3, "Each point should be in its own cluster");
     }
 }

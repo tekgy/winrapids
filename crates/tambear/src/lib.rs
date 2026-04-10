@@ -140,6 +140,7 @@ pub use clustering::{
     hopkins_statistic,
     gap_statistic, GapStatisticResult,
     bic_score, aic_score,
+    kmeans_f64,
 };
 pub use intermediates::{DistanceMatrix, Metric, SufficientStatistics, IntermediateTag, TamSession, DataId};
 pub use reduce_op::ReduceOp;

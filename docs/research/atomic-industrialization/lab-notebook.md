@@ -484,4 +484,75 @@ count in `--lib` runs.
 
 ---
 
-*Last updated: 2026-04-10 by observer (after commit ff13e63 — 2,194+279 tests, all green)*
+---
+
+### Product Landscape Verification — 2026-04-10 (post-summary)
+
+Following the naturalist's question about unnamed algorithms in the 4 predicted gap families
+({Prefix×Graph, ByKey×Graph, Prefix×Prefix, Circular×Graph}).
+
+**Verified: CCM is Prefix × Graph, unnamed.**
+
+`complexity.rs:1589` — `pub fn ccm(x, y, embed_dim, tau, k)`. The code's Kingdom label
+("Kingdom A") is correct for the inner kNN loop but misses the product structure:
+- Prefix atom: `(0..embed_dim).map(|d| series[i - d * tau])` — Takens delay embedding
+- Graph atom: `(0..lib_size).filter(|&j| j != i).map(|j| ...)` — kNN graph construction and weighted prediction
+
+The algorithm is Prefix (manifold reconstruction) × Graph (nearest neighbor prediction).
+It was classified correctly for its inner loop, incorrectly for its outer structure.
+
+**Verified: `largest_lyapunov` and `correlation_dimension` are also Prefix × Graph.**
+
+All three independently call `delay_embed` (now delegated to `time_series::delay_embed`)
+then build kNN or pairwise-distance structures on the manifold. Three separate functions
+implementing the same product without recognizing it. The product classification predicts
+they should share the delay embedding via TamSession — they currently don't.
+
+**Verified: Transfer entropy is ByKey × Prefix.**
+
+`information_theory.rs:744` — discretizes into bins (ByKey), then computes t-1 → t
+transition probabilities (Prefix within each bin class). Two atoms, unnamed.
+
+**Verified: Prefix × Prefix has no implementation in the codebase.**
+
+Searched for 2D prefix scans, integral images, summed area tables. None found. This is
+a genuine gap, not a classification gap. The Viola-Jones box-filtering family is absent.
+
+**Observable implication of the product classification:**
+
+`ccm`, `largest_lyapunov`, `correlation_dimension` all construct delay embeddings
+independently. The product structure predicts they should share this intermediate.
+This is a concrete, actionable sharing opportunity that falls directly out of the theory.
+
+---
+
+### Math-Researcher Proposals Verified — 2026-04-10
+
+Verified three technical claims from the math-researcher's campsite proposals:
+
+**FNN promotion: confirmed correct and doable.**
+`family15_manifold_topology.rs:445` — `fn fnn_frac(x, d, tau)` is private, 33 lines,
+Kennel 1992 criterion. Hardcoded `rtol = 15.0` should become a `using()` parameter on
+promotion. Implementation is correct.
+
+**SVD algorithm label is wrong in the code.**
+Section header `linear_algebra.rs:607` says "Golub-Kahan bidiagonalization + QR iteration."
+Actual implementation (`linear_algebra.rs:620`) is one-sided Jacobi rotations — explicitly
+stated in the docstring. The math-researcher's proposal matched the section header, not
+the algorithm. The workup (Principle 10 against LAPACK dgesvd) is warranted; the campsite
+description needs correction.
+
+**Schur decomposition: absent, docstring misleads.**
+`matrix_log` docstring at `linear_algebra.rs:1581` says "Schur decomposition approach."
+The actual implementation uses repeated square-rooting + Gregory series — no Schur.
+The proposal is correct (Schur IS a gap). The current code is approximating around it,
+not using it.
+
+**SVD test coverage: 3 tests, not a workup.**
+`svd_reconstruction`, `svd_singular_values`, `svd_orthogonality` — basic correctness.
+Missing: near-singular, rank-deficient, tall/wide extremes, ill-conditioned matrices.
+Workup proposal is correct.
+
+---
+
+*Last updated: 2026-04-10 by observer (product landscape verification + math-researcher claim audit)*

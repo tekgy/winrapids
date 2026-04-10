@@ -267,6 +267,10 @@ pub use complexity::{
     hurst_rs, dfa, higuchi_fd, lempel_ziv_complexity,
     correlation_dimension, largest_lyapunov,
     LyapunovSpectrum, lyapunov_spectrum,
+    // Nonlinear/structural complexity
+    RqaResult, rqa, MfdfaResult, mfdfa, CcmResult, ccm,
+    PhaseTransitionResult, phase_transition,
+    harmonic_r_stat, hankel_r_stat,
     // Atoms — promoted from private: composable sub-operations
     count_matches, phi_func, pattern_to_index, factorial,
     linear_fit_segment, estimate_mean_period,
@@ -620,3 +624,51 @@ pub use bigint::{U256, BigInt};
 pub use bigfloat::{BigFloat, BigComplex, zeta_complex, hardy_z, find_zeta_zero, euler_factor_complex, euler_product_complex};
 pub use superposition::{Superposition, SuperpositionView};
 pub use tam::{tam, TamValue, TamResult, ConvergeResult, Diagnostic, EmergentDepth, tam_f64};
+
+// Survival analysis
+pub use survival::{
+    KmStep, kaplan_meier, km_median,
+    LogRankResult, log_rank_test,
+    CoxResult, cox_ph,
+    GrambschTherneauResult, grambsch_therneau_test,
+};
+
+// Panel / econometrics
+pub use panel::{
+    FeResult, panel_fe, panel_re,
+    FdResult, panel_fd,
+    HausmanResult, hausman_test, hausman_test_full,
+    panel_twfe, breusch_pagan_re, re_theta,
+    TwoSlsResult, two_sls,
+    DidResult, did,
+};
+
+// Bayesian inference
+pub use bayesian::{
+    McmcChain, metropolis_hastings,
+    BayesLinearResult, bayesian_linear_regression,
+    effective_sample_size as mcmc_effective_sample_size, r_hat,
+};
+
+// Item Response Theory
+pub use irt::{
+    rasch_prob, prob_2pl, prob_3pl,
+    ItemParams, IrtFitConfig, fit_2pl,
+    ability_mle, ability_eap,
+    item_information, test_information, sem,
+    mantel_haenszel_dif,
+};
+
+// Series acceleration (Aitken, Shanks, Wynn, Richardson, Euler, Abel)
+pub use series_accel::{
+    partial_sums, cumsum, cesaro_sum,
+    aitken_delta2, wynn_epsilon, StreamingWynn,
+    richardson_extrapolate, euler_transform, abel_sum,
+    richardson_partial_sums, euler_maclaurin_zeta,
+    ConvergenceType, detect_convergence, accelerate,
+};
+
+// Naive Bayes classifier
+pub use train::naive_bayes::{
+    GaussianNB, gaussian_nb_fit, gaussian_nb_predict, gaussian_nb_predict_proba,
+};

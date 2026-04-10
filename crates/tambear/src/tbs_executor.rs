@@ -2138,19 +2138,21 @@ pub fn execute(
                 let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
                 let min_y = y.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
                 let max_y = y.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
-                if min_x.is_nan() || max_x.is_nan() || min_y.is_nan() || max_y.is_nan() {
-                    return Ok(TbsStepOutput::Matrix { name: "pmi", data: vec![f64::NAN], rows: 1, cols: 1 });
-                }
-                let range_x = (max_x - min_x).max(1e-15);
-                let range_y = (max_y - min_y).max(1e-15);
-                let mut counts = vec![0.0f64; n_bins * n_bins];
-                for i in 0..n {
-                    let bx = ((x[i] - min_x) / range_x * (n_bins as f64 - 1.0)).round() as usize;
-                    let by = ((y[i] - min_y) / range_y * (n_bins as f64 - 1.0)).round() as usize;
-                    counts[bx.min(n_bins - 1) * n_bins + by.min(n_bins - 1)] += 1.0;
-                }
-                let pmi_mat = crate::information_theory::pointwise_mutual_information(&counts, n_bins, n_bins, positive);
-                TbsStepOutput::Matrix { name: "pmi", data: pmi_mat, rows: n_bins, cols: n_bins }
+                let (pmi_data, pmi_rows, pmi_cols) = if min_x.is_nan() || max_x.is_nan() || min_y.is_nan() || max_y.is_nan() {
+                    (vec![f64::NAN], 1usize, 1usize)
+                } else {
+                    let range_x = (max_x - min_x).max(1e-15);
+                    let range_y = (max_y - min_y).max(1e-15);
+                    let mut counts = vec![0.0f64; n_bins * n_bins];
+                    for i in 0..n {
+                        let bx = ((x[i] - min_x) / range_x * (n_bins as f64 - 1.0)).round() as usize;
+                        let by = ((y[i] - min_y) / range_y * (n_bins as f64 - 1.0)).round() as usize;
+                        counts[bx.min(n_bins - 1) * n_bins + by.min(n_bins - 1)] += 1.0;
+                    }
+                    let pmi_mat = crate::information_theory::pointwise_mutual_information(&counts, n_bins, n_bins, positive);
+                    (pmi_mat, n_bins, n_bins)
+                };
+                TbsStepOutput::Matrix { name: "pmi", data: pmi_data, rows: pmi_rows, cols: pmi_cols }
             }
 
             // ══════════════════════════════════════════════════════════════

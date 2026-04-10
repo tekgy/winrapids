@@ -236,11 +236,18 @@ impl MomentStats {
             + 6.0 * delta2 * (na * na * b.m2 + nb * nb * a.m2) / (n * n)
             + 4.0 * delta * (na * b.m3 - nb * a.m3) / n;
 
+        // Use total_cmp-aware min/max: if either operand is NaN, propagate NaN.
+        // f64::min/max swallow NaN (return the other operand), which would silently
+        // lose contamination and produce wrong bounds for merged statistics.
+        let merged_min = if a.min.is_nan() || b.min.is_nan() { f64::NAN }
+                         else { a.min.min(b.min) };
+        let merged_max = if a.max.is_nan() || b.max.is_nan() { f64::NAN }
+                         else { a.max.max(b.max) };
         MomentStats {
             count: n,
             sum,
-            min: a.min.min(b.min),
-            max: a.max.max(b.max),
+            min: merged_min,
+            max: merged_max,
             m2, m3, m4,
         }
     }
@@ -685,6 +692,24 @@ pub fn iqr(sorted: &[f64]) -> f64 {
 }
 
 // ── Additional central tendency ───────────────────────────────────────────
+
+/// Coefficient of variation: std(ddof=1) / |mean|.
+///
+/// Returns NaN if the array has fewer than 2 elements, the mean is zero, or
+/// all values are NaN. NaN values are excluded before computation.
+///
+/// This is the population-normalized dispersion — a dimensionless measure of
+/// relative variability independent of scale. Widely used in finance (returns
+/// volatility per unit return), biology (assay noise), and process control.
+pub fn coefficient_of_variation(values: &[f64]) -> f64 {
+    let finite: Vec<f64> = values.iter().copied().filter(|v| !v.is_nan()).collect();
+    let n = finite.len();
+    if n < 2 { return f64::NAN; }
+    let mean: f64 = finite.iter().sum::<f64>() / n as f64;
+    if mean.abs() < 1e-300 { return f64::NAN; }
+    let var: f64 = finite.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64;
+    var.sqrt() / mean.abs()
+}
 
 /// Geometric mean: exp(Σlog(x) / n).
 ///

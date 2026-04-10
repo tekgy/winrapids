@@ -635,6 +635,8 @@ pub fn fixed_point(g: impl Fn(f64) -> f64, x0: f64, tol: f64, max_iter: usize) -
 /// Returns `f64::NEG_INFINITY` for empty input (log of empty sum = -inf).
 pub fn log_sum_exp(x: &[f64]) -> f64 {
     if x.is_empty() { return f64::NEG_INFINITY; }
+    // NaN guard: f64::max swallows NaN, so check explicitly before folding
+    if x.iter().any(|v| v.is_nan()) { return f64::NAN; }
     let max = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     if max.is_infinite() { return max; }
     max + x.iter().map(|&v| (v - max).exp()).sum::<f64>().ln()

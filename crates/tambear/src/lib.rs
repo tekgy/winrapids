@@ -725,3 +725,33 @@ pub use tda::{
     bottleneck_distance, wasserstein_distance,
     persistence_statistics, persistence_entropy, betti_curve,
 };
+
+// Volatility estimation and market microstructure
+pub use volatility::{
+    GarchResult, garch11_fit, garch11_forecast,
+    EgarchResult, egarch11_fit,
+    GjrGarchResult, gjr_garch11_fit,
+    TgarchResult, tgarch11_fit,
+    ewma_variance, realized_variance, realized_volatility,
+    bipower_variation, jump_test_bns,
+    roll_spread, kyle_lambda, amihud_illiquidity,
+    annualize_vol,
+    parkinson_variance, garman_klass_variance,
+    rogers_satchell_variance, yang_zhang_variance,
+    hill_estimator, hill_tail_alpha,
+    tripower_quarticity,
+    ArchLmResult, arch_lm_test,
+    VpinResult, vpin_bvc,
+    nvg_degree, hvg_degree, nvg_mean_degree, hvg_mean_degree,
+};
+
+// Causal inference
+pub use causal::{
+    propensity_scores,
+    MatchResult, psm_match,
+    IpwResult, ipw,
+    DidResult as CausalDidResult, did as causal_did,
+    RddResult, rdd_sharp,
+    e_value,
+    doubly_robust_ate,
+};

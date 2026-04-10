@@ -1924,6 +1924,72 @@ pub fn execute(
                 TbsStepOutput::Scalar { name: "lempel_ziv", value: crate::complexity::lempel_ziv_complexity(&col) as f64 }
             }
 
+            ("rqa", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let m = usize_arg(step, "m", 1, 2);
+                let tau = usize_arg(step, "tau", 2, 1);
+                let epsilon = f64_arg(step, "epsilon", 3, 0.1);
+                let lmin = usize_arg(step, "lmin", 4, 2);
+                let res = crate::complexity::rqa(&col, m, tau, epsilon, lmin);
+                TbsStepOutput::Vector {
+                    name: "rqa",
+                    values: vec![res.rr, res.det, res.lam, res.entr, res.lmax as f64, res.l_avg, res.tt],
+                }
+            }
+
+            ("mfdfa", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let min_seg = usize_arg(step, "min_seg", 1, 16);
+                let max_seg = usize_arg(step, "max_seg", 2, pn / 4);
+                // Default q values: -3, -2, -1, 0, 1, 2, 3
+                let q_values: Vec<f64> = vec![-3.0, -2.0, -1.0, 0.5, 1.0, 1.5, 2.0, 3.0];
+                let res = crate::complexity::mfdfa(&col, &q_values, min_seg, max_seg);
+                TbsStepOutput::Vector {
+                    name: "mfdfa",
+                    values: vec![res.width, res.h2, res.mean_se],
+                }
+            }
+
+            ("ccm", None) => {
+                let cx = usize_arg(step, "col_x", 0, 0);
+                let cy = usize_arg(step, "col_y", 1, 1);
+                let (x, y) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
+                let embed_dim = usize_arg(step, "embed_dim", 2, 3);
+                let tau = usize_arg(step, "tau", 3, 1);
+                let k = usize_arg(step, "k", 4, embed_dim + 1);
+                let res = crate::complexity::ccm(&x, &y, embed_dim, tau, k);
+                TbsStepOutput::Vector {
+                    name: "ccm",
+                    values: vec![res.rho_xy, res.rho_yx, res.rho_xy_half, res.rho_yx_half, res.convergence],
+                }
+            }
+
+            ("phase_transition", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let win_size = usize_arg(step, "win_size", 1, pn / 10);
+                let res = crate::complexity::phase_transition(&col, win_size, None);
+                TbsStepOutput::Vector {
+                    name: "phase_transition",
+                    values: vec![res.order_parameter, res.susceptibility, res.binder_cumulant, res.critical_exponent],
+                }
+            }
+
+            ("harmonic_r_stat", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                TbsStepOutput::Scalar { name: "harmonic_r_stat", value: crate::complexity::harmonic_r_stat(&col) }
+            }
+
+            ("hankel_r_stat", None) => {
+                let c = col_arg(step, 0);
+                let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                let embed_dim = usize_arg(step, "embed_dim", 1, 3);
+                TbsStepOutput::Scalar { name: "hankel_r_stat", value: crate::complexity::hankel_r_stat(&col, embed_dim) }
+            }
+
             // ══════════════════════════════════════════════════════════════
             // Spatial statistics
             // ══════════════════════════════════════════════════════════════

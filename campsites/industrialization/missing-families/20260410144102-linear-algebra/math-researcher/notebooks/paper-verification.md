@@ -5,6 +5,31 @@ Date: 2026-04-10
 
 ---
 
+### 0. SVD — CORRECTION (algorithm label was wrong in earlier description)
+
+**CORRECTION**: Earlier description said "Golub-Kahan bidiagonalization + QR iteration."
+The actual implementation is ONE-SIDED JACOBI ROTATIONS, as confirmed by the observer
+reading the actual code at linear_algebra.rs:620-628. The section header at
+linear_algebra.rs:607 is misleading and should be corrected.
+
+One-sided Jacobi: applies Jacobi rotations directly to A until off-diagonal elements
+converge to zero. O(n²m) per sweep, typically 5-10 sweeps. Key advantage: does NOT
+square the condition number (unlike Golub-Kahan which forms A^T A internally).
+This is the BETTER choice for tambear's correctness goals.
+
+**Reference**: Demmel & Veselic (1992), "Jacobi's method is more accurate than QR"
+
+The three existing tests (reconstruction, singular values, orthogonality) cover the
+happy path. Missing adversarial cases: near-singular, rank-deficient, tall/wide extremes,
+ill-conditioned (singular values spanning many orders of magnitude like [1e8, 1e4, 1, 1e-4, 1e-8]).
+These are the cases where one-sided Jacobi's advantage matters most.
+
+Also: matrix_log docstring at linear_algebra.rs:1581 references "Schur decomposition approach"
+but the implementation uses repeated square-rooting + Gregory series. Schur doesn't exist
+as a primitive. The docstring should be corrected.
+
+---
+
 ### 1. matrix_exp — CORRECT
 
 **Reference**: Higham (2005), "The Scaling and Squaring Method for the Matrix Exponential Revisited", SIAM J. Matrix Anal. Appl.

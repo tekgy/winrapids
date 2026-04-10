@@ -21,6 +21,12 @@
 //! - **normality_unchecked**: suggest KS test before parametric tests
 
 use crate::pipeline::TamPipeline;
+use crate::tbs_advice::{TbsDiagnostic, TbsRecommendation, TbsOverride, TbsStepAdvice};
+use crate::tbs_autodetect::{
+    autodetect_correlation, autodetect_t_test_2, autodetect_anova,
+    autodetect_pca_components, autodetect_regression_diagnostics,
+    autodetect_volatility, normality_test,
+};
 use crate::tbs_lint::{self, LintSeverity, TbsLint};
 use crate::tbs_parser::{TbsChain, TbsStep};
 use crate::train::linear::LinearModel;
@@ -72,88 +78,7 @@ impl TbsStepOutput {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Advice types — "tambear recommends X because Y, user forced Z"
-// ---------------------------------------------------------------------------
-
-/// A diagnostic data point computed during auto-detection.
-#[derive(Debug, Clone)]
-pub struct TbsDiagnostic {
-    /// Name of the diagnostic check (e.g. "normality", "equal_variance").
-    pub test_name: &'static str,
-    /// Numeric result (e.g. p-value, statistic, count).
-    pub result: f64,
-    /// Human-readable conclusion (e.g. "p=0.23, normality not rejected").
-    pub conclusion: String,
-}
-
-/// What tambear recommends and why.
-#[derive(Debug, Clone)]
-pub struct TbsRecommendation {
-    /// Recommended method name (e.g. "welch_t", "mann_whitney").
-    pub method: &'static str,
-    /// Reason for the recommendation.
-    pub reason: String,
-}
-
-/// What the user forced instead of the recommendation.
-#[derive(Debug, Clone)]
-pub struct TbsOverride {
-    /// The method the user explicitly requested.
-    pub method: String,
-    /// The parameter/key that triggered this override (e.g. "using(method=…)").
-    pub key: String,
-    /// Warning about the override (e.g. "normality assumption may be violated").
-    pub warning: Option<String>,
-}
-
-/// Per-step advice: recommendation + optional user override + diagnostics.
-/// Populated by steps that have auto-detection logic.
-#[derive(Debug, Clone)]
-pub struct TbsStepAdvice {
-    /// What tambear would have recommended.
-    pub recommended: TbsRecommendation,
-    /// What the user forced (None if they accepted the recommendation).
-    pub user_override: Option<TbsOverride>,
-    /// Supporting diagnostic checks.
-    pub diagnostics: Vec<TbsDiagnostic>,
-}
-
-impl TbsStepAdvice {
-    /// Build advice for a recommendation the user accepted (no override).
-    pub fn accepted(method: &'static str, reason: impl Into<String>) -> Self {
-        TbsStepAdvice {
-            recommended: TbsRecommendation { method, reason: reason.into() },
-            user_override: None,
-            diagnostics: Vec::new(),
-        }
-    }
-
-    /// Build advice for a recommendation the user overrode.
-    pub fn overridden(
-        recommended: &'static str,
-        reason: impl Into<String>,
-        forced: impl Into<String>,
-        key: impl Into<String>,
-        warning: Option<impl Into<String>>,
-    ) -> Self {
-        TbsStepAdvice {
-            recommended: TbsRecommendation { method: recommended, reason: reason.into() },
-            user_override: Some(TbsOverride {
-                method: forced.into(),
-                key: key.into(),
-                warning: warning.map(|w| w.into()),
-            }),
-            diagnostics: Vec::new(),
-        }
-    }
-
-    /// Attach a diagnostic to this advice.
-    pub fn with_diagnostic(mut self, test_name: &'static str, result: f64, conclusion: impl Into<String>) -> Self {
-        self.diagnostics.push(TbsDiagnostic { test_name, result, conclusion: conclusion.into() });
-        self
-    }
-}
+// Advice types are defined in tbs_advice and imported above.
 
 /// The output of executing a `.tbs` chain.
 pub struct TbsResult {
@@ -268,6 +193,17 @@ pub fn execute(
     let mut superpositions_vec: Vec<Option<crate::superposition::Superposition>> = Vec::with_capacity(chain.steps.len());
     let mut using_bag = crate::using::UsingBag::new();
 
+    // SortedArray phylum: per-chain sorted-column cache.
+    //
+    // In typical TBS chains (quantile | median | iqr | shapiro_wilk | quartiles)
+    // every step sorts the same column independently — O(n log n) × k for k steps.
+    // This cache stores the sorted NaN-free copy on first access and reuses it for
+    // the remaining steps in the same chain.
+    //
+    // Keyed by column index. Cleared whenever a Transform step mutates the pipeline
+    // frame (normalize, etc.) because the underlying data has changed.
+    let mut sorted_cache: std::collections::HashMap<usize, Vec<f64>> = std::collections::HashMap::new();
+
     // Track state for science linting
     let mut normalized = false;
     let mut normality_checked = false;
@@ -287,6 +223,7 @@ pub fn execute(
             ("normalize", None) => {
                 pipeline = pipeline.normalize();
                 normalized = true;
+                sorted_cache.clear(); // data changed — sorted views are stale
                 TbsStepOutput::Transform
             }
 
@@ -374,55 +311,69 @@ pub fn execute(
 
             ("lmoment", None) | ("l_moments", None) => {
                 let c = col_arg(step, 0);
-                let col = extract_col(&pipeline.frame().data, pn, pd, c);
-                let sorted = crate::descriptive::sorted_nan_free(&col);
-                let lm = crate::descriptive::lmoment(&sorted);
+                if !sorted_cache.contains_key(&c) {
+                    let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                    sorted_cache.insert(c, crate::descriptive::sorted_nan_free(&col));
+                }
+                let lm = crate::descriptive::lmoment(&sorted_cache[&c]);
                 TbsStepOutput::Vector { name: "lmoment", values: lm.to_vec() }
             }
 
             ("median", None) => {
                 let c = col_arg(step, 0);
-                let col = extract_col(&pipeline.frame().data, pn, pd, c);
-                let sorted = crate::descriptive::sorted_nan_free(&col);
-                TbsStepOutput::Scalar { name: "median", value: crate::descriptive::median(&sorted) }
+                if !sorted_cache.contains_key(&c) {
+                    let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                    sorted_cache.insert(c, crate::descriptive::sorted_nan_free(&col));
+                }
+                TbsStepOutput::Scalar { name: "median", value: crate::descriptive::median(&sorted_cache[&c]) }
             }
 
             ("quantile", None) => {
                 let q = f64_req(step, "q", 0)?;
                 let c = usize_arg(step, "col", 1, 0);
-                let col = extract_col(&pipeline.frame().data, pn, pd, c);
-                let sorted = crate::descriptive::sorted_nan_free(&col);
-                let v = crate::descriptive::quantile(&sorted, q, crate::descriptive::QuantileMethod::Linear);
+                if !sorted_cache.contains_key(&c) {
+                    let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                    sorted_cache.insert(c, crate::descriptive::sorted_nan_free(&col));
+                }
+                let v = crate::descriptive::quantile(&sorted_cache[&c], q, crate::descriptive::QuantileMethod::Linear);
                 TbsStepOutput::Scalar { name: "quantile", value: v }
             }
 
             ("quartiles", None) => {
                 let c = col_arg(step, 0);
-                let col = extract_col(&pipeline.frame().data, pn, pd, c);
-                let sorted = crate::descriptive::sorted_nan_free(&col);
-                let (q1, q2, q3) = crate::descriptive::quartiles(&sorted);
+                if !sorted_cache.contains_key(&c) {
+                    let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                    sorted_cache.insert(c, crate::descriptive::sorted_nan_free(&col));
+                }
+                let (q1, q2, q3) = crate::descriptive::quartiles(&sorted_cache[&c]);
                 TbsStepOutput::Vector { name: "quartiles", values: vec![q1, q2, q3] }
             }
 
             ("iqr", None) => {
                 let c = col_arg(step, 0);
-                let col = extract_col(&pipeline.frame().data, pn, pd, c);
-                let sorted = crate::descriptive::sorted_nan_free(&col);
-                TbsStepOutput::Scalar { name: "iqr", value: crate::descriptive::iqr(&sorted) }
+                if !sorted_cache.contains_key(&c) {
+                    let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                    sorted_cache.insert(c, crate::descriptive::sorted_nan_free(&col));
+                }
+                TbsStepOutput::Scalar { name: "iqr", value: crate::descriptive::iqr(&sorted_cache[&c]) }
             }
 
             ("mad", None) => {
                 let c = col_arg(step, 0);
-                let col = extract_col(&pipeline.frame().data, pn, pd, c);
-                let sorted = crate::descriptive::sorted_nan_free(&col);
-                TbsStepOutput::Scalar { name: "mad", value: crate::descriptive::mad(&sorted) }
+                if !sorted_cache.contains_key(&c) {
+                    let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                    sorted_cache.insert(c, crate::descriptive::sorted_nan_free(&col));
+                }
+                TbsStepOutput::Scalar { name: "mad", value: crate::descriptive::mad(&sorted_cache[&c]) }
             }
 
             ("gini", None) => {
                 let c = col_arg(step, 0);
-                let col = extract_col(&pipeline.frame().data, pn, pd, c);
-                let sorted = crate::descriptive::sorted_nan_free(&col);
-                TbsStepOutput::Scalar { name: "gini", value: crate::descriptive::gini(&sorted) }
+                if !sorted_cache.contains_key(&c) {
+                    let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                    sorted_cache.insert(c, crate::descriptive::sorted_nan_free(&col));
+                }
+                TbsStepOutput::Scalar { name: "gini", value: crate::descriptive::gini(&sorted_cache[&c]) }
             }
 
             ("geometric_mean", None) => {
@@ -440,17 +391,21 @@ pub fn execute(
             ("trimmed_mean", None) => {
                 let frac = f64_arg(step, "fraction", 0, 0.1);
                 let c = usize_arg(step, "col", 1, 0);
-                let col = extract_col(&pipeline.frame().data, pn, pd, c);
-                let sorted = crate::descriptive::sorted_nan_free(&col);
-                TbsStepOutput::Scalar { name: "trimmed_mean", value: crate::descriptive::trimmed_mean(&sorted, frac) }
+                if !sorted_cache.contains_key(&c) {
+                    let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                    sorted_cache.insert(c, crate::descriptive::sorted_nan_free(&col));
+                }
+                TbsStepOutput::Scalar { name: "trimmed_mean", value: crate::descriptive::trimmed_mean(&sorted_cache[&c], frac) }
             }
 
             ("winsorized_mean", None) => {
                 let frac = f64_arg(step, "fraction", 0, 0.1);
                 let c = usize_arg(step, "col", 1, 0);
-                let col = extract_col(&pipeline.frame().data, pn, pd, c);
-                let sorted = crate::descriptive::sorted_nan_free(&col);
-                TbsStepOutput::Scalar { name: "winsorized_mean", value: crate::descriptive::winsorized_mean(&sorted, frac) }
+                if !sorted_cache.contains_key(&c) {
+                    let col = extract_col(&pipeline.frame().data, pn, pd, c);
+                    sorted_cache.insert(c, crate::descriptive::sorted_nan_free(&col));
+                }
+                TbsStepOutput::Scalar { name: "winsorized_mean", value: crate::descriptive::winsorized_mean(&sorted_cache[&c], frac) }
             }
 
             ("correlation_matrix", None) => {
@@ -459,125 +414,37 @@ pub fn execute(
             }
 
             ("correlation", None) => {
-                // Auto-detect the appropriate pairwise correlation method.
-                // Decision tree (all branches produce &'static str name):
-                //   using(method=X) → honour override and record recommendation
-                //   Both binary (≤2 unique values): Phi coefficient
-                //   One binary + one continuous: Point-biserial (= Pearson on binary+continuous)
-                //   Both normal (SW or D'A-P, p > 0.05): Pearson r
-                //   Otherwise: Spearman ρ
+                // Layer 1 auto-detection delegated to tbs_autodetect::autodetect_correlation.
+                // Layer 2 override: if using(method=X), run X and record the override.
                 let cx = usize_arg(step, "col_x", 0, 0);
                 let cy = usize_arg(step, "col_y", 1, 1);
                 let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
 
-                // ≤2 distinct non-NaN values → treat as binary
-                let count_unique = |col: &[f64]| -> usize {
-                    let mut seen = std::collections::HashSet::new();
-                    for &v in col {
-                        if !v.is_nan() { seen.insert(v.to_bits()); }
-                        if seen.len() > 2 { return seen.len(); }
-                    }
-                    seen.len()
-                };
-                let x_binary = count_unique(&x) <= 2;
-                let y_binary = count_unique(&yv) <= 2;
+                let (auto_val, auto_name, auto_adv) = autodetect_correlation(&x, &yv, &using_bag);
 
-                // Normality test: SW for n < n_thresh, D'Agostino-Pearson for n ≥ n_thresh
-                let normality_alpha = using_bag.get_f64("normality_alpha").unwrap_or(0.05);
-                let n_thresh = using_bag.get_f64("normality_test_n_threshold")
-                    .map(|v| v as usize).unwrap_or(5000);
-                let normality = |col: &[f64]| -> (f64, &'static str) {
-                    if col.len() < n_thresh {
-                        let r = crate::nonparametric::shapiro_wilk(col);
-                        (r.p_value, "Shapiro-Wilk")
-                    } else {
-                        let r = crate::nonparametric::dagostino_pearson(col);
-                        (r.p_value, "D'Agostino-Pearson")
-                    }
-                };
-
-                // Check for user override first
-                let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
-
-                // Compute the auto-recommended method + value + advice
-                let (auto_name, auto_val, auto_adv): (&'static str, f64, TbsStepAdvice) =
-                    if x_binary && y_binary {
-                        let phi = crate::nonparametric::phi_coefficient(&x, &yv);
-                        (
-                            "phi_coefficient", phi,
-                            TbsStepAdvice::accepted("phi_coefficient",
-                                "both variables binary (≤2 unique values), phi coefficient is exact Pearson on binary data"),
-                        )
-                    } else if x_binary || y_binary {
-                        let (bin, cont) = if x_binary { (&x, &yv) } else { (&yv, &x) };
-                        let rpb = crate::nonparametric::point_biserial(bin, cont);
-                        (
-                            "point_biserial", rpb,
-                            TbsStepAdvice::accepted("point_biserial",
-                                "one variable binary and one continuous, using point-biserial (= Pearson on 0/1 indicator)"),
-                        )
-                    } else {
-                        let (px, tn_x) = normality(&x);
-                        let (py, tn_y) = normality(&yv);
-                        let x_norm = px > normality_alpha;
-                        let y_norm = py > normality_alpha;
-                        if x_norm && y_norm {
-                            let r = crate::nonparametric::pearson_r(&x, &yv);
-                            let adv = TbsStepAdvice::accepted("pearson",
-                                format!("both normal ({} p={:.3}/{:.3}), using Pearson r", tn_x, px, py))
-                                .with_diagnostic(tn_x, px, "normal")
-                                .with_diagnostic(tn_y, py, "normal");
-                            ("pearson", r, adv)
-                        } else {
-                            let r = crate::nonparametric::spearman(&x, &yv);
-                            let reason = if !x_norm && !y_norm {
-                                format!("both non-normal ({} p={:.3}/{:.3}), using Spearman ρ", tn_x, px, py)
-                            } else if !x_norm {
-                                format!("x non-normal ({} p={:.3}), using Spearman ρ", tn_x, px)
-                            } else {
-                                format!("y non-normal ({} p={:.3}), using Spearman ρ", tn_y, py)
-                            };
-                            let adv = TbsStepAdvice::accepted("spearman", reason)
-                                .with_diagnostic(tn_x, px, if x_norm { "normal" } else { "non-normal" })
-                                .with_diagnostic(tn_y, py, if y_norm { "normal" } else { "non-normal" });
-                            ("spearman", r, adv)
-                        }
+                let (final_name, final_val, final_adv) = if let Some(forced) = using_bag.method().map(|s| s.to_owned()) {
+                    let forced_val = match forced.as_str() {
+                        "spearman"                     => crate::nonparametric::spearman(&x, &yv),
+                        "kendall" | "kendall_tau"      => crate::nonparametric::kendall_tau(&x, &yv),
+                        "phi"     | "phi_coefficient"  => crate::nonparametric::phi_coefficient(&x, &yv),
+                        "point_biserial"               => crate::nonparametric::point_biserial(&x, &yv),
+                        _                              => crate::nonparametric::pearson_r(&x, &yv),
                     };
-
-                // If user forced a method, run that instead but record the override
-                let (final_name, final_val, final_adv): (&'static str, f64, TbsStepAdvice) =
-                    if let Some(ref forced) = user_method {
-                        let forced_val = match forced.as_str() {
-                            "spearman" => crate::nonparametric::spearman(&x, &yv),
-                            "kendall" | "kendall_tau" => crate::nonparametric::kendall_tau(&x, &yv),
-                            "phi" | "phi_coefficient" => crate::nonparametric::phi_coefficient(&x, &yv),
-                            "point_biserial" => crate::nonparametric::point_biserial(&x, &yv),
-                            _ => crate::nonparametric::pearson_r(&x, &yv),
-                        };
-                        let forced_name: &'static str = match forced.as_str() {
-                            "spearman" => "spearman",
-                            "kendall" | "kendall_tau" => "kendall_tau",
-                            "phi" | "phi_coefficient" => "phi_coefficient",
-                            "point_biserial" => "point_biserial",
-                            _ => "pearson",
-                        };
-                        let warn = if forced_name != auto_name {
-                            Some(format!(
-                                "user forced {forced_name} but tambear recommends {auto_name}: {}",
-                                auto_adv.recommended.reason
-                            ))
-                        } else { None };
-                        let adv = TbsStepAdvice::overridden(
-                            auto_name,
-                            auto_adv.recommended.reason.clone(),
-                            forced.clone(),
-                            "method",
-                            warn,
-                        );
-                        (forced_name, forced_val, adv)
-                    } else {
-                        (auto_name, auto_val, auto_adv)
+                    let forced_name: &'static str = match forced.as_str() {
+                        "spearman"                     => "spearman",
+                        "kendall" | "kendall_tau"      => "kendall_tau",
+                        "phi"     | "phi_coefficient"  => "phi_coefficient",
+                        "point_biserial"               => "point_biserial",
+                        _                              => "pearson",
                     };
+                    let warn = if forced_name != auto_name {
+                        Some(format!("user forced {forced_name} but tambear recommends {auto_name}: {}", auto_adv.recommended.reason))
+                    } else { None };
+                    let adv = TbsStepAdvice::overridden(auto_name, auto_adv.recommended.reason.clone(), forced, "method", warn);
+                    (forced_name, forced_val, adv)
+                } else {
+                    (auto_name, auto_val, auto_adv)
+                };
 
                 step_advice = Some(final_adv);
                 TbsStepOutput::Scalar { name: final_name, value: final_val }
@@ -613,99 +480,41 @@ pub fn execute(
             }
 
             ("test", Some("t2")) | ("t_test_2", None) => {
-                // Auto-detect the appropriate two-sample test.
-                // Decision tree:
-                //   using(method=X) → honour override
-                //   Both normal (SW/D'A-P p > 0.05):
-                //     Equal variance (Levene p > 0.05) → pooled two-sample t
-                //     Unequal variance → Welch t
-                //   Non-normal → Mann-Whitney U
+                // Layer 1 auto-detection delegated to autodetect_t_test_2.
                 let cx = usize_arg(step, "col_x", 0, 0);
                 let cy = usize_arg(step, "col_y", 1, 1);
                 let (x, yv) = extract_two_cols(&pipeline.frame().data, pn, pd, cx, cy);
                 let sx = crate::descriptive::moments_ungrouped(&x);
                 let sy = crate::descriptive::moments_ungrouped(&yv);
 
-                // Normality
-                let normality_alpha = using_bag.get_f64("normality_alpha").unwrap_or(0.05);
-                let variance_alpha = using_bag.get_f64("variance_alpha").unwrap_or(0.05);
-                let n_thresh = using_bag.get_f64("normality_test_n_threshold")
-                    .map(|v| v as usize).unwrap_or(5000);
-                let normality = |col: &[f64]| -> (f64, &'static str) {
-                    if col.len() < n_thresh {
-                        let r = crate::nonparametric::shapiro_wilk(col);
-                        (r.p_value, "Shapiro-Wilk")
-                    } else {
-                        let r = crate::nonparametric::dagostino_pearson(col);
-                        (r.p_value, "D'Agostino-Pearson")
-                    }
-                };
-                let (px, tn_x) = normality(&x);
-                let (py, tn_y) = normality(&yv);
-                let x_norm = px > normality_alpha;
-                let y_norm = py > normality_alpha;
-
-                // Variance equality via Brown-Forsythe (Levene with median)
-                let levene_p = if x_norm && y_norm {
-                    let lev = crate::hypothesis::levene_test(
-                        &[x.as_slice(), yv.as_slice()],
-                        crate::hypothesis::LeveneCenter::Median,
-                    );
-                    lev.p_value
-                } else { f64::NAN };
-                let equal_var = levene_p > variance_alpha;
-
-                let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
-
-                // Build auto recommendation
-                let (auto_method, auto_reason): (&'static str, String) =
-                    if x_norm && y_norm {
-                        if equal_var {
-                            ("two_sample_t", format!("both normal ({} p={:.3}/{:.3}), equal variance (Levene p={:.3}): pooled t-test", tn_x, px, py, levene_p))
-                        } else {
-                            ("welch_t", format!("both normal ({} p={:.3}/{:.3}), unequal variance (Levene p={:.3}): Welch t-test", tn_x, px, py, levene_p))
-                        }
-                    } else {
-                        ("mann_whitney_u", format!("non-normal data ({} p={:.3}/{:.3}): Mann-Whitney U", tn_x, px, py))
-                    };
+                let (auto_method, auto_adv) = autodetect_t_test_2(&x, &yv, &using_bag);
 
                 let run_test = |method: &str| -> crate::hypothesis::TestResult {
                     match method {
-                        "welch_t" | "welch" => crate::hypothesis::welch_t(&sx, &sy),
+                        "welch_t" | "welch"               => crate::hypothesis::welch_t(&sx, &sy),
                         "mann_whitney" | "mann_whitney_u" => {
                             let mw = crate::nonparametric::mann_whitney_u(&x, &yv);
                             crate::hypothesis::TestResult {
                                 test_name: "Mann-Whitney U",
-                                statistic: mw.statistic,
-                                p_value: mw.p_value,
-                                df: f64::NAN,
-                                effect_size: f64::NAN,
-                                effect_size_name: "",
+                                statistic: mw.statistic, p_value: mw.p_value,
+                                df: f64::NAN, effect_size: f64::NAN, effect_size_name: "",
                                 ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
                             }
                         }
-                        _ => crate::hypothesis::two_sample_t(&sx, &sy),
+                        _                                 => crate::hypothesis::two_sample_t(&sx, &sy),
                     }
                 };
 
-                let (final_method, test_result, adv) =
-                    if let Some(ref forced) = user_method {
-                        let forced_method = forced.as_str();
-                        let warn = if forced_method != auto_method {
-                            Some(format!("user forced {forced_method} but tambear recommends {auto_method}: {auto_reason}"))
-                        } else { None };
-                        let adv = TbsStepAdvice::overridden(
-                            auto_method, auto_reason.clone(), forced.clone(), "method", warn)
-                            .with_diagnostic(tn_x, px, if x_norm { "normal" } else { "non-normal" })
-                            .with_diagnostic(tn_y, py, if y_norm { "normal" } else { "non-normal" });
-                        (forced_method.to_owned(), run_test(forced_method), adv)
-                    } else {
-                        let adv = TbsStepAdvice::accepted(auto_method, auto_reason.clone())
-                            .with_diagnostic(tn_x, px, if x_norm { "normal" } else { "non-normal" })
-                            .with_diagnostic(tn_y, py, if y_norm { "normal" } else { "non-normal" });
-                        (auto_method.to_owned(), run_test(auto_method), adv)
-                    };
-                let _ = final_method; // method name encoded in TestResult.test_name
+                let (test_result, adv) = if let Some(forced) = using_bag.method().map(|s| s.to_owned()) {
+                    let warn = if forced.as_str() != auto_method {
+                        Some(format!("user forced {} but tambear recommends {}: {}", forced, auto_method, auto_adv.recommended.reason))
+                    } else { None };
+                    let adv = TbsStepAdvice::overridden(auto_method, auto_adv.recommended.reason.clone(), forced.clone(), "method", warn);
+                    (run_test(&forced), adv)
+                } else {
+                    (run_test(auto_method), auto_adv)
+                };
+
                 step_advice = Some(adv);
                 n_hypothesis_tests += 1;
                 TbsStepOutput::Test(test_result)
@@ -747,23 +556,13 @@ pub fn execute(
                 TbsStepOutput::Test(crate::hypothesis::one_proportion_z(successes, total, p0))
             }
 
-            // ── ANOVA auto-detect ─────────────────────────────────────────
-            // Decision tree:
-            //   1. Test normality per group (Shapiro-Wilk / D'Agostino-Pearson)
-            //   2. Test homoscedasticity (Levene's / Brown-Forsythe)
-            //   3. Route:
-            //      - Normal + equal var → classic one-way ANOVA
-            //      - Normal + unequal var → Welch's ANOVA
-            //      - Non-normal → Kruskal-Wallis
-            //   4. If significant → auto-add post-hoc
+            // ── ANOVA auto-detect (Layer 1 delegated to autodetect_anova) ────
             ("test", Some("anova")) | ("anova", None) => {
-                // col_val = the value column, col_group = the group column
                 let cv = usize_arg(step, "col_val", 0, 0);
                 let cg = usize_arg(step, "col_group", 1, 1.min(pd.saturating_sub(1)));
                 let vals = extract_col(&pipeline.frame().data, pn, pd, cv);
                 let groups_raw = extract_col(&pipeline.frame().data, pn, pd, cg);
 
-                // Build groups: discretize the group column
                 let mut group_map: std::collections::BTreeMap<i64, Vec<f64>> = std::collections::BTreeMap::new();
                 for i in 0..pn {
                     let g = groups_raw[i] as i64;
@@ -785,58 +584,12 @@ pub fn execute(
                         ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
                     })
                 } else {
-                    // Normality check per group
-                    let normality_alpha = using_bag.get_f64("normality_alpha").unwrap_or(0.05);
-                    let variance_alpha = using_bag.get_f64("variance_alpha").unwrap_or(0.05);
-                    let n_thresh = using_bag.get_f64("normality_test_n_threshold")
-                        .map(|v| v as usize).unwrap_or(5000);
-                    let normality = |col: &[f64]| -> (f64, &'static str) {
-                        if col.len() < 3 { return (f64::NAN, "n<3"); }
-                        if col.len() < n_thresh {
-                            let r = crate::nonparametric::shapiro_wilk(col);
-                            (r.p_value, "Shapiro-Wilk")
-                        } else {
-                            let r = crate::nonparametric::dagostino_pearson(col);
-                            (r.p_value, "D'Agostino-Pearson")
-                        }
-                    };
-                    let norm_results: Vec<(f64, &str)> = group_vecs.iter().map(|g| normality(g)).collect();
-                    let all_normal = norm_results.iter().all(|(p, _)| *p > normality_alpha);
+                    let (auto_method, auto_adv) = autodetect_anova(&group_vecs, &using_bag);
 
-                    // Levene's test for homoscedasticity
-                    let group_slices: Vec<&[f64]> = group_vecs.iter().map(|v| v.as_slice()).collect();
-                    let levene = crate::hypothesis::levene_test(
-                        &group_slices, crate::hypothesis::LeveneCenter::Median);
-                    let equal_var = levene.p_value > variance_alpha;
-
-                    let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
-
-                    // Flatten for one_way_anova / kruskal_wallis
                     let flat: Vec<f64> = group_vecs.iter().flat_map(|v| v.iter().copied()).collect();
                     let sizes: Vec<usize> = group_vecs.iter().map(|v| v.len()).collect();
-
-                    // Compute per-group MomentStats for Welch ANOVA
                     let group_stats: Vec<crate::descriptive::MomentStats> = group_vecs.iter()
                         .map(|g| crate::descriptive::moments_ungrouped(g)).collect();
-
-                    // Auto recommendation
-                    let (auto_method, auto_reason): (&'static str, String) = if all_normal {
-                        if equal_var {
-                            ("one_way_anova", format!(
-                                "all {} groups normal, equal variance (Levene p={:.3}): classic ANOVA",
-                                k, levene.p_value))
-                        } else {
-                            ("welch_anova", format!(
-                                "all {} groups normal, unequal variance (Levene p={:.3}): Welch's ANOVA",
-                                k, levene.p_value))
-                        }
-                    } else {
-                        let non_normal: Vec<usize> = norm_results.iter().enumerate()
-                            .filter(|(_, (p, _))| *p <= normality_alpha).map(|(i, _)| i).collect();
-                        ("kruskal_wallis", format!(
-                            "groups {:?} non-normal: Kruskal-Wallis H test",
-                            non_normal))
-                    };
 
                     let run_anova = |method: &str| -> TbsStepOutput {
                         match method {
@@ -845,41 +598,26 @@ pub fn execute(
                                 let res = crate::hypothesis::welch_anova(&slices);
                                 TbsStepOutput::Test(crate::hypothesis::TestResult {
                                     test_name: "Welch's ANOVA",
-                                    statistic: res.f_statistic,
-                                    p_value: res.p_value,
-                                    df: res.df_between,
-                                    effect_size: f64::NAN,
-                                    effect_size_name: "",
+                                    statistic: res.f_statistic, p_value: res.p_value,
+                                    df: res.df_between, effect_size: f64::NAN, effect_size_name: "",
                                     ci_lower: f64::NAN, ci_upper: f64::NAN, ci_level: f64::NAN,
                                 })
                             }
                             "kruskal_wallis" | "kruskal" => {
-                                let kw = crate::nonparametric::kruskal_wallis(&flat, &sizes);
-                                TbsStepOutput::Nonparametric(kw)
+                                TbsStepOutput::Nonparametric(crate::nonparametric::kruskal_wallis(&flat, &sizes))
                             }
-                            _ => {
-                                // Classic one-way ANOVA
-                                let res = crate::hypothesis::one_way_anova(&group_stats);
-                                TbsStepOutput::Anova(res)
-                            }
+                            _ => TbsStepOutput::Anova(crate::hypothesis::one_way_anova(&group_stats)),
                         }
                     };
 
-                    let (output, adv) = if let Some(ref forced) = user_method {
+                    let (output, adv) = if let Some(forced) = using_bag.method().map(|s| s.to_owned()) {
                         let warn = if forced.as_str() != auto_method {
-                            Some(format!("user forced {} but tambear recommends {}: {}",
-                                forced, auto_method, auto_reason))
+                            Some(format!("user forced {} but tambear recommends {}: {}", forced, auto_method, auto_adv.recommended.reason))
                         } else { None };
-                        let adv = TbsStepAdvice::overridden(
-                            auto_method, auto_reason.clone(), forced.clone(), "method", warn)
-                            .with_diagnostic("Levene", levene.p_value,
-                                if equal_var { "equal variance" } else { "unequal variance" });
-                        (run_anova(forced), adv)
+                        let adv = TbsStepAdvice::overridden(auto_method, auto_adv.recommended.reason.clone(), forced.clone(), "method", warn);
+                        (run_anova(&forced), adv)
                     } else {
-                        let adv = TbsStepAdvice::accepted(auto_method, auto_reason.clone())
-                            .with_diagnostic("Levene", levene.p_value,
-                                if equal_var { "equal variance" } else { "unequal variance" });
-                        (run_anova(auto_method), adv)
+                        (run_anova(auto_method), auto_adv)
                     };
 
                     step_advice = Some(adv);
@@ -1374,93 +1112,39 @@ pub fn execute(
             // 5. Cook's distance for influential observations
             // Records all findings in TbsStepAdvice.
             ("regression", None) => {
+                // OLS fit + Layer 1 diagnostics delegated to autodetect_regression_diagnostics.
                 let y_ref = y.as_deref()
                     .ok_or("regression: target data (y) must be provided to executor")?;
                 let data = &pipeline.frame().data;
 
-                // Fit OLS
                 let model = crate::train::linear::fit(data, y_ref, pn, pd)?;
                 let r2 = model.r_squared;
-
-                // Residuals = y - ŷ
                 let y_hat = model.predict(data, pn);
                 let residuals: Vec<f64> = y_ref.iter().zip(y_hat.iter()).map(|(yi, fi)| yi - fi).collect();
 
-                // Build X_aug (n × (d+1)) with intercept column
-                let p = pd + 1;
-                let mut x_aug_data = vec![0.0_f64; pn * p];
+                let aug_cols = pd + 1;
+                let mut x_aug_data = vec![0.0_f64; pn * aug_cols];
                 for i in 0..pn {
-                    x_aug_data[i * p] = 1.0; // intercept
-                    for j in 0..pd {
-                        x_aug_data[i * p + j + 1] = data[i * pd + j];
-                    }
+                    x_aug_data[i * aug_cols] = 1.0;
+                    for j in 0..pd { x_aug_data[i * aug_cols + j + 1] = data[i * pd + j]; }
                 }
-                let x_aug = crate::linear_algebra::Mat { rows: pn, cols: p, data: x_aug_data };
-
-                // Predictor matrix without intercept for VIF
+                let x_aug  = crate::linear_algebra::Mat { rows: pn, cols: aug_cols, data: x_aug_data };
                 let x_pred = crate::linear_algebra::Mat { rows: pn, cols: pd, data: data.to_vec() };
 
-                // VIF check
-                let vif_threshold = using_bag.get_f64("vif_threshold").unwrap_or(10.0);
-                let normality_alpha = using_bag.get_f64("normality_alpha").unwrap_or(0.05);
-                let variance_alpha = using_bag.get_f64("variance_alpha").unwrap_or(0.05);
                 let n_thresh = using_bag.get_f64("normality_test_n_threshold")
                     .map(|v| v as usize).unwrap_or(5000);
-                let vif_vals = crate::multivariate::vif(&x_pred);
-                let max_vif = vif_vals.iter().cloned().fold(0.0_f64, f64::max);
-                let multicollinear = max_vif > vif_threshold;
+                let (resid_norm_p, resid_norm_name) = normality_test(&residuals, n_thresh);
 
-                // Residual normality
-                let norm_result = if pn < n_thresh {
-                    crate::nonparametric::shapiro_wilk(&residuals)
-                } else {
-                    crate::nonparametric::dagostino_pearson(&residuals)
-                };
-                let resid_norm_p = norm_result.p_value;
-                let resid_normal = resid_norm_p > normality_alpha;
+                let (auto_method, auto_adv) = autodetect_regression_diagnostics(
+                    &x_pred, &x_aug, &residuals, resid_norm_p, resid_norm_name, &using_bag);
 
-                // Breusch-Pagan heteroscedasticity
-                let bp = crate::hypothesis::breusch_pagan(&x_aug, &residuals);
-                let heteroscedastic = bp.p_value < variance_alpha;
-
-                // Cook's distance
-                let influence_threshold = using_bag.get_f64("influence_threshold");
-                let influence = crate::hypothesis::cooks_distance_with_threshold(&x_aug, &residuals, influence_threshold);
-                let n_influential = influence.n_influential;
-
-                // Build advice
-                let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
-                let (auto_method, auto_reason) = if multicollinear {
-                    ("ridge", format!("max VIF={max_vif:.1} > {vif_threshold:.0} (multicollinearity detected): consider Ridge regression"))
-                } else if !resid_normal {
-                    ("quantile", format!("residuals non-normal (p={resid_norm_p:.3}): consider quantile regression or robust OLS"))
-                } else if heteroscedastic {
-                    ("wls", format!("heteroscedastic residuals (Breusch-Pagan p={:.3}): consider WLS or HC3 standard errors", bp.p_value))
-                } else {
-                    ("ols", format!("normality OK (p={resid_norm_p:.3}), homoscedasticity OK (BP p={:.3}), VIF OK (max={max_vif:.1}): OLS assumptions satisfied", bp.p_value))
-                };
-
-                let adv = TbsStepAdvice::accepted(auto_method, auto_reason.clone())
-                    .with_diagnostic("VIF_max", max_vif,
-                        if multicollinear { "multicollinearity detected" } else { "OK" })
-                    .with_diagnostic(norm_result.test_name, resid_norm_p,
-                        if resid_normal { "normal" } else { "non-normal" })
-                    .with_diagnostic("Breusch-Pagan", bp.p_value,
-                        if heteroscedastic { "heteroscedastic" } else { "homoscedastic" })
-                    .with_diagnostic("Cook's_D_n_influential", n_influential as f64,
-                        if n_influential > 0 {
-                            format!("{n_influential} influential observations (Cook's D > 4/n)")
-                        } else {
-                            "no influential observations".to_owned()
-                        });
-
-                let final_adv = if let Some(ref forced) = user_method {
+                let final_adv = if let Some(forced) = using_bag.method().map(|s| s.to_owned()) {
                     let warn = if forced.as_str() != auto_method {
-                        Some(format!("user forced {} but tambear recommends {}: {}", forced, auto_method, auto_reason))
+                        Some(format!("user forced {} but tambear recommends {}: {}", forced, auto_method, auto_adv.recommended.reason))
                     } else { None };
-                    TbsStepAdvice::overridden(auto_method, auto_reason, forced.clone(), "method", warn)
+                    TbsStepAdvice::overridden(auto_method, auto_adv.recommended.reason.clone(), forced, "method", warn)
                 } else {
-                    adv
+                    auto_adv
                 };
 
                 step_advice = Some(final_adv);
@@ -1509,77 +1193,25 @@ pub fn execute(
             // ══════════════════════════════════════════════════════════════
 
             ("pca", None) => {
-                // If n_components is specified: pass-through (no auto-detection).
-                // If not specified: auto-select via KMO/Bartlett pre-check + Kaiser criterion.
+                // Explicit n_components: pass-through. Otherwise: Layer 1 auto-selection.
                 let user_n_components = step.get_arg("n_components", 0).and_then(|v| v.as_usize());
                 let data = &pipeline.frame().data;
 
                 if let Some(nc) = user_n_components {
-                    // Explicit n_components — run PCA directly
-                    let result = crate::dim_reduction::pca(data, pn, pd, nc);
-                    TbsStepOutput::Pca(result)
+                    TbsStepOutput::Pca(crate::dim_reduction::pca(data, pn, pd, nc))
                 } else {
-                    // Auto-detection: KMO/Bartlett + Kaiser criterion for n_components
-                    // 1. Compute correlation matrix
-                    let corr_mat = crate::factor_analysis::correlation_matrix(data, pn, pd);
-                    let kb = crate::factor_analysis::kmo_bartlett(&corr_mat, pn);
+                    let (auto_k, auto_adv) = autodetect_pca_components(data, pn, pd, &using_bag);
 
-                    let kmo = kb.kmo_overall;
-                    let bartlett_p = kb.bartlett_p_value;
-                    let kmo_threshold = using_bag.get_f64("kmo_threshold").unwrap_or(0.5);
-                    let bartlett_alpha = using_bag.get_f64("bartlett_alpha").unwrap_or(0.05);
-                    let pca_viable = kmo >= kmo_threshold && bartlett_p < bartlett_alpha;
-
-                    // 2. Run full PCA to get eigenvalues (singular_values² / (n-1))
-                    let full_pca = crate::dim_reduction::pca(data, pn, pd, pd);
-                    let n_minus_1 = (pn - 1).max(1) as f64;
-                    let eigenvalues: Vec<f64> = full_pca.singular_values.iter()
-                        .map(|sv| sv * sv / n_minus_1)
-                        .collect();
-
-                    // 3. Kaiser criterion: components with eigenvalue > 1
-                    let kaiser_k = eigenvalues.iter().filter(|&&ev| ev > 1.0).count().max(1);
-                    let auto_k = kaiser_k.min(pd).max(1);
-
-                    // 4. Build advice
-                    let user_method: Option<String> = using_bag.method().map(|s| s.to_owned());
-                    let (auto_method, auto_reason) = if !pca_viable {
-                        if kmo < kmo_threshold {
-                            ("pca_warn", format!(
-                                "KMO={kmo:.3} < {kmo_threshold}: data may not be suitable for PCA (sampling inadequacy)"))
-                        } else {
-                            ("pca_warn", format!(
-                                "Bartlett p={bartlett_p:.3} ≥ {bartlett_alpha}: correlation matrix not significantly different from identity"))
-                        }
-                    } else {
-                        ("pca", format!(
-                            "KMO={kmo:.3} ≥ {kmo_threshold}, Bartlett p={bartlett_p:.4} < {bartlett_alpha}: PCA viable; Kaiser criterion → {auto_k} components"))
-                    };
-
-                    let adv = TbsStepAdvice::accepted(auto_method, auto_reason.clone())
-                        .with_diagnostic("KMO", kmo,
-                            if kmo >= 0.9 { "marvellous" }
-                            else if kmo >= 0.8 { "meritorious" }
-                            else if kmo >= 0.7 { "middling" }
-                            else if kmo >= 0.6 { "mediocre" }
-                            else if kmo >= kmo_threshold { "miserable" }
-                            else { "unacceptable" })
-                        .with_diagnostic("Bartlett", bartlett_p,
-                            if bartlett_p < bartlett_alpha { "significant (correlations present)" } else { "not significant" });
-
-                    let final_adv = if let Some(ref forced) = user_method {
-                        let warn = if forced.as_str() != auto_method {
-                            Some(format!("user forced {forced} but tambear recommends {auto_method}: {auto_reason}"))
+                    let final_adv = if let Some(forced) = using_bag.method().map(|s| s.to_owned()) {
+                        let warn = if forced.as_str() != auto_adv.recommended.method {
+                            Some(format!("user forced {} but tambear recommends {}: {}", forced, auto_adv.recommended.method, auto_adv.recommended.reason))
                         } else { None };
-                        TbsStepAdvice::overridden(auto_method, auto_reason, forced.clone(), "method", warn)
+                        TbsStepAdvice::overridden(auto_adv.recommended.method, auto_adv.recommended.reason.clone(), forced, "method", warn)
                     } else {
-                        adv
+                        auto_adv
                     };
                     step_advice = Some(final_adv);
-
-                    // Run PCA with auto-selected n_components
-                    let result = crate::dim_reduction::pca(data, pn, pd, auto_k);
-                    TbsStepOutput::Pca(result)
+                    TbsStepOutput::Pca(crate::dim_reduction::pca(data, pn, pd, auto_k))
                 }
             }
 
@@ -2393,48 +2025,15 @@ pub fn execute(
             // ── Volatility auto-detection ──────────────────────────────────
             // ARCH-LM → GARCH fit → near-IGARCH warning → standardized residuals
             ("volatility_analyze", None) | ("vol_analyze", None) => {
+                // Layer 1 delegated to autodetect_volatility.
                 let c = col_arg(step, 0);
                 let col = extract_col(&pipeline.frame().data, pn, pd, c);
-
-                // ARCH-LM test
-                let arch_lags_cap = using_bag.get_f64("arch_lags_cap")
-                    .map(|v| v as usize).unwrap_or(5);
-                let arch_lags_denom = using_bag.get_f64("arch_lags_fraction_denom")
-                    .map(|v| v as usize).unwrap_or(10);
-                let arch_lags = arch_lags_cap.min(col.len() / arch_lags_denom).max(1);
-                let arch_alpha = using_bag.get_f64("arch_alpha").unwrap_or(0.05);
-                let arch = crate::volatility::arch_lm_test(&col, arch_lags);
-                let arch_p = arch.as_ref().map_or(1.0, |a| a.p_value);
-                let has_arch = arch_p < arch_alpha;
-
-                if has_arch {
-                    // Fit GARCH(1,1)
-                    let garch_max_iter = using_bag.get_f64("garch_max_iter")
-                        .map(|v| v as usize).unwrap_or(200);
-                    let garch = crate::volatility::garch11_fit(&col, garch_max_iter);
-                    let rec = if garch.near_igarch {
-                        "GARCH(1,1) near-integrated (α+β > 0.99): consider IGARCH or long-memory model"
-                    } else {
-                        "GARCH(1,1) fitted successfully"
-                    };
-                    let adv = TbsStepAdvice::accepted("garch11", rec.to_string())
-                        .with_diagnostic("ARCH-LM", arch_p, "ARCH effects present")
-                        .with_diagnostic("alpha+beta", garch.alpha + garch.beta,
-                            if garch.near_igarch { "near-integrated" } else { "stationary" });
-                    step_advice = Some(adv);
-                    TbsStepOutput::Vector {
-                        name: "garch_params",
-                        values: vec![garch.omega, garch.alpha, garch.beta],
-                    }
+                let vol = autodetect_volatility(&col, &using_bag);
+                step_advice = Some(vol.advice);
+                if let Some(params) = vol.garch_params {
+                    TbsStepOutput::Vector { name: "garch_params", values: params.to_vec() }
                 } else {
-                    let adv = TbsStepAdvice::accepted("constant_volatility",
-                        "no ARCH effects detected; constant volatility (EWMA/rolling std) sufficient")
-                        .with_diagnostic("ARCH-LM", arch_p, "no ARCH effects");
-                    step_advice = Some(adv);
-                    // Return EWMA as the simpler alternative
-                    let ewma_lambda = using_bag.get_f64("ewma_lambda").unwrap_or(0.94);
-                    let values = crate::volatility::ewma_variance(&col, ewma_lambda);
-                    TbsStepOutput::Vector { name: "ewma_variance", values }
+                    TbsStepOutput::Vector { name: "ewma_variance", values: vol.ewma_variance.unwrap_or_default() }
                 }
             }
 

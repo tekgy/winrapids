@@ -13,7 +13,7 @@
 //!
 //! Kingdom A: all reduce to regression/matching compositions.
 
-use crate::linear_algebra::{Mat, mat_mul, cholesky, cholesky_solve};
+use crate::linear_algebra::{Mat, cholesky, cholesky_solve, simple_linear_regression};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Propensity Score
@@ -78,6 +78,9 @@ pub fn propensity_scores(x: &Mat, treatment: &[f64]) -> Vec<f64> {
     }).collect()
 }
 
+// Thin re-export so local callers don't need the full path.
+// The canonical implementation lives in neural.rs (special_functions delegates there too).
+#[inline]
 fn sigmoid(z: f64) -> f64 { crate::neural::sigmoid(z) }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -316,8 +319,10 @@ pub fn rdd_sharp(
         }
     }
 
-    let (a_l, b_l) = ols_1d(&left_x, &left_y);
-    let (a_r, b_r) = ols_1d(&right_x, &right_y);
+    let left_fit = simple_linear_regression(&left_x, &left_y);
+    let right_fit = simple_linear_regression(&right_x, &right_y);
+    let (a_l, b_l) = (left_fit.intercept, left_fit.slope);
+    let (a_r, b_r) = (right_fit.intercept, right_fit.slope);
 
     RddResult {
         effect: a_r - a_l,
@@ -326,25 +331,6 @@ pub fn rdd_sharp(
         slope_left: b_l,
         slope_right: b_r,
     }
-}
-
-/// Simple centered OLS for 1D regression (centered x).
-fn ols_1d(x: &[f64], y: &[f64]) -> (f64, f64) {
-    let n = x.len() as f64;
-    if n < 2.0 { return (if n > 0.0 { y[0] } else { f64::NAN }, 0.0); }
-    let mx = x.iter().sum::<f64>() / n;
-    let my = y.iter().sum::<f64>() / n;
-    let mut sxy = 0.0;
-    let mut sxx = 0.0;
-    for i in 0..x.len() {
-        let dx = x[i] - mx;
-        sxy += dx * (y[i] - my);
-        sxx += dx * dx;
-    }
-    if sxx.abs() < 1e-15 { return (my, 0.0); }
-    let b = sxy / sxx;
-    let a = my - b * mx;
-    (a, b)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

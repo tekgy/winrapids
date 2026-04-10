@@ -13,7 +13,7 @@
 //!
 //! Kingdom A (Commutative): all reduce to FFT + accumulate.
 
-use crate::signal_processing::{Complex, fft, rfft, window_hann, next_pow2};
+use crate::signal_processing::{Complex, fft, window_hann, next_pow2};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Lomb-Scargle periodogram (irregular sampling)

@@ -3917,7 +3917,7 @@ fn f02_pinv_left_inverse() {
         &[0.0, 1.0],
         &[1.0, 1.0],
     ]);
-    let ap = pinv(&a);
+    let ap = pinv(&a, None);
     let product = mat_mul(&ap, &a);
     mat_close("A^+A", &product, &Mat::eye(2), 1e-8);
 }
@@ -6534,7 +6534,7 @@ fn svd_pinv_adversarial() {
         0.0, 1e-8,
         0.0, 0.0,
     ]);
-    let a_pinv = pinv(&a);
+    let a_pinv = pinv(&a, None);
     let a_pinv_a = mat_mul(&a, &mat_mul(&a_pinv, &a));
     let err = mat_max_diff(&a, &a_pinv_a);
     assert!(err < 1e-10, "pinv adversarial: ||A - A*A+*A|| = {:.2e}", err);
@@ -7708,7 +7708,7 @@ mod f15_irt {
                 responses[i * 3 + j] = if (rng as f64 / u64::MAX as f64) < probs[j] { 1 } else { 0 };
             }
         }
-        let items = fit_2pl(&responses, n, 3, 30);
+        let items = fit_2pl(&responses, n, 3, 30, None);
         assert!(items[0].difficulty < items[1].difficulty,
             "Easy item b={} should be < medium b={}", items[0].difficulty, items[1].difficulty);
         assert!(items[1].difficulty < items[2].difficulty,

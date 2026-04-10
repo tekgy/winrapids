@@ -2009,7 +2009,7 @@ pub fn execute(
                 let data = &pipeline.frame().data;
                 // Convert f64 → u8 responses
                 let responses: Vec<u8> = data.iter().map(|&v| if v >= 0.5 { 1 } else { 0 }).collect();
-                let items = crate::irt::fit_2pl(&responses, n_persons, n_items, max_iter);
+                let items = crate::irt::fit_2pl(&responses, n_persons, n_items, max_iter, None);
                 let flat: Vec<f64> = items.iter().flat_map(|it| [it.discrimination, it.difficulty]).collect();
                 TbsStepOutput::Vector { name: "irt_item_params", values: flat }
             }
@@ -2353,7 +2353,7 @@ pub fn execute(
 
             ("pinv", None) => {
                 let mat = crate::linear_algebra::Mat { rows: pn, cols: pd, data: pipeline.frame().data.clone() };
-                let res = crate::linear_algebra::pinv(&mat);
+                let res = crate::linear_algebra::pinv(&mat, None);
                 TbsStepOutput::Matrix { name: "pinv", data: res.data, rows: res.rows, cols: res.cols }
             }
 

@@ -331,11 +331,33 @@ impl ClusteringEngine {
 
 /// Run DBSCAN density estimation + union-find on a flat n×n distance matrix.
 ///
-/// This is the pure CPU part of DBSCAN — steps 2-5 from `discover_clusters`.
-/// Extracted so both `discover_clusters` (which computes distance) and
-/// `discover_clusters_from_distance` (which reuses precomputed distance) can
-/// share identical logic without duplication.
-fn clustering_from_distance(
+/// This is the **pure CPU primitive** for DBSCAN — density estimation + core
+/// identification + union-find component labeling + border-point assignment.
+/// It operates on any precomputed n×n distance slice regardless of metric.
+///
+/// ## Parameters
+///
+/// - `dist`: flat n×n distance matrix (row-major). `dist[i*n+j]` = distance(i,j).
+///   Distance values must be non-negative; the metric is caller-supplied.
+/// - `n`: number of points.
+/// - `epsilon_threshold`: neighborhood radius in the caller's distance units.
+///   For L2² distances pass `radius²`; for L2 distances pass `radius`.
+/// - `min_samples`: minimum neighbors (including self) for a point to be a core.
+///
+/// ## Returns
+///
+/// [`ClusterResult`] with per-point labels: `-1` = noise, `0..k-1` = clusters.
+///
+/// ## Why public
+///
+/// This function is math that exists independently of GPU infrastructure. Any
+/// algorithm that builds a pairwise distance matrix (KNN graph, manifold
+/// topology, spectral clustering, etc.) can reuse this CPU primitive directly
+/// without instantiating a [`ClusteringEngine`]. The GPU engine is an
+/// optimization wrapper; this is the core algorithm.
+///
+/// Kingdom A: all steps are accumulate+gather over the n×n distance slice.
+pub fn clustering_from_distance(
     dist: &[f64],
     n: usize,
     epsilon_threshold: f64,

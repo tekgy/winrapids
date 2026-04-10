@@ -4,6 +4,8 @@
 //! `msplit_temporal_coherence`.
 
 use tambear::nonparametric::{dtw, dtw_banded, levenshtein, quantile_symbolize, edit_distance_on_series, pearson_r};
+use tambear::{quantile, QuantileMethod, lag1_autocorrelation};
+use tambear::signal_processing::regularize_interp;
 
 /// DTW distance between two bin-level series.
 ///
@@ -51,23 +53,11 @@ pub fn wasserstein_1d(x: &[f64], y: &[f64]) -> f64 {
     for i in 0..n {
         // Interpolated quantile at rank (i+0.5)/n
         let t = (i as f64 + 0.5) / n as f64;
-        let qx = sample_quantile(&sx, t);
-        let qy = sample_quantile(&sy, t);
+        let qx = quantile(&sx, t, QuantileMethod::Linear);
+        let qy = quantile(&sy, t, QuantileMethod::Linear);
         sum += (qx - qy).abs();
     }
     sum / n as f64
-}
-
-/// Linear-interpolated quantile from a sorted slice.
-fn sample_quantile(sorted: &[f64], q: f64) -> f64 {
-    let n = sorted.len();
-    if n == 0 { return f64::NAN; }
-    if n == 1 { return sorted[0]; }
-    let pos = q * (n - 1) as f64;
-    let lo = pos.floor() as usize;
-    let hi = (lo + 1).min(n - 1);
-    let frac = pos - lo as f64;
-    sorted[lo] * (1.0 - frac) + sorted[hi] * frac
 }
 
 /// Pearson cross-correlation at a single lag.
@@ -332,24 +322,10 @@ impl MsplitCoherenceResult {
     }
 }
 
-/// Regularize data to m equispaced points using linear interpolation.
-fn regularize_interp_m(data: &[f64], m: usize) -> Vec<f64> {
-    let n = data.len();
-    if n == 0 { return vec![f64::NAN; m]; }
-    if n == 1 { return vec![data[0]; m]; }
-    (0..m).map(|i| {
-        let t = (i as f64 / m as f64) * (n - 1) as f64;
-        let lo = t as usize;
-        let hi = (lo + 1).min(n - 1);
-        let frac = t - lo as f64;
-        data[lo] * (1.0 - frac) + data[hi] * frac
-    }).collect()
-}
-
 /// Compute M-split temporal coherence features.
 pub fn msplit_temporal_coherence(data: &[f64], m: usize) -> MsplitCoherenceResult {
     if data.len() < 4 || m < 4 { return MsplitCoherenceResult::nan(); }
-    let reg = regularize_interp_m(data, m);
+    let reg = regularize_interp(data, m);
     if reg.iter().any(|v| v.is_nan()) { return MsplitCoherenceResult::nan(); }
 
     let mean = reg.iter().sum::<f64>() / m as f64;
@@ -358,8 +334,7 @@ pub fn msplit_temporal_coherence(data: &[f64], m: usize) -> MsplitCoherenceResul
     if var < 1e-30 { return MsplitCoherenceResult::nan(); }
 
     // Lag-1 autocorrelation
-    let s01: f64 = (0..m-1).map(|t| centered[t] * centered[t+1]).sum();
-    let mean_autocorr = s01 / (m as f64 * var);
+    let mean_autocorr = lag1_autocorrelation(&reg);
 
     // Split-half correlation
     let half = m / 2;

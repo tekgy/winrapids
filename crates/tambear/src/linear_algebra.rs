@@ -339,6 +339,50 @@ pub fn det(a: &Mat) -> f64 {
     }
 }
 
+/// Log-determinant via Gaussian elimination with partial pivoting.
+///
+/// Returns `ln|det(A)|`, which is numerically stable for matrices that
+/// would overflow or underflow under `det(a).ln()`. Returns `-∞` for
+/// singular matrices.
+///
+/// This primitive is the canonical implementation for any computation that
+/// needs `ln|det(M)|` — Kalman filter log-likelihood, multivariate normal
+/// log-density, Gaussian process marginal likelihood, etc.
+///
+/// Kingdom A: O(n³) accumulate over pivots.
+pub fn log_det(a: &Mat) -> f64 {
+    let n = a.rows;
+    assert_eq!(a.cols, n, "log_det requires a square matrix");
+    if n == 1 { return a.data[0].abs().ln(); }
+    // Gaussian elimination with partial pivoting
+    let mut a_copy = a.data.clone();
+    let mut log_d = 0.0_f64;
+    for k in 0..n {
+        // Find pivot
+        let mut pivot_row = k;
+        let mut max_val = a_copy[k * n + k].abs();
+        for i in (k + 1)..n {
+            if a_copy[i * n + k].abs() > max_val {
+                max_val = a_copy[i * n + k].abs();
+                pivot_row = i;
+            }
+        }
+        if pivot_row != k {
+            for j in 0..n { a_copy.swap(k * n + j, pivot_row * n + j); }
+        }
+        let diag = a_copy[k * n + k];
+        if diag.abs() < 1e-300 { return f64::NEG_INFINITY; }
+        log_d += diag.abs().ln();
+        for i in (k + 1)..n {
+            let factor = a_copy[i * n + k] / diag;
+            for j in k..n {
+                a_copy[i * n + j] -= factor * a_copy[k * n + j];
+            }
+        }
+    }
+    log_d
+}
+
 /// Matrix inverse via LU factorization.
 pub fn inv(a: &Mat) -> Option<Mat> {
     if !a.is_square() { return None; }
@@ -696,7 +740,17 @@ fn svd_col_dots(data: &[f64], m: usize, n: usize, p: usize, q: usize) -> (f64, f
 }
 
 /// Compute the pseudoinverse A⁺ via SVD.
-pub fn pinv(a: &Mat) -> Mat {
+///
+/// # Parameters
+///
+/// - `rcond` — singular values smaller than this threshold are treated as
+///   zero when inverting. Smaller values retain more near-zero singular
+///   values (less aggressive truncation); larger values suppress more noise.
+///   Type: `Option<f64>`, range: `(0, ∞)`, default: `1e-12`.
+///   Note: MATLAB uses `max(m,n) * eps * max(σ)` (relative); this parameter
+///   is absolute. Use `None` for the default absolute threshold.
+pub fn pinv(a: &Mat, rcond: Option<f64>) -> Mat {
+    let rcond = rcond.unwrap_or(1e-12);
     let svd_res = svd(a);
     let m = a.rows;
     let n = a.cols;
@@ -705,7 +759,7 @@ pub fn pinv(a: &Mat) -> Mat {
     // A⁺ = V Σ⁺ U^T
     let mut sigma_inv = vec![0.0; k];
     for i in 0..k {
-        if svd_res.sigma[i] > 1e-12 {
+        if svd_res.sigma[i] > rcond {
             sigma_inv[i] = 1.0 / svd_res.sigma[i];
         }
     }
@@ -1552,7 +1606,7 @@ mod tests {
             &[1.0, 1.0],
             &[1.0, 2.0],
         ]);
-        let a_pinv = pinv(&a);
+        let a_pinv = pinv(&a, None);
         // A⁺ A should be identity (n×n)
         let prod = mat_mul(&a_pinv, &a);
         mat_approx_eq(&prod, &Mat::eye(2), 1e-8);

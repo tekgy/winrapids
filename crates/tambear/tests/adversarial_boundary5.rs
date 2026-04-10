@@ -66,7 +66,7 @@ fn prob_3pl_guessing_above_one() {
 #[test]
 fn fit_2pl_all_correct() {
     let responses = vec![1u8; 30]; // 10 persons × 3 items, all correct
-    let items = fit_2pl(&responses, 10, 3, 20);
+    let items = fit_2pl(&responses, 10, 3, 20, None);
     assert!(items.iter().all(|item| item.discrimination.is_finite() && item.difficulty.is_finite()),
         "fit_2pl should produce finite params on all-correct data");
 }
@@ -75,7 +75,7 @@ fn fit_2pl_all_correct() {
 #[test]
 fn fit_2pl_all_incorrect() {
     let responses = vec![0u8; 30]; // 10 persons × 3 items, all incorrect
-    let items = fit_2pl(&responses, 10, 3, 20);
+    let items = fit_2pl(&responses, 10, 3, 20, None);
     assert!(items.iter().all(|item| item.discrimination.is_finite() && item.difficulty.is_finite()),
         "fit_2pl should produce finite params on all-incorrect data");
 }
@@ -95,7 +95,7 @@ fn fit_2pl_single_person() {
 #[test]
 fn fit_2pl_single_item() {
     let responses = vec![1, 0, 1, 1, 0, 1, 0, 0, 1, 1]; // 10 persons, 1 item
-    let items = fit_2pl(&responses, 10, 1, 20);
+    let items = fit_2pl(&responses, 10, 1, 20, None);
     assert_eq!(items.len(), 1);
     assert!(items[0].discrimination.is_finite(), "a should be finite, got {}", items[0].discrimination);
 }

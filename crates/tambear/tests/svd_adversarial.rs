@@ -388,7 +388,7 @@ fn svd_adversarial_pinv_overdetermined() {
         &[5.0, 6.0],
         &[7.0, 8.0],
     ]);
-    let a_pinv = pinv(&a);
+    let a_pinv = pinv(&a, None);
     assert_eq!(a_pinv.rows, 2);
     assert_eq!(a_pinv.cols, 4);
 

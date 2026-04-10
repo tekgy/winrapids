@@ -447,7 +447,7 @@ pub fn hausman_test_full(
     let v_diff: Vec<f64> = (0..d * d).map(|i| v_fe[i] - v_re[i]).collect();
 
     let v_diff_mat = Mat::from_vec(d, d, v_diff);
-    let v_inv = pinv(&v_diff_mat);
+    let v_inv = pinv(&v_diff_mat, None);
 
     // χ² = diff' × V⁺ × diff
     let mut chi2 = 0.0;

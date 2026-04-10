@@ -45,11 +45,81 @@ pub struct ItemParams {
     pub difficulty: f64,
 }
 
+/// Configuration for Newton-Raphson bounds and clamps in [`fit_2pl`].
+///
+/// All fields are `Option<T>`; `None` means "use the documented default."
+/// Pass `IrtFitConfig::default()` to get the canonical JMLE settings.
+#[derive(Debug, Clone, Default)]
+pub struct IrtFitConfig {
+    /// Number of Newton-Raphson inner steps per outer E- and M-step.
+    /// More steps → tighter convergence per outer iteration, higher cost.
+    /// Type: `Option<usize>`, range: `[1, ∞)`, default: `10`.
+    pub nr_inner_iter: Option<usize>,
+
+    /// Lower bound for person ability θ during Newton-Raphson clamping.
+    /// The IRT logistic is numerically well-behaved within ±6 for most
+    /// standardized tests; CAT systems covering extreme abilities may need
+    /// wider bounds (e.g., ±8).
+    /// Type: `Option<f64>`, range: `(-∞, theta_max)`, default: `-6.0`.
+    pub theta_min: Option<f64>,
+
+    /// Upper bound for person ability θ.
+    /// Type: `Option<f64>`, range: `(theta_min, ∞)`, default: `6.0`.
+    pub theta_max: Option<f64>,
+
+    /// Minimum discrimination `a`. Values below 0.1 are near-flat ICCs
+    /// and indicate items that barely differentiate ability levels.
+    /// Type: `Option<f64>`, range: `(0, disc_max)`, default: `0.1`.
+    pub disc_min: Option<f64>,
+
+    /// Maximum discrimination `a`. Values above 5 imply near-perfect step
+    /// functions — usually a convergence artifact rather than real data.
+    /// Type: `Option<f64>`, range: `(disc_min, ∞)`, default: `5.0`.
+    pub disc_max: Option<f64>,
+
+    /// Minimum item difficulty `b` (logit scale).
+    /// Type: `Option<f64>`, range: `(-∞, diff_max)`, default: `-5.0`.
+    pub diff_min: Option<f64>,
+
+    /// Maximum item difficulty `b` (logit scale).
+    /// Type: `Option<f64>`, range: `(diff_min, ∞)`, default: `5.0`.
+    pub diff_max: Option<f64>,
+
+    /// Epsilon for clamping empirical proportion correct before the logit
+    /// that initialises item difficulty. Prevents ±∞ starting values for
+    /// perfect/zero items. Larger n datasets may use a tighter value (e.g.
+    /// `0.001`).
+    /// Type: `Option<f64>`, range: `(0, 0.5)`, default: `0.01`.
+    pub p_correct_eps: Option<f64>,
+}
+
 /// Fit 2PL model via joint MLE (alternating Newton steps).
+///
 /// `responses`: n_persons × n_items binary matrix (1=correct, 0=incorrect), row-major.
+///
 /// Returns item parameters.
-pub fn fit_2pl(responses: &[u8], n_persons: usize, n_items: usize, max_iter: usize) -> Vec<ItemParams> {
+///
+/// Pass `IrtFitConfig::default()` for canonical JMLE settings, or populate
+/// fields to override specific bounds and iteration counts.
+pub fn fit_2pl(
+    responses: &[u8],
+    n_persons: usize,
+    n_items: usize,
+    max_iter: usize,
+    config: Option<IrtFitConfig>,
+) -> Vec<ItemParams> {
     assert_eq!(responses.len(), n_persons * n_items);
+
+    let cfg = config.unwrap_or_default();
+    let nr_inner_iter = cfg.nr_inner_iter.unwrap_or(10);
+    let theta_min = cfg.theta_min.unwrap_or(-6.0);
+    let theta_max = cfg.theta_max.unwrap_or(6.0);
+    let disc_min = cfg.disc_min.unwrap_or(0.1);
+    let disc_max = cfg.disc_max.unwrap_or(5.0);
+    let diff_min = cfg.diff_min.unwrap_or(-5.0);
+    let diff_max = cfg.diff_max.unwrap_or(5.0);
+    let p_correct_eps = cfg.p_correct_eps.unwrap_or(0.01);
+    let p_correct_ceil = 1.0 - p_correct_eps;
 
     let mut abilities: Vec<f64> = vec![0.0; n_persons];
     let mut items: Vec<ItemParams> = (0..n_items).map(|j| {
@@ -57,7 +127,7 @@ pub fn fit_2pl(responses: &[u8], n_persons: usize, n_items: usize, max_iter: usi
             / n_persons as f64;
         ItemParams {
             discrimination: 1.0,
-            difficulty: -logit(p_correct.clamp(0.01, 0.99)),
+            difficulty: -logit(p_correct.clamp(p_correct_eps, p_correct_ceil)),
         }
     }).collect();
 
@@ -66,7 +136,7 @@ pub fn fit_2pl(responses: &[u8], n_persons: usize, n_items: usize, max_iter: usi
         for i in 0..n_persons {
             // Newton-Raphson for θ_i
             let mut theta = abilities[i];
-            for _ in 0..10 {
+            for _ in 0..nr_inner_iter {
                 let mut grad = 0.0;
                 let mut hess = 0.0;
                 for j in 0..n_items {
@@ -82,7 +152,7 @@ pub fn fit_2pl(responses: &[u8], n_persons: usize, n_items: usize, max_iter: usi
                 if hess.abs() < 1e-10 { break; }
                 let step = grad / hess;
                 theta -= step;
-                theta = theta.clamp(-6.0, 6.0);
+                theta = theta.clamp(theta_min, theta_max);
                 if step.abs() < 1e-6 { break; }
             }
             abilities[i] = theta;
@@ -98,7 +168,7 @@ pub fn fit_2pl(responses: &[u8], n_persons: usize, n_items: usize, max_iter: usi
         for j in 0..n_items {
             let mut a = items[j].discrimination;
             let mut b = items[j].difficulty;
-            for _ in 0..10 {
+            for _ in 0..nr_inner_iter {
                 let mut grad_a = 0.0;
                 let mut grad_b = 0.0;
                 let mut hess_aa = 0.0;
@@ -115,8 +185,8 @@ pub fn fit_2pl(responses: &[u8], n_persons: usize, n_items: usize, max_iter: usi
                 }
                 if hess_aa.abs() > 1e-10 { a -= grad_a / hess_aa; }
                 if hess_bb.abs() > 1e-10 { b -= grad_b / hess_bb; }
-                a = a.clamp(0.1, 5.0);
-                b = b.clamp(-5.0, 5.0);
+                a = a.clamp(disc_min, disc_max);
+                b = b.clamp(diff_min, diff_max);
             }
             items[j] = ItemParams { discrimination: a, difficulty: b };
         }
@@ -344,7 +414,7 @@ mod tests {
             responses[i * n_items + 2] = if (rng as f64 / u64::MAX as f64) < 0.2 { 1 } else { 0 };
         }
 
-        let items = fit_2pl(&responses, n_persons, n_items, 20);
+        let items = fit_2pl(&responses, n_persons, n_items, 20, None);
         assert!(items[0].difficulty < items[2].difficulty,
             "Easy item b={} should be < hard item b={}", items[0].difficulty, items[2].difficulty);
     }

@@ -1232,7 +1232,7 @@ fn bench_svd_accuracy_vs_condition() {
         recon_err = recon_err.sqrt();
 
         // Pseudoinverse residual: ||A A+ A - A||_F
-        let a_pinv = pinv(&a);
+        let a_pinv = pinv(&a, None);
         let mut pinv_resid = 0.0f64;
         for i in 0..n {
             for j in 0..n {

@@ -6,6 +6,7 @@
 //! NOT covered: `cwt_wavelet` (in family7), `scattering`, `coherence` (GAPs).
 
 use tambear::signal_processing as sp;
+use tambear::ols_slope;
 
 /// FFT-based spectral features.
 ///
@@ -107,19 +108,11 @@ pub fn fft_spectral(returns: &[f64]) -> FftSpectralResult {
     }
 
     // Spectral slope: OLS of log(PSD) vs log(f), skip DC
-    let mut sx = 0.0; let mut sy = 0.0; let mut sxx = 0.0; let mut sxy = 0.0; let mut np = 0.0;
-    for (i, &p) in psd.iter().enumerate().skip(1) {
-        if p > 1e-300 {
-            let lx = (i as f64).ln();
-            let ly = p.ln();
-            sx += lx; sy += ly; sxx += lx * lx; sxy += lx * ly; np += 1.0;
-        }
-    }
-    let slope = if np > 1.0 {
-        let num = np * sxy - sx * sy;
-        let den = np * sxx - sx * sx;
-        if den.abs() > 1e-15 { num / den } else { f64::NAN }
-    } else { f64::NAN };
+    let (log_freqs, log_psds): (Vec<f64>, Vec<f64>) = psd.iter().enumerate().skip(1)
+        .filter(|(_, &p)| p > 1e-300)
+        .map(|(i, &p)| ((i as f64).ln(), p.ln()))
+        .unzip();
+    let slope = ols_slope(&log_freqs, &log_psds);
 
     FftSpectralResult {
         total_energy, peak_frequency, centroid, bandwidth, entropy, flatness, rolloff_85, slope,
@@ -338,14 +331,13 @@ pub fn lomb_scargle_features(returns: &[f64], times: &[f64], n_freqs: usize) -> 
     let peak_frequency = freqs[peak_idx];
 
     // Spectral slope: OLS of log(power) vs log(freq), negate slope (power-law decay)
-    let pairs: Vec<(f64, f64)> = freqs.iter().zip(power.iter())
-        .filter(|&(_, &pw)| pw > 1e-30).map(|(&f, &pw)| (f.ln(), pw.ln())).collect();
-    let spectral_slope = if pairs.len() >= 3 {
-        let mx: f64 = pairs.iter().map(|(x, _)| x).sum::<f64>() / pairs.len() as f64;
-        let my: f64 = pairs.iter().map(|(_, y)| y).sum::<f64>() / pairs.len() as f64;
-        let (mut sxy, mut sxx) = (0.0_f64, 0.0_f64);
-        for &(x, yv) in &pairs { let dx = x - mx; sxy += dx * (yv - my); sxx += dx * dx; }
-        if sxx > 1e-30 { -(sxy / sxx) } else { f64::NAN }
+    let (log_freqs_ls, log_powers): (Vec<f64>, Vec<f64>) = freqs.iter().zip(power.iter())
+        .filter(|&(_, &pw)| pw > 1e-30)
+        .map(|(&f, &pw)| (f.ln(), pw.ln()))
+        .unzip();
+    let spectral_slope = if log_freqs_ls.len() >= 3 {
+        let s = ols_slope(&log_freqs_ls, &log_powers);
+        if s.is_finite() { -s } else { f64::NAN }
     } else { f64::NAN };
 
     // False alarm probability (Baluev approximation): 1 - (1 - exp(-z))^M

@@ -39,7 +39,7 @@
 //! sequential version produces the SAME output and serves as the CPU backend
 //! and the gold standard for testing the parallel version.
 
-use crate::linear_algebra::{mat_mul, mat_add, mat_sub, mat_scale, inv, Mat, mat_vec};
+use crate::linear_algebra::{mat_mul, mat_add, mat_sub, inv, log_det, Mat, mat_vec};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Scalar Kalman filter (1D state, 1D observation)
@@ -256,7 +256,7 @@ pub fn kalman_filter_matrix(
         let x_pred = mat_vec(&f, &x);
         // P_pred = F * P * F^T + Q
         let fp = mat_mul(&f, &p);
-        let ft = transpose_mat(&f);
+        let ft = f.t();
         let fp_ft = mat_mul(&fp, &ft);
         let p_pred = mat_add(&fp_ft, &q);
 
@@ -274,7 +274,7 @@ pub fn kalman_filter_matrix(
 
         // S = H * P_pred * H^T + R
         let hp = mat_mul(&h, &p_pred);
-        let ht = transpose_mat(&h);
+        let ht = h.t();
         let hp_ht = mat_mul(&hp, &ht);
         let s = mat_add(&hp_ht, &r);
 
@@ -290,6 +290,7 @@ pub fn kalman_filter_matrix(
                 continue;
             }
         };
+        // K = P_pred * H^T * S^{-1} (ht already computed above)
         let p_ht = mat_mul(&p_pred, &ht);
         let k = mat_mul(&p_ht, &s_inv);
 
@@ -299,11 +300,12 @@ pub fn kalman_filter_matrix(
 
         // P_upd = (I - K * H) * P_pred
         let kh = mat_mul(&k, &h);
-        let i_mat = identity_mat(n_state);
+        let i_mat = Mat::eye(n_state);
         let i_kh = mat_sub(&i_mat, &kh);
         let p_upd = mat_mul(&i_kh, &p_pred);
 
         // Log-likelihood: -0.5 * (n_obs * ln(2π) + ln|S| + nu^T S^{-1} nu)
+        // log_det from linear_algebra is the canonical primitive — stable for small matrices
         let ln_det_s = log_det(&s);
         let nu_t = Mat { data: nu.clone(), rows: 1, cols: n_obs };
         let nu_t_sinv = mat_mul(&nu_t, &s_inv);
@@ -319,60 +321,8 @@ pub fn kalman_filter_matrix(
     Some(KalmanFilterMatrixResult { states, covariances, log_likelihood })
 }
 
-fn transpose_mat(m: &Mat) -> Mat {
-    let mut data = vec![0.0_f64; m.rows * m.cols];
-    for i in 0..m.rows {
-        for j in 0..m.cols {
-            data[j * m.rows + i] = m.data[i * m.cols + j];
-        }
-    }
-    Mat { data, rows: m.cols, cols: m.rows }
-}
-
-fn identity_mat(n: usize) -> Mat {
-    let mut data = vec![0.0_f64; n * n];
-    for i in 0..n { data[i * n + i] = 1.0; }
-    Mat { data, rows: n, cols: n }
-}
-
-fn log_det(m: &Mat) -> f64 {
-    // Log-determinant via simple LU for small matrices (n ≤ 10).
-    // For larger matrices this would use Cholesky.
-    let n = m.rows;
-    assert_eq!(m.cols, n);
-    if n == 1 {
-        return m.data[0].abs().ln();
-    }
-    // Gaussian elimination with partial pivoting
-    let mut a = m.data.clone();
-    let mut log_d = 0.0_f64;
-    let mut sign = 1.0_f64;
-    for k in 0..n {
-        // Find pivot
-        let mut pivot_row = k;
-        let mut max_val = a[k * n + k].abs();
-        for i in (k + 1)..n {
-            if a[i * n + k].abs() > max_val {
-                max_val = a[i * n + k].abs();
-                pivot_row = i;
-            }
-        }
-        if pivot_row != k {
-            for j in 0..n { a.swap(k * n + j, pivot_row * n + j); }
-            sign = -sign;
-        }
-        let diag = a[k * n + k];
-        if diag.abs() < 1e-300 { return f64::NEG_INFINITY; }
-        log_d += diag.abs().ln();
-        for i in (k + 1)..n {
-            let factor = a[i * n + k] / diag;
-            for j in k..n {
-                a[i * n + j] -= factor * a[k * n + j];
-            }
-        }
-    }
-    log_d
-}
+// transpose_mat, identity_mat, and log_det are now the canonical public primitives
+// Mat::t(), Mat::eye(n), and linear_algebra::log_det. All three private copies removed.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Hidden Markov Model (HMM)

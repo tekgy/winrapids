@@ -200,7 +200,7 @@ fn cond_singular() {
 #[test]
 fn pinv_zero() {
     let m = Mat::zeros(2, 3);
-    let p = pinv(&m);
+    let p = pinv(&m, None);
     for i in 0..p.rows {
         for j in 0..p.cols {
             assert!(p.get(i, j).abs() < 1e-10, "pinv(0)[{},{}] should be 0", i, j);

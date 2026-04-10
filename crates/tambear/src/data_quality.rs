@@ -369,7 +369,14 @@ pub fn fft_is_valid(x: &[f64], timestamps: Option<&[u64]>) -> bool {
 /// - At least 100 samples (typical convergence minimum)
 /// - Non-constant data (price_cv > 0)
 /// - Evidence of volatility clustering (otherwise a simpler model suffices)
-pub fn garch_is_valid(returns: &[f64]) -> bool {
+///
+/// # Parameters
+///
+/// - `min_vol_clustering_acf` — minimum ACF(r²) required for volatility
+///   clustering to be declared present, forwarded to [`has_vol_clustering`].
+///   Type: `Option<f64>`, range: `[0, 1)`, default: `0.05`.
+pub fn garch_is_valid(returns: &[f64], min_vol_clustering_acf: Option<f64>) -> bool {
+    let threshold = min_vol_clustering_acf.unwrap_or(0.05);
     if tick_count(returns) < 100 {
         return false;
     }
@@ -377,7 +384,7 @@ pub fn garch_is_valid(returns: &[f64]) -> bool {
     if cv.is_nan() || cv < 1e-12 {
         return false;
     }
-    has_vol_clustering(returns, 0.05)
+    has_vol_clustering(returns, threshold)
 }
 
 /// Validity predicate for rank-based nonparametric methods.
@@ -601,23 +608,53 @@ pub struct DataQualitySummary {
 }
 
 impl DataQualitySummary {
-    /// Compute the full summary from a single slice.
+    /// Compute the full summary from a single slice using canonical defaults.
     ///
-    /// Uses canonical thresholds (`has_trend` at R² > 0.5,
-    /// `has_vol_clustering` at ACF > 0.1, `jump_ratio_proxy` at k = 3.0).
+    /// Delegates to [`DataQualitySummary::from_slice_with_params`] with:
+    /// - `jump_k = 3.0` (σ-multiplier for jump detection)
+    /// - `vol_clustering_acf = 0.1` (ACF threshold for volatility clustering)
+    /// - `trend_r2_threshold = 0.5` (R² threshold for trend detection)
     pub fn from_slice(x: &[f64]) -> Self {
+        Self::from_slice_with_params(x, None, None, None)
+    }
+
+    /// Compute the full summary with explicit threshold control.
+    ///
+    /// # Parameters
+    ///
+    /// - `jump_k` — sigma-multiplier for jump detection via
+    ///   `jump_ratio_proxy`. Larger values require bigger jumps to register.
+    ///   Type: `Option<f64>`, range: `(0, ∞)`, default: `3.0`.
+    ///
+    /// - `vol_clustering_acf` — minimum ACF(r²) at any lag within the cap
+    ///   for `has_vol_clustering` to return `true`. Higher values require
+    ///   stronger squared-return autocorrelation.
+    ///   Type: `Option<f64>`, range: `[0, 1)`, default: `0.1`.
+    ///
+    /// - `trend_r2_threshold` — minimum OLS R² for `has_trend` to return
+    ///   `true`. Higher values require a more dominant linear component.
+    ///   Type: `Option<f64>`, range: `[0, 1]`, default: `0.5`.
+    pub fn from_slice_with_params(
+        x: &[f64],
+        jump_k: Option<f64>,
+        vol_clustering_acf: Option<f64>,
+        trend_r2_threshold: Option<f64>,
+    ) -> Self {
+        let jump_k = jump_k.unwrap_or(3.0);
+        let vol_clustering_acf = vol_clustering_acf.unwrap_or(0.1);
+        let trend_r2_threshold = trend_r2_threshold.unwrap_or(0.5);
         Self {
             tick_count: tick_count(x),
             unique_prices: unique_prices(x),
             price_cv: price_cv(x),
             lag1_autocorr: lag1_autocorrelation(x),
             effective_sample_size: effective_sample_size(x),
-            jump_ratio: jump_ratio_proxy(x, 3.0),
+            jump_ratio: jump_ratio_proxy(x, jump_k),
             trend_r2: trend_r2(x),
             split_variance_ratio: split_variance_ratio(x),
             acf_decay_exponent: acf_decay_exponent(x),
-            has_vol_clustering: has_vol_clustering(x, 0.1),
-            has_trend: has_trend(x, 0.5),
+            has_vol_clustering: has_vol_clustering(x, vol_clustering_acf),
+            has_trend: has_trend(x, trend_r2_threshold),
             is_stationary_adf_05: is_stationary_adf_05(x),
         }
     }
@@ -2023,9 +2060,9 @@ mod tests {
     #[test]
     fn garch_is_valid_needs_clustering() {
         let constant = vec![1.0; 200];
-        assert!(!garch_is_valid(&constant));
+        assert!(!garch_is_valid(&constant, None));
         let too_short = vec![0.1; 50];
-        assert!(!garch_is_valid(&too_short));
+        assert!(!garch_is_valid(&too_short, None));
     }
 
     #[test]

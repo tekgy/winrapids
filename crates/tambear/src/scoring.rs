@@ -37,12 +37,28 @@ pub fn threshold_fixed(using: &UsingBag) -> f64 {
 /// Thresh = median(drops) + k * std(drops)
 ///
 /// Prevents spurious detections in noisy data by scaling the threshold to the signal.
+///
+/// # UsingBag keys
+///
+/// - `threshold_k` — multiplier on the standard deviation term.
+///   Type: `f64`, range: `[0, ∞)`, default: `2.0`.
+///
+/// - `empty_fallback_threshold` — value returned when `drops` is empty (no
+///   historical drop scores available). Should reflect a neutral prior on
+///   changepoint density.
+///   Type: `f64`, range: `(0, 1]`, default: `0.5`.
+///
+/// - `min_adaptive_threshold` — floor applied to the computed threshold.
+///   Prevents the adaptive rule from producing thresholds so low that every
+///   bin is flagged as a changepoint.
+///   Type: `f64`, range: `[0, empty_fallback_threshold]`, default: `0.3`.
 pub fn threshold_adaptive(drops: &[f64], using: &UsingBag) -> f64 {
     if drops.is_empty() {
-        return 0.5;
+        return using.get_f64("empty_fallback_threshold").unwrap_or(0.5);
     }
 
     let k = using.get_f64("threshold_k").unwrap_or(2.0);
+    let min_threshold = using.get_f64("min_adaptive_threshold").unwrap_or(0.3);
 
     let mut sorted = drops.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -51,5 +67,5 @@ pub fn threshold_adaptive(drops: &[f64], using: &UsingBag) -> f64 {
     let mean = drops.iter().sum::<f64>() / drops.len() as f64;
     let var = drops.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / drops.len() as f64;
 
-    (median + k * var.sqrt()).max(0.3)
+    (median + k * var.sqrt()).max(min_threshold)
 }

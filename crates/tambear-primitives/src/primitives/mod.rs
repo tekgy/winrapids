@@ -1,6 +1,7 @@
 // Flat catalog. One module per primitive. Alphabetical.
 // Adding a new primitive = adding one folder + one line here.
 
+pub mod recipe;
 pub mod lehmer_mean;
 pub mod log_sum_exp;
 pub mod mean_arithmetic;
@@ -31,3 +32,6 @@ pub use nan_guard::{nan_min, nan_max, has_nan, has_non_finite, finite_only, sort
 pub use prefix_scan::{prefix_scan_inclusive, prefix_scan_exclusive, reduce, prefix_scan_segmented};
 pub use semiring::{Semiring, Additive, TropicalMinPlus, TropicalMaxPlus, LogSumExp, Boolean, MaxTimes};
 pub use softmax::{softmax, log_softmax};
+pub use recipe::{Step, GroupingKind, ExprKind, OpKind, Recipe,
+    MEAN_ARITHMETIC, MEAN_GEOMETRIC, MEAN_HARMONIC, MEAN_QUADRATIC,
+    VARIANCE, CUMSUM};

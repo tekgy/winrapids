@@ -1,43 +1,34 @@
 //! # tambear-primitives
 //!
-//! Flat catalog of mathematical primitives. One folder per primitive.
-//! The filesystem IS the inventory.
+//! The alphabet of computation. Three categories of atoms:
 //!
-//! ## Architecture
+//! - **Transforms** — what to do to each element (exp, ln, square, abs, ...)
+//! - **Accumulates** — how to combine elements (All+Add, ByKey+Max, Prefix+Semiring, Tiled+DotProduct, ...)
+//! - **Gathers** — how to read results (scalar, per_group, per_element, formula, ...)
 //!
+//! Math is expressed as: Transform → Accumulate → Gather chains.
+//! Multiple chains fuse into single passes when they share (Grouping, Op).
+//!
+//! "Mean arithmetic" is not a primitive. It's a RECIPE:
 //! ```text
-//! src/primitives/
-//! ├── log_sum_exp/
-//! │   ├── mod.rs           — the implementation
-//! │   ├── params.toml      — machine-readable contract (IDE, TBS, sharing)
-//! │   ├── primitive.tbs    — TBS script (the language, not just notation)
-//! │   ├── workup.md        — Principle 10 publication-grade workup
-//! │   ├── oracle.py        — mpmath/sympy 50-digit reference
-//! │   ├── benchmark.rs     — scale sweep + competitor comparison
-//! │   ├── README.md        — tutorial: what, when, how, composes with
-//! │   └── tests/
-//! │       ├── basic.rs     — golden path
-//! │       ├── adversarial.rs — NaN, Inf, empty, degenerate
-//! │       ├── oracle.rs    — bit-perfect against oracle.py
-//! │       └── parity.rs    — vs scipy/R/MATLAB
-//! └── pearson_r/
-//!     └── ... (same structure)
+//! identity  → Accumulate(All, Add) → "sum"
+//! const(1)  → Accumulate(All, Add) → "count"    ← FUSES with above
+//! Gather(scalar, sum / count)
 //! ```
 //!
-//! ## Principles
+//! The primitives are: identity, const, All, Add, scalar, division.
+//! The recipe is how they compose. TAM compiles and executes recipes.
 //!
-//! - **One primitive = one folder.** If it exists, the folder exists.
-//! - **Flat, not nested.** Families are tags in params.toml, not directories.
-//!   `log_sum_exp` belongs to [information_theory, numerical, probabilistic].
-//! - **Self-describing.** params.toml has everything the IDE needs:
-//!   parameters, types, defaults, sharing contract, using() keys, kingdom.
-//! - **Self-proving.** workup.md + oracle.py + tests/ prove correctness.
-//!   Missing files = unproven primitive.
-//! - **node===node.** Every primitive has identical folder structure
-//!   regardless of complexity. `log_sum_exp` looks like `eigendecomposition`.
+//! ## The alphabet
+//!
+//! ```text
+//! transforms/     — element-wise operations (the φ in scatter_phi)
+//! accumulates/    — (grouping × op) pairs
+//! gathers/        — addressing patterns for reading results
+//! recipes/        — named compositions (teaching names for chains)
+//! ```
 
-pub mod primitives;
-pub mod catalog;
-
-// Flat re-export: `use tambear_primitives::log_sum_exp`
-pub use primitives::*;
+pub mod transforms;
+pub mod accumulates;
+pub mod gathers;
+pub mod recipes;

@@ -207,6 +207,11 @@ impl Ord for DijkstraState {
 
 /// Dijkstra's shortest path algorithm.
 ///
+/// **Kingdom A** — tropical (min, +) semiring priority-queue scan. The combine
+/// operation `d[v] = min(d[v], d[u] + w(u,v))` is a TropicalMinPlus accumulate
+/// over the adjacency structure; state is a (cost, predecessor) pair with
+/// finitely-representable composition under the semiring.
+///
 /// Returns `(distances, parents)`. All edge weights **must be non-negative**;
 /// panics if any negative weight is detected. Use `bellman_ford` for graphs
 /// with negative weights (it also detects negative cycles).
@@ -245,6 +250,11 @@ pub fn dijkstra(g: &Graph, source: usize) -> (Vec<f64>, Vec<Option<usize>>) {
 
 /// Bellman-Ford shortest path (handles negative edges).
 ///
+/// **Kingdom A** — tropical (min, +) semiring edge-relaxation scan over n−1
+/// rounds. Each round is a gather over all edges with TropicalMinPlus combine;
+/// rounds are sequential (n−1 of them) but within each round all edges
+/// relax independently. Negative-cycle detection is a Kingdom A predicate scan.
+///
 /// Returns None if a negative cycle is detected.
 pub fn bellman_ford(g: &Graph, source: usize) -> Option<(Vec<f64>, Vec<Option<usize>>)> {
     let n = g.n_nodes;
@@ -278,6 +288,12 @@ pub fn bellman_ford(g: &Graph, source: usize) -> Option<(Vec<f64>, Vec<Option<us
 }
 
 /// Floyd-Warshall all-pairs shortest paths.
+///
+/// **Kingdom A** — tropical (min, +) semiring matrix exponentiation. The
+/// recurrence `d[i][j] = min(d[i][j], d[i][k] + d[k][j])` is a TropicalMinPlus
+/// matrix–vector product iterated over n intermediate vertices k; each k-round
+/// is a fully parallel gather over (i,j) pairs. State is a (cost) scalar with
+/// finitely-representable composition under TropicalMinPlus.
 ///
 /// Returns n×n distance matrix. dist[i][j] = shortest distance from i to j.
 pub fn floyd_warshall(g: &Graph) -> Vec<Vec<f64>> {

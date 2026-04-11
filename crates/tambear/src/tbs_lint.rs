@@ -467,9 +467,20 @@ fn kingdom_of(base: &str, sub: Option<&str>) -> (Kingdom, Option<SharedSubproble
         ("adf_test", None) | ("ar", None) | ("yule_walker", None)
             => (Kingdom::A, Some(SharedSubproblem::Autocorrelation)),
 
-        // Kingdom B — sequential
-        ("kaplan_meier", None) | ("log_rank", None) | ("exp_smoothing", None)
-            => (Kingdom::B, None),
+        // Kingdom A — suffix-count scan (reclassified: at-risk counts are deterministic
+        // suffix counts of sorted data, not accumulated path-dependent state.
+        // n1(t) = |{i: times[i] >= t, groups[i] == 0}| is computable for any t
+        // independently of processing order — same structural argument as kaplan_meier)
+        ("log_rank", None)
+            => (Kingdom::A, None),
+
+        // Kingdom A — prefix product scan (survival.rs: prior Kingdom B label was wrong)
+        ("kaplan_meier", None)
+            => (Kingdom::A, None),
+
+        // Kingdom A — affine prefix scan (time_series.rs: prior Kingdom B label was wrong)
+        ("exp_smoothing", None)
+            => (Kingdom::A, None),
 
         // Kingdom C — distance-matrix dependent
         ("kmeans", None) | ("dbscan", None) | ("discover_clusters", None)
@@ -501,7 +512,8 @@ fn kingdom_of(base: &str, sub: Option<&str>) -> (Kingdom, Option<SharedSubproble
         ("train", Some("logistic"))
             => (Kingdom::C, Some(SharedSubproblem::GramMatrix)),
 
-        // Kingdom C — GARCH (B recursion + C optimization)
+        // Kingdom C — GARCH fitting (A filter + C optimization outer loop)
+        // The garch11_filter is Kingdom A (affine prefix scan); the fit is Kingdom C.
         ("garch", None)
             => (Kingdom::C, Some(SharedSubproblem::Covariance)),
 
@@ -809,8 +821,12 @@ pub fn verify_all_kingdom_contracts() -> Vec<KingdomContract> {
         ("hausman", None),
         // Kingdom A — autocorrelation
         ("adf_test", None), ("ar", None), ("yule_walker", None),
-        // Kingdom B — sequential
-        ("kaplan_meier", None), ("log_rank", None), ("exp_smoothing", None),
+        // Kingdom A — prefix product scan (reclassified from B)
+        ("kaplan_meier", None),
+        // Kingdom A — affine prefix scan (reclassified from B)
+        ("exp_smoothing", None),
+        // Kingdom A — suffix-count scan (reclassified from B: at-risk counts are deterministic)
+        ("log_rank", None),
         // Kingdom C — distance-matrix
         ("kmeans", None), ("dbscan", None), ("discover_clusters", None),
         ("knn", None), ("tsne", None), ("umap", None),
@@ -1046,9 +1062,18 @@ mod tests {
     }
 
     #[test]
-    fn kingdom_annotation_b_ops() {
-        assert_eq!(kingdom_of("kaplan_meier", None).0, Kingdom::B);
-        assert_eq!(kingdom_of("exp_smoothing", None).0, Kingdom::B);
+    fn kingdom_annotation_reclassified_to_a() {
+        // kaplan_meier: prior label "Kingdom B" was wrong.
+        // KM is a prefix product scan — survival.rs documents this correction.
+        assert_eq!(kingdom_of("kaplan_meier", None).0, Kingdom::A);
+        // exp_smoothing: prior label "Kingdom B" was wrong.
+        // EMA/exponential smoothing is an affine prefix scan (Kingdom A).
+        assert_eq!(kingdom_of("exp_smoothing", None).0, Kingdom::A);
+        // log_rank: prior label "Kingdom B" was wrong.
+        // At-risk counts n1(t), n2(t) are deterministic suffix counts of sorted data —
+        // n1(t) = |{i: times[i] >= t, groups[i] == 0}| — not path-dependent accumulated state.
+        // Same structural argument as kaplan_meier. The sequential walk is an artifact.
+        assert_eq!(kingdom_of("log_rank", None).0, Kingdom::A);
     }
 
     #[test]
@@ -1262,15 +1287,6 @@ mod tests {
     }
 
     #[test]
-    fn kingdom_b_kaplan_meier_is_honest() {
-        let contract = verify_kingdom("kaplan_meier", None);
-        assert_eq!(contract.kingdom, Kingdom::B);
-        assert!(contract.verification.is_sound());
-        assert!(matches!(contract.verification, KingdomVerification::HonestDeclaration { .. }),
-            "kaplan_meier must declare honest B — sequential survival estimator");
-    }
-
-    #[test]
     fn kingdom_c_kmeans_is_honest() {
         let contract = verify_kingdom("kmeans", None);
         assert_eq!(contract.kingdom, Kingdom::C);
@@ -1330,9 +1346,16 @@ mod tests {
 
     #[test]
     fn verify_all_contracts_kingdom_b_count() {
-        // Sanity: there are sequential ops in the table.
+        // Sanity check: all registered ops are Kingdom A or C (the standard liftable kingdoms).
+        // All prior Kingdom B annotations in survival.rs, time_series.rs, panel.rs, and
+        // tbs_lint.rs have been reclassified after structural analysis.
+        // Genuine Kingdom B (not in TBS table): BOCPD (growing state), PELT (state-dependent pruning),
+        // EGARCH (σ_{t-1} normalization), SDE step integrators (f(x_t) needs x_t),
+        // TDA union-find/boundary matrix, MCMC (acceptance ratio nonlinear in state),
+        // TAR/threshold models (branch selection depends on state value).
+        // ARMA(q>0) reclassified Kingdom A: MA terms lift to companion matrix, M is constant.
         let contracts = verify_all_kingdom_contracts();
         let b_count = contracts.iter().filter(|c| c.kingdom == Kingdom::B).count();
-        assert!(b_count >= 2, "expected at least 2 Kingdom B ops (kaplan_meier, exp_smoothing), got {b_count}");
+        assert_eq!(b_count, 0, "all TBS table ops reclassified to A or C; got {b_count} B ops");
     }
 }

@@ -214,7 +214,7 @@ pub fn panel_re(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// First-Difference estimator (Kingdom B — affine lag scan)
+// First-Difference estimator (Kingdom A — adjacent-pair scan, no accumulated state)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// First-difference panel estimator.

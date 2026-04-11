@@ -121,3 +121,60 @@ Claims:
 
 Claim 4 is the operational payoff: TAM can determine an algorithm's Kingdom by
 observing its sharing behavior during execution, not by static analysis.
+
+---
+
+## Semigroup homomorphism sharpening (navigator, 2026-04-10)
+
+Navigator's framing: **A recurrence is Kingdom A iff its update function is a semigroup
+homomorphism** — more precisely, a monoid homomorphism from the data sequence (with
+concatenation as the monoid operation) into the endomorphism monoid of the state space.
+
+This is a sharper statement of the existing φ: D → S condition. Spelled out:
+- Data sequences form a monoid (D*, concatenation, ε)
+- State endomorphisms form a monoid (End(X), composition, id)
+- Kingdom A iff ∃ monoid homomorphism h: D* → End(X) such that the recurrence
+  `s_t = h(d_t)(s_{t-1})` and `h(d_1 · d_2) = h(d_1) ∘ h(d_2)` (homomorphism law)
+
+The homomorphism law is exactly bounded-representation condition 3: composing k data
+steps gives `h(d_1 · ... · d_k)` which must be representable in O(1) in k. If the
+representation of `h(d_1 · ... · d_k)` grows with k, h is not a homomorphism from D*
+into a FIXED monoid — it's a homomorphism into a graded family of monoids, which is
+not the same thing.
+
+**Newton's method fails the homomorphism test** (navigator):
+`x_{t+1} = x_t - f(x_t)/f'(x_t)` — the update function `T(x) = x - f(x)/f'(x)` is
+nonlinear in x. For the homomorphism to exist, composing two Newton steps must produce
+another Newton step representable in O(1) space. But `T ∘ T(x)` involves `f` and `f'`
+evaluated at `T(x)`, which is generally transcendental in x. No fixed parametric family
+closes under composition. Not a monoid homomorphism → not Kingdom A.
+
+BUT: Newton is C(A). The inner computation at each step (linear solve for the Newton
+step direction) IS a monoid homomorphism on the linear system. The outer iteration
+(stepping in the Newton direction) is the non-homomorphic part.
+
+**Logistic map fails** (navigator confirms existing entry):
+`x_{t+1} = r·x_t·(1-x_t)` — composition after n steps = degree-2ⁿ polynomial. The
+homomorphism h maps each datum (here, just r) to the degree-2 map `x ↦ r·x·(1-x)`.
+Composing k such maps gives a degree-2ⁿ polynomial — representation grows. No fixed
+monoid. Not Kingdom A.
+
+**The publishable theorem** (navigator):
+> A financial return model is GPU-parallelizable (Kingdom A) iff its per-step update
+> function forms a monoid homomorphism from the return sequence into a fixed-dimension
+> endomorphism monoid.
+>
+> Affine models (GARCH, EMA, AR, Kalman): the update x ↦ a·x + b factors as (a,b)
+> composable in 2 scalars. Monoid homomorphism. GPU-parallelizable.
+>
+> Nonlinear models (logistic map, EGARCH normalizing by σ_t): update degree doubles
+> or depends on state value. No fixed monoid. Not GPU-parallelizable.
+
+This is the formal statement of the A/B boundary for financial models.
+
+**ARMA-GARCH coupling check** (navigator raised; resolved by code inspection):
+`garch11_fit` takes `returns: &[f64]` — mean-adjusted returns as exogenous input.
+No ARMA-GARCH joint model exists in the codebase. Callers are responsible for mean
+adjustment before passing to the filter. Therefore r²_{t-1} = returns[t-1]² is always
+a pure data value. The coupling (μ depending on past σ²) that would break linearity
+does not exist in this implementation. GARCH is unconditionally Kingdom A as implemented.

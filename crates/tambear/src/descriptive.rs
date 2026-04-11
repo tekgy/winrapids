@@ -1130,6 +1130,46 @@ pub fn mase(actual: &[f64], predicted: &[f64], seasonal_period: usize) -> f64 {
     out_mae / baseline_mae
 }
 
+// ── mean_of / variance_of — zero-overhead inline primitives ───────────────
+
+/// Arithmetic mean of a slice, ignoring NaN values.
+///
+/// Zero-overhead alternative to `moments_ungrouped(v).mean()` for callers
+/// that only need the mean and don't need the full moment suite. Returns
+/// `f64::NAN` if no finite values are present.
+///
+/// This is the canonical deduplication target for the 15+ inline copies of
+/// `iter().sum::<f64>() / n as f64` scattered across the codebase.
+#[inline]
+pub fn mean_of(values: &[f64]) -> f64 {
+    let mut s = 0.0_f64;
+    let mut cnt = 0usize;
+    for &v in values {
+        if v.is_finite() { s += v; cnt += 1; }
+    }
+    if cnt == 0 { f64::NAN } else { s / cnt as f64 }
+}
+
+/// Sample variance (ddof=1) of a slice, ignoring NaN values.
+///
+/// Zero-overhead alternative to `moments_ungrouped(v).variance(1)` for
+/// callers that only need the variance. Returns `f64::NAN` for n < 2.
+///
+/// This is the canonical deduplication target for scattered inline variance
+/// computations across time_series.rs, complexity.rs, and data_quality.rs.
+#[inline]
+pub fn variance_of(values: &[f64]) -> f64 {
+    let mut s = 0.0_f64;
+    let mut s2 = 0.0_f64;
+    let mut cnt = 0usize;
+    for &v in values {
+        if v.is_finite() { s += v; s2 += v * v; cnt += 1; }
+    }
+    if cnt < 2 { return f64::NAN; }
+    let n = cnt as f64;
+    (s2 - s * s / n) / (n - 1.0)
+}
+
 // ── mode ──────────────────────────────────────────────────────────────────
 
 /// Sample mode: the most frequently occurring finite value.

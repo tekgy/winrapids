@@ -74,6 +74,9 @@ pub fn garch11_filter(returns: &[f64], omega: f64, alpha: f64, beta: f64, sigma2
 
 /// Log-likelihood of a GARCH(1,1) model given conditional variances.
 ///
+/// **Kingdom A** — all terms are independent across t; a straight parallel sum
+/// (standard semiring Add accumulate over t). No sequential dependency.
+///
 /// `ll = -½ Σ_t [ln(2π) + ln(σ²_t) + r²_t / σ²_t]`
 pub fn garch11_log_likelihood(returns: &[f64], sigma2: &[f64]) -> f64 {
     assert_eq!(returns.len(), sigma2.len());

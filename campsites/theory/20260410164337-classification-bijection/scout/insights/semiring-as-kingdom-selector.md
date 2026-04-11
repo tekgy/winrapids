@@ -131,8 +131,10 @@ Not Kingdom A despite bounded state.
 | Scaled sine `d·sin(x)` | No — transcendental nesting, unbounded | B |
 | Floor-affine `floor(a·x + b)` | No — floor breaks distributivity; compose ≠ floor of linear | B |
 | Branching `x>0 ? ax+b : cx+d` | No — needs intermediate sign to compose | B |
-| ARMA MA residuals (CSS) | No — residuals are state (but Kalman formulation = A) | B impl / A math |
-| BOCPD run-length stats | No — state-dependent accumulation target | B |
+| Affine matrix `M·x + b`, M constant | Yes — O(n²) matrix, always | A |
+| Exponential tower `d_t^x` | No — tower of depth k needs O(k) representation | B |
+| ARMA MA residuals (CSS) | No — residuals are state (but companion matrix formulation = A) | B impl / A math |
+| BOCPD run-length stats | Dissolves to A if sufficient stats precomputed from data; B if maintained incrementally | A math / B impl |
 
 **Floor-affine counter-example** (r-gap-scan): `f_t(x) = floor(a_t·x + b_t)`.
 Data-determined (a_t, b_t from input). Fixed type (ℤ or ℝ). But composition:
@@ -150,6 +152,68 @@ Algorithms genuinely beyond Kingdom A:
 Most algorithms fall into the first category once the right semiring is identified.
 The second category (data-determined but non-closing) is the surprising finding —
 it means "data-determined" alone is not sufficient, even when state is bounded.
+
+**Exponential tower** (biology-math-scan — confirms engineering-math-scan's Condition 3):
+`x_t = d_t^{x_{t-1}}`. Each map `f_t(x) = d_t^x` is data-determined. Composition is
+always associative as a mathematical fact. But composing k maps gives a tower of depth k:
+`d_r^{d_s^{...^{d_1^x}}}` — O(k) representation, no fixed parametric family closes
+under composition. This is the same failure mode as the symmetric-difference example
+(O(k) set representation). The condition is already in Condition 3 — this is independent
+confirmation from a number-theory / lambda calculus direction. Tetration and Ackermann
+are known computationally hard for exactly this reason.
+
+---
+
+## BOCPD and ARMA: the dissolution pattern (biology-math-scan)
+
+**The pattern**: many apparently Kingdom B algorithms dissolve to Kingdom A when you
+recognize that what looks like "state" is actually a function of DATA that could be
+precomputed. This is the same move as the Kalman formulation for GARCH (b_t = K·y_t
+is data-determined). The implementation uses state; the mathematics is data.
+
+**ARMA companion matrix proof** (biology-math-scan, confirming prior session finding):
+
+State vector `s_t = [ε_t, ε_{t-1}, ..., ε_{t-q+1}]^T`.
+```
+s_t = M · s_{t-1} + b_t(x)
+```
+where M is the CONSTANT companion matrix (MA coefficients θ_j) and
+`b_t(x) = [x_t - Σ φ_i x_{t-i}, 0, ..., 0]^T` depends only on DATA.
+
+M is constant → Condition 2 satisfied (data-determined). Affine maps compose to affine
+maps over the same state space → Condition 3 satisfied (O(1) representation: M^k, accumulated b).
+Therefore: ARMA via companion matrix = Kingdom A.
+
+The CSS implementation chains on ε_t which it computed — implementation artifact, not
+a structural constraint. The label "B implementation / A math" is correct.
+
+**BOCPD dissolution argument** (biology-math-scan):
+
+The run-length posterior update at time t:
+```
+P(r_t | x_{1:t}) ∝ P(x_t | r_t, x_t^{(r)}) · [growth term + reset term]
+```
+The likelihood `P(x_t | r_t, x_t^{(r)})` depends on sufficient stats for the current run.
+If those sufficient stats are precomputed from the observation sequence (they are always
+a function of `x_{τ:t}` — pure data), then the update becomes element-wise multiply by
+data-determined weights + shift + add: a LINEAR MAP on the run-length probability vector,
+fully data-determined.
+
+Verdict: **BOCPD is "A math / B impl"** — the same pattern as ARMA. The precomputed-stats
+formulation makes every likelihood weight a function of the data, and the update is a
+data-determined linear transformation on the run-length vector. The standard incremental
+implementation treats sufficient stats as state (B), but the underlying mathematics is
+a data-determined linear map (A).
+
+**Surviving genuine Kingdom B residual**: MCMC.
+The acceptance ratio π(x')/π(x_t) cannot be precomputed from any data sequence —
+it requires evaluating π at the CURRENT state x_t which is the output of prior random
+decisions, not a deterministic function of observed input data. No dissolution path exists.
+
+**Pattern summary**:
+- Sequential implementation + state that is secretly a function of data → dissolves to A
+- State that is the output of prior stochastic decisions (MCMC) → genuinely B
+- State that requires prior output because closure fails (logistic, floor-affine) → genuinely B
 
 ---
 

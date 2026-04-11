@@ -81,11 +81,11 @@ pub fn price_cv(x: &[f64]) -> f64 {
     if n < 2 {
         return f64::NAN;
     }
-    let mean = clean.iter().sum::<f64>() / n as f64;
+    let mean = crate::descriptive::mean_of(&clean);
     if mean.abs() < 1e-300 {
         return f64::NAN;
     }
-    let var = clean.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64;
+    let var = crate::descriptive::variance_of(&clean);
     var.sqrt() / mean.abs()
 }
 
@@ -172,12 +172,11 @@ pub fn sampling_regularity_cv(timestamps: &[u64]) -> f64 {
     let diffs: Vec<f64> = (1..n)
         .map(|i| (timestamps[i] - timestamps[i - 1]) as f64)
         .collect();
-    let m = diffs.len() as f64;
-    let mean = diffs.iter().sum::<f64>() / m;
+    let mean = crate::descriptive::mean_of(&diffs);
     if mean.abs() < 1e-300 {
         return f64::NAN;
     }
-    let var = diffs.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / m;
+    let var = crate::descriptive::variance_of(&diffs);
     var.sqrt() / mean
 }
 
@@ -227,10 +226,7 @@ pub fn split_variance_ratio(x: &[f64]) -> f64 {
         return f64::NAN;
     }
     let mid = n / 2;
-    let var_half = |s: &[f64]| -> f64 {
-        let m = s.iter().sum::<f64>() / s.len() as f64;
-        s.iter().map(|v| (v - m).powi(2)).sum::<f64>() / (s.len() - 1) as f64
-    };
+    let var_half = |s: &[f64]| -> f64 { crate::descriptive::variance_of(s) };
     let v1 = var_half(&clean[..mid]);
     let v2 = var_half(&clean[mid..]);
     if v2.abs() < 1e-300 {
@@ -249,26 +245,12 @@ pub fn split_variance_ratio(x: &[f64]) -> f64 {
 pub fn trend_r2(x: &[f64]) -> f64 {
     let clean: Vec<f64> = x.iter().copied().filter(|v| !v.is_nan()).collect();
     let n = clean.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let nf = n as f64;
-    let y_mean = clean.iter().sum::<f64>() / nf;
-    let t_mean = (nf - 1.0) / 2.0;
-    let mut sxy = 0.0;
-    let mut sxx = 0.0;
-    let mut syy = 0.0;
-    for (i, &y) in clean.iter().enumerate() {
-        let dt = i as f64 - t_mean;
-        let dy = y - y_mean;
-        sxy += dt * dy;
-        sxx += dt * dt;
-        syy += dy * dy;
-    }
-    if sxx < 1e-300 || syy < 1e-300 {
-        return 0.0;
-    }
-    let r = sxy / (sxx * syy).sqrt();
+    if n < 3 { return 0.0; }
+    // Pearson r between integer time indices [0..n) and values.
+    // r² is the OLS coefficient of determination for a linear trend.
+    let t: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let r = crate::nonparametric::pearson_r(&t, &clean);
+    if r.is_nan() { return 0.0; }
     (r * r).min(1.0)
 }
 
@@ -313,7 +295,7 @@ pub fn has_vol_clustering(returns: &[f64], threshold: f64) -> bool {
     if n < 5 {
         return false;
     }
-    let mean = r2.iter().sum::<f64>() / n as f64;
+    let mean = crate::descriptive::mean_of(&r2);
     let mut num = 0.0;
     let mut den = 0.0;
     for i in 0..n {
@@ -418,7 +400,7 @@ pub fn lag1_autocorrelation(x: &[f64]) -> f64 {
     if n < 2 {
         return 0.0;
     }
-    let mean = x.iter().sum::<f64>() / n as f64;
+    let mean = crate::descriptive::mean_of(x);
     let mut num = 0.0_f64;
     let mut den = 0.0_f64;
     for i in 0..n {
@@ -512,7 +494,7 @@ pub fn acf_decay_exponent(x: &[f64]) -> f64 {
     }
     let max_lag = (n / 4).min(20).max(2);
 
-    let mean = x.iter().sum::<f64>() / n as f64;
+    let mean = crate::descriptive::mean_of(x);
     let centered: Vec<f64> = x.iter().map(|&v| v - mean).collect();
     let c0: f64 = centered.iter().map(|v| v * v).sum();
     if c0 < 1e-300 {
@@ -533,9 +515,8 @@ pub fn acf_decay_exponent(x: &[f64]) -> f64 {
         return f64::NAN;
     }
 
-    let nf = log_k.len() as f64;
-    let mx = log_k.iter().sum::<f64>() / nf;
-    let my = log_abs_rho.iter().sum::<f64>() / nf;
+    let mx = crate::descriptive::mean_of(&log_k);
+    let my = crate::descriptive::mean_of(&log_abs_rho);
     let mut num = 0.0_f64;
     let mut den = 0.0_f64;
     for i in 0..log_k.len() {
@@ -707,7 +688,7 @@ pub fn lag_k_autocorrelation(x: &[f64], k: usize) -> f64 {
     let n = x.len();
     if k == 0 { return 1.0; }
     if n < k + 1 { return 0.0; }
-    let mean = x.iter().sum::<f64>() / n as f64;
+    let mean = crate::descriptive::mean_of(x);
     let mut num = 0.0_f64;
     let mut den = 0.0_f64;
     for i in 0..n {
@@ -1078,7 +1059,7 @@ pub fn iat_mean(timestamps: &[u64]) -> f64 {
     if iats.is_empty() {
         return f64::NAN;
     }
-    iats.iter().sum::<f64>() / iats.len() as f64
+    crate::descriptive::mean_of(&iats)
 }
 
 /// Median interarrival time.
@@ -1226,10 +1207,10 @@ pub fn iat_memory_coefficient(timestamps: &[u64]) -> f64 {
     }
     let a = &iats[..n - 1];
     let b = &iats[1..];
-    let mu_a = a.iter().sum::<f64>() / a.len() as f64;
-    let mu_b = b.iter().sum::<f64>() / b.len() as f64;
-    let var_a = a.iter().map(|x| (x - mu_a).powi(2)).sum::<f64>() / (a.len() - 1).max(1) as f64;
-    let var_b = b.iter().map(|x| (x - mu_b).powi(2)).sum::<f64>() / (b.len() - 1).max(1) as f64;
+    let mu_a = crate::descriptive::mean_of(a);
+    let mu_b = crate::descriptive::mean_of(b);
+    let var_a = crate::descriptive::variance_of(a);
+    let var_b = crate::descriptive::variance_of(b);
     let sd_a = var_a.sqrt();
     let sd_b = var_b.sqrt();
     if sd_a < 1e-300 || sd_b < 1e-300 {
@@ -1393,7 +1374,7 @@ pub fn iat_ks_exponential(timestamps: &[u64]) -> f64 {
     let mut iats = iats(timestamps);
     let n = iats.len();
     if n < 2 { return f64::NAN; }
-    let mean = iats.iter().sum::<f64>() / n as f64;
+    let mean = crate::descriptive::mean_of(&iats);
     if mean < 1e-300 { return f64::NAN; }
     iats.sort_by(|a, b| a.total_cmp(b));
     let lambda = 1.0 / mean;
@@ -1565,8 +1546,8 @@ pub fn count_outliers_zscore(x: &[f64], k: Option<f64>) -> usize {
     let clean: Vec<f64> = x.iter().copied().filter(|v| v.is_finite()).collect();
     let n = clean.len();
     if n < 2 { return 0; }
-    let mean = clean.iter().sum::<f64>() / n as f64;
-    let std = (clean.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64).sqrt();
+    let mean = crate::descriptive::mean_of(&clean);
+    let std = crate::descriptive::variance_of(&clean).sqrt();
     if std < 1e-300 { return 0; }
     clean.iter().filter(|&&v| (v - mean).abs() > k * std).count()
 }
@@ -1686,7 +1667,7 @@ pub fn theil_t(x: &[f64]) -> f64 {
     let clean: Vec<f64> = x.iter().copied().filter(|&v| v.is_finite() && v > 0.0).collect();
     let n = clean.len();
     if n < 2 { return f64::NAN; }
-    let mu = clean.iter().sum::<f64>() / n as f64;
+    let mu = crate::descriptive::mean_of(&clean);
     if mu < 1e-300 { return f64::NAN; }
     clean.iter().map(|&v| {
         let r = v / mu;
@@ -1703,9 +1684,9 @@ pub fn theil_l(x: &[f64]) -> f64 {
     let clean: Vec<f64> = x.iter().copied().filter(|&v| v.is_finite() && v > 0.0).collect();
     let n = clean.len();
     if n < 2 { return f64::NAN; }
-    let mu = clean.iter().sum::<f64>() / n as f64;
+    let mu = crate::descriptive::mean_of(&clean);
     if mu < 1e-300 { return f64::NAN; }
-    let mean_log = clean.iter().map(|&v| v.ln()).sum::<f64>() / n as f64;
+    let mean_log = crate::descriptive::mean_of(&clean.iter().map(|&v| v.ln()).collect::<Vec<_>>());
     mu.ln() - mean_log
 }
 
@@ -1722,16 +1703,16 @@ pub fn atkinson_index(x: &[f64], epsilon: f64) -> f64 {
     let clean: Vec<f64> = x.iter().copied().filter(|&v| v.is_finite() && v > 0.0).collect();
     let n = clean.len();
     if n < 2 { return f64::NAN; }
-    let mu = clean.iter().sum::<f64>() / n as f64;
+    let mu = crate::descriptive::mean_of(&clean);
     if mu < 1e-300 { return f64::NAN; }
 
     if (epsilon - 1.0).abs() < 1e-10 {
         // Limiting case: A = 1 - exp(mean(ln x)) / mu
-        let mean_log = clean.iter().map(|&v| v.ln()).sum::<f64>() / n as f64;
+        let mean_log = crate::descriptive::mean_of(&clean.iter().map(|&v| v.ln()).collect::<Vec<_>>());
         1.0 - mean_log.exp() / mu
     } else {
         let power = 1.0 - epsilon;
-        let mean_pow = clean.iter().map(|&v| v.powf(power)).sum::<f64>() / n as f64;
+        let mean_pow = crate::descriptive::mean_of(&clean.iter().map(|&v| v.powf(power)).collect::<Vec<_>>());
         if mean_pow <= 0.0 { return f64::NAN; }
         1.0 - mean_pow.powf(1.0 / power) / mu
     }

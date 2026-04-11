@@ -9,8 +9,9 @@
 //! Exponential smoothing = Kingdom A via affine semigroup prefix scan (see signal_processing::affine_prefix_scan).
 //! Prior label "Kingdom B" for exponential smoothing was wrong — the map a=(1-α), b=α·x_t
 //! is data-determined and affine maps compose with bounded representation.
-//! ARMA(p,q) filter = Kingdom B when q > 0 (MA residual chain is state-dependent).
-//! Pure AR(p) = Kingdom A (companion matrix prefix scan).
+//! ARMA(p,q) filter = Kingdom A in both AR-only and MA-present cases via companion matrix
+//! prefix scan (M = constant MA-coefficient matrix, b_t = data-determined AR drive).
+//! `arma_fit` = Kingdom A (filter) + Kingdom C (outer MLE), same structure as GARCH.
 //! Unit root tests = regression-based (ADF reuses F10 OLS).
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -499,10 +500,15 @@ pub fn arma_css_residuals(centered: &[f64], ar: &[f64], ma: &[f64]) -> Vec<f64> 
 /// `ArmaResult` with fitted coefficients, intercept, sigma2, AIC/BIC, residuals.
 ///
 /// # Kingdom
-/// Kingdom B when q > 0 (MA terms): the residual ε_t = y_t - ŷ_t depends on
-/// previous residuals, making each step's map state-dependent. The MA chain
-/// genuinely cannot be expressed as a data-determined prefix scan.
-/// Kingdom A when q = 0 (pure AR): companion matrix prefix scan over observations.
+/// Inner filter (`arma_css_residuals`) = **Kingdom A** for both pure AR and MA-present
+/// cases: state vector `s_t = [ε_t, …, ε_{t-q+1}]^T` propagates via constant companion
+/// matrix M (containing θ_j) plus data-determined drive `b_t(x) = x_t - Σ φ_i x_{t-i}`.
+/// M is constant → map is data-determined → affine semigroup → bounded representation.
+/// The prior label "Kingdom B when q > 0" was wrong: residuals appear as *state entries*
+/// but the *map itself* (M) is constant, not state-dependent.
+///
+/// Outer MLE (L-BFGS over CSS objective) = **Kingdom C** (iterative fixed-point).
+/// Together: Kingdom A (filter) + Kingdom C (optimization) — same structure as GARCH.
 pub fn arma_fit(data: &[f64], p: usize, q: usize, max_iter: usize) -> ArmaResult {
     let n = data.len();
     let start = p.max(q);
@@ -885,6 +891,10 @@ pub struct SesResult {
 }
 
 /// Simple Exponential Smoothing. `alpha` ∈ (0, 1).
+///
+/// **Kingdom A** via affine semigroup prefix scan: `level_t = α·x_t + (1-α)·level_{t-1}`.
+/// Affine map `a_t = (1-α)` (constant), `b_t = α·x_t` (data-determined). Same
+/// algebraic structure as EWMA variance; delegates conceptually to `affine_prefix_scan`.
 pub fn simple_exponential_smoothing(data: &[f64], alpha: f64) -> SesResult {
     let n = data.len();
     assert!(n > 0);
@@ -905,6 +915,12 @@ pub fn simple_exponential_smoothing(data: &[f64], alpha: f64) -> SesResult {
 }
 
 /// Holt's linear trend method (double exponential smoothing).
+///
+/// **Kingdom A** via affine 3×3 companion matrix prefix scan. State vector
+/// `s_t = [level_t, trend_t, 1]^T` propagates via constant companion matrix
+/// (α, β are fixed parameters) with data-determined offset `b_t = [α·x_t, β·x_t, 0]^T`.
+/// Affine maps compose with bounded (3×3) representation. Same structure as Kalman
+/// filter with fixed observation model.
 pub fn holt_linear(data: &[f64], alpha: f64, beta: f64, horizon: usize) -> Vec<f64> {
     let n = data.len();
     assert!(n >= 2);
@@ -4039,7 +4055,13 @@ impl BocpdState {
 /// Sorted vector of detected changepoint time indices.
 ///
 /// # Kingdom
-/// Kingdom B (sequential message-passing; each step depends on the previous).
+/// **Kingdom A math / Kingdom B implementation.**
+/// If sufficient stats are precomputed from the observation sequence, the update
+/// `p_t = D(x_t) · H · p_{t-1} + reset · e_0` is a data-determined linear map on
+/// the run-length posterior vector (D(x_t) diagonal with data-computed likelihoods,
+/// H constant hazard matrix). That is Kingdom A via linear prefix scan.
+/// This implementation maintains sufficient stats incrementally (B impl), but the
+/// underlying mathematics is data-determined. Label: A math / B impl.
 pub fn bocpd(data: &[f64], max_run: usize, hazard: f64, threshold: Option<f64>) -> Vec<usize> {
     let n = data.len();
     if n < 10 { return Vec::new(); }

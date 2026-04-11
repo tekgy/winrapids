@@ -604,7 +604,7 @@ pub fn qr_solve(a: &Mat, b: &[f64]) -> Vec<f64> {
     x
 }
 
-// ─── SVD (Golub-Kahan bidiagonalization + QR iteration) ─────────────
+// ─── SVD (one-sided Jacobi rotations) ───────────────────────────────
 
 /// Singular Value Decomposition result: A = U Σ V^T.
 #[derive(Debug, Clone)]
@@ -1579,9 +1579,9 @@ fn mat_norm1(a: &Mat) -> f64 {
 /// Matrix logarithm via inverse scaling and squaring with Padé approximation.
 ///
 /// Computes the principal logarithm log(A) for matrices with positive real eigenvalues.
-/// Uses the Schur decomposition approach: compute log of upper triangular T, then
-/// rotate back. This implementation uses repeated square-rooting to bring A near I,
-/// then applies the Gregory series log(X) = 2·atanh((X-I)(X+I)⁻¹).
+/// Uses inverse scaling and squaring: repeated square-rooting brings A near I,
+/// then applies the Gregory series log(X) = 2·atanh((X-I)(X+I)⁻¹). No Schur
+/// decomposition is used.
 ///
 /// ## Applications
 ///

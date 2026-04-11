@@ -941,4 +941,17 @@ NaN-eating folds. Proposals 1 and 4 address the two most visible remaining Type 
 Proposal 2 connects to the op-identity-method architectural fix. Proposal 3 is the systematic
 version of an already-solved single-primitive problem.
 
-*Last updated: 2026-04-10 by observer (wave 18 final verification + adversarial proposals assessed)*
+### renyi_entropy:108 NaN-eating fix applied (2026-04-10)
+
+The sole remaining live NaN-eating fold in production — `renyi_entropy` alpha=∞ branch,
+`information_theory.rs:108` — was fixed directly by observer.
+
+**Before**: `fold(0.0f64, f64::max)` — silently returns 0.0 when any probability is NaN (f64::max(0.0, NaN) = 0.0, -0.0.ln() = -inf, incorrect output with no signal).
+
+**After**: `fold(f64::NEG_INFINITY, crate::numerical::nan_max)` — propagates NaN correctly. If any input is NaN, max_p = NaN, return value = NaN.
+
+**Verification**: `cargo test --lib information_theory` — 74 tests, 0 failed.
+
+This fix closes the NaN propagation gap in `renyi_entropy`. The only NaN-eating pattern that survived waves 1-18 was this early-return special case (alpha=∞ branch). The adversarial validity-semantics proposal correctly identified this class: early-return branches that silently apply Ignore policy.
+
+*Last updated: 2026-04-10 by observer (renyi_entropy NaN fix confirmed)*

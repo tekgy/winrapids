@@ -226,7 +226,14 @@ pub fn nonhomogeneous_poisson(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// n-step transition probabilities: T^n for n×n stochastic matrix.
-/// Accumulate: repeated matrix multiplication (Kingdom C).
+///
+/// **Kingdom A** — binary exponentiation (repeated squaring) is a prefix scan
+/// over the bits of n with matrix multiplication as the semigroup operator.
+/// Loop runs exactly `floor(log₂(n))` steps unconditionally — termination is
+/// data-determined by n, NOT convergence-dependent. Maps are data-determined
+/// (transition matrix is a fixed parameter). Prior label "Kingdom C" was wrong:
+/// C means iterative-until-convergence; binary exponentiation has no convergence
+/// criterion and no self-referential state selection.
 pub fn markov_n_step(transition: &[f64], n: usize, n_states: usize) -> Vec<f64> {
     let mut result: Vec<f64> = (0..n_states * n_states).map(|i| {
         if i / n_states == i % n_states { 1.0 } else { 0.0 }

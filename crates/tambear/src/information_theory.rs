@@ -98,14 +98,15 @@ pub fn renyi_entropy(probs: &[f64], alpha: f64) -> f64 {
     }
 
     if alpha == 0.0 {
-        // H_0 = log(|support|)
+        // H_0 = log(|support|) — NaN in any probability must propagate
+        if probs.iter().any(|p| p.is_nan()) { return f64::NAN; }
         let support = probs.iter().filter(|&&p| p > 0.0).count();
         return (support as f64).ln();
     }
 
     if alpha == f64::INFINITY {
         // Min-entropy: -log(max p)
-        let max_p = probs.iter().cloned().fold(0.0f64, f64::max);
+        let max_p = probs.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
         return -max_p.ln();
     }
 
@@ -1047,7 +1048,8 @@ pub fn renyi_divergence(p: &[f64], q: &[f64], alpha: f64) -> f64 {
     }
 
     if alpha == 0.0 {
-        // D_0 = -log(Σ qᵢ [pᵢ > 0])
+        // D_0 = -log(Σ qᵢ [pᵢ > 0]) — NaN in p or q must propagate
+        if p.iter().chain(q.iter()).any(|x| x.is_nan()) { return f64::NAN; }
         let overlap: f64 = p.iter().zip(q)
             .filter(|(&pi, _)| pi > 0.0)
             .map(|(_, &qi)| qi)
@@ -1056,10 +1058,11 @@ pub fn renyi_divergence(p: &[f64], q: &[f64], alpha: f64) -> f64 {
     }
 
     if alpha == f64::INFINITY {
-        // Max-divergence: log max pᵢ/qᵢ
+        // Max-divergence: log max pᵢ/qᵢ — NaN in p or q must propagate
+        if p.iter().chain(q.iter()).any(|x| x.is_nan()) { return f64::NAN; }
         let max_ratio = p.iter().zip(q).filter(|(&pi, _)| pi > 0.0).map(|(&pi, &qi)| {
             if qi <= 0.0 { f64::INFINITY } else { pi / qi }
-        }).fold(0.0f64, f64::max);
+        }).fold(f64::NEG_INFINITY, crate::numerical::nan_max);
         return max_ratio.ln();
     }
 

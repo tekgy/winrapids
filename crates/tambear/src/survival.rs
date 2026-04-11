@@ -7,9 +7,11 @@
 //! Survival = accumulate over ordered event times.
 //! Kaplan-Meier = prefix product of conditional survival probabilities (Kingdom A).
 //! Multiplication is associative — KM is a parallel prefix product scan, not Kingdom B.
+//! Log-rank = suffix-count scan per event time; at-risk counts n(t) = |{i: times[i] >= t}|
+//! are deterministic functions of sorted data — Kingdom A. Not path-dependent state.
 //! Cox PH = partial likelihood optimization (Kingdom C).
-//! Prior label "Kingdom B (sequential scan)" was wrong; the sequential implementation
-//! is an artifact, not a structural constraint — the operation is associative.
+//! Prior "Kingdom B" labels for KM and log-rank were wrong; the sequential walk is an
+//! implementation artifact, not a structural constraint.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Kaplan-Meier estimator
@@ -90,6 +92,14 @@ pub struct LogRankResult {
 
 /// Log-rank test comparing survival between two groups.
 /// `groups`: 0 or 1 for each observation.
+///
+/// # Kingdom
+/// Kingdom A — suffix-count scan. At each event time t, the at-risk count
+/// n1(t) = |{i: times[i] >= t, groups[i] == 0}| is a deterministic function
+/// of the sorted data, not accumulated path-dependent state. The expected
+/// events e1(t) = d(t) * n1(t) / (n1(t)+n2(t)) is computable independently
+/// for any t. The sum over event times is a ByKey accumulate. Prior label
+/// "Kingdom B" was wrong; the sequential walk is an implementation artifact.
 pub fn log_rank_test(times: &[f64], events: &[bool], groups: &[usize]) -> LogRankResult {
     let n = times.len();
     assert_eq!(events.len(), n);

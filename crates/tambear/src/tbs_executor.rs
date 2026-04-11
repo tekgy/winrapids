@@ -21,7 +21,7 @@
 //! - **normality_unchecked**: suggest KS test before parametric tests
 
 use crate::pipeline::TamPipeline;
-use crate::tbs_advice::{TbsDiagnostic, TbsRecommendation, TbsOverride, TbsStepAdvice};
+use crate::tbs_advice::TbsStepAdvice;
 use crate::tbs_autodetect::{
     autodetect_correlation, autodetect_t_test_2, autodetect_anova,
     autodetect_pca_components, autodetect_regression_diagnostics,

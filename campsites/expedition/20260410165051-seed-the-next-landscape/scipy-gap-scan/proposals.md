@@ -68,15 +68,15 @@ pub fn log_gamma(x: f64) -> f64 {
     ...
 ```
 
-**Oracle:** `log_gamma(-0.5) = ln(2√π) ≈ 1.7232658...`
-`log_gamma(-1.5) = ln(4√π/3) ≈ 0.8600472...`
+**Oracle:** `log_gamma(-0.5) = ln(2√π) = 0.5·ln(π) + ln(2) ≈ 1.2655...` *(corrected — prior value 1.7232658 was wrong; confirmed by scipy and first-principles derivation)*
+`log_gamma(-1.5) = ln(4√π/3) ≈ 0.8600472...` *(correct)*
 
 **Why matters:** `log_gamma` is called by `log_beta`, which is called by
 `regularized_incomplete_beta`, which is called by every t/F/chi2 test. Any distribution
 that computes log-likelihoods with negative intermediate parameter values gets +∞.
 This is a root-level bug in the special functions tree.
 
-**Adversarial already notified.** This could be wave 19 target or a standalone fix.
+**Adversarial already notified.** *(Observer note 2026-04-10: this fix is already in — `special_functions.rs:160-167` distinguishes poles from non-integer negatives. 5 log_gamma tests pass including the reflection formula oracle. This item is CLOSED.)*
 
 ---
 

@@ -20,8 +20,11 @@ matrix behave like a complex Hermitian ensemble rather than a real symmetric one
 
 **GUE** (β=2, complex Hermitian / Montgomery's conjecture for zeta zeros):
 - Density: p(s) = (32/π²)·s²·exp(-4s²/π)
-- CDF: requires numerical integration (not closed form)
+- CDF: P(s) = 1 - (1 + 8s²/π)·exp(-4s²/π)   ← CLOSED FORM (math-researcher confirmed)
 - Repulsion: QUADRATIC — p(s) ~ s² as s → 0
+- Note: exact GUE (Fredholm determinant of sine kernel) differs from surmise by ~1% in bulk,
+  ~2% in tails. For n~1000 zeros/eigenvalues, sampling uncertainty (~3%) exceeds this — use
+  surmise. Exact GUE only needed for n > 10^6 (Odlyzko-scale experiments).
 
 **Poisson** (no level repulsion / random, uncorrelated):
 - Density: p(s) = exp(-s)
@@ -75,7 +78,7 @@ We have `ks_test_normal`. The gap is an arbitrary reference CDF parameter.
 The Wigner surmise CDFs as first-class primitives:
 ```rust
 pub fn wigner_surmise_goe_cdf(s: f64) -> f64  // 1 - exp(-π·s²/4)
-pub fn wigner_surmise_gue_cdf(s: f64) -> f64  // numerical integration of (32/π²)·s²·exp(-4s²/π)
+pub fn wigner_surmise_gue_cdf(s: f64) -> f64  // 1 - (1 + 8s²/π)·exp(-4s²/π)  [closed form]
 pub fn poisson_spacing_cdf(s: f64) -> f64      // 1 - exp(-s)
 ```
 

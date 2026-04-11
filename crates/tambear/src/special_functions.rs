@@ -153,9 +153,20 @@ pub fn erfc(x: f64) -> f64 {
 /// Natural log of the gamma function: ln Γ(x).
 ///
 /// Lanczos approximation with g=7, 9-term coefficients.
-/// Valid for x > 0. Returns f64::INFINITY for x ≤ 0.
+/// Valid for all x except non-positive integers (poles of Γ).
+/// Returns f64::INFINITY at integer non-positives (x = 0, -1, -2, ...).
+/// Non-integer negatives (x = -0.5, -1.5, ...) return finite values via the reflection formula.
 pub fn log_gamma(x: f64) -> f64 {
-    if x <= 0.0 { return f64::INFINITY; }
+    // Poles at non-positive integers only: Γ has simple poles at 0, -1, -2, ...
+    // Non-integer negatives (e.g. x = -0.5, -1.5) have finite log|Γ(x)| values.
+    if x <= 0.0 {
+        if x == x.floor() {
+            // Integer non-positive: pole → ln|Γ| = +∞
+            return f64::INFINITY;
+        }
+        // Non-integer negative: reflection formula ln|Γ(x)| = ln(π) - ln|sin(πx)| - ln|Γ(1-x)|
+        // Fall through to the x < 0.5 branch below.
+    }
 
     // Coefficients from Paul Godfrey's compilation (g=7, n=9)
     const C: [f64; 9] = [
@@ -172,6 +183,8 @@ pub fn log_gamma(x: f64) -> f64 {
 
     if x < 0.5 {
         // Reflection formula: Γ(x)Γ(1-x) = π / sin(πx)
+        // Works for any x where sin(πx) ≠ 0, i.e. x not an integer.
+        // For negative non-integers: 1.0 - x > 1, so the recursive call is in the safe region.
         let lsin = (std::f64::consts::PI * x).sin().abs().ln();
         std::f64::consts::PI.ln() - lsin - log_gamma(1.0 - x)
     } else {
@@ -209,16 +222,20 @@ pub fn log_beta(a: f64, b: f64) -> f64 {
 /// ψ(α) = ln(x̄) - mean(ln x), which is Kingdom C τ=0: unique solution,
 /// iterative via Newton's method with trigamma as the Hessian).
 pub fn digamma(x: f64) -> f64 {
-    if x.is_nan() || x == 0.0 {
+    if x.is_nan() {
         return f64::NAN;
     }
 
-    // ψ(x) has poles at non-positive integers.
+    // ψ(x) has simple poles at 0, -1, -2, ... with residue -1.
+    // Correct limit: ψ(x) → -∞ as x → non-positive integer from above.
+    if x == 0.0 {
+        return f64::NEG_INFINITY;
+    }
     // Widen check: tan(nπ) ≈ ε_mach in f64, causing 10^16 blowup in reflection formula.
     if x < 0.0 {
         let rounded = x.round();
         if rounded <= 0.0 && (x - rounded).abs() < 1e-12 {
-            return f64::NAN;
+            return f64::NEG_INFINITY;
         }
     }
 
@@ -253,8 +270,21 @@ pub fn digamma(x: f64) -> f64 {
 /// Uses asymptotic expansion for large x, recurrence ψ₁(x+1) = ψ₁(x) - 1/x².
 /// Required as the Hessian in Newton iterations for Gamma MLE.
 pub fn trigamma(x: f64) -> f64 {
-    if x.is_nan() || x <= 0.0 {
+    if x.is_nan() {
         return f64::NAN;
+    }
+    // ψ₁(x) has a pole of order 2 at non-positive integers → +∞.
+    if x <= 0.0 {
+        let rounded = x.round();
+        if (x - rounded).abs() < 1e-12 {
+            // Non-positive integer pole: ψ₁(x) → +∞
+            return f64::INFINITY;
+        }
+        // Non-integer negatives: reflection formula for trigamma
+        // ψ₁(1-x) + ψ₁(x) = π²/sin²(πx)  [reflection formula]
+        // ψ₁(x) = π²/sin²(πx) - ψ₁(1-x)
+        let sin_pi_x = (std::f64::consts::PI * x).sin();
+        return std::f64::consts::PI.powi(2) / (sin_pi_x * sin_pi_x) - trigamma(1.0 - x);
     }
 
     // Shift into asymptotic region using recurrence ψ₁(x+1) = ψ₁(x) - 1/x²
@@ -1130,6 +1160,58 @@ mod tests {
         assert!(approx(log_gamma(0.5), 0.5 * std::f64::consts::PI.ln(), 1e-8));
         // Γ(10) = 362880
         assert!(approx(log_gamma(10.0), 362880.0_f64.ln(), FINE_TOL));
+    }
+
+    #[test]
+    fn log_gamma_poles_at_nonpositive_integers() {
+        // Γ has simple poles at 0, -1, -2, ... → log|Γ| = +∞
+        assert!(log_gamma(0.0).is_infinite() && log_gamma(0.0).is_sign_positive());
+        assert!(log_gamma(-1.0).is_infinite() && log_gamma(-1.0).is_sign_positive());
+        assert!(log_gamma(-2.0).is_infinite() && log_gamma(-2.0).is_sign_positive());
+        assert!(log_gamma(-10.0).is_infinite() && log_gamma(-10.0).is_sign_positive());
+    }
+
+    #[test]
+    fn log_gamma_negative_nonintegers_reflection_formula() {
+        // For non-integer x < 0, the reflection formula gives:
+        //   ln|Γ(x)| = ln(π) - ln|sin(πx)| - ln|Γ(1-x)|
+        // This is the oracle: the function must satisfy its own defining equation.
+        //
+        // Previously log_gamma returned +∞ for ALL x ≤ 0 (bug: non-poles treated as poles).
+        // After fix: only integer non-positives return +∞.
+        for &x in &[-0.5_f64, -1.5, -2.5, -0.1, -0.9, -3.7] {
+            let computed = log_gamma(x);
+            // Must NOT be infinity (only poles should be infinite)
+            assert!(computed.is_finite(), "log_gamma({x}) should be finite, got {computed}");
+            // Must satisfy the reflection formula: consistency check
+            let lsin = (std::f64::consts::PI * x).sin().abs().ln();
+            let expected = std::f64::consts::PI.ln() - lsin - log_gamma(1.0 - x);
+            assert!((computed - expected).abs() < 1e-10,
+                "log_gamma({x}) = {computed} but reflection formula gives {expected}");
+        }
+    }
+
+    #[test]
+    fn log_gamma_negative_half_integer_oracle() {
+        // Analytical: Γ(-0.5) = -2√π, so ln|Γ(-0.5)| = ln(2√π) = ln(2) + 0.5·ln(π)
+        // Oracle from reflection formula (mpmath confirmed):
+        //   sin(π·(-0.5)) = sin(-π/2) = -1, |sin| = 1, ln|sin| = 0
+        //   Γ(1.5) = (√π)/2, ln Γ(1.5) = 0.5·ln(π) - ln(2)
+        //   ln|Γ(-0.5)| = ln(π) - 0 - (0.5·ln(π) - ln(2)) = 0.5·ln(π) + ln(2)
+        let expected = 0.5 * std::f64::consts::PI.ln() + 2.0_f64.ln();
+        let computed = log_gamma(-0.5);
+        assert!((computed - expected).abs() < 1e-10,
+            "log_gamma(-0.5): got {computed}, expected {expected}");
+
+        // Γ(-1.5) = (4/3)√π, so ln|Γ(-1.5)| = ln(4) - ln(3) + 0.5·ln(π)
+        //   sin(π·(-1.5)) = sin(-3π/2) = 1, ln|sin| = 0
+        //   Γ(2.5) = (3/4)√π·2 = (3√π)/2... let's use the oracle: Γ(2.5) = 1.5·Γ(1.5) = 1.5·(√π/2) = 3√π/4
+        //   ln Γ(2.5) = ln(3) + 0.5·ln(π) - ln(4)
+        //   ln|Γ(-1.5)| = ln(π) - 0 - (ln(3) + 0.5·ln(π) - ln(4)) = 0.5·ln(π) - ln(3) + ln(4)
+        let expected_neg15 = 0.5 * std::f64::consts::PI.ln() - 3.0_f64.ln() + 4.0_f64.ln();
+        let computed_neg15 = log_gamma(-1.5);
+        assert!((computed_neg15 - expected_neg15).abs() < 1e-10,
+            "log_gamma(-1.5): got {computed_neg15}, expected {expected_neg15}");
     }
 
     // ── incomplete beta ──────────────────────────────────────────────────

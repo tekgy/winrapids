@@ -252,9 +252,10 @@ fn knn_all_zero_distances() {
     }
 }
 
-/// KNN with NaN distances: NaN enters neighbor list via unconditional push (best.len() < k),
-/// before any comparison. total_cmp sorts NaN high, but NaN was already in the list.
-/// BUG: NaN distance is selected as nearest neighbor instead of finite distance.
+/// KNN with NaN distances: point 0 has NaN distance to point 1.
+/// Correct behavior: k-neighborhood of point 0 is undefined (empty).
+/// Point 1 similarly has undefined neighborhood (NaN distance to point 0).
+/// Point 2 has all-finite distances and should still get correct neighbors.
 #[test]
 fn knn_nan_distances() {
     let dist = DistanceMatrix::from_vec(Metric::L2Sq, 3, vec![
@@ -263,13 +264,14 @@ fn knn_nan_distances() {
         2.0, 3.0, 0.0,
     ]);
     let result = tambear::knn::knn_from_distance(&dist, 1);
-    // Point 0: point 1 has NaN distance, point 2 has d=2.
-    // BUG: NaN enters via unconditional push (best.len()=0 < k=1), never displaced.
-    // Point 1 (NaN) wins because it's pushed first, and d=2 < NaN is false (NaN comparison).
-    if result.neighbors[0][0].0 == 1 {
-        eprintln!("CONFIRMED BUG: KNN selects NaN-distance neighbor (point 1, d=NaN) over finite neighbor (point 2, d=2)");
-    }
-    // Point 2: point 0 (d=2) vs point 1 (d=3) — both finite, should work
+    // Points 0 and 1 have NaN distances to each other → their neighborhoods are undefined.
+    assert!(result.neighbors[0].is_empty(),
+        "Point 0 has NaN distance → undefined neighborhood, expected empty, got {:?}",
+        result.neighbors[0]);
+    assert!(result.neighbors[1].is_empty(),
+        "Point 1 has NaN distance → undefined neighborhood, expected empty, got {:?}",
+        result.neighbors[1]);
+    // Point 2: all distances finite → correct neighborhood
     assert_eq!(result.neighbors[2][0].0, 0, "Nearest to 2 is 0 (d=2)");
 }
 

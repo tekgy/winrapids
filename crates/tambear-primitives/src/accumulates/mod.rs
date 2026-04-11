@@ -12,6 +12,8 @@
 //! On CPU: one loop per unique (Grouping, Op), with all transforms
 //! computed per element inside the loop.
 
+pub mod metadata;
+
 use crate::tbs::Expr;
 
 /// What data an accumulate operates over — a column reference.

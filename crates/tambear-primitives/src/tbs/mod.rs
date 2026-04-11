@@ -22,12 +22,13 @@ pub mod shape;
 pub enum Expr {
     // === Leaf nodes ===
 
-    /// The current element value (the implicit input to a transform).
-    /// In a scatter context, this is the value being scattered.
+    /// The current element value (sugar for Col(0)).
     Val,
-    /// A second column value (for binary/cross-column operations).
-    /// In Pearson r: Val is x, Val2 is y.
+    /// A second column value (sugar for Col(1)).
     Val2,
+    /// Any column by index. Col(0) = Val, Col(1) = Val2, Col(n) = nth column.
+    /// Allows expressions over arbitrary numbers of columns.
+    Col(usize),
     /// A reference value (per-group mean, running value, etc).
     /// Set by the accumulate context — e.g. group mean for centering.
     Ref,
@@ -127,10 +128,12 @@ pub enum Expr {
 // === Convenience constructors ===
 
 impl Expr {
-    /// val (the input element)
+    /// val (the input element, sugar for col(0))
     pub fn val() -> Self { Expr::Val }
-    /// val2 (second column)
+    /// val2 (second column, sugar for col(1))
     pub fn val2() -> Self { Expr::Val2 }
+    /// nth column reference
+    pub fn col(n: usize) -> Self { Expr::Col(n) }
     /// reference value
     pub fn r#ref() -> Self { Expr::Ref }
     /// literal constant
@@ -196,10 +199,15 @@ impl Expr {
 use std::collections::HashMap;
 
 /// Evaluate a TBS expression given variable bindings.
+/// `val` = column 0, `val2` = column 1. For Col(n) with n >= 2,
+/// pass additional columns via the `cols` parameter in eval_multi.
 pub fn eval(expr: &Expr, val: f64, val2: f64, reference: f64, vars: &HashMap<String, f64>) -> f64 {
     match expr {
         Expr::Val => val,
         Expr::Val2 => val2,
+        Expr::Col(0) => val,
+        Expr::Col(1) => val2,
+        Expr::Col(_) => f64::NAN, // use eval_multi for 3+ columns
         Expr::Ref => reference,
         Expr::Lit(c) => *c,
         Expr::Var(name) => *vars.get(name.as_str()).unwrap_or(&f64::NAN),
@@ -269,6 +277,29 @@ pub fn eval(expr: &Expr, val: f64, val2: f64, reference: f64, vars: &HashMap<Str
             let diff = (eval(a, val, val2, reference, vars) - eval(b, val, val2, reference, vars)).abs();
             if diff < 1e-15 { 1.0 } else { 0.0 }
         }
+    }
+}
+
+/// Evaluate with arbitrary number of input columns.
+/// `cols[0]` = val, `cols[1]` = val2, `cols[n]` = Col(n).
+/// Use this when expressions reference 3+ columns.
+pub fn eval_multi(expr: &Expr, cols: &[f64], reference: f64, vars: &HashMap<String, f64>) -> f64 {
+    let get_col = |n: usize| cols.get(n).copied().unwrap_or(f64::NAN);
+    let val = get_col(0);
+    let val2 = get_col(1);
+
+    match expr {
+        Expr::Col(n) => get_col(*n),
+        // All recursive calls also need multi-column context
+        Expr::Neg(a) => -eval_multi(a, cols, reference, vars),
+        Expr::Abs(a) => eval_multi(a, cols, reference, vars).abs(),
+        Expr::Sq(a) => { let v = eval_multi(a, cols, reference, vars); v * v },
+        Expr::Mul(a, b) => eval_multi(a, cols, reference, vars) * eval_multi(b, cols, reference, vars),
+        Expr::Add(a, b) => eval_multi(a, cols, reference, vars) + eval_multi(b, cols, reference, vars),
+        Expr::Sub(a, b) => eval_multi(a, cols, reference, vars) - eval_multi(b, cols, reference, vars),
+        Expr::Div(a, b) => eval_multi(a, cols, reference, vars) / eval_multi(b, cols, reference, vars),
+        // For non-recursive leaf/simple cases, delegate to eval
+        _ => eval(expr, val, val2, reference, vars),
     }
 }
 

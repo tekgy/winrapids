@@ -325,11 +325,21 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             syntax: "val2", latex: "y", tambear: "w",
             domain: Domain::AllReals, range: "ℝ",
             properties: &[],
-            derivative: Some(DerivativeRule::Zero), // val2 is independent of val
+            derivative: Some(DerivativeRule::Zero),
             inverse: None, identity: None, absorbing: None,
             nan_behavior: NanBehavior::Propagate, cost: Cost(0),
             stability_note: "", simplifications: &[],
             tam_instruction: "load_col2",
+        },
+        Expr::Col(_) => AtomMeta {
+            syntax: "col(n)", latex: "x_n", tambear: "cₙ",
+            domain: Domain::AllReals, range: "ℝ",
+            properties: &[],
+            derivative: Some(DerivativeRule::Zero),
+            inverse: None, identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(0),
+            stability_note: "", simplifications: &[],
+            tam_instruction: "load_col",
         },
         Expr::Ref => AtomMeta {
             syntax: "ref", latex: r"\mu", tambear: "r",
@@ -580,6 +590,7 @@ pub fn to_syntax(expr: &Expr) -> String {
     match expr {
         Expr::Val => "val".into(),
         Expr::Val2 => "val2".into(),
+        Expr::Col(n) => format!("col({n})"),
         Expr::Ref => "ref".into(),
         Expr::Lit(c) => format!("{c}"),
         Expr::Var(s) => s.clone(),

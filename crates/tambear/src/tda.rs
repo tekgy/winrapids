@@ -5,8 +5,14 @@
 //!
 //! ## Architecture
 //!
-//! H₀ = union-find over filtered edges (Kingdom B: sequential merge).
-//! H₁ = boundary matrix reduction (Kingdom B: column operations).
+//! H₀ = union-find over filtered edges.
+//!   Kingdom A (Graph grouping) when filtration values are in general position (no ties):
+//!   merge decisions are data-determined by strict filtration order; Jayanti-Tarjan
+//!   parallel union-find applies; which component dies is uniquely determined by data.
+//!   Kingdom B when filtration ties exist: tie-breaking order is not encoded in data;
+//!   the persistence diagram output is not a deterministic function of input alone.
+//!   Parameterization determines kingdom — same pattern as DTW (fixed vs variable template).
+//! H₁ = boundary matrix reduction (Kingdom B: column operations depend on prior pivots).
 //! Persistence diagram = pairs of (birth, death) values.
 //! Features for ML = vectorizations of persistence diagrams.
 

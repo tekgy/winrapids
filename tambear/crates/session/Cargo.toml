@@ -1,0 +1,7 @@
+[package]
+name = "tambear-session"
+version.workspace = true
+edition.workspace = true
+description = "TODO"
+
+[dependencies]

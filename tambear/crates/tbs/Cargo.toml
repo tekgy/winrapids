@@ -1,0 +1,8 @@
+[package]
+name = "tambear-tbs"
+version.workspace = true
+edition.workspace = true
+description = "TBS: the expression language for all of tambear. Expr AST, parser, UsingBag."
+
+[dependencies]
+# Zero dependencies. The language is self-contained.

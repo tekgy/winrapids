@@ -1,0 +1,7 @@
+[package]
+name = "tambear-frame"
+version.workspace = true
+edition.workspace = true
+description = "TODO"
+
+[dependencies]

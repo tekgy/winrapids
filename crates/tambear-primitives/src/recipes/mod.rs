@@ -28,8 +28,8 @@ pub fn mean_arithmetic() -> Recipe {
     Recipe {
         name: "mean_arithmetic".into(),
         slots: vec![
-            AccumulateSlot { expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum".into() },
-            AccumulateSlot { expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
         ],
         gathers: vec![
             Gather { expr: Expr::var("sum").div(Expr::var("count")), output: "mean".into() },
@@ -42,9 +42,9 @@ pub fn variance() -> Recipe {
     Recipe {
         name: "variance".into(),
         slots: vec![
-            AccumulateSlot { expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum".into() },
-            AccumulateSlot { expr: Expr::val().sq(), grouping: Grouping::All, op: Op::Add, output: "sum_sq".into() },
-            AccumulateSlot { expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::val().sq(), grouping: Grouping::All, op: Op::Add, output: "sum_sq".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
         ],
         gathers: vec![
             Gather {
@@ -62,8 +62,8 @@ pub fn mean_geometric() -> Recipe {
     Recipe {
         name: "mean_geometric".into(),
         slots: vec![
-            AccumulateSlot { expr: Expr::val().ln(), grouping: Grouping::All, op: Op::Add, output: "log_sum".into() },
-            AccumulateSlot { expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::val().ln(), grouping: Grouping::All, op: Op::Add, output: "log_sum".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
         ],
         gathers: vec![
             Gather { expr: Expr::var("log_sum").div(Expr::var("count")).exp(), output: "geometric_mean".into() },
@@ -76,8 +76,8 @@ pub fn mean_harmonic() -> Recipe {
     Recipe {
         name: "mean_harmonic".into(),
         slots: vec![
-            AccumulateSlot { expr: Expr::val().recip(), grouping: Grouping::All, op: Op::Add, output: "recip_sum".into() },
-            AccumulateSlot { expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::val().recip(), grouping: Grouping::All, op: Op::Add, output: "recip_sum".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
         ],
         gathers: vec![
             Gather { expr: Expr::var("count").div(Expr::var("recip_sum")), output: "harmonic_mean".into() },
@@ -91,10 +91,10 @@ pub fn pearson_r() -> Recipe {
     Recipe {
         name: "pearson_r".into(),
         slots: vec![
-            AccumulateSlot { expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum_x".into() },
-            AccumulateSlot { expr: Expr::val().sq(), grouping: Grouping::All, op: Op::Add, output: "sum_sq_x".into() },
-            AccumulateSlot { expr: Expr::val().mul(Expr::val2()), grouping: Grouping::All, op: Op::Add, output: "sum_xy".into() },
-            AccumulateSlot { expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum_x".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::val().sq(), grouping: Grouping::All, op: Op::Add, output: "sum_sq_x".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::val().mul(Expr::val2()), grouping: Grouping::All, op: Op::Add, output: "sum_xy".into() },
+            AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
         ],
         gathers: vec![
             Gather {

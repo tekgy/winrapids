@@ -12,7 +12,7 @@ fn c(x: f64) -> Expr { Expr::lit(x) }
 fn var(s: &str) -> Expr { Expr::var(s) }
 
 fn aa(expr: Expr, name: &str) -> AccumulateSlot {
-    AccumulateSlot { expr, grouping: Grouping::All, op: Op::Add, output: name.into() }
+    AccumulateSlot { source: crate::accumulates::DataSource::Primary, expr, grouping: Grouping::All, op: Op::Add, output: name.into() }
 }
 
 #[test]

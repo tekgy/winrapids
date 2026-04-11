@@ -58,6 +58,34 @@ pub enum Expr {
     /// Is finite: 1.0 if finite, 0.0 otherwise
     IsFinite(Box<Expr>),
 
+    // === Trigonometric ===
+
+    /// Sine
+    Sin(Box<Expr>),
+    /// Cosine
+    Cos(Box<Expr>),
+    /// Tangent
+    Tan(Box<Expr>),
+    /// Arcsine
+    Asin(Box<Expr>),
+    /// Arccosine
+    Acos(Box<Expr>),
+    /// Arctangent
+    Atan(Box<Expr>),
+    /// Hyperbolic sine
+    Sinh(Box<Expr>),
+    /// Hyperbolic cosine
+    Cosh(Box<Expr>),
+    /// Hyperbolic tangent
+    Tanh(Box<Expr>),
+
+    // === Rounding / Modular ===
+
+    /// Round to nearest integer
+    Round(Box<Expr>),
+    /// Truncate toward zero
+    Trunc(Box<Expr>),
+
     // === Binary operations ===
 
     /// Addition: a + b
@@ -76,6 +104,12 @@ pub enum Expr {
     Max(Box<Expr>, Box<Expr>),
     /// Clamp: clamp(x, lo, hi)
     Clamp(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// Two-argument arctangent: atan2(y, x)
+    Atan2(Box<Expr>, Box<Expr>),
+    /// Modulo: a % b
+    Mod(Box<Expr>, Box<Expr>),
+    /// Conditional: if cond > 0 then a else b
+    If(Box<Expr>, Box<Expr>, Box<Expr>),
 
     // === Comparison (returns 0.0 or 1.0) ===
 
@@ -126,6 +160,32 @@ impl Expr {
     pub fn div(self, other: Expr) -> Self { Expr::Div(Box::new(self), Box::new(other)) }
     /// a^b
     pub fn pow(self, other: Expr) -> Self { Expr::Pow(Box::new(self), Box::new(other)) }
+    /// sin(x)
+    pub fn sin(self) -> Self { Expr::Sin(Box::new(self)) }
+    /// cos(x)
+    pub fn cos(self) -> Self { Expr::Cos(Box::new(self)) }
+    /// tan(x)
+    pub fn tan(self) -> Self { Expr::Tan(Box::new(self)) }
+    /// asin(x)
+    pub fn asin(self) -> Self { Expr::Asin(Box::new(self)) }
+    /// acos(x)
+    pub fn acos(self) -> Self { Expr::Acos(Box::new(self)) }
+    /// atan(x)
+    pub fn atan(self) -> Self { Expr::Atan(Box::new(self)) }
+    /// sinh(x)
+    pub fn sinh(self) -> Self { Expr::Sinh(Box::new(self)) }
+    /// cosh(x)
+    pub fn cosh(self) -> Self { Expr::Cosh(Box::new(self)) }
+    /// tanh(x)
+    pub fn tanh(self) -> Self { Expr::Tanh(Box::new(self)) }
+    /// round(x)
+    pub fn round(self) -> Self { Expr::Round(Box::new(self)) }
+    /// trunc(x)
+    pub fn trunc(self) -> Self { Expr::Trunc(Box::new(self)) }
+    /// atan2(y, x)
+    pub fn atan2(self, other: Expr) -> Self { Expr::Atan2(Box::new(self), Box::new(other)) }
+    /// a % b
+    pub fn modulo(self, other: Expr) -> Self { Expr::Mod(Box::new(self), Box::new(other)) }
 }
 
 // === Evaluation ===
@@ -156,6 +216,18 @@ pub fn eval(expr: &Expr, val: f64, val2: f64, reference: f64, vars: &HashMap<Str
         }
         Expr::IsFinite(a) => if eval(a, val, val2, reference, vars).is_finite() { 1.0 } else { 0.0 },
 
+        Expr::Sin(a)  => eval(a, val, val2, reference, vars).sin(),
+        Expr::Cos(a)  => eval(a, val, val2, reference, vars).cos(),
+        Expr::Tan(a)  => eval(a, val, val2, reference, vars).tan(),
+        Expr::Asin(a) => eval(a, val, val2, reference, vars).asin(),
+        Expr::Acos(a) => eval(a, val, val2, reference, vars).acos(),
+        Expr::Atan(a) => eval(a, val, val2, reference, vars).atan(),
+        Expr::Sinh(a) => eval(a, val, val2, reference, vars).sinh(),
+        Expr::Cosh(a) => eval(a, val, val2, reference, vars).cosh(),
+        Expr::Tanh(a) => eval(a, val, val2, reference, vars).tanh(),
+        Expr::Round(a) => eval(a, val, val2, reference, vars).round(),
+        Expr::Trunc(a) => eval(a, val, val2, reference, vars).trunc(),
+
         Expr::Add(a, b) => eval(a, val, val2, reference, vars) + eval(b, val, val2, reference, vars),
         Expr::Sub(a, b) => eval(a, val, val2, reference, vars) - eval(b, val, val2, reference, vars),
         Expr::Mul(a, b) => eval(a, val, val2, reference, vars) * eval(b, val, val2, reference, vars),
@@ -176,6 +248,16 @@ pub fn eval(expr: &Expr, val: f64, val2: f64, reference: f64, vars: &HashMap<Str
             let vlo = eval(lo, val, val2, reference, vars);
             let vhi = eval(hi, val, val2, reference, vars);
             vx.max(vlo).min(vhi)
+        }
+
+        Expr::Atan2(a, b) => eval(a, val, val2, reference, vars).atan2(eval(b, val, val2, reference, vars)),
+        Expr::Mod(a, b) => eval(a, val, val2, reference, vars) % eval(b, val, val2, reference, vars),
+        Expr::If(cond, then, els) => {
+            if eval(cond, val, val2, reference, vars) > 0.0 {
+                eval(then, val, val2, reference, vars)
+            } else {
+                eval(els, val, val2, reference, vars)
+            }
         }
 
         Expr::Gt(a, b) => if eval(a, val, val2, reference, vars) > eval(b, val, val2, reference, vars) { 1.0 } else { 0.0 },
@@ -269,6 +351,56 @@ mod tests {
         assert_eq!(eval(&expr, -0.5, 0.0, 0.0, &empty_vars()), 0.0);
         assert_eq!(eval(&expr, 0.5, 0.0, 0.0, &empty_vars()), 0.5);
         assert_eq!(eval(&expr, 1.5, 0.0, 0.0, &empty_vars()), 1.0);
+    }
+
+    #[test]
+    fn sin_cos_identity() {
+        // sin²(x) + cos²(x) = 1
+        let x = 1.7;
+        let s = eval(&Expr::val().sin(), x, 0.0, 0.0, &empty_vars());
+        let c = eval(&Expr::val().cos(), x, 0.0, 0.0, &empty_vars());
+        assert!((s * s + c * c - 1.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn tanh_range() {
+        // tanh is in (-1, 1)
+        let result = eval(&Expr::val().tanh(), 100.0, 0.0, 0.0, &empty_vars());
+        assert!((result - 1.0).abs() < 1e-10);
+        let result = eval(&Expr::val().tanh(), -100.0, 0.0, 0.0, &empty_vars());
+        assert!((result + 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn atan2_quadrants() {
+        let pi = std::f64::consts::PI;
+        let r = eval(&Expr::val().atan2(Expr::val2()), 1.0, 1.0, 0.0, &empty_vars());
+        assert!((r - pi / 4.0).abs() < 1e-14); // 45 degrees
+    }
+
+    #[test]
+    fn modulo() {
+        let r = eval(&Expr::val().modulo(Expr::lit(3.0)), 7.0, 0.0, 0.0, &empty_vars());
+        assert!((r - 1.0).abs() < 1e-14); // 7 % 3 = 1
+    }
+
+    #[test]
+    fn conditional_if() {
+        // ReLU: if x > 0 then x else 0
+        let relu = Expr::If(
+            Box::new(Expr::Gt(Box::new(Expr::val()), Box::new(Expr::lit(0.0)))),
+            Box::new(Expr::val()),
+            Box::new(Expr::lit(0.0)),
+        );
+        assert_eq!(eval(&relu, 5.0, 0.0, 0.0, &empty_vars()), 5.0);
+        assert_eq!(eval(&relu, -3.0, 0.0, 0.0, &empty_vars()), 0.0);
+    }
+
+    #[test]
+    fn round_and_trunc() {
+        assert_eq!(eval(&Expr::val().round(), 2.7, 0.0, 0.0, &empty_vars()), 3.0);
+        assert_eq!(eval(&Expr::val().trunc(), 2.7, 0.0, 0.0, &empty_vars()), 2.0);
+        assert_eq!(eval(&Expr::val().trunc(), -2.7, 0.0, 0.0, &empty_vars()), -2.0);
     }
 
     #[test]

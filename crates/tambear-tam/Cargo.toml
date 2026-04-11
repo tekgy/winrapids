@@ -1,0 +1,8 @@
+[package]
+name = "tambear-tam"
+version = "0.1.0"
+edition = "2021"
+description = "TAM: the compiler from recipes to fused execution plans. Reads primitive decompositions, finds shared steps, deduplicates, executes."
+
+[dependencies]
+tambear-primitives = { path = "../tambear-primitives" }

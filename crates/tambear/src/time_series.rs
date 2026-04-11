@@ -2977,7 +2977,7 @@ pub fn stl_decompose(data: &[f64], period: usize, robust: bool) -> Option<StlRes
 
 fn median_val(v: &[f64]) -> f64 {
     let mut sorted = v.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.total_cmp(b));
     let n = sorted.len();
     if n % 2 == 1 {
         sorted[n / 2]

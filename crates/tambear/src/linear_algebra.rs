@@ -1671,11 +1671,14 @@ fn matrix_sqrt_denman(a: &Mat) -> Mat {
     let eye = Mat::eye(n);
     let mut x = a.clone();
     let mut y = eye.clone();
+    let nan_mat = || Mat::from_vec(n, n, vec![f64::NAN; n * n]);
 
     for _ in 0..50 {
         let x_inv = inv(&x);
         let y_inv = inv(&y);
-        if x_inv.is_none() || y_inv.is_none() { break; }
+        // Singular intermediate: principal sqrt doesn't exist (zero or negative eigenvalue).
+        // Return NaN-matrix as the degenerate() signal — not identity, not partial result.
+        if x_inv.is_none() || y_inv.is_none() { return nan_mat(); }
         let x_inv = x_inv.unwrap();
         let y_inv = y_inv.unwrap();
 
@@ -1690,6 +1693,14 @@ fn matrix_sqrt_denman(a: &Mat) -> Mat {
         y = y_new;
         if diff < 1e-14 { break; }
     }
+    // Post-convergence check: verify X² ≈ A. Diverged iterations produce wrong answers.
+    let x2 = mat_mul(&x, &x);
+    let frob_err: f64 = x2.data.iter().zip(a.data.iter())
+        .map(|(a, b)| (a - b) * (a - b))
+        .sum::<f64>().sqrt();
+    let frob_a: f64 = a.data.iter().map(|v| v * v).sum::<f64>().sqrt();
+    let rel_err = if frob_a > 1e-300 { frob_err / frob_a } else { frob_err };
+    if rel_err > 1e-6 { return nan_mat(); }
     x
 }
 

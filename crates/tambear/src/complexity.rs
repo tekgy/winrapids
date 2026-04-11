@@ -1780,7 +1780,7 @@ pub fn ccm(x: &[f64], y: &[f64], embed_dim: usize, tau: usize, k: usize) -> CcmR
                     (d, j)
                 }).collect();
             if dists.len() < k { continue; }
-            dists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            dists.sort_by(|a, b| a.0.total_cmp(&b.0));
             let neighbors = &dists[..k];
             let d_min = neighbors[0].0;
             let weights: Vec<f64> = neighbors.iter()
@@ -1920,7 +1920,7 @@ pub fn phase_transition(
 pub fn harmonic_r_stat(levels: &[f64]) -> f64 {
     if levels.len() < 3 { return f64::NAN; }
     let mut sorted = levels.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| a.total_cmp(b));
     let spacings: Vec<f64> = sorted.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
     let r_vals: Vec<f64> = spacings.windows(2).filter_map(|w| {
         let (a, b) = (w[0], w[1]);

@@ -3171,7 +3171,7 @@ pub fn omori_fit(times: &[f64], t_end: f64) -> OmoriResult {
         return OmoriResult::nan();
     }
     let mut sorted = times.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.total_cmp(b));
     let median_t = sorted[n / 2];
     let c = (0.01 * median_t).max(1e-9);
 
@@ -3697,7 +3697,7 @@ pub fn ranksums(x: &[f64], y: &[f64]) -> NonparametricResult {
         .enumerate()
         .map(|(_i, (v, g))| (v, g))
         .collect();
-    pool.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    pool.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     // Assign average ranks for ties
     let total = n1 + n2;
@@ -3891,7 +3891,7 @@ pub fn theilslopes(y: &[f64], x: Option<&[f64]>) -> TheilSlopesResult {
         }
     }
     if slopes.is_empty() { return nan_result; }
-    slopes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    slopes.sort_by(|a, b| a.total_cmp(b));
     let slope = if slopes.len() % 2 == 1 {
         slopes[slopes.len() / 2]
     } else {
@@ -3901,8 +3901,8 @@ pub fn theilslopes(y: &[f64], x: Option<&[f64]>) -> TheilSlopesResult {
     // Intercept via medians
     let mut sx = xs.to_vec();
     let mut sy = y.to_vec();
-    sx.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    sy.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sx.sort_by(|a, b| a.total_cmp(b));
+    sy.sort_by(|a, b| a.total_cmp(b));
     let mx = if n % 2 == 1 { sx[n / 2] } else { (sx[n / 2 - 1] + sx[n / 2]) / 2.0 };
     let my = if n % 2 == 1 { sy[n / 2] } else { (sy[n / 2 - 1] + sy[n / 2]) / 2.0 };
     let intercept = my - slope * mx;
@@ -3955,7 +3955,7 @@ pub fn siegelslopes(y: &[f64], x: Option<&[f64]>) -> TheilSlopesResult {
             })
             .collect();
         if row_slopes.is_empty() { continue; }
-        row_slopes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        row_slopes.sort_by(|a, b| a.total_cmp(b));
         let m = row_slopes.len();
         let med = if m % 2 == 1 {
             row_slopes[m / 2]
@@ -3965,7 +3965,7 @@ pub fn siegelslopes(y: &[f64], x: Option<&[f64]>) -> TheilSlopesResult {
         per_point_medians.push(med);
     }
     if per_point_medians.is_empty() { return nan_result; }
-    per_point_medians.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    per_point_medians.sort_by(|a, b| a.total_cmp(b));
     let m = per_point_medians.len();
     let slope = if m % 2 == 1 {
         per_point_medians[m / 2]
@@ -3976,8 +3976,8 @@ pub fn siegelslopes(y: &[f64], x: Option<&[f64]>) -> TheilSlopesResult {
     // Intercept via medians
     let mut sx = xs.to_vec();
     let mut sy = y.to_vec();
-    sx.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    sy.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sx.sort_by(|a, b| a.total_cmp(b));
+    sy.sort_by(|a, b| a.total_cmp(b));
     let mx = if n % 2 == 1 { sx[n / 2] } else { (sx[n / 2 - 1] + sx[n / 2]) / 2.0 };
     let my = if n % 2 == 1 { sy[n / 2] } else { (sy[n / 2 - 1] + sy[n / 2]) / 2.0 };
     let intercept = my - slope * mx;

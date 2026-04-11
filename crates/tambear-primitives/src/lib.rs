@@ -37,6 +37,7 @@
 //!   regardless of complexity. `log_sum_exp` looks like `eigendecomposition`.
 
 pub mod primitives;
+pub mod catalog;
 
 // Flat re-export: `use tambear_primitives::log_sum_exp`
 pub use primitives::*;

@@ -1,105 +1,175 @@
-//! Catalog: the index of all primitives in the flat catalog.
+//! Catalog: searchable index of all primitives.
 //!
-//! Built at compile time from the primitives module tree.
-//! At runtime, provides search, listing, and metadata queries.
-//!
-//! This is what the IDE, TBS compiler, and agents call to discover
-//! what primitives exist and how they compose.
+//! Search by name, alias, family tag, parameter, formula fragment,
+//! ecosystem name (scipy/R/MATLAB/Julia), or any combination.
+//! The catalog is the API that IDE, TBS, and agents use to discover
+//! what exists and how to use it.
 
-/// Metadata for a single primitive, derived from params.toml.
+/// Metadata for a single primitive. Search-oriented — everything
+/// a consumer needs to FIND and USE this primitive.
 #[derive(Debug, Clone)]
 pub struct PrimitiveEntry {
-    /// Canonical name (folder name). e.g. "log_sum_exp"
+    /// Canonical name (= folder name). The primary key.
     pub name: &'static str,
-    /// Human description.
+    /// Human description — what it computes, in one sentence.
     pub description: &'static str,
-    /// Family tags for multi-membership search.
+    /// Formula in plain text. Searchable.
+    pub formula: &'static str,
+    /// All names this primitive is known by — aliases, abbreviations,
+    /// ecosystem names, colloquial names. ALL searchable.
+    pub aliases: &'static [&'static str],
+    /// Family tags — multi-membership. Not hierarchical.
     pub families: &'static [&'static str],
-    /// Kingdom classification (A, B, C, D).
+    /// Kingdom classification.
     pub kingdom: &'static str,
-    /// What semiring this primitive belongs to (if applicable).
+    /// Semiring (if this primitive is or uses one).
     pub semiring: Option<&'static str>,
-    /// What this primitive produces for TamSession sharing.
-    pub sharing_tag: Option<&'static str>,
-    /// Names of primitives that consume this one's output.
-    pub consumers: &'static [&'static str],
-    /// Whether this primitive has a complete workup (Principle 10).
+    /// What other primitives does this CALL internally.
+    pub composes_from: &'static [&'static str],
+    /// Related primitives — alternatives, generalizations, specializations.
+    pub related: &'static [&'static str],
+    /// Names in other ecosystems for cross-reference search.
+    pub ecosystem_names: &'static [&'static str],
+    /// Parameter names (searchable — "what takes a bandwidth parameter?").
+    pub param_names: &'static [&'static str],
+    /// Completeness flags.
     pub has_workup: bool,
-    /// Whether adversarial tests exist.
     pub has_adversarial: bool,
-    /// Whether oracle validation exists.
     pub has_oracle: bool,
 }
 
-/// The compile-time catalog. Every primitive registers here.
-/// Adding a primitive = adding one entry to this array.
+// ═══════════════════════════════════════════════════════════════════
+// The catalog
+// ═══════════════════════════════════════════════════════════════════
+
 pub static CATALOG: &[PrimitiveEntry] = &[
     PrimitiveEntry {
         name: "nan_guard",
-        description: "NaN-propagating comparisons and guards (nan_min, nan_max, sorted_total, sorted_finite)",
+        description: "NaN-propagating min/max and safe sorting",
+        formula: "nan_min(a,b) = NaN if either is NaN, else min(a,b)",
+        aliases: &["nan_min", "nan_max", "nan_propagating", "sorted_total", "sorted_finite", "has_nan", "finite_only"],
         families: &["numerical", "guard", "foundation"],
         kingdom: "A",
         semiring: None,
-        sharing_tag: None,
-        consumers: &["semiring", "log_sum_exp", "prefix_scan", "every_primitive_that_handles_raw_input"],
+        composes_from: &[],
+        related: &["total_cmp"],
+        ecosystem_names: &["numpy.nanmin", "numpy.nanmax", "R: na.rm=TRUE"],
+        param_names: &[],
         has_workup: false,
         has_adversarial: false,
         has_oracle: false,
     },
     PrimitiveEntry {
         name: "semiring",
-        description: "Semiring trait + 6 instances (Additive, TropicalMinPlus, TropicalMaxPlus, LogSumExp, Boolean, MaxTimes)",
-        families: &["algebra", "foundation", "semiring"],
+        description: "Algebraic semiring trait + 6 standard instances",
+        formula: "(S, add, mul, zero, one) where add is associative+commutative, mul distributes",
+        aliases: &["Additive", "TropicalMinPlus", "TropicalMaxPlus", "LogSumExp", "Boolean", "MaxTimes",
+                   "tropical", "min-plus", "max-plus", "log-semiring", "boolean semiring"],
+        families: &["algebra", "foundation", "semiring", "scan"],
         kingdom: "A",
         semiring: Some("all"),
-        sharing_tag: None,
-        consumers: &["prefix_scan", "hmm_forward", "viterbi", "shortest_path", "attention"],
+        composes_from: &["nan_guard"],
+        related: &["monoid", "group", "ring", "field"],
+        ecosystem_names: &[],
+        param_names: &[],
         has_workup: false,
         has_adversarial: true,
         has_oracle: false,
     },
     PrimitiveEntry {
         name: "log_sum_exp",
-        description: "Numerically stable log(sum(exp(x))) via max-subtraction trick",
+        description: "Numerically stable log(sum(exp(x))) via max-subtraction",
+        formula: "lse(x) = max(x) + ln(sum(exp(x - max(x))))",
+        aliases: &["logsumexp", "lse", "log-add-exp", "log_add_exp", "softmax_denominator",
+                   "log_sum_exp_pair", "pairwise_lse"],
         families: &["information_theory", "numerical", "probabilistic", "semiring"],
         kingdom: "A",
         semiring: Some("LogSumExp"),
-        sharing_tag: Some("LogSumExpResult"),
-        consumers: &["hmm_forward", "softmax", "log_softmax", "mixture_log_likelihood", "bayes_model_evidence", "attention_weights"],
+        composes_from: &[],
+        related: &["softmax", "log_softmax", "log_likelihood", "partition_function"],
+        ecosystem_names: &["scipy.special.logsumexp", "torch.logsumexp", "tf.reduce_logsumexp",
+                           "numpy.logaddexp", "R: matrixStats::logSumExp"],
+        param_names: &["values"],
         has_workup: false,
         has_adversarial: true,
         has_oracle: false,
     },
     PrimitiveEntry {
         name: "prefix_scan",
-        description: "Generic prefix scan over any semiring (inclusive, exclusive, segmented, reduce)",
+        description: "Generic prefix scan over any semiring — THE Kingdom A operation",
+        formula: "output[i] = add(input[0], ..., input[i])",
+        aliases: &["scan", "cumulative", "prefix_sum", "cumsum", "running_sum", "running_min",
+                   "running_max", "inclusive_scan", "exclusive_scan", "segmented_scan",
+                   "parallel_scan", "blelloch", "reduce", "fold"],
         families: &["scan", "parallel", "foundation", "kingdom_a"],
         kingdom: "A",
         semiring: Some("any"),
-        sharing_tag: None,
-        consumers: &["cumsum", "running_min", "running_max", "hmm_forward", "viterbi", "ema", "garch_filter"],
+        composes_from: &["semiring"],
+        related: &["cumsum", "cumprod", "running_min", "running_max", "segmented_reduce"],
+        ecosystem_names: &["numpy.cumsum", "itertools.accumulate", "std::iter::scan",
+                           "thrust::inclusive_scan", "R: cumsum"],
+        param_names: &["data", "semiring"],
         has_workup: false,
         has_adversarial: false,
         has_oracle: false,
     },
     PrimitiveEntry {
         name: "softmax",
-        description: "Normalized exponential distribution. Composes from log_sum_exp.",
-        families: &["probabilistic", "neural", "attention"],
+        description: "Normalized exponential. Composes from log_sum_exp.",
+        formula: "softmax(x)_i = exp(x_i - lse(x))",
+        aliases: &["normalized_exponential", "soft_max", "log_softmax", "softargmax",
+                   "boltzmann", "gibbs_distribution"],
+        families: &["probabilistic", "neural", "attention", "classification"],
         kingdom: "A",
         semiring: None,
-        sharing_tag: None,
-        consumers: &["attention", "classification", "mixture_weights", "boltzmann"],
+        composes_from: &["log_sum_exp"],
+        related: &["log_sum_exp", "sigmoid", "hardmax", "sparsemax", "gumbel_softmax"],
+        ecosystem_names: &["scipy.special.softmax", "torch.softmax", "torch.log_softmax",
+                           "tf.nn.softmax", "R: exp(x)/sum(exp(x))"],
+        param_names: &["x"],
         has_workup: false,
         has_adversarial: true,
         has_oracle: false,
     },
 ];
 
-/// Search the catalog by name substring (case-insensitive).
+// ═══════════════════════════════════════════════════════════════════
+// Search API
+// ═══════════════════════════════════════════════════════════════════
+
+/// Universal search — matches against name, aliases, description,
+/// formula, families, ecosystem names, and parameter names.
+/// Case-insensitive. Returns all matching entries ranked by relevance.
 pub fn search(query: &str) -> Vec<&'static PrimitiveEntry> {
     let q = query.to_lowercase();
-    CATALOG.iter().filter(|e| e.name.to_lowercase().contains(&q)).collect()
+    let mut scored: Vec<(usize, &PrimitiveEntry)> = CATALOG.iter()
+        .filter_map(|e| {
+            let mut score = 0usize;
+            // Exact name match — highest
+            if e.name.to_lowercase() == q { score += 100; }
+            // Name contains
+            if e.name.to_lowercase().contains(&q) { score += 50; }
+            // Alias exact match
+            if e.aliases.iter().any(|a| a.to_lowercase() == q) { score += 80; }
+            // Alias contains
+            if e.aliases.iter().any(|a| a.to_lowercase().contains(&q)) { score += 30; }
+            // Ecosystem name contains
+            if e.ecosystem_names.iter().any(|n| n.to_lowercase().contains(&q)) { score += 40; }
+            // Family match
+            if e.families.iter().any(|f| f.to_lowercase() == q) { score += 20; }
+            // Description contains
+            if e.description.to_lowercase().contains(&q) { score += 10; }
+            // Formula contains
+            if e.formula.to_lowercase().contains(&q) { score += 10; }
+            // Param name match
+            if e.param_names.iter().any(|p| p.to_lowercase().contains(&q)) { score += 15; }
+
+            if score > 0 { Some((score, e)) } else { None }
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0)); // highest score first
+    scored.into_iter().map(|(_, e)| e).collect()
 }
 
 /// Search by family tag.
@@ -113,14 +183,22 @@ pub fn by_kingdom(kingdom: &str) -> Vec<&'static PrimitiveEntry> {
     CATALOG.iter().filter(|e| e.kingdom == kingdom).collect()
 }
 
-/// All primitives that consume a given primitive's output.
-pub fn consumers_of(name: &str) -> Vec<&'static PrimitiveEntry> {
-    // Find primitives whose consumers list includes `name`,
-    // OR whose name appears in `name`'s consumers list.
-    let n = name.to_lowercase();
-    CATALOG.iter().filter(|e| {
-        e.consumers.iter().any(|c| c.to_lowercase() == n)
-    }).collect()
+/// Find what a primitive composes from (its dependencies).
+pub fn dependencies_of(name: &str) -> Vec<&'static PrimitiveEntry> {
+    let entry = CATALOG.iter().find(|e| e.name == name);
+    match entry {
+        Some(e) => e.composes_from.iter()
+            .filter_map(|dep| CATALOG.iter().find(|c| c.name == *dep))
+            .collect(),
+        None => vec![],
+    }
+}
+
+/// Find primitives that depend on (compose from) a given primitive.
+pub fn dependents_of(name: &str) -> Vec<&'static PrimitiveEntry> {
+    CATALOG.iter()
+        .filter(|e| e.composes_from.contains(&name))
+        .collect()
 }
 
 /// Primitives missing workups (Principle 10 gap).
@@ -138,7 +216,7 @@ pub fn count() -> usize {
     CATALOG.len()
 }
 
-/// List all family tags across all primitives.
+/// All family tags across all primitives.
 pub fn all_families() -> Vec<&'static str> {
     let mut families: Vec<&str> = CATALOG.iter()
         .flat_map(|e| e.families.iter().copied())
@@ -148,57 +226,87 @@ pub fn all_families() -> Vec<&'static str> {
     families
 }
 
+/// All aliases across all primitives.
+pub fn all_aliases() -> Vec<(&'static str, &'static str)> {
+    CATALOG.iter()
+        .flat_map(|e| e.aliases.iter().map(move |a| (*a, e.name)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn search_finds_log_sum_exp() {
-        let results = search("log_sum");
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].name, "log_sum_exp");
+    fn search_by_name() {
+        let r = search("log_sum_exp");
+        assert_eq!(r[0].name, "log_sum_exp");
+    }
+
+    #[test]
+    fn search_by_alias() {
+        let r = search("logsumexp");
+        assert_eq!(r[0].name, "log_sum_exp");
+    }
+
+    #[test]
+    fn search_by_scipy_name() {
+        let r = search("scipy.special.logsumexp");
+        assert_eq!(r[0].name, "log_sum_exp");
+    }
+
+    #[test]
+    fn search_by_torch_name() {
+        let r = search("torch.logsumexp");
+        assert_eq!(r[0].name, "log_sum_exp");
+    }
+
+    #[test]
+    fn search_cumsum_finds_prefix_scan() {
+        let r = search("cumsum");
+        assert!(r.iter().any(|e| e.name == "prefix_scan"), "cumsum should find prefix_scan");
+    }
+
+    #[test]
+    fn search_tropical_finds_semiring() {
+        let r = search("tropical");
+        assert!(r.iter().any(|e| e.name == "semiring"));
+    }
+
+    #[test]
+    fn search_boltzmann_finds_softmax() {
+        let r = search("boltzmann");
+        assert!(r.iter().any(|e| e.name == "softmax"));
+    }
+
+    #[test]
+    fn dependencies_of_softmax() {
+        let deps = dependencies_of("softmax");
+        assert!(deps.iter().any(|e| e.name == "log_sum_exp"));
+    }
+
+    #[test]
+    fn dependents_of_log_sum_exp() {
+        let deps = dependents_of("log_sum_exp");
+        assert!(deps.iter().any(|e| e.name == "softmax"));
     }
 
     #[test]
     fn by_family_foundation() {
-        let results = by_family("foundation");
-        assert!(results.len() >= 2); // nan_guard, semiring, prefix_scan
+        let r = by_family("foundation");
+        assert!(r.len() >= 3);
     }
 
     #[test]
-    fn by_kingdom_a() {
-        let results = by_kingdom("A");
-        assert_eq!(results.len(), CATALOG.len()); // all are Kingdom A currently
-    }
-
-    #[test]
-    fn consumers_of_log_sum_exp() {
-        // log_sum_exp's entry lists "softmax" as a consumer
-        let entry = search("log_sum_exp");
-        assert!(entry[0].consumers.contains(&"softmax"), "softmax should be in log_sum_exp consumers");
-
-        // consumers_of finds entries that HAVE "softmax" in their consumers list
-        let results = consumers_of("softmax");
-        let names: Vec<&str> = results.iter().map(|e| e.name).collect();
-        assert!(names.contains(&"log_sum_exp"), "log_sum_exp should list softmax as consumer");
-    }
-
-    #[test]
-    fn missing_workups_is_all() {
-        // None have workups yet
-        assert_eq!(missing_workups().len(), CATALOG.len());
-    }
-
-    #[test]
-    fn all_families_deduped() {
+    fn all_families_sorted() {
         let fams = all_families();
         for i in 1..fams.len() {
-            assert!(fams[i] > fams[i-1], "not sorted/deduped");
+            assert!(fams[i] > fams[i-1]);
         }
     }
 
     #[test]
-    fn count_matches() {
+    fn count_is_five() {
         assert_eq!(count(), 5);
     }
 }

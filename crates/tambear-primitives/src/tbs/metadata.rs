@@ -97,7 +97,7 @@ pub struct AtomMeta {
 
     // === GPU mapping ===
     /// What hardware instruction(s) this becomes.
-    pub gpu_instruction: &'static str,
+    pub tam_instruction: &'static str,
 }
 
 /// How to differentiate an Expr node.
@@ -131,7 +131,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             inverse: None, identity: None, absorbing: None,
             nan_behavior: NanBehavior::Propagate, cost: Cost(0),
             stability_note: "", simplifications: &[],
-            gpu_instruction: "load",
+            tam_instruction: "load",
         },
         Expr::Lit(_) => AtomMeta {
             syntax: "c", latex: "c", tambear: "c",
@@ -141,7 +141,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             inverse: None, identity: None, absorbing: None,
             nan_behavior: NanBehavior::Propagate, cost: Cost(0),
             stability_note: "", simplifications: &[],
-            gpu_instruction: "immediate",
+            tam_instruction: "immediate",
         },
         Expr::Neg(_) => AtomMeta {
             syntax: "neg(x)", latex: "-x", tambear: "−v",
@@ -151,7 +151,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             inverse: Some("neg"), identity: None, absorbing: None,
             nan_behavior: NanBehavior::Propagate, cost: Cost(1),
             stability_note: "", simplifications: &["neg(neg(x)) = x"],
-            gpu_instruction: "fneg",
+            tam_instruction: "fneg",
         },
         Expr::Abs(_) => AtomMeta {
             syntax: "abs(x)", latex: "|x|", tambear: "|v|",
@@ -161,7 +161,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             inverse: None, identity: None, absorbing: None,
             nan_behavior: NanBehavior::Propagate, cost: Cost(1),
             stability_note: "", simplifications: &["abs(abs(x)) = abs(x)", "abs(neg(x)) = abs(x)"],
-            gpu_instruction: "fabs",
+            tam_instruction: "fabs",
         },
         Expr::Sq(_) => AtomMeta {
             syntax: "sq(x)", latex: "x^2", tambear: "v²",
@@ -172,7 +172,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(2),
             stability_note: "overflow for |x| > 1.3e154",
             simplifications: &["sq(sqrt(x)) = x for x≥0", "sq(abs(x)) = sq(x)"],
-            gpu_instruction: "fmul(x,x)",
+            tam_instruction: "fmul(x,x)",
         },
         Expr::Sqrt(_) => AtomMeta {
             syntax: "sqrt(x)", latex: r"\sqrt{x}", tambear: "√v",
@@ -183,7 +183,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(8),
             stability_note: "NaN for negative input",
             simplifications: &["sqrt(sq(x)) = abs(x)", "sqrt(0) = 0", "sqrt(1) = 1"],
-            gpu_instruction: "fsqrt",
+            tam_instruction: "fsqrt",
         },
         Expr::Ln(_) => AtomMeta {
             syntax: "ln(x)", latex: r"\ln(x)", tambear: "ln v",
@@ -194,7 +194,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(10),
             stability_note: "ln(1+x) loses precision for small x; use ln1p",
             simplifications: &["ln(exp(x)) = x", "ln(1) = 0", "ln(e) = 1"],
-            gpu_instruction: "log",
+            tam_instruction: "log",
         },
         Expr::Exp(_) => AtomMeta {
             syntax: "exp(x)", latex: "e^x", tambear: "eᵛ",
@@ -205,7 +205,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(10),
             stability_note: "overflow for x > 709.8; underflow for x < -745.1",
             simplifications: &["exp(ln(x)) = x for x>0", "exp(0) = 1"],
-            gpu_instruction: "exp",
+            tam_instruction: "exp",
         },
         Expr::Sin(_) => AtomMeta {
             syntax: "sin(x)", latex: r"\sin(x)", tambear: "sin v",
@@ -216,7 +216,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(15),
             stability_note: "precision degrades for very large |x| (argument reduction)",
             simplifications: &["sin(0) = 0", "sin(asin(x)) = x for |x|≤1"],
-            gpu_instruction: "sin",
+            tam_instruction: "sin",
         },
         Expr::Cos(_) => AtomMeta {
             syntax: "cos(x)", latex: r"\cos(x)", tambear: "cos v",
@@ -227,7 +227,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(15),
             stability_note: "same as sin",
             simplifications: &["cos(0) = 1", "sin²+cos²=1"],
-            gpu_instruction: "cos",
+            tam_instruction: "cos",
         },
         Expr::Tanh(_) => AtomMeta {
             syntax: "tanh(x)", latex: r"\tanh(x)", tambear: "tanh v",
@@ -238,7 +238,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(15),
             stability_note: "",
             simplifications: &["tanh(0) = 0"],
-            gpu_instruction: "tanh",
+            tam_instruction: "tanh",
         },
         Expr::Recip(_) => AtomMeta {
             syntax: "recip(x)", latex: r"\frac{1}{x}", tambear: "1/v",
@@ -249,7 +249,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(4),
             stability_note: "infinity for x near 0",
             simplifications: &["recip(recip(x)) = x"],
-            gpu_instruction: "fdiv(1,x) or rcp",
+            tam_instruction: "fdiv(1,x) or rcp",
         },
         Expr::Sign(_) => AtomMeta {
             syntax: "sign(x)", latex: r"\text{sgn}(x)", tambear: "sgn v",
@@ -260,7 +260,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(2),
             stability_note: "discontinuous at 0",
             simplifications: &["sign(sign(x)) = sign(x)", "sign(abs(x)) = 1 for x≠0"],
-            gpu_instruction: "copysign(1,x)",
+            tam_instruction: "copysign(1,x)",
         },
         Expr::Add(_, _) => AtomMeta {
             syntax: "a + b", latex: "a + b", tambear: "a + b",
@@ -271,7 +271,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(1),
             stability_note: "catastrophic cancellation when a ≈ -b",
             simplifications: &["x + 0 = x", "x + neg(x) = 0"],
-            gpu_instruction: "fadd",
+            tam_instruction: "fadd",
         },
         Expr::Sub(_, _) => AtomMeta {
             syntax: "a - b", latex: "a - b", tambear: "a − b",
@@ -282,7 +282,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(1),
             stability_note: "catastrophic cancellation when a ≈ b",
             simplifications: &["x - 0 = x", "x - x = 0"],
-            gpu_instruction: "fsub",
+            tam_instruction: "fsub",
         },
         Expr::Mul(_, _) => AtomMeta {
             syntax: "a * b", latex: r"a \cdot b", tambear: "a × b",
@@ -293,7 +293,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(2),
             stability_note: "overflow for large operands",
             simplifications: &["x * 1 = x", "x * 0 = 0", "x * neg(1) = neg(x)"],
-            gpu_instruction: "fmul",
+            tam_instruction: "fmul",
         },
         Expr::Div(_, _) => AtomMeta {
             syntax: "a / b", latex: r"\frac{a}{b}", tambear: "a ÷ b",
@@ -304,7 +304,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(4),
             stability_note: "infinity when b → 0; NaN when 0/0",
             simplifications: &["x / 1 = x", "x / x = 1 for x≠0", "0 / x = 0 for x≠0"],
-            gpu_instruction: "fdiv",
+            tam_instruction: "fdiv",
         },
         Expr::Pow(_, _) => AtomMeta {
             syntax: "a ^ b", latex: "a^b", tambear: "aᵇ",
@@ -315,7 +315,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             nan_behavior: NanBehavior::Propagate, cost: Cost(15),
             stability_note: "overflow/underflow; NaN for negative base with non-integer exponent",
             simplifications: &["x^0 = 1", "x^1 = x", "x^2 = sq(x)"],
-            gpu_instruction: "pow",
+            tam_instruction: "pow",
         },
 
         // Default for remaining variants
@@ -327,7 +327,7 @@ pub fn atom_meta(expr: &Expr) -> AtomMeta {
             inverse: None, identity: None, absorbing: None,
             nan_behavior: NanBehavior::Propagate, cost: Cost(1),
             stability_note: "", simplifications: &[],
-            gpu_instruction: "?",
+            tam_instruction: "?",
         },
     }
 }
@@ -425,7 +425,7 @@ mod tests {
         assert!(matches!(meta.nan_behavior, NanBehavior::Propagate));
         assert_eq!(meta.cost.0, 15);
         assert!(!meta.simplifications.is_empty());
-        assert_eq!(meta.gpu_instruction, "sin");
+        assert_eq!(meta.tam_instruction, "sin");
     }
 
     #[test]

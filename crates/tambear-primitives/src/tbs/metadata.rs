@@ -96,7 +96,10 @@ pub struct AtomMeta {
     pub simplifications: &'static [&'static str],
 
     // === GPU mapping ===
-    /// What hardware instruction(s) this becomes.
+    /// What this compiles to in .tam IR.
+    /// Cost(1-2) = direct IEEE 754 hardware op (fadd, fmul, fdiv, fsqrt).
+    /// Cost(8+) = tambear-implemented from hardware ops (sin, exp, ln).
+    /// The cost already tells the optimizer which is which.
     pub tam_instruction: &'static str,
 }
 

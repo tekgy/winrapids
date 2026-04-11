@@ -10,6 +10,8 @@
 //! vendor driver kits to any ALU. No CUDA strings. No WGSL.
 //! No vendor language anywhere. Our language, our compiler, our IR.
 
+pub mod metadata;
+
 /// A TBS expression: the universal AST node.
 ///
 /// Every mathematical expression in tambear is a tree of these nodes.

@@ -28,6 +28,7 @@
 //! recipes/        — named compositions (teaching names for chains)
 //! ```
 
+pub mod tbs;
 pub mod transforms;
 pub mod accumulates;
 pub mod gathers;

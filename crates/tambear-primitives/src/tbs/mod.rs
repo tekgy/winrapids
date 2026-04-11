@@ -11,6 +11,7 @@
 //! No vendor language anywhere. Our language, our compiler, our IR.
 
 pub mod metadata;
+pub mod shape;
 
 /// A TBS expression: the universal AST node.
 ///

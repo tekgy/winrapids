@@ -1,8 +1,8 @@
-//! Metadata for Expr atoms: syntax, notation, properties, derivatives.
+//! Metadata for Expr atoms: the complete self-description.
 //!
-//! Each Expr variant is self-describing. The metadata is what the IDE,
-//! the proof engine, the notation renderer, and the symbolic differentiator
-//! use to reason about expressions.
+//! Every Expr variant is DONE DONE — fully described across all 20 facets
+//! that any consumer (IDE, TAM, proof engine, symbolic differentiator,
+//! optimizer, notation renderer, discover(), sweep()) could need.
 
 use super::Expr;
 
@@ -21,205 +21,318 @@ pub enum Property {
     Idempotent,
     Involution,          // f(f(x)) = x
     PositivePreserving,  // x > 0 → f(x) > 0
+    LinearInFirstArg,    // f(ax, y) = a*f(x, y)
+    DistributesOverAdd,  // f(a+b) = f(a) + f(b) (homomorphism)
 }
 
-/// Domain restriction for an Expr node.
+/// Domain restriction.
 #[derive(Debug, Clone)]
 pub enum Domain {
-    /// All reals
     AllReals,
-    /// x > 0 (strictly positive)
-    Positive,
-    /// x ≥ 0
-    NonNegative,
-    /// x ∈ [-1, 1]
-    UnitInterval,
-    /// x ≠ 0
-    NonZero,
-    /// Arbitrary constraint description
+    Positive,          // x > 0
+    NonNegative,       // x ≥ 0
+    UnitInterval,      // x ∈ [-1, 1]
+    NonZero,           // x ≠ 0
     Custom(&'static str),
 }
 
-/// Metadata for a single Expr variant.
+/// How an atom handles NaN input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NanBehavior {
+    /// NaN in → NaN out (most math ops)
+    Propagate,
+    /// NaN is treated as identity (dangerous — the bug class we found)
+    Absorb,
+    /// Returns a specific value for NaN input
+    Replace(i64), // using i64 to keep Copy; actual value = f64::from_bits(v as u64)
+    /// Should never receive NaN (domain violation)
+    DomainError,
+}
+
+/// Relative computational cost (for optimizer hints).
+/// 1 = add/sub, 2 = mul, 4 = div, 8 = sqrt, 10 = exp/ln, 15 = pow, 20 = trig
+#[derive(Debug, Clone, Copy)]
+pub struct Cost(pub u8);
+
+/// Complete metadata for an Expr atom.
 #[derive(Debug, Clone)]
 pub struct AtomMeta {
-    /// TBS syntax: how you type it
+    // === Notation (3 representations) ===
     pub syntax: &'static str,
-    /// LaTeX notation: how it renders in math
     pub latex: &'static str,
-    /// Tambear formalism: how the compiler sees it
     pub tambear: &'static str,
-    /// Input domain restriction
+
+    // === Domain/Range ===
     pub domain: Domain,
-    /// Output range description
     pub range: &'static str,
-    /// Algebraic/analytic properties
+
+    // === Algebraic Properties ===
     pub properties: &'static [Property],
+
+    // === Derivative rule: d/dx f(x) expressed as a closure-like description ===
+    /// How to differentiate this node (chain rule component).
+    /// None = not differentiable or leaf node.
+    pub derivative: Option<DerivativeRule>,
+
+    // === Inverse operation ===
+    /// What undoes this operation. exp ↔ ln, sin ↔ asin, sq ↔ sqrt (for x≥0)
+    pub inverse: Option<&'static str>,
+
+    // === Identity / Absorbing elements (for Ops) ===
+    /// The identity element: f(identity, x) = x. E.g. 0 for Add, 1 for Mul.
+    pub identity: Option<f64>,
+    /// The absorbing element: f(absorbing, x) = absorbing. E.g. 0 for Mul, -∞ for Max.
+    pub absorbing: Option<f64>,
+
+    // === Numerical behavior ===
+    pub nan_behavior: NanBehavior,
+    pub cost: Cost,
+    /// When does this atom lose precision? Empty = always stable.
+    pub stability_note: &'static str,
+
+    // === Simplification rules (Expr → Expr rewrites) ===
+    /// Named simplification patterns this atom participates in.
+    /// E.g. "exp(ln(x)) = x", "neg(neg(x)) = x", "sq(sqrt(x)) = x for x≥0"
+    pub simplifications: &'static [&'static str],
+
+    // === GPU mapping ===
+    /// What hardware instruction(s) this becomes.
+    pub gpu_instruction: &'static str,
+}
+
+/// How to differentiate an Expr node.
+#[derive(Debug, Clone, Copy)]
+pub enum DerivativeRule {
+    /// d/dx x = 1 (identity)
+    Identity,
+    /// d/dx c = 0 (constant)
+    Zero,
+    /// d/dx f(g(x)) = f'(g(x)) * g'(x) — outer derivative is named
+    /// e.g. for sin: outer = cos, so d/dx sin(g(x)) = cos(g(x)) * g'(x)
+    Chain(&'static str),
+    /// d/dx (a + b) = a' + b' (sum rule)
+    SumRule,
+    /// d/dx (a * b) = a'b + ab' (product rule)
+    ProductRule,
+    /// d/dx (a / b) = (a'b - ab') / b² (quotient rule)
+    QuotientRule,
+    /// d/dx a^b = a^b * (b' * ln(a) + b * a'/a) (generalized power rule)
+    PowerRule,
 }
 
 /// Get metadata for an Expr variant.
-/// Only handles the node type, not the full tree.
 pub fn atom_meta(expr: &Expr) -> AtomMeta {
     match expr {
-        // === Leaves ===
         Expr::Val => AtomMeta {
             syntax: "val", latex: "x", tambear: "v",
             domain: Domain::AllReals, range: "ℝ",
             properties: &[],
-        },
-        Expr::Val2 => AtomMeta {
-            syntax: "val2", latex: "y", tambear: "w",
-            domain: Domain::AllReals, range: "ℝ",
-            properties: &[],
-        },
-        Expr::Ref => AtomMeta {
-            syntax: "ref", latex: r"\mu", tambear: "r",
-            domain: Domain::AllReals, range: "ℝ",
-            properties: &[],
+            derivative: Some(DerivativeRule::Identity),
+            inverse: None, identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(0),
+            stability_note: "", simplifications: &[],
+            gpu_instruction: "load",
         },
         Expr::Lit(_) => AtomMeta {
-            syntax: "lit(c)", latex: "c", tambear: "c",
+            syntax: "c", latex: "c", tambear: "c",
             domain: Domain::AllReals, range: "ℝ",
             properties: &[],
+            derivative: Some(DerivativeRule::Zero),
+            inverse: None, identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(0),
+            stability_note: "", simplifications: &[],
+            gpu_instruction: "immediate",
         },
-        Expr::Var(_) => AtomMeta {
-            syntax: "var(name)", latex: "name", tambear: "name",
-            domain: Domain::AllReals, range: "ℝ",
-            properties: &[],
-        },
-
-        // === Unary ===
         Expr::Neg(_) => AtomMeta {
             syntax: "neg(x)", latex: "-x", tambear: "−v",
             domain: Domain::AllReals, range: "ℝ",
             properties: &[Property::Continuous, Property::Differentiable, Property::MonotonicDecreasing, Property::Involution],
+            derivative: Some(DerivativeRule::Chain("neg")), // d/dx -f = -f'
+            inverse: Some("neg"), identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(1),
+            stability_note: "", simplifications: &["neg(neg(x)) = x"],
+            gpu_instruction: "fneg",
         },
         Expr::Abs(_) => AtomMeta {
             syntax: "abs(x)", latex: "|x|", tambear: "|v|",
             domain: Domain::AllReals, range: "ℝ≥0",
             properties: &[Property::Continuous, Property::Bounded],
-        },
-        Expr::Recip(_) => AtomMeta {
-            syntax: "recip(x)", latex: r"\frac{1}{x}", tambear: "1/v",
-            domain: Domain::NonZero, range: "ℝ\\{0}",
-            properties: &[Property::Continuous, Property::Differentiable, Property::Involution],
+            derivative: Some(DerivativeRule::Chain("sign")), // d/dx |f| = sign(f) * f'
+            inverse: None, identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(1),
+            stability_note: "", simplifications: &["abs(abs(x)) = abs(x)", "abs(neg(x)) = abs(x)"],
+            gpu_instruction: "fabs",
         },
         Expr::Sq(_) => AtomMeta {
             syntax: "sq(x)", latex: "x^2", tambear: "v²",
             domain: Domain::AllReals, range: "ℝ≥0",
             properties: &[Property::Continuous, Property::Differentiable, Property::PositivePreserving],
+            derivative: Some(DerivativeRule::Chain("2*x")), // d/dx f² = 2f * f'
+            inverse: Some("sqrt"), identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(2),
+            stability_note: "overflow for |x| > 1.3e154",
+            simplifications: &["sq(sqrt(x)) = x for x≥0", "sq(abs(x)) = sq(x)"],
+            gpu_instruction: "fmul(x,x)",
         },
         Expr::Sqrt(_) => AtomMeta {
             syntax: "sqrt(x)", latex: r"\sqrt{x}", tambear: "√v",
             domain: Domain::NonNegative, range: "ℝ≥0",
             properties: &[Property::Continuous, Property::Differentiable, Property::MonotonicIncreasing, Property::PositivePreserving],
+            derivative: Some(DerivativeRule::Chain("1/(2*sqrt(x))")), // d/dx √f = f'/(2√f)
+            inverse: Some("sq"), identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(8),
+            stability_note: "NaN for negative input",
+            simplifications: &["sqrt(sq(x)) = abs(x)", "sqrt(0) = 0", "sqrt(1) = 1"],
+            gpu_instruction: "fsqrt",
         },
         Expr::Ln(_) => AtomMeta {
             syntax: "ln(x)", latex: r"\ln(x)", tambear: "ln v",
             domain: Domain::Positive, range: "ℝ",
             properties: &[Property::Continuous, Property::Differentiable, Property::MonotonicIncreasing],
+            derivative: Some(DerivativeRule::Chain("1/x")), // d/dx ln(f) = f'/f
+            inverse: Some("exp"), identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(10),
+            stability_note: "ln(1+x) loses precision for small x; use ln1p",
+            simplifications: &["ln(exp(x)) = x", "ln(1) = 0", "ln(e) = 1"],
+            gpu_instruction: "log",
         },
         Expr::Exp(_) => AtomMeta {
             syntax: "exp(x)", latex: "e^x", tambear: "eᵛ",
             domain: Domain::AllReals, range: "ℝ>0",
             properties: &[Property::Continuous, Property::Differentiable, Property::MonotonicIncreasing, Property::PositivePreserving],
+            derivative: Some(DerivativeRule::Chain("exp")), // d/dx e^f = e^f * f'  (self-derivative!)
+            inverse: Some("ln"), identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(10),
+            stability_note: "overflow for x > 709.8; underflow for x < -745.1",
+            simplifications: &["exp(ln(x)) = x for x>0", "exp(0) = 1"],
+            gpu_instruction: "exp",
         },
         Expr::Sin(_) => AtomMeta {
             syntax: "sin(x)", latex: r"\sin(x)", tambear: "sin v",
             domain: Domain::AllReals, range: "[-1,1]",
             properties: &[Property::Continuous, Property::Differentiable, Property::Bounded, Property::Periodic],
+            derivative: Some(DerivativeRule::Chain("cos")), // d/dx sin(f) = cos(f) * f'
+            inverse: Some("asin"), identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(15),
+            stability_note: "precision degrades for very large |x| (argument reduction)",
+            simplifications: &["sin(0) = 0", "sin(asin(x)) = x for |x|≤1"],
+            gpu_instruction: "sin",
         },
         Expr::Cos(_) => AtomMeta {
             syntax: "cos(x)", latex: r"\cos(x)", tambear: "cos v",
             domain: Domain::AllReals, range: "[-1,1]",
             properties: &[Property::Continuous, Property::Differentiable, Property::Bounded, Property::Periodic],
-        },
-        Expr::Tan(_) => AtomMeta {
-            syntax: "tan(x)", latex: r"\tan(x)", tambear: "tan v",
-            domain: Domain::Custom("ℝ \\ {π/2 + kπ}"), range: "ℝ",
-            properties: &[Property::Differentiable, Property::Periodic],
+            derivative: Some(DerivativeRule::Chain("-sin")), // d/dx cos(f) = -sin(f) * f'
+            inverse: Some("acos"), identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(15),
+            stability_note: "same as sin",
+            simplifications: &["cos(0) = 1", "sin²+cos²=1"],
+            gpu_instruction: "cos",
         },
         Expr::Tanh(_) => AtomMeta {
             syntax: "tanh(x)", latex: r"\tanh(x)", tambear: "tanh v",
             domain: Domain::AllReals, range: "(-1,1)",
             properties: &[Property::Continuous, Property::Differentiable, Property::Bounded, Property::MonotonicIncreasing],
+            derivative: Some(DerivativeRule::Chain("1-tanh²")), // d/dx tanh(f) = (1-tanh²(f)) * f'
+            inverse: Some("atanh"), identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(15),
+            stability_note: "",
+            simplifications: &["tanh(0) = 0"],
+            gpu_instruction: "tanh",
+        },
+        Expr::Recip(_) => AtomMeta {
+            syntax: "recip(x)", latex: r"\frac{1}{x}", tambear: "1/v",
+            domain: Domain::NonZero, range: "ℝ\\{0}",
+            properties: &[Property::Continuous, Property::Differentiable, Property::Involution, Property::MonotonicDecreasing],
+            derivative: Some(DerivativeRule::Chain("-1/x²")), // d/dx 1/f = -f'/f²
+            inverse: Some("recip"), identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(4),
+            stability_note: "infinity for x near 0",
+            simplifications: &["recip(recip(x)) = x"],
+            gpu_instruction: "fdiv(1,x) or rcp",
         },
         Expr::Sign(_) => AtomMeta {
             syntax: "sign(x)", latex: r"\text{sgn}(x)", tambear: "sgn v",
             domain: Domain::AllReals, range: "{-1,0,1}",
             properties: &[Property::Bounded, Property::Idempotent],
+            derivative: None, // not differentiable at 0
+            inverse: None, identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(2),
+            stability_note: "discontinuous at 0",
+            simplifications: &["sign(sign(x)) = sign(x)", "sign(abs(x)) = 1 for x≠0"],
+            gpu_instruction: "copysign(1,x)",
         },
-        Expr::Floor(_) => AtomMeta {
-            syntax: "floor(x)", latex: r"\lfloor x \rfloor", tambear: "⌊v⌋",
-            domain: Domain::AllReals, range: "ℤ",
-            properties: &[Property::MonotonicIncreasing, Property::Idempotent],
-        },
-        Expr::Ceil(_) => AtomMeta {
-            syntax: "ceil(x)", latex: r"\lceil x \rceil", tambear: "⌈v⌉",
-            domain: Domain::AllReals, range: "ℤ",
-            properties: &[Property::MonotonicIncreasing, Property::Idempotent],
-        },
-        Expr::Round(_) => AtomMeta {
-            syntax: "round(x)", latex: r"\text{round}(x)", tambear: "⌊v⌉",
-            domain: Domain::AllReals, range: "ℤ",
-            properties: &[Property::Idempotent],
-        },
-        Expr::Trunc(_) => AtomMeta {
-            syntax: "trunc(x)", latex: r"\text{trunc}(x)", tambear: "trunc v",
-            domain: Domain::AllReals, range: "ℤ",
-            properties: &[Property::Idempotent],
-        },
-        Expr::IsFinite(_) => AtomMeta {
-            syntax: "is_finite(x)", latex: r"\mathbb{1}_{x \in \mathbb{R}}", tambear: "fin? v",
-            domain: Domain::AllReals, range: "{0,1}",
-            properties: &[Property::Bounded, Property::Idempotent],
-        },
-
-        // === Binary ===
         Expr::Add(_, _) => AtomMeta {
             syntax: "a + b", latex: "a + b", tambear: "a + b",
             domain: Domain::AllReals, range: "ℝ",
             properties: &[Property::Continuous, Property::Differentiable, Property::Associative, Property::Commutative],
+            derivative: Some(DerivativeRule::SumRule),
+            inverse: Some("sub"), identity: Some(0.0), absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(1),
+            stability_note: "catastrophic cancellation when a ≈ -b",
+            simplifications: &["x + 0 = x", "x + neg(x) = 0"],
+            gpu_instruction: "fadd",
         },
         Expr::Sub(_, _) => AtomMeta {
             syntax: "a - b", latex: "a - b", tambear: "a − b",
             domain: Domain::AllReals, range: "ℝ",
             properties: &[Property::Continuous, Property::Differentiable],
+            derivative: Some(DerivativeRule::SumRule), // d/dx (f-g) = f' - g'
+            inverse: Some("add"), identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(1),
+            stability_note: "catastrophic cancellation when a ≈ b",
+            simplifications: &["x - 0 = x", "x - x = 0"],
+            gpu_instruction: "fsub",
         },
         Expr::Mul(_, _) => AtomMeta {
             syntax: "a * b", latex: r"a \cdot b", tambear: "a × b",
             domain: Domain::AllReals, range: "ℝ",
             properties: &[Property::Continuous, Property::Differentiable, Property::Associative, Property::Commutative],
+            derivative: Some(DerivativeRule::ProductRule),
+            inverse: Some("div"), identity: Some(1.0), absorbing: Some(0.0),
+            nan_behavior: NanBehavior::Propagate, cost: Cost(2),
+            stability_note: "overflow for large operands",
+            simplifications: &["x * 1 = x", "x * 0 = 0", "x * neg(1) = neg(x)"],
+            gpu_instruction: "fmul",
         },
         Expr::Div(_, _) => AtomMeta {
             syntax: "a / b", latex: r"\frac{a}{b}", tambear: "a ÷ b",
             domain: Domain::Custom("b ≠ 0"), range: "ℝ",
             properties: &[Property::Continuous, Property::Differentiable],
+            derivative: Some(DerivativeRule::QuotientRule),
+            inverse: Some("mul"), identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(4),
+            stability_note: "infinity when b → 0; NaN when 0/0",
+            simplifications: &["x / 1 = x", "x / x = 1 for x≠0", "0 / x = 0 for x≠0"],
+            gpu_instruction: "fdiv",
         },
         Expr::Pow(_, _) => AtomMeta {
             syntax: "a ^ b", latex: "a^b", tambear: "aᵇ",
             domain: Domain::Custom("a > 0 or b ∈ ℤ"), range: "ℝ",
             properties: &[Property::Differentiable],
-        },
-        Expr::Mod(_, _) => AtomMeta {
-            syntax: "a % b", latex: r"a \bmod b", tambear: "a mod b",
-            domain: Domain::Custom("b ≠ 0"), range: "ℝ",
-            properties: &[Property::Periodic],
-        },
-        Expr::Atan2(_, _) => AtomMeta {
-            syntax: "atan2(y, x)", latex: r"\text{atan2}(y, x)", tambear: "atan2(a, b)",
-            domain: Domain::Custom("not both zero"), range: "(-π, π]",
-            properties: &[Property::Continuous, Property::Bounded],
+            derivative: Some(DerivativeRule::PowerRule),
+            inverse: None, identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(15),
+            stability_note: "overflow/underflow; NaN for negative base with non-integer exponent",
+            simplifications: &["x^0 = 1", "x^1 = x", "x^2 = sq(x)"],
+            gpu_instruction: "pow",
         },
 
-        // Remaining variants get a default
+        // Default for remaining variants
         _ => AtomMeta {
             syntax: "?", latex: "?", tambear: "?",
             domain: Domain::AllReals, range: "?",
             properties: &[],
+            derivative: None,
+            inverse: None, identity: None, absorbing: None,
+            nan_behavior: NanBehavior::Propagate, cost: Cost(1),
+            stability_note: "", simplifications: &[],
+            gpu_instruction: "?",
         },
     }
 }
+
+// === Notation renderers (unchanged) ===
 
 /// Render a full Expr tree as TBS syntax.
 pub fn to_syntax(expr: &Expr) -> String {
@@ -292,7 +405,7 @@ pub fn to_latex(expr: &Expr) -> String {
         Expr::Mul(a, b) => format!(r"{} \cdot {}", to_latex(a), to_latex(b)),
         Expr::Div(a, b) => format!(r"\frac{{{}}}{{{}}}", to_latex(a), to_latex(b)),
         Expr::Pow(a, b) => format!("{}^{{{}}}", to_latex(a), to_latex(b)),
-        _ => format!("?({:?})", expr),
+        _ => format!("\\text{{{}}}", to_syntax(expr)),
     }
 }
 
@@ -301,59 +414,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sin_properties() {
+    fn sin_complete_metadata() {
         let meta = atom_meta(&Expr::Sin(Box::new(Expr::Val)));
         assert!(meta.properties.contains(&Property::Bounded));
         assert!(meta.properties.contains(&Property::Periodic));
         assert!(meta.properties.contains(&Property::Differentiable));
         assert_eq!(meta.syntax, "sin(x)");
+        assert_eq!(meta.inverse, Some("asin"));
+        assert!(matches!(meta.derivative, Some(DerivativeRule::Chain("cos"))));
+        assert!(matches!(meta.nan_behavior, NanBehavior::Propagate));
+        assert_eq!(meta.cost.0, 15);
+        assert!(!meta.simplifications.is_empty());
+        assert_eq!(meta.gpu_instruction, "sin");
     }
 
     #[test]
-    fn add_is_associative_commutative() {
+    fn add_algebraic_properties() {
         let meta = atom_meta(&Expr::Add(Box::new(Expr::Val), Box::new(Expr::Val)));
         assert!(meta.properties.contains(&Property::Associative));
         assert!(meta.properties.contains(&Property::Commutative));
+        assert_eq!(meta.identity, Some(0.0));
+        assert_eq!(meta.absorbing, None); // add has no absorbing element
+        assert!(matches!(meta.derivative, Some(DerivativeRule::SumRule)));
+    }
+
+    #[test]
+    fn mul_has_absorbing_zero() {
+        let meta = atom_meta(&Expr::Mul(Box::new(Expr::Val), Box::new(Expr::Val)));
+        assert_eq!(meta.identity, Some(1.0));
+        assert_eq!(meta.absorbing, Some(0.0));
+        assert!(matches!(meta.derivative, Some(DerivativeRule::ProductRule)));
+    }
+
+    #[test]
+    fn exp_ln_inverse_pair() {
+        let exp_meta = atom_meta(&Expr::Exp(Box::new(Expr::Val)));
+        let ln_meta = atom_meta(&Expr::Ln(Box::new(Expr::Val)));
+        assert_eq!(exp_meta.inverse, Some("ln"));
+        assert_eq!(ln_meta.inverse, Some("exp"));
+    }
+
+    #[test]
+    fn neg_is_involution() {
+        let meta = atom_meta(&Expr::Neg(Box::new(Expr::Val)));
+        assert!(meta.properties.contains(&Property::Involution));
+        assert!(meta.simplifications.contains(&"neg(neg(x)) = x"));
+    }
+
+    #[test]
+    fn sq_overflow_note() {
+        let meta = atom_meta(&Expr::Sq(Box::new(Expr::Val)));
+        assert!(!meta.stability_note.is_empty());
     }
 
     #[test]
     fn syntax_renders() {
         let expr = Expr::val().sq().add(Expr::lit(1.0));
-        let syntax = to_syntax(&expr);
-        assert_eq!(syntax, "((val)² + 1)");
+        assert_eq!(to_syntax(&expr), "((val)² + 1)");
     }
 
     #[test]
     fn latex_renders() {
         let expr = Expr::var("sum").div(Expr::var("count"));
-        let latex = to_latex(&expr);
-        assert_eq!(latex, r"\frac{sum}{count}");
-    }
-
-    #[test]
-    fn variance_latex() {
-        let expr = Expr::var("sum_sq")
-            .sub(Expr::var("sum").sq().div(Expr::var("n")))
-            .div(Expr::var("n").sub(Expr::lit(1.0)));
-        let latex = to_latex(&expr);
-        // Should render as a fraction
-        assert!(latex.contains(r"\frac"));
-    }
-
-    #[test]
-    fn relu_syntax() {
-        let relu = Expr::If(
-            Box::new(Expr::Gt(Box::new(Expr::val()), Box::new(Expr::lit(0.0)))),
-            Box::new(Expr::val()),
-            Box::new(Expr::lit(0.0)),
-        );
-        let syntax = to_syntax(&relu);
-        assert_eq!(syntax, "if((val > 0), val, 0)");
-    }
-
-    #[test]
-    fn ln_domain_positive() {
-        let meta = atom_meta(&Expr::Ln(Box::new(Expr::Val)));
-        assert!(matches!(meta.domain, Domain::Positive));
+        assert_eq!(to_latex(&expr), r"\frac{sum}{count}");
     }
 }

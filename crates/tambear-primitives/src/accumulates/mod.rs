@@ -12,7 +12,7 @@
 //! On CPU: one loop per unique (Grouping, Op), with all transforms
 //! computed per element inside the loop.
 
-use crate::transforms::Transform;
+use crate::tbs::Expr;
 
 /// WHERE results go — how to partition input elements into accumulators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,11 +50,12 @@ pub enum Op {
     Or,
 }
 
-/// One accumulation slot: a transform feeding a (Grouping, Op).
+/// One accumulation slot: a TBS expression feeding a (Grouping, Op).
 #[derive(Debug, Clone)]
 pub struct AccumulateSlot {
-    /// What to compute per element before combining.
-    pub transform: Transform,
+    /// What to compute per element before combining — a TBS expression.
+    /// `Expr::Val` = raw value, `Expr::val().sq()` = x², etc.
+    pub expr: Expr,
     /// Where results go.
     pub grouping: Grouping,
     /// How to combine.
@@ -69,8 +70,8 @@ pub struct AccumulateSlot {
 pub struct AccumulatePass {
     pub grouping: Grouping,
     pub op: Op,
-    /// All transforms computed in this single pass.
-    pub slots: Vec<(Transform, String)>,  // (transform, output_name)
+    /// All expressions computed in this single pass.
+    pub slots: Vec<(Expr, String)>,  // (expression, output_name)
 }
 
 /// Given a list of slots, fuse into minimal passes.
@@ -78,12 +79,12 @@ pub struct AccumulatePass {
 pub fn fuse_passes(slots: &[AccumulateSlot]) -> Vec<AccumulatePass> {
     use std::collections::HashMap;
 
-    let mut groups: HashMap<(Grouping, Op), Vec<(Transform, String)>> = HashMap::new();
+    let mut groups: HashMap<(Grouping, Op), Vec<(Expr, String)>> = HashMap::new();
 
     for slot in slots {
         groups.entry((slot.grouping, slot.op))
             .or_default()
-            .push((slot.transform, slot.output.clone()));
+            .push((slot.expr.clone(), slot.output.clone()));
     }
 
     groups.into_iter()
@@ -110,12 +111,13 @@ pub fn execute_pass_cpu(
         Op::Or  => 0.0,
     }).collect();
 
-    // Single pass through data
+    // Single pass through data — all expressions evaluated per element
+    let empty_vars = std::collections::HashMap::new();
     for (i, &x) in data.iter().enumerate() {
         let second = if has_second && i < second_col.len() { second_col[i] } else { 0.0 };
 
-        for (j, (transform, _)) in pass.slots.iter().enumerate() {
-            let val = transform.apply(x, reference, second);
+        for (j, (expr, _)) in pass.slots.iter().enumerate() {
+            let val = crate::tbs::eval(expr, x, second, reference, &empty_vars);
             match pass.op {
                 Op::Add => accs[j] += val,
                 Op::Max => if val > accs[j] { accs[j] = val; },
@@ -139,11 +141,11 @@ mod tests {
     #[test]
     fn fuse_all_add_slots() {
         let slots = vec![
-            AccumulateSlot { transform: Transform::Identity, grouping: Grouping::All, op: Op::Add, output: "sum".into() },
-            AccumulateSlot { transform: Transform::Const(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
-            AccumulateSlot { transform: Transform::Square, grouping: Grouping::All, op: Op::Add, output: "sum_sq".into() },
-            AccumulateSlot { transform: Transform::Ln, grouping: Grouping::All, op: Op::Add, output: "log_sum".into() },
-            AccumulateSlot { transform: Transform::Reciprocal, grouping: Grouping::All, op: Op::Add, output: "recip_sum".into() },
+            AccumulateSlot { expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum".into() },
+            AccumulateSlot { expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
+            AccumulateSlot { expr: Expr::val().sq(), grouping: Grouping::All, op: Op::Add, output: "sum_sq".into() },
+            AccumulateSlot { expr: Expr::val().ln(), grouping: Grouping::All, op: Op::Add, output: "log_sum".into() },
+            AccumulateSlot { expr: Expr::val().recip(), grouping: Grouping::All, op: Op::Add, output: "recip_sum".into() },
         ];
         let passes = fuse_passes(&slots);
         assert_eq!(passes.len(), 1, "all 5 slots should fuse into 1 pass");
@@ -153,9 +155,9 @@ mod tests {
     #[test]
     fn execute_fused_moments() {
         let slots = vec![
-            AccumulateSlot { transform: Transform::Identity, grouping: Grouping::All, op: Op::Add, output: "sum".into() },
-            AccumulateSlot { transform: Transform::Const(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
-            AccumulateSlot { transform: Transform::Square, grouping: Grouping::All, op: Op::Add, output: "sum_sq".into() },
+            AccumulateSlot { expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum".into() },
+            AccumulateSlot { expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
+            AccumulateSlot { expr: Expr::val().sq(), grouping: Grouping::All, op: Op::Add, output: "sum_sq".into() },
         ];
         let passes = fuse_passes(&slots);
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
@@ -167,13 +169,11 @@ mod tests {
 
         assert_eq!(sum, 15.0);
         assert_eq!(count, 5.0);
-        assert_eq!(sum_sq, 55.0); // 1+4+9+16+25
+        assert_eq!(sum_sq, 55.0);
 
-        // Mean from gathered results
         let mean = sum / count;
         assert_eq!(mean, 3.0);
 
-        // Variance from gathered results
         let var = (sum_sq - sum * sum / count) / (count - 1.0);
         assert!((var - 2.5).abs() < 1e-14);
     }
@@ -181,30 +181,48 @@ mod tests {
     #[test]
     fn cross_product_fuses() {
         let slots = vec![
-            AccumulateSlot { transform: Transform::Identity, grouping: Grouping::All, op: Op::Add, output: "sum_x".into() },
-            AccumulateSlot { transform: Transform::Square, grouping: Grouping::All, op: Op::Add, output: "sum_sq_x".into() },
-            AccumulateSlot { transform: Transform::MulPair, grouping: Grouping::All, op: Op::Add, output: "sum_xy".into() },
-            AccumulateSlot { transform: Transform::Const(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
+            AccumulateSlot { expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum_x".into() },
+            AccumulateSlot { expr: Expr::val().sq(), grouping: Grouping::All, op: Op::Add, output: "sum_sq_x".into() },
+            AccumulateSlot { expr: Expr::val().mul(Expr::val2()), grouping: Grouping::All, op: Op::Add, output: "sum_xy".into() },
+            AccumulateSlot { expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
         ];
         let passes = fuse_passes(&slots);
         assert_eq!(passes.len(), 1, "cross-product fuses with sums");
 
         let x = vec![1.0, 2.0, 3.0];
-        let y = vec![2.0, 4.0, 6.0]; // y = 2x, perfect correlation
+        let y = vec![2.0, 4.0, 6.0];
 
         let results = execute_pass_cpu(&passes[0], &x, 0.0, &y);
         let sum_xy = results.iter().find(|(n, _)| n == "sum_xy").unwrap().1;
-        assert_eq!(sum_xy, 1.0*2.0 + 2.0*4.0 + 3.0*6.0); // 2+8+18 = 28
+        assert_eq!(sum_xy, 1.0*2.0 + 2.0*4.0 + 3.0*6.0);
     }
 
     #[test]
     fn different_ops_dont_fuse() {
         let slots = vec![
-            AccumulateSlot { transform: Transform::Identity, grouping: Grouping::All, op: Op::Add, output: "sum".into() },
-            AccumulateSlot { transform: Transform::Identity, grouping: Grouping::All, op: Op::Max, output: "max".into() },
-            AccumulateSlot { transform: Transform::Identity, grouping: Grouping::All, op: Op::Min, output: "min".into() },
+            AccumulateSlot { expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum".into() },
+            AccumulateSlot { expr: Expr::val(), grouping: Grouping::All, op: Op::Max, output: "max".into() },
+            AccumulateSlot { expr: Expr::val(), grouping: Grouping::All, op: Op::Min, output: "min".into() },
         ];
         let passes = fuse_passes(&slots);
         assert_eq!(passes.len(), 3, "Add, Max, Min are 3 separate passes");
+    }
+
+    #[test]
+    fn any_expression_works() {
+        // |ln(val)| — arbitrary TBS expression as a transform
+        let slots = vec![
+            AccumulateSlot {
+                expr: Expr::val().ln().abs(),
+                grouping: Grouping::All,
+                op: Op::Add,
+                output: "sum_abs_ln".into(),
+            },
+        ];
+        let passes = fuse_passes(&slots);
+        let data = vec![0.5, 2.0]; // |ln(0.5)| + |ln(2)| = ln(2) + ln(2) = 2*ln(2)
+        let results = execute_pass_cpu(&passes[0], &data, 0.0, &[]);
+        let val = results[0].1;
+        assert!((val - 2.0 * 2.0_f64.ln()).abs() < 1e-14);
     }
 }

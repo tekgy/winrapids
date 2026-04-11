@@ -9,7 +9,7 @@
 //! The recipe is what the IDE shows. The atoms are what TAM compiles.
 //! The recipe is how humans think. The atoms are how the machine thinks.
 
-use crate::transforms::Transform;
+use crate::tbs::Expr;
 use crate::accumulates::{AccumulateSlot, Grouping, Op};
 use crate::gathers::{Gather, GatherComputation};
 
@@ -31,8 +31,8 @@ pub fn mean_arithmetic() -> Recipe {
     Recipe {
         name: "mean_arithmetic".into(),
         slots: vec![
-            AccumulateSlot { transform: Transform::Identity, grouping: Grouping::All, op: Op::Add, output: "sum".into() },
-            AccumulateSlot { transform: Transform::Const(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
+            AccumulateSlot { expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum".into() },
+            AccumulateSlot { expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
         ],
         gathers: vec![
             Gather {
@@ -50,9 +50,9 @@ pub fn variance() -> Recipe {
     Recipe {
         name: "variance".into(),
         slots: vec![
-            AccumulateSlot { transform: Transform::Identity, grouping: Grouping::All, op: Op::Add, output: "sum".into() },
-            AccumulateSlot { transform: Transform::Square, grouping: Grouping::All, op: Op::Add, output: "sum_sq".into() },
-            AccumulateSlot { transform: Transform::Const(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
+            AccumulateSlot { expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum".into() },
+            AccumulateSlot { expr: Expr::val().sq(), grouping: Grouping::All, op: Op::Add, output: "sum_sq".into() },
+            AccumulateSlot { expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
         ],
         gathers: vec![
             Gather {
@@ -72,8 +72,8 @@ pub fn mean_geometric() -> Recipe {
     Recipe {
         name: "mean_geometric".into(),
         slots: vec![
-            AccumulateSlot { transform: Transform::Ln, grouping: Grouping::All, op: Op::Add, output: "log_sum".into() },
-            AccumulateSlot { transform: Transform::Const(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
+            AccumulateSlot { expr: Expr::val().ln(), grouping: Grouping::All, op: Op::Add, output: "log_sum".into() },
+            AccumulateSlot { expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
         ],
         gathers: vec![
             Gather {
@@ -93,10 +93,10 @@ pub fn pearson_r() -> Recipe {
     Recipe {
         name: "pearson_r".into(),
         slots: vec![
-            AccumulateSlot { transform: Transform::Identity, grouping: Grouping::All, op: Op::Add, output: "sum_x".into() },
-            AccumulateSlot { transform: Transform::Square, grouping: Grouping::All, op: Op::Add, output: "sum_sq_x".into() },
-            AccumulateSlot { transform: Transform::MulPair, grouping: Grouping::All, op: Op::Add, output: "sum_xy".into() },
-            AccumulateSlot { transform: Transform::Const(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
+            AccumulateSlot { expr: Expr::val(), grouping: Grouping::All, op: Op::Add, output: "sum_x".into() },
+            AccumulateSlot { expr: Expr::val().sq(), grouping: Grouping::All, op: Op::Add, output: "sum_sq_x".into() },
+            AccumulateSlot { expr: Expr::val().mul(Expr::val2()), grouping: Grouping::All, op: Op::Add, output: "sum_xy".into() },
+            AccumulateSlot { expr: Expr::lit(1.0), grouping: Grouping::All, op: Op::Add, output: "count".into() },
             // Note: sum_y and sum_sq_y come from running the same slots on column y
         ],
         gathers: vec![
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn pearson_has_cross_product() {
         let r = pearson_r();
-        let has_mul = r.slots.iter().any(|s| matches!(s.transform, Transform::MulPair));
+        let has_mul = r.slots.iter().any(|s| matches!(&s.expr, Expr::Mul(_, _)));
         assert!(has_mul, "pearson needs MulPair for sum_xy");
     }
 

@@ -2430,7 +2430,7 @@ pub fn rank_von_neumann_ratio(data: &[f64]) -> f64 {
     }
     // Compute ranks
     let mut indexed: Vec<(usize, f64)> = data.iter().enumerate().map(|(i, &v)| (i, v)).collect();
-    indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    indexed.sort_by(|a, b| a.1.total_cmp(&b.1));
     let mut ranks = vec![0.0_f64; n];
     for (rank, &(orig_idx, _)) in indexed.iter().enumerate() {
         ranks[orig_idx] = (rank + 1) as f64;
@@ -2639,7 +2639,7 @@ pub fn spectral_fwhm(freqs: &[f64], psd: &[f64]) -> f64 {
     let (peak_idx, peak_val) = psd
         .iter()
         .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|a, b| a.1.total_cmp(b.1))
         .unwrap();
     let half_height = baseline + (peak_val - baseline) / 2.0;
 
@@ -2677,7 +2677,7 @@ pub fn spectral_q_factor(freqs: &[f64], psd: &[f64]) -> f64 {
     let peak_idx = psd
         .iter()
         .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(i, _)| i)
         .unwrap_or(0);
     let peak_freq = freqs[peak_idx];
@@ -2771,7 +2771,7 @@ pub fn dominant_frequency(freqs: &[f64], psd: &[f64]) -> f64 {
     let idx = psd
         .iter()
         .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(i, _)| i)
         .unwrap_or(0);
     freqs[idx]
@@ -4026,7 +4026,7 @@ impl BocpdState {
         let argmax = self.run_post[..=max_len]
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
             .map(|(i, _)| i)
             .unwrap_or(0);
         let mean_rl: f64 = self.run_post[..=max_len]

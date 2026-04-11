@@ -621,9 +621,8 @@ pub fn convex_hull_2d(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
         .iter()
         .enumerate()
         .min_by(|(_, a), (_, b)| {
-            a.1.partial_cmp(&b.1)
-                .unwrap()
-                .then(a.0.partial_cmp(&b.0).unwrap())
+            a.1.total_cmp(&b.1)
+                .then(a.0.total_cmp(&b.0))
         })
         .map(|(i, _)| i)
         .unwrap();
@@ -638,7 +637,7 @@ pub fn convex_hull_2d(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
             // Collinear — sort by distance
             let da = (ax - pivot.0).hypot(ay - pivot.1);
             let db = (bx - pivot.0).hypot(by - pivot.1);
-            da.partial_cmp(&db).unwrap()
+            da.total_cmp(&db)
         } else if cross > 0.0 {
             std::cmp::Ordering::Less
         } else {

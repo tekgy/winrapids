@@ -1188,7 +1188,7 @@ pub fn variance_of(values: &[f64]) -> f64 {
 pub fn mode(values: &[f64]) -> f64 {
     let mut finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
     if finite.is_empty() { return f64::NAN; }
-    finite.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    finite.sort_by(|a, b| a.total_cmp(b));
 
     let mut best_val = finite[0];
     let mut best_count = 1usize;
@@ -2564,7 +2564,7 @@ mod tests {
             let approx = t - (c0 + c1*t + c2*t*t) / (1.0 + d1*t + d2*t*t + d3*t*t*t);
             if p < 0.5 { -approx } else { approx }
         }).collect();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted.sort_by(|a, b| a.total_cmp(b));
 
         let lm = lmoment(&sorted);
         // L1 (mean) ≈ 0

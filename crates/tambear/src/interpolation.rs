@@ -140,7 +140,7 @@ pub fn lerp(xs: &[f64], ys: &[f64], x: f64) -> f64 {
         return ys[0];
     }
     // Binary search for the interval
-    let i = match xs.binary_search_by(|xi| xi.partial_cmp(&x).unwrap_or(std::cmp::Ordering::Less)) {
+    let i = match xs.binary_search_by(|xi| xi.total_cmp(&x)) {
         Ok(i) => return ys[i], // exact match
         Err(0) => 0,           // below range — extrapolate from first segment
         Err(i) if i >= n => n - 2, // above range — extrapolate from last segment

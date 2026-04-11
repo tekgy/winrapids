@@ -751,7 +751,7 @@ pub fn knn_adjacency(dists: &[f64], n: usize, k: usize) -> Vec<f64> {
             .filter(|&b| b != a)
             .map(|b| (b, dists[a * n + b]))
             .collect();
-        row.sort_unstable_by(|x, y| x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal));
+        row.sort_unstable_by(|x, y| x.1.total_cmp(&y.1));
         let sigma = row.get(k.min(row.len()).saturating_sub(1))
             .map(|r| r.1)
             .unwrap_or(1.0)

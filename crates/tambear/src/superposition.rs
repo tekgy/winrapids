@@ -682,7 +682,7 @@ pub fn sweep_correlation(x: &[f64], y: &[f64]) -> Superposition {
 
     // Modal value: median of the three signed-comparable measures (pearson, spearman, kendall)
     let mut signed_three = [pearson, spearman, kendall];
-    signed_three.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    signed_three.sort_by(|a, b| a.total_cmp(b));
     let modal_value = signed_three[1]; // median
 
     Superposition {
@@ -752,7 +752,7 @@ pub fn sweep_regression(x: &[f64], y: &[f64]) -> Superposition {
     let agreement = scalar_agreement(&slopes);
 
     let mut sorted_slopes = slopes.clone();
-    sorted_slopes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted_slopes.sort_by(|a, b| a.total_cmp(b));
     let modal_value = sorted_slopes[sorted_slopes.len() / 2]; // median
 
     Superposition {

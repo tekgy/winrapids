@@ -61,7 +61,7 @@ pub fn threshold_adaptive(drops: &[f64], using: &UsingBag) -> f64 {
     let min_threshold = using.get_f64("min_adaptive_threshold").unwrap_or(0.3);
 
     let mut sorted = drops.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| a.total_cmp(b));
 
     let median = sorted[sorted.len() / 2];
     let mean = drops.iter().sum::<f64>() / drops.len() as f64;

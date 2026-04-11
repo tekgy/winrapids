@@ -7,6 +7,8 @@ target/
 **/target/
 **/target2/
 **/target3/
+**/target4/
+**/target5/
 **/.playwright-mcp/
 **/*.pdb
 **/*.rlib

@@ -1701,7 +1701,7 @@ pub fn gauss_legendre_nodes_weights(n: usize) -> (Vec<f64>, Vec<f64>) {
     }
     // Sort ascending
     let mut pairs: Vec<(f64, f64)> = nodes.into_iter().zip(weights.into_iter()).collect();
-    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
     let nodes: Vec<f64> = pairs.iter().map(|(x, _)| *x).collect();
     let weights: Vec<f64> = pairs.iter().map(|(_, w)| *w).collect();
     (nodes, weights)
@@ -2332,7 +2332,7 @@ mod orthogonal_bessel_rmt_tests {
         let x = vec![0.1, 5.0, 0.3, 0.2];
         let s = softmax(&x);
         // Largest logit → largest probability
-        let argmax = s.iter().enumerate().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).unwrap().0;
+        let argmax = s.iter().enumerate().max_by(|(_, a), (_, b)| a.total_cmp(b)).unwrap().0;
         assert_eq!(argmax, 1);
     }
 

@@ -1,0 +1,11 @@
+[package]
+name = "tambear-primitives"
+version = "0.1.0"
+edition = "2021"
+description = "Flat catalog of mathematical primitives. One folder per primitive. The filesystem IS the inventory."
+
+[dependencies]
+# No dependencies on tambear — this is the foundation, not a wrapper.
+# tambear will eventually depend on US, not the other way around.
+
+[dev-dependencies]

@@ -1,0 +1,46 @@
+[primitive]
+name = "log_sum_exp"
+family = ["information_theory", "numerical", "probabilistic", "semiring"]
+kingdom = "A"
+semiring = "LogSumExp"
+description = "Numerically stable log(sum(exp(x))) via max-subtraction trick"
+
+[[params]]
+name = "values"
+type = "&[f64]"
+required = true
+description = "Log-space values to combine"
+
+[returns]
+type = "f64"
+description = "log(sum(exp(values)))"
+
+[identity]
+value = "-Infinity"
+rationale = "lse(-inf, x) = x for all x"
+
+[degenerate]
+value = "NaN"
+condition = "any input is NaN"
+
+[sharing]
+tag = "LogSumExpResult"
+consumers = [
+    "hmm_forward",
+    "softmax",
+    "log_softmax",
+    "mixture_log_likelihood",
+    "bayes_model_evidence",
+    "partition_function",
+    "attention_weights",
+    "forward_backward",
+]
+
+[also_provides]
+log_sum_exp_pair = "Binary associative combine for prefix scans"
+
+[references]
+original = "Blanchard et al. (2019) 'Accurately computing the log-sum-exp and softmax functions'"
+scipy = "scipy.special.logsumexp"
+r = "matrixStats::logSumExp"
+numpy = "numpy.logaddexp (pairwise)"

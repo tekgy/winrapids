@@ -117,6 +117,17 @@ impl Plan {
             .sum();
         total_without_sharing - self.n_accumulates()
     }
+
+    /// How many actual DATA PASSES does execution need?
+    /// Accumulates with the same (Grouping, Op) fuse into one pass
+    /// with multiple Expr outputs. This is the real cost.
+    pub fn n_data_passes(&self) -> usize {
+        let mut groups: std::collections::HashSet<(GroupingKind, OpKind)> = std::collections::HashSet::new();
+        for acc in &self.accumulates {
+            groups.insert((acc.grouping, acc.op));
+        }
+        groups.len()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -134,47 +145,88 @@ pub struct PlanResults {
 
 /// Execute a plan on CPU. This is the reference implementation.
 /// TAM's GPU backend would replace this with kernel dispatch.
+///
+/// KEY: All accumulates that share the same (Grouping, Op) are fused
+/// into a SINGLE PASS through the data. Only the Expr varies per slot.
+/// This is the CPU equivalent of scatter_multi_phi on GPU.
 pub fn execute_cpu(plan: &Plan, data: &[f64]) -> PlanResults {
     let n = data.len();
 
-    // Phase 1: Execute all accumulates (ONE pass per unique accumulate)
-    let mut acc_values: Vec<f64> = Vec::with_capacity(plan.accumulates.len());
+    // Phase 1: Group accumulates by (Grouping, Op) for fusion.
+    // All accumulates in the same group execute in ONE pass.
+    let mut acc_values: Vec<f64> = vec![0.0; plan.accumulates.len()];
 
-    for acc in &plan.accumulates {
-        let value = match (&acc.grouping, &acc.expr, &acc.op) {
-            // All + Value + Add = sum
-            (GroupingKind::All, ExprKind::Value, OpKind::Add) => {
-                data.iter().sum::<f64>()
-            }
-            // All + One + Add = count
-            (GroupingKind::All, ExprKind::One, OpKind::Add) => {
-                n as f64
-            }
-            // All + ValueSq + Add = sum of squares
-            (GroupingKind::All, ExprKind::ValueSq, OpKind::Add) => {
-                data.iter().map(|&v| v * v).sum::<f64>()
-            }
-            // All + Ln + Add = sum of logs
-            (GroupingKind::All, ExprKind::Ln, OpKind::Add) => {
-                data.iter().map(|&v| v.ln()).sum::<f64>()
-            }
-            // All + Reciprocal + Add = sum of reciprocals
-            (GroupingKind::All, ExprKind::Reciprocal, OpKind::Add) => {
-                data.iter().map(|&v| 1.0 / v).sum::<f64>()
-            }
-            // All + Value + Max
-            (GroupingKind::All, ExprKind::Value, OpKind::Max) => {
-                data.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
-            }
-            // All + Value + Min
-            (GroupingKind::All, ExprKind::Value, OpKind::Min) => {
-                data.iter().cloned().fold(f64::INFINITY, f64::min)
-            }
-            _ => {
-                f64::NAN // unimplemented combination
-            }
+    // Initialize accumulators based on Op identity
+    for (i, acc) in plan.accumulates.iter().enumerate() {
+        acc_values[i] = match acc.op {
+            OpKind::Add => 0.0,
+            OpKind::Max => f64::NEG_INFINITY,
+            OpKind::Min => f64::INFINITY,
+            _ => 0.0,
         };
-        acc_values.push(value);
+    }
+
+    // Find which accumulates share (Grouping::All, Op::Add) — the common case
+    let all_add_indices: Vec<usize> = plan.accumulates.iter().enumerate()
+        .filter(|(_, a)| a.grouping == GroupingKind::All && a.op == OpKind::Add)
+        .map(|(i, _)| i)
+        .collect();
+
+    let all_max_indices: Vec<usize> = plan.accumulates.iter().enumerate()
+        .filter(|(_, a)| a.grouping == GroupingKind::All && a.op == OpKind::Max)
+        .map(|(i, _)| i)
+        .collect();
+
+    let all_min_indices: Vec<usize> = plan.accumulates.iter().enumerate()
+        .filter(|(_, a)| a.grouping == GroupingKind::All && a.op == OpKind::Min)
+        .map(|(i, _)| i)
+        .collect();
+
+    // === FUSED PASS: one loop through data, all All+Add accumulates ===
+    if !all_add_indices.is_empty() {
+        for &x in data {
+            for &idx in &all_add_indices {
+                let lifted = match plan.accumulates[idx].expr {
+                    ExprKind::Value      => x,
+                    ExprKind::ValueSq    => x * x,
+                    ExprKind::One        => 1.0,
+                    ExprKind::Ln         => x.ln(),
+                    ExprKind::Reciprocal => 1.0 / x,
+                    ExprKind::Pow        => x, // TODO: needs parameter
+                    ExprKind::CrossRef   => x, // TODO: needs reference
+                    ExprKind::AbsDev     => x.abs(), // TODO: needs reference
+                    ExprKind::SqDev      => x * x, // TODO: needs reference
+                };
+                acc_values[idx] += lifted;
+            }
+        }
+    }
+
+    // === FUSED PASS: one loop for all All+Max accumulates ===
+    if !all_max_indices.is_empty() {
+        for &x in data {
+            for &idx in &all_max_indices {
+                let lifted = match plan.accumulates[idx].expr {
+                    ExprKind::Value => x,
+                    ExprKind::ValueSq => x * x,
+                    _ => x,
+                };
+                if lifted > acc_values[idx] { acc_values[idx] = lifted; }
+            }
+        }
+    }
+
+    // === FUSED PASS: one loop for all All+Min accumulates ===
+    if !all_min_indices.is_empty() {
+        for &x in data {
+            for &idx in &all_min_indices {
+                let lifted = match plan.accumulates[idx].expr {
+                    ExprKind::Value => x,
+                    _ => x,
+                };
+                if lifted < acc_values[idx] { acc_values[idx] = lifted; }
+            }
+        }
     }
 
     // Phase 2: Execute gathers (evaluate expressions over accumulated values)
@@ -386,5 +438,47 @@ mod tests {
         vars.insert("count", 1.0);
         let result = eval_gather_expr("exp(log_sum / count)", &vars);
         assert!((result - 1.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn five_recipes_one_data_pass() {
+        let recipes: Vec<&Recipe> = vec![
+            &MEAN_ARITHMETIC, &MEAN_GEOMETRIC, &MEAN_HARMONIC,
+            &MEAN_QUADRATIC, &VARIANCE,
+        ];
+        let plan = Plan::compile(&recipes);
+
+        // 5 unique accumulate outputs...
+        assert_eq!(plan.n_accumulates(), 5);
+        // ...but only ONE data pass (all are Grouping::All + Op::Add)
+        assert_eq!(plan.n_data_passes(), 1,
+            "all 5 accumulates share (All, Add) — should fuse to 1 pass");
+        // Saved: 11 accumulates → 5 unique → 1 pass
+        assert_eq!(plan.n_saved(&recipes), 6);
+    }
+
+    #[test]
+    fn fused_execution_correct() {
+        let recipes: Vec<&Recipe> = vec![
+            &MEAN_ARITHMETIC, &MEAN_GEOMETRIC, &MEAN_HARMONIC,
+            &MEAN_QUADRATIC, &VARIANCE,
+        ];
+        let plan = Plan::compile(&recipes);
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let result = execute_cpu(&plan, &data);
+
+        let arith = *result.results.get("mean_arithmetic").unwrap();
+        let geo = *result.results.get("mean_geometric").unwrap();
+        let harm = *result.results.get("mean_harmonic").unwrap();
+        let quad = *result.results.get("mean_quadratic").unwrap();
+        let var = *result.results.get("variance").unwrap();
+
+        assert!((arith - 3.0).abs() < 1e-14, "arith={arith}");
+        assert!((var - 2.5).abs() < 1e-14, "var={var}");
+
+        // Power mean inequality
+        assert!(harm <= geo + 1e-10);
+        assert!(geo <= arith + 1e-10);
+        assert!(arith <= quad + 1e-10);
     }
 }

@@ -154,3 +154,7 @@ mod tests {
         assert!(has_mul);
     }
 }
+
+#[cfg(test)]
+#[path = "coverage_test.rs"]
+mod coverage_test;

@@ -1,35 +1,25 @@
 //! # tambear-primitives
 //!
-//! The alphabet of computation. Three categories of atoms:
+//! The alphabet of computation. Three layers:
 //!
-//! - **Transforms** — what to do to each element (exp, ln, square, abs, ...)
-//! - **Accumulates** — how to combine elements (All+Add, ByKey+Max, Prefix+Semiring, Tiled+DotProduct, ...)
-//! - **Gathers** — how to read results (scalar, per_group, per_element, formula, ...)
+//! - **TBS Expr** — the universal expression AST (one type for everything)
+//! - **Accumulates** — (Grouping × Op) pairs that combine Expr-transformed elements
+//! - **Gathers** — Expr over accumulated results
 //!
-//! Math is expressed as: Transform → Accumulate → Gather chains.
+//! Math is expressed as: Expr → Accumulate → Gather(Expr) chains.
 //! Multiple chains fuse into single passes when they share (Grouping, Op).
 //!
 //! "Mean arithmetic" is not a primitive. It's a RECIPE:
 //! ```text
-//! identity  → Accumulate(All, Add) → "sum"
-//! const(1)  → Accumulate(All, Add) → "count"    ← FUSES with above
-//! Gather(scalar, sum / count)
+//! Expr::val()    → Accumulate(All, Add) → "sum"
+//! Expr::lit(1.0) → Accumulate(All, Add) → "count"    ← FUSES with above
+//! Gather(Expr::var("sum").div(Expr::var("count")))
 //! ```
 //!
-//! The primitives are: identity, const, All, Add, scalar, division.
-//! The recipe is how they compose. TAM compiles and executes recipes.
-//!
-//! ## The alphabet
-//!
-//! ```text
-//! transforms/     — element-wise operations (the φ in scatter_phi)
-//! accumulates/    — (grouping × op) pairs
-//! gathers/        — addressing patterns for reading results
-//! recipes/        — named compositions (teaching names for chains)
-//! ```
+//! The atoms are: val, lit, sq, ln, exp, abs, add, sub, mul, div, pow.
+//! The recipe composes them. TAM compiles and executes recipes.
 
 pub mod tbs;
-pub mod transforms;
 pub mod accumulates;
 pub mod gathers;
 pub mod recipes;

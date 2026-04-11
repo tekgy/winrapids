@@ -250,6 +250,21 @@ pub struct ViterbiResult {
 }
 
 /// Viterbi algorithm — log-domain max-product with backpointer.
+///
+/// # Kingdom classification
+/// **Current implementation: Kingdom B** (sequential). The recurrence
+/// `δ_t(j) = max_i [δ_{t-1}(i) + log A(i,j)] + log B(j, o_t)` has sequential
+/// state dependency — δ_t depends on δ_{t-1} elementwise.
+///
+/// **Target: Kingdom A** via tropical max-plus semiring (ℝ, max, +). The
+/// transition step is a matrix-vector multiply over (max,+) — a prefix scan
+/// over the state-transition matrix. Once `Semiring<TropicalMaxPlus>` is
+/// implemented and the scan engine is parameterized, this can be rewritten as
+/// a parallel prefix scan with O(T log T) work instead of O(T·n²) sequential.
+///
+/// The backpointer (psi) tracking is the one part that genuinely requires
+/// sequential state — it records argmax at each step. In the Kingdom A form,
+/// the forward pass is parallel; the backtracing pass remains sequential.
 pub fn hmm_viterbi(hmm: &Hmm, obs: &[usize]) -> ViterbiResult {
     let n = hmm.n_states;
     let t_len = obs.len();

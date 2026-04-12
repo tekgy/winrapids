@@ -200,7 +200,8 @@ fn print_op(out: &mut String, op: &Op, indent: usize) {
         Op::TamExp { dst, a } => format!("{} = tam_exp.f64 {}", dst.display(), a.display()),
         Op::TamLn  { dst, a } => format!("{} = tam_ln.f64 {}", dst.display(), a.display()),
         Op::TamSin { dst, a } => format!("{} = tam_sin.f64 {}", dst.display(), a.display()),
-        Op::TamCos { dst, a } => format!("{} = tam_cos.f64 {}", dst.display(), a.display()),
+        Op::TamCos  { dst, a } => format!("{} = tam_cos.f64 {}", dst.display(), a.display()),
+        Op::TamAtan { dst, a } => format!("{} = tam_atan.f64 {}", dst.display(), a.display()),
         Op::TamPow { dst, a, b } => format!("{} = tam_pow.f64 {}, {}", dst.display(), a.display(), b.display()),
 
         // ── Reduction ────────────────────────────────────────────────────────

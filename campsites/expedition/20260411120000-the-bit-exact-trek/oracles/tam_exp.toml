@@ -1,0 +1,269 @@
+# Oracle entry for tam_exp
+# Written by: adversarial mathematician (I9′ corpus curation)
+# Date: 2026-04-12
+# Runner: scientist (oracle_runner::run_oracle)
+# Reference binary: produced by math-researcher via gen-reference.py
+#
+# This file is the acceptance criterion for tam_exp.
+# Do not change claimed_max_ulp without navigator sign-off.
+# Do not add inputs here without verifying against mpmath at 200+ digits.
+
+[function]
+name = "tam_exp"
+primary_domain = [-745.1332191019411, 709.7827128933840]
+# ^ These are the exact fp64 boundaries where output transitions from subnormal to +0
+# and from finite to +inf respectively. Computed by math-researcher; verify post-implementation.
+claimed_max_ulp = 1.0
+reference_bin = "peak2-libm/exp-1k.bin"
+# ^ Phase 1 uses exp-1k.bin for calibration. Replace with exp-1m.bin when available.
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CORPUS — named injection sets
+# Each set is a list of f64 values (literals or string expressions).
+# String expressions are evaluated via mpmath at 50+ digits then rounded to f64.
+# The runner evaluates string expressions ONCE at load time.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[corpus]
+
+# Standard special values (IEEE 754 §9.2.1).
+# These overlap with bit_exact_checks below; including them here runs the ULP path too.
+# The bit_exact_checks section is the authoritative check for sign-sensitive values.
+special_values = [
+    "inf",    # exp(+inf) = +inf
+    "-inf",   # exp(-inf) = +0.0 (SIGN-SENSITIVE: see bit_exact_checks)
+    "nan",    # exp(nan) = nan (NaN propagation, I11)
+    0.0,      # exp(+0) = 1.0 exact
+    -0.0,     # exp(-0) = 1.0 exact (same as +0; sign of input irrelevant)
+]
+
+# Cody-Waite exact inputs: x = n * ln2_hi where ln2_hi = 0x3FE62E42FEFA3800
+# For these inputs, the range-reduction residual r = 0 exactly (Sterbenz).
+# The polynomial receives r=0 and returns 1.0; the final result must be 2^n exactly.
+# This is the primary test for Cody-Waite coefficient correctness.
+# All values are n * 0x3FE62E42FEFA3800 (the high Cody-Waite constant for ln2).
+# Computed as exact fp64 multiplies; no string expressions needed.
+cody_waite_exact = [
+    -709.0890460703306,  # n = -1022: 2^-1022 = fp64_min_normal
+    -354.5445230351653,  # n = -511
+    -177.2722615175827,  # n = -255
+    -88.6361307587913,   # n = -127
+    -44.3180653793957,   # n = -63
+    -22.1590326896978,   # n = -31
+    -11.0795163448489,   # n = -15
+    -5.5397581724245,    # n = -7 (approx; exact bit pattern from n * ln2_hi)
+    -2.7698790862122,    # n = -3 (approx)
+    -1.3849395431061,    # n = -2
+    -0.6931471805599453, # n = -1 (≈ -ln(2)); exp(-ln(2)) = 0.5 exactly
+    0.6931471805599453,  # n = 1  (≈  ln(2)); exp(ln(2)) = 2.0 ± 1 ULP [critical]
+    1.3862943611198906,  # n = 2
+    2.772588722239781,   # n = 4
+    5.545177444479562,   # n = 8
+    11.090354888959125,  # n = 16
+    22.180709777918250,  # n = 32
+    44.36141955583650,   # n = 64
+    88.72283911167300,   # n = 128
+    177.44567822334600,  # n = 256
+    354.89135644669200,  # n = 512
+    709.0890460703306,   # n = 1023: just below overflow
+]
+# NOTE: The string-expression path for "n * ln2_hi" is not used here because
+# the runner evaluates via mpmath, which gives a different rounding than the
+# exact fp64 multiply. These values are the direct fp64 multiplies of
+# (n as f64) * f64::from_bits(0x3FE62E42FEFA3800u64). Math-researcher must
+# verify these bit patterns match the actual constants committed in exp-design.md.
+
+# Near-overflow boundary: inputs in [709.0, 710.0]
+near_overflow = [
+    709.0,
+    709.78,
+    709.7827128933839,   # largest input where exp is finite (approx; verify post-impl)
+    709.7827128933840,   # claimed overflow threshold (should give +inf)
+    710.0,               # definitely +inf
+    800.0,               # well above overflow
+]
+
+# Near-underflow boundary: inputs in [-746, -744]
+# exp output should be subnormal (not zero) in the deep subnormal range,
+# and +0 below the underflow cutoff.
+near_underflow = [
+    -708.4,              # near fp64_min_normal ≈ -708.3964; result near MIN_POSITIVE
+    -709.0,              # just past fp64_min_normal; enters subnormal range
+    -720.0,              # subnormal output
+    -730.0,              # subnormal output
+    -740.0,              # subnormal output
+    -744.4,              # near the deepest subnormal boundary
+    -745.0,              # should return positive subnormal (NOT +0)
+    -745.1332191019411,  # the exact underflow boundary (approx): exp here ≈ 5e-324
+    -745.2,              # should return +0 (below underflow cutoff)
+    -746.0,              # definitely +0 (see bit_exact_checks)
+    -800.0,              # definitely +0
+    -1000.0,             # definitely +0
+]
+
+# Subnormal input test: exp(x) ≈ 1 + x for tiny x.
+# Variant B polynomial must return 1.0 + x + x^2/2 + ... to full precision.
+tiny_args = [
+    1e-300,
+    -1e-300,
+    1e-200,
+    5e-324,   # smallest positive subnormal (MIN_SUBNORMAL)
+    2.2e-308, # fp64_min_normal (MIN_POSITIVE)
+    2.2e-16,  # fp64_epsilon (machine epsilon)
+    -2.2e-16,
+]
+
+# Critical range-reduction boundary: inputs near multiples of ln(2).
+# Not the same as cody_waite_exact — these are inputs near the boundary,
+# testing that the dispatch from one quadrant to the next is smooth.
+argument_reduction_boundaries = [
+    "ln(2)",              # 0.693147...
+    "2*ln(2)",            # 1.386294...
+    "3*ln(2)",            # 2.079441...
+    "10*ln(2)",           # 6.931471...
+    "-ln(2)",             # -0.693147...
+    "ln(2) + 1e-15",      # just past the boundary
+    "ln(2) - 1e-15",      # just before the boundary
+    "10*ln(2) + 1e-12",
+    "10*ln(2) - 1e-12",
+]
+
+# TMD candidates (Table Maker's Dilemma): inputs where the true value is
+# within 0.5 ULP of the midpoint between two adjacent fp64 values.
+# These are the hardest inputs for correct rounding. Verify each against
+# mpmath at 500+ digits before marking as known-good.
+# See tmd-corpus/exp-tmd.md for derivation.
+tmd_candidates = [
+    1.0,     # exp(1.0) = e; correct fp64 is 0x4005BF0A8B14576A
+    -1.0,    # exp(-1.0) = 1/e; near-TMD case
+    0.5,     # exp(0.5) = sqrt(e); known near-TMD case
+    -0.5,
+]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BIT-EXACT CHECKS
+# For sign-sensitive results where ULP distance would accept the wrong sign.
+# Input → required bit pattern. Checked with candidate(input).to_bits() == expected_bits.
+# These are STRONGER than ULP checks.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[[bit_exact_checks.cases]]
+name = "exp_neg_inf_is_positive_zero"
+input = "-inf"
+expected_bits = "0x0000000000000000"   # +0.0 (NOT -0.0 = 0x8000000000000000)
+rationale = "IEEE 754: exp(-inf) = +0. Sign bit must be 0. Some libms return -0 due to sign-propagation through the underflow path. adversarial-review-exp.md B1."
+
+[[bit_exact_checks.cases]]
+name = "exp_pos_inf_is_positive_inf"
+input = "inf"
+expected_bits = "0x7FF0000000000000"   # +inf
+rationale = "IEEE 754: exp(+inf) = +inf. Expected trivially but included for completeness."
+
+[[bit_exact_checks.cases]]
+name = "exp_pos_zero_is_one"
+input = 0.0
+expected_bits = "0x3FF0000000000000"   # 1.0
+rationale = "exp(+0) = 1.0 exactly."
+
+[[bit_exact_checks.cases]]
+name = "exp_neg_zero_is_one"
+input = -0.0
+expected_bits = "0x3FF0000000000000"   # 1.0 (NOT -1.0 or anything with sign)
+rationale = "exp(-0) = 1.0 exactly. The sign of the zero input must not propagate to the output."
+
+[[bit_exact_checks.cases]]
+name = "exp_underflow_is_positive_zero"
+input = -746.0
+expected_bits = "0x0000000000000000"   # +0.0
+rationale = "exp(-746) is below the subnormal range; rounds to +0. Sign must be +. adversarial-review-exp.md B1."
+
+[[bit_exact_checks.cases]]
+name = "exp_neg_ln2_is_half"
+input = -0.6931471805599453   # fp64(-ln(2))
+expected_bits = "0x3FE0000000000000"   # 0.5 exactly
+rationale = "exp(-ln(2)) = 0.5 exactly. This is representable in fp64. The Cody-Waite reduction with n=-1 gives r=0 and the polynomial returns 1.0; ldexp(1.0, -1) = 0.5. Must be bit-exact."
+
+[[bit_exact_checks.cases]]
+name = "exp_subnormal_output_not_zero"
+input = -745.0
+expected_bits = "NONZERO_SUBNORMAL"    # any u64 in [1, 0x000FFFFFFFFFFFFF]
+rationale = "exp(-745) is in the subnormal range. Must NOT be flushed to zero. adversarial-review-exp.md B5. Runner: check actual_bits != 0 AND (actual_bits >> 52) == 0 (subnormal = zero exponent field)."
+# NOTE to scientist: the runner needs to handle the "NONZERO_SUBNORMAL" pseudo-constant as a
+# range check: (bits != 0) && (bits >> 52 == 0). This is the only entry that isn't a single
+# expected bit pattern — it's a class constraint. Flag this as a runner design question if needed.
+
+[[bit_exact_checks.cases]]
+name = "exp_deepest_subnormal_boundary"
+input = -745.1332191019411
+expected_bits = "NONZERO_SUBNORMAL"
+rationale = "This is approximately the deepest-subnormal-output input (n=-1074 in the subnormal path). Must give 5e-324 = 0x0000000000000001 or slightly above, NOT zero. adversarial-review-exp.md B5."
+
+# ──────────────────────────────────────────────────────────────────────────────
+# IDENTITY CHECKS
+# Named identity functions registered in the runner's static registry.
+# Variable x is drawn from the specified domain during the identity check run.
+# Tolerance is in ULP relative to the result of the left-hand side.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[[identity_checks]]
+name = "exp_log_roundtrip"
+# exp(log(x)) should equal x within 2 ULP (composed 1-ULP errors from exp and log).
+# Domain: positive reals only (log is not defined for x <= 0).
+tolerance_ulp = 2.0
+domain = [1e-200, 1e200]
+
+[[identity_checks]]
+name = "exp_negation"
+# exp(x) * exp(-x) should equal 1.0 within 2 ULP.
+# Domain: central range to avoid overflow in exp(x) or exp(-x).
+tolerance_ulp = 2.0
+domain = [-700.0, 700.0]
+
+[[identity_checks]]
+name = "exp_additivity"
+# exp(a + b) should equal exp(a) * exp(b) within 3 ULP.
+# This is a two-argument identity; runner generates pairs (a, b) from the domain.
+# Domain: constrained so exp(a) and exp(b) are both finite and their product doesn't overflow.
+tolerance_ulp = 3.0
+domain = [-350.0, 350.0]
+# ^ Runner: generate pairs (a, b) from domain^2 such that a+b is also in domain.
+
+[[identity_checks]]
+name = "exp_one_returns_e"
+# exp(1.0) should equal the fp64 representation of e within 1 ULP.
+# This is the canonical TMD case; see tmd-corpus/exp-tmd.md.
+# Not a domain-sweep check — a single-point check. Runner: just test exp(1.0).
+tolerance_ulp = 1.0
+domain = [1.0, 1.0]   # single point
+
+# ──────────────────────────────────────────────────────────────────────────────
+# NOTES FOR SCIENTIST (runner implementation)
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# [N1] The "NONZERO_SUBNORMAL" expected_bits pseudo-constant in bit_exact_checks
+# needs special handling in the runner. It is not a single u64 but a class constraint:
+# (actual_bits != 0) && ((actual_bits >> 52) == 0) && ((actual_bits >> 63) == 0)
+# (i.e., positive, nonzero, subnormal). The runner should treat any string value
+# in expected_bits that is not a hex literal as a named constraint to look up.
+# For Phase 1, only two constraints are needed: "NONZERO_SUBNORMAL" and the
+# standard hex bit patterns. Adversarial will flag if new constraint types arise.
+#
+# [N2] The cody_waite_exact values were computed as (n as f64) * LN2_HI where
+# LN2_HI = f64::from_bits(0x3FE62E42FEFA3800u64). The runner should load these
+# as f64 literals and NOT re-evaluate via mpmath, because mpmath's value of ln(2)
+# is slightly different from LN2_HI and would give a different f64.
+#
+# [N3] The argument_reduction_boundaries set uses mpmath string expressions.
+# These are evaluated once at load time. The runner should cache the evaluated
+# f64 values so they don't fluctuate between runs.
+#
+# [N4] For the identity_checks, the runner uses a static registry keyed by name.
+# The closures are:
+#   "exp_log_roundtrip":  |x, exp_fn, ln_fn| (exp_fn(ln_fn(x)) - x).abs()
+#   "exp_negation":       |x, exp_fn| (exp_fn(x) * exp_fn(-x) - 1.0).abs()
+#   "exp_additivity":     |(a, b), exp_fn| (exp_fn(a + b) - exp_fn(a) * exp_fn(b)).abs()
+#   "exp_one_returns_e":  |_, exp_fn| ulp_distance(exp_fn(1.0), std::f64::consts::E)
+# For identities that require multiple functions (exp_log_roundtrip needs log),
+# the runner needs to accept a multi-function registry. Flag this if the runner
+# design only accepts a single `candidate` closure — the identity interface may
+# need to be widened to pass a function map rather than a single fn pointer.

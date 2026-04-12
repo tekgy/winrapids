@@ -344,7 +344,7 @@ impl VerifyCtx {
             }
 
             Op::TamExp { dst, a } | Op::TamLn { dst, a }
-            | Op::TamSin { dst, a } | Op::TamCos { dst, a } => {
+            | Op::TamSin { dst, a } | Op::TamCos { dst, a } | Op::TamAtan { dst, a } => {
                 self.expect_ty(a, &Ty::F64, errors);
                 self.define(dst, Ty::F64, errors);
             }

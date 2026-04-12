@@ -428,7 +428,10 @@ and wait for a separate campsite:
 - Global mutable state
 - Calling kernels from functions or functions from kernels (except transcendental stubs)
 - Binary encoding (text only in Phase 1)
-- Type casts between `f64` and `i32`
+- Integer division or remainder (use the `and.i64` + power-of-two trick for `mod` where needed)
+- `f32` type (fp64 only in Phase 1)
+
+**Note (campsite 1.14 amendment):** `f64_to_i32_rn`, `bitcast.f64.i64`, `bitcast.i64.f64`, and `ldexp.f64` are *in scope* as of campsite 1.14. The original "Type casts between f64 and i32 are out of scope" line has been removed — it predates the libm ops decision. §5.4a and §5.4b define the full set.
 
 ---
 

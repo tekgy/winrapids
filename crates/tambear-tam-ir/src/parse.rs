@@ -630,6 +630,12 @@ fn parse_op(ln: usize, toks: &[String]) -> PResult<Op> {
             let (a, b) = parse_two_regs_comma(ln, operands)?;
             Ok(Op::TamPow { dst, a, b })
         }
+        "tam_atan.f64" => {
+            if operands.len() != 1 {
+                return Err(ParseError::new(ln, "tam_atan.f64 takes one register"));
+            }
+            Ok(Op::TamAtan { dst, a: parse_reg(ln, &operands[0])? })
+        }
         other => Err(ParseError::new(ln, format!("unknown mnemonic: {other:?}"))),
     }
 }

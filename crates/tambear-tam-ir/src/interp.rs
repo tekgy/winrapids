@@ -553,6 +553,9 @@ impl<'p> Interpreter<'p> {
             Op::TamCos { .. } => {
                 panic!("tam_cos: not yet in libm (campsite 1.13 stub). Wire tambear-libm at campsite 5.2.");
             }
+            Op::TamAtan { .. } => {
+                panic!("tam_atan: not yet in libm (campsite 1.13 stub). Wire tambear-libm at campsite 5.2.");
+            }
             Op::TamPow { .. } => {
                 panic!("tam_pow: not yet in libm (campsite 1.13 stub). Wire tambear-libm at campsite 5.2.");
             }
@@ -686,7 +689,8 @@ fn get_dst(op: &Op) -> Option<&Reg> {
         Op::TamExp { dst, .. } => Some(dst),
         Op::TamLn { dst, .. } => Some(dst),
         Op::TamSin { dst, .. } => Some(dst),
-        Op::TamCos { dst, .. } => Some(dst),
+        Op::TamCos  { dst, .. } => Some(dst),
+        Op::TamAtan { dst, .. } => Some(dst),
         Op::TamPow { dst, .. } => Some(dst),
         Op::StoreF64 { .. } => None,
         Op::ReduceBlockAdd { .. } => None,

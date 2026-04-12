@@ -306,6 +306,15 @@ pub enum Op {
     /// `tam_pow.f64 %dst = %a, %b`  — a^b
     TamPow { dst: Reg, a: Reg, b: Reg },
 
+    /// `tam_atan.f64 %dst = %a`  — arctan(a), result in radians.
+    ///
+    /// Range: `(-π/2, π/2)` for all finite inputs. `tam_atan(±∞) = ±π/2`.
+    /// `tam_atan(NaN) = NaN`. `tam_atan(0) = 0` (sign preserved).
+    ///
+    /// Campsite 1.18 stub: added 2026-04-12 to unblock Phase 2 atan implementation.
+    /// Implementation pending tambear-libm (campsite 2.8 or similar).
+    TamAtan { dst: Reg, a: Reg },
+
     // ── Reduction ────────────────────────────────────────────────────────────
 
     /// `reduce_block_add.f64 %out_buf, %slot_idx:i32, %val:f64 @order(<strategy>)`

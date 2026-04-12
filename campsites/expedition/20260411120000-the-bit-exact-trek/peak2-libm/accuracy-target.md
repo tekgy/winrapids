@@ -141,6 +141,8 @@ If **any** of these fails, the function is not done. The remedy is to diagnose t
 - **We do not claim correct rounding.** `max_ulp = 1.0` means our answer could be one ULP off from the truly-rounded result on some inputs.
 - **We do not claim this bound outside the declared primary domain.** Big-argument trig (`|x| > 2^20`) is out of spec until Payne-Hanek lands.
 - **We do not claim 1 ULP for `tam_atan2` in Phase 1.** The `y/x` division composes with atan's 1-ULP error to reach ~2 ULP. The exception is documented above and in the per-function exceptions table; Phase 2 addresses it via double-double on the quotient.
+- **We do not claim 1 ULP for `tam_pow` in Phase 1.** The composed `exp(b · log(a))` path reaches ~2 ULP worst case for `|b| ≤ 30`. Phase 2 tightens via TwoSum/TwoProd on the intermediate.
+- **We do not claim 1 ULP for `tam_tan` in Phase 1.** Pole sensitivity makes uniform 1 ULP structurally unreachable. The 2-ULP bound is scoped to the pole-exclusion zone `|cos(x_f64)| ≥ 2^-26`; inputs closer to poles are flagged by the oracle runner, not silently passed.
 - **We do not claim that identity tests hold to 0 ULPs.** Composition of individually-correct functions can drift by a couple of ULPs; that's geometry of floating-point, not a bug.
 - **We do not claim speed.** Phase 1 is correctness-first. The interpreter will run the `.tam` ops one at a time and it will be slow. Speed is Peak 5.5 (JIT) onward.
 

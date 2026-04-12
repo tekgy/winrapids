@@ -138,6 +138,43 @@ diverging — exactly the problem tambear-libm is being built to solve.
 
 ---
 
+### Entry 007 — 2026-04-12 — Campsite 4.8: Three-Section Oracle Format
+
+**Source:** Scientist report (commit `d4141ec`), observer independent code review.
+
+**Verified state:** 76 passing, 0 failing, 9 ignored (across all test suites in `tambear-tam-test-harness`). Build clean.
+
+#### The three-section oracle design (assessment)
+
+The `tam_exp.toml` oracle uses three orthogonal check categories. Observer read the full file and the oracle runner source. Assessment:
+
+**`[[bit_exact_checks.cases]]`** — Six entries covering `exp(-inf) = +0.0` (sign-sensitive), `exp(+inf) = +inf`, `exp(+0) = 1.0`, `exp(-0) = 1.0`, `exp(-746) = +0.0`, and `exp(-ln2) = 0.5`. These are cases where IEEE 754 semantics or exact arithmetic determines the exact bit pattern. The sign on `exp(-inf)` and `exp(-746)` is the critical detail — some libms return `-0.0` through sign propagation in the underflow path, which is wrong. `BitExactConstraint` is hex-only, preventing named constraints from being accidentally encoded in the wrong section.
+
+**`[[constraint_checks.cases]]`** — Two entries, both `nonzero_subnormal_positive`: `exp(-745.0)` and `exp(-745.1332...)`. These test that subnormal-range outputs are not flushed to zero. The right section for these: the implementation determines the exact subnormal bit pattern, but we can assert class membership (`bits != 0 AND exponent field == 0 AND sign == 0`). Phase 1 has three named constraints: `nonzero_subnormal_positive`, `finite`, `infinite_positive`.
+
+**`[[identity_checks]]`** — Four entries: `exp_log_roundtrip` (requires `tam_ln`, skipped until registered), `exp_negation` (`exp(x) * exp(-x) = 1`, 2 ULP), `exp_additivity` (`exp(a+b) = exp(a)*exp(b)`, 3 ULP), `exp_one_returns_e` (single-point TMD check, 1 ULP). The skip-not-fail behavior for missing auxiliary functions is correct — `exp_log_roundtrip` produces NaN residual and is skipped rather than failed until `tam_ln` is registered.
+
+#### Observer assessment
+
+The separation of concerns is exact:
+- Bit patterns where IEEE 754 specifies the answer → `bit_exact_checks`
+- Outputs where class is determined but exact bits are implementation-determined → `constraint_checks`
+- Algebraic identities → `identity_checks`
+
+No category bleeds into another. This correctly handles the hardest libm testing case: subnormal outputs where you know the *class* but not the exact bits.
+
+**Concern — TMD corpus is thin (TC-3 update):**
+
+The `tmd_candidates` corpus has 4 values: `1.0, -1.0, 0.5, -0.5`. A publishable faithful-rounding claim requires thousands of TMD candidates systematically generated near rounding boundaries. The current set catches gross errors but not subtle off-by-one-ULP polynomial cases. This is not a Phase 1 blocker (the `claimed_max_ulp = 1.0` check against the 1k reference binary covers the broader domain), but the TMD corpus needs expansion before a journal submission. The referenced `tmd-corpus/exp-tmd.md` does not yet exist — monitoring for it.
+
+**Cody-Waite exact inputs — critical runner implementation trap:**
+
+The 22 `cody_waite_exact` inputs are `(n as f64) * LN2_HI` (the high Cody-Waite constant, `0x3FE62E42FEFA3800`), NOT `n * ln(2)`. The oracle note is explicit: the runner must NOT re-evaluate these via mpmath because mpmath's `ln(2)` differs from `LN2_HI` by the deliberate round-off that Cody-Waite tracks. Re-evaluating via mpmath would test wrong inputs (the residual `r` would not be exactly 0, defeating the test). Observer will verify this when the oracle runner's corpus loading is reviewed.
+
+**I9 compliance:** `reference_bin = "peak2-libm/exp-1k.bin"` confirmed to exist on disk. Reference is mpmath at 50+ digits, not another libm. I9 compliant.
+
+---
+
 ### Entry 006 — 2026-04-11 — Peak 1 Verification + Post-Integration Test Failures
 
 **Source:** Navigator announcement (Peak 1 complete), observer independent verification.

@@ -183,6 +183,24 @@ input = -0.6931471805599453   # fp64(-ln(2))
 expected_bits = "0x3FE0000000000000"   # 0.5 exactly
 rationale = "exp(-ln(2)) = 0.5 exactly. This is representable in fp64. The Cody-Waite reduction with n=-1 gives r=0 and the polynomial returns 1.0; ldexp(1.0, -1) = 0.5. Must be bit-exact."
 
+[[bit_exact_checks.cases]]
+name = "exp_overflow_threshold_is_positive_inf"
+input = 709.7827128933840
+expected_bits = "0x7FF0000000000000"   # +inf (NOT -inf = 0xFFF0000000000000)
+rationale = "Overflow from a finite argument must produce +inf not -inf. The injection-set ULP path cannot enforce this: near_overflow inputs are not in the reference binary, so the runner uses candidate(x) as its own reference (ULP=0 always, sign ignored). This bit_exact_check is the only enforcement of overflow sign. Different code path from IEEE special-value input (f64::INFINITY input → +inf is covered by exp_pos_inf_is_positive_inf)."
+
+[[bit_exact_checks.cases]]
+name = "exp_well_above_overflow_is_positive_inf"
+input = 710.0
+expected_bits = "0x7FF0000000000000"   # +inf
+rationale = "Belt-and-suspenders for the overflow sign. 710.0 is well above the overflow threshold. An implementation with a sign error in the overflow fast-path would be caught here. Same injection-set ULP gap as exp_overflow_threshold_is_positive_inf."
+
+[[bit_exact_checks.cases]]
+name = "exp_far_above_overflow_is_positive_inf"
+input = 800.0
+expected_bits = "0x7FF0000000000000"   # +inf
+rationale = "Belt-and-suspenders. 800.0 is far above overflow threshold, exercises any separate deep-overflow fast-path. A sign error that only manifests for very large inputs would be caught here and not by 709.78 or 710.0 entries."
+
 # ──────────────────────────────────────────────────────────────────────────────
 # CONSTRAINT CHECKS
 # Class-membership constraints — not a single expected bit pattern but a named

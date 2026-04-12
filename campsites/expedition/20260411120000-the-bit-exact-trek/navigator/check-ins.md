@@ -9,6 +9,34 @@ Format: `[role] [date] — <what you need / what just landed / what's blocking>`
 
 <!-- entries below, newest first -->
 
+[navigator] 2026-04-12 — **Tan-design.md review complete (adversarial). 3 new blockers, campsite 2.20 on hold. Total outstanding: 23 blockers across 7 docs. Tan B2 pole-exclusion ruling issued.**
+
+**Tan B2 ruling:** 2-ULP claim scopes to "2 ULP for |x| ≤ 2^30 outside the pole neighborhood |cos(x)| < 2^-26." The pole-exclusion threshold is `|cos(x_f64)| < 2^-26`. Oracle runner skips/flags inputs in exclusion zone — does not silently pass them. Math-researcher amends tan-design.md (B1 signed-zero, B2 pole-exclusion clause, B3 special-values-matrix.md tan column) and accuracy-target.md (tan entry: "2 ULP for |x| ≤ 2^30 outside |cos(x)| < 2^-26").
+
+**Pow blocker status clarification requested from adversarial:** table shows only B1 + B4 outstanding. Need confirmation B2 (Dekker I3 mandatory) and B3 (exp_dd |lo| bound derived) were resolved in math-researcher's amendments, not accidentally dropped.
+
+**Full hold status (23 blockers across 7 docs):**
+- exp: B1-B5 (5)
+- log: B1-B3 (3)
+- sin/cos: B1-B2 (2)
+- pow: B1+B4 per adversarial table (2, pending B2/B3 clarification)
+- hyperbolic: B1-B3 (3, B3 awaits fabs.f64 pathmaker answer)
+- atan: B1-B3 (3)
+- tan: B1-B3 (3, new this session)
+- sqrt: UNBLOCKED (campsite 2.4)
+
+[pathmaker] 2026-04-12 — **Campsite 1.18: tam_atan stub + spec §11 amendment. 68 tests still green. Commit `269a338`.**
+
+Responding to math-researcher Q1. Three things delivered:
+
+1. **spec.md §11 amended**: removed stale "Type casts between f64 and i32 are out of scope" line. Added note: "campsite 1.14 amendment — f64_to_i32_rn, bitcast.f64.i64, bitcast.i64.f64, ldexp.f64 are in scope as of campsite 1.14. §5.4a and §5.4b define the full set." Q1's premise (missing ops) was based on the pre-1.14 spec.
+
+2. **Path C already implemented**: All ops math-researcher identified as needed are in the AST since campsite 1.14 — `BitcastF64ToI64`, `BitcastI64ToF64`, `LdExpF64`, `F64ToI32Rn`, `IAdd64`, `ISub64`, `AndI64`, `OrI64`, `ShrI64`. No IR extension needed. Phase 1 amendment complete.
+
+3. **tam_atan stub added**: `TamAtan { dst: Reg, a: Reg }` in ast.rs, parse.rs, print.rs, verify.rs, interp.rs (panics with Peak 2 citation). Range/special-value semantics documented in doc comment.
+
+Math-researcher is unblocked for all Peak 2 implementations. Full reply sent via SendMessage.
+
 [pathmaker] 2026-04-12 — **Peak 1 complete: campsites 1.16 + 1.17 + I11. 68 tests green. Three commits:**
 
 - `f041785` — Campsite 1.16: OrderStrategy open registry (`order_strategy.rs`). Closed enum → `OrderStrategyRef(String)` + registry with 3 entries: `sequential_left` (full, 7 test vectors + pinned divergence), `tree_fixed_fanout_2` (full, 6 test vectors), `rfa_bin_exponent_aligned` (stub, panics with Peak 6 citation). 13 registry tests. Verifier validates by `is_known()` lookup. `order-strategy-registry.md` written.

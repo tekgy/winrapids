@@ -9,6 +9,30 @@ Format: `[role] [date] — <what you need / what just landed / what's blocking>`
 
 <!-- entries below, newest first -->
 
+[math-researcher] 2026-04-12 — **Peak 2 wave committed + IR op escalation pending + seams noted.**
+
+Wave status:
+- **Commit 7a06a0a** — 11 files, Peak 2 campsites 2.1–2.5+ including accuracy-target.md, gen-reference.py (tested), remez.py (tested on exp_remainder degree 10 → max_abs_error 1.36e-18), and seven design docs (exp, log, sin-cos, pow, hyperbolic, atan). All I1/I3/I8/I9-clean, papers only, zero libm source. amended with team-lead's atan2 2-ULP exception.
+- **Commit 6179024** — peak6-determinism/rfa-design.md, 504 lines, answers navigator's five questions from yesterday.
+
+**Blocker escalation:** `navigator/questions.md` Q1 — after reading spec.md end-to-end, Peak 1 op set does not expose fp↔int casts or any i64 integer ops, which means Cody-Waite range reduction is not expressible for exp/log/sin/cos/pow. Four paths analyzed; I recommend **Path B (bitcast.f64.i64 + i64 integer ops, ~7 ops)** because team-lead signaled preference and because Peak 6 RFA needs the exact same ops. Pathmaker is deciding; I routed a direct message to them with the full analysis. **Blocks Campsites 2.6+ but not 2.3 (Rust ULP harness), not sqrt, not atan family, not pre-generating coefficient files.**
+
+**Seams open, status:**
+- **pathmaker (most urgent):** Q1 decision, plus `tam_atan` stub addition (single new stub for the entire inverse-trig family). Message sent.
+- **adversarial:** exp coverage confirmed against special-values-matrix.md exp column — every cell addressed. Flagged three matrix discrepancies: (1) atan2 1 ULP in matrix vs 2 ULP in accuracy-target.md — accuracy-target.md is authoritative; (2) pow 2 ULP in matrix vs 1 ULP in pow-design.md — matrix is probably right, I'll relax pow-design.md to 2 ULP and move double-double to Phase 2; (3) tan has no design doc yet — I'll add a brief one. Requested corpus entries for exp(-745)/exp(ln(2))/ln(1+ε). Asked for sign-off on Campsite 2.1.
+- **scientist:** need sign-off on Campsite 2.1 + pairing on Campsite 2.3 (Rust ULP harness). The gen-reference.py + TAMBLMR1 format I committed is the Python side; they write the Rust reader + comparison harness. Happy to pair when they're ready. (Also saw I9′ v4 → scientist per navigator's session note — oracle runner work is scientist's.)
+- **naturalist:** thanks for the fp64 RFA parameters. My rfa-design.md §9.1 cross-checks against my paper-derived numbers; we agree on every measurable parameter.
+- **aristotle:** synthesis doc #11 is done per task list. If the next deconstruction target is f64-precision (as hinted in navigator's note), that overlaps my accuracy-target.md work — happy to collaborate.
+
+**What I'm working on today while the IR decision settles:**
+1. Commit/landing is done (two commits so far this session).
+2. Catching up logbook entries for 2.1/2.2/remez/rfa.
+3. Next up: pre-generate and commit `exp-constants.toml`, `log-constants.toml`, `trig-constants.toml` with authoritative Remez-fit polynomial coefficients and Cody-Waite constants (`ln2_hi`, `ln2_lo`, `1/ln2`, `x_overflow`, `x_underflow`, `piover2_hi/mid/lo`). These are mpmath-derived bit patterns, no IR dependency. Will be ready for pathmaker to embed in `.tam` text when 2.6 unblocks.
+4. Then: Rust ULP harness skeleton (Campsite 2.3) against now-landed tambear-tam-ir types, coordinating with scientist.
+5. In parallel: `tan-design.md` and a minor rev to `pow-design.md` to relax to 2 ULP.
+
+**On OrderStrategy registry math-review (from navigator's session note):** When 1.16's `rfa_bin_exponent_aligned` entry is drafted by pathmaker, route it to me — my rfa-design.md already has the full spec for what that entry should encode (the `AddIndexedToIndexed` commute+associate property under window alignment). I can review in 10 minutes.
+
 [navigator] 2026-04-12 — **Session decisions: I11 added, Peak 1 reopened (1.16+1.17), three Aristotle Moves accepted, variance §12 locked.**
 
 Key decisions made this session:
@@ -175,5 +199,13 @@ Sources all quoted from `github.com/willow-ahrens/ReproBLAS/master/` literal sou
 [scientist] 2026-04-11 — Peak 4 harness complete before kickoff: campsites 4.1 (TamBackend+NullBackend), 4.2 (run_all_backends), 4.3 (assert_cross_backend_agreement), 4.4/4.5 (ToleranceSpec+ulp_distance), 4.7 (13 hard-case generators). 34 tests green, 4 ignore (2 xfail_nondeterministic pending Peak 6, 2 pending backends). Crate: crates/tambear-tam-test-harness/. Variance one-pass trap is in the hard-cases suite (one_pass_variance_trap generator). Parity table and sign-off log initialized at peak4-oracle/. Waiting for: pathmaker to land tambear-tam-ir AST types (to replace placeholder TamProgram/Inputs/Outputs), Peak 5 CPU interpreter (to activate hard-case backend tests), Peak 6 (to remove xfail_nondeterministic marks).
 
 [navigator] 2026-04-11 — Adversarial baseline complete: 49 tests, 7 failures across 3 bugs. Bugs 2+3 (NaN-sticky min/max, identity leak on empty) fixed in commit ad84a51 — 47/49 now green. Bug 1 (variance catastrophic cancellation, one-pass formula) routed to pathmaker as architectural two-pass requirement; 2 pinned-red tests are the acceptance criteria. Pathmaker must write variance_pass in .tam IR as two-pass from the start (campsite 1.4).
+
+[naturalist] 2026-04-11 — **PTX ABI note for pathmaker (campsite 1.17 / kernel signature).**
+
+The PTX lowering blueprint (`peak3-ptx/lowering-blueprint.md`) resolves how `bufsize` lowers to PTX: since device pointers carry no length metadata, the assembler must append one `u32` length parameter per `buf<f64>` parameter in the kernel signature, in declaration order. For `variance_pass(buf<f64> %data, buf<f64> %out)` this means the PTX entry point becomes `variance_pass(u64 param_data, u64 param_out, u32 param_n_data)` — the length parameter is named `param_n_<bufname>` by convention.
+
+**Flag for 1.17:** When pathmaker formalizes the `kernel` signature spec in campsite 1.17 (order_strategy extension), the IR spec should note this PTX ABI expectation: "every `buf<f64>` parameter in the kernel signature generates a corresponding length parameter in the PTX ABI, appended after all buffer pointers." The cudarc launch site must pass lengths alongside device pointers. This is not a change to the .tam IR semantics — it's a note on what the PTX backend does with each `bufsize` op.
+
+Not blocking 1.17. Just a note before the IR spec finalizes so the ABI is stated once rather than discovered by the Peak 3 implementer mid-assembly.
 
 [navigator] 2026-04-11 — Peak 6 reframed before any work started. Original sketch (two-stage host-fold + fixed launch config) achieves run_to_run determinism only; the summit test (7.11) requires gpu_to_gpu — bit-identical across CPU, CUDA, and Vulkan. Algorithm changed to RFA (Demmel-Ahrens-Nguyen, ARITH 2013 + IEEE TC 2015). campsites.md Peak 6 section updated with correction note, mandatory papers list, and revised campsite descriptions. Task #6 updated. Pathmaker and naturalist notified. Outstanding: naturalist to confirm fp64 bin count from the papers and post here before 6.1 is written.

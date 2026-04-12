@@ -20,6 +20,10 @@
 | `tam_sinh` | pure `.tam` function calling `tam_exp` | No |
 | `tam_cosh` | pure `.tam` function calling `tam_exp` | No |
 
+**IR ops used:**
+- `tam_exp` — the transcendental stub (TamExp in ast.rs); all three functions call it
+- `fabs.f64` — used for `|x|` in polynomial-regime dispatch. Confirmed present in spec §5.3 as `FAbs { dst, a }` at ast.rs:198. (Adversarial B3 resolution, 2026-04-12: no IR amendment needed; adding this explicit note.)
+
 **Net ask of pathmaker:** nothing. These functions live in the libm `.tam` text as compositions; no IR amendment required.
 
 ---
@@ -115,10 +119,14 @@ if |x| < 2^-26:
     # Return 1.0 exactly — the quadratic correction is below 1 ULP
     return 1.0
 elif |x| < 22:
-    # Medium regime: full formula, no cancellation (it's a sum, not difference)
-    e_x = exp(x)
-    e_neg = 1 / e_x
-    return (e_x + e_neg) / 2
+    # Medium regime: two-call form — exp(x) and exp(-x) are independent
+    # 1-ULP calls. Their sum has no cancellation (both positive), so the
+    # result is accurate to 1 ULP dominated by the larger term.
+    # (Adversarial B2 resolution, 2026-04-12: earlier draft used 1/e_x which
+    # compounded error to ~1.5 ULP; replaced with the two-call form.)
+    e_pos = tam_exp(x)
+    e_neg = tam_exp(-x)
+    return (e_pos + e_neg) / 2
 else:
     # Large regime: cosh(x) ≈ e^|x| / 2
     if x > 0:
@@ -160,13 +168,16 @@ elif |x| < 0.55:
     # to avoid cancellation in (e^2x - 1)/(e^2x + 1)
     return x + x * x * x * TANH_POLY(x*x)
 elif |x| < 22:
-    # Medium regime: use the formula
-    # tanh(x) = 1 - 2/(e^(2x) + 1)  (for x > 0, avoids overflow in numerator)
-    # For x < 0, use -tanh(|x|)
-    sign = sign_of(x)
-    ax = |x|
-    e_2x = exp(2 * ax)
-    return sign * (1.0 - 2.0 / (e_2x + 1.0))
+    # Medium regime: two-call form (per navigator ruling 2026-04-12, adversarial B4).
+    # The earlier single-call form `1 - 2/(e^(2x)+1)` cannot achieve 1 ULP near
+    # |x| = 0.55 because the final subtraction amplifies relative error by
+    # 1/tanh(x). Two independent tam_exp calls avoid this.
+    # Sign is implicit: (e_pos - e_neg) is negative for x < 0 automatically.
+    # Error budget: each exp call at 1 ULP independently; fdiv at 0.5 ULP;
+    # total ≤ 2 ULP worst case (same carve-out as atan2 and pow).
+    e_pos = tam_exp(x)
+    e_neg = tam_exp(-x)
+    return (e_pos - e_neg) / (e_pos + e_neg)
 else:
     # Large regime: tanh(x) → ±1 to full precision
     return copysign(1.0, x)
@@ -174,7 +185,7 @@ else:
 
 The `|x| > 22` regime: `e^(2x) > 2^63`, so `2/(e^(2x) + 1) < 2^-62`, which is below `1 ULP` of `1.0`. The result is `±1.0` to full precision.
 
-The `|x| > 0.55` regime: use the stable form `1 - 2/(e^(2x) + 1)` which has no cancellation because both terms contribute the same sign.
+The `|x| > 0.55` regime: use the two-call form `(exp(x) - exp(-x)) / (exp(x) + exp(-x))` per navigator ruling 2026-04-12 (adversarial B4). The earlier draft used `1 - 2/(e^(2x) + 1)` which could not achieve 1 ULP near `|x| = 0.55`; the two-call form bounds error at ≤ 2 ULP.
 
 The `|x| < 0.55` regime: the formula cancels. Use a polynomial.
 

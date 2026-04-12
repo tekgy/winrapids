@@ -14,6 +14,71 @@
 
 ---
 
+## VB-005 — GLSL.std.450 `Sqrt` NaN behavior is underspecified
+
+**Vendor:** Khronos (Vulkan / GLSL.std.450)
+**Component:** GLSL.std.450 extended instruction set, opcode 31 (Sqrt)
+**Gap:** The GLSL.std.450 specification for `Sqrt` states the operand must be
+non-negative (≥ 0). NaN is neither positive nor negative, so NaN input falls
+into the domain where the spec makes no guarantee. IEEE 754-2019 §9.2 specifies
+that `squareRoot(qNaN)` shall return a NaN, and GLSL.std.450 is broadly
+intended to follow IEEE semantics — but the domain restriction text creates
+ambiguity: is NaN excluded from the guarantee? The spec does not say explicitly
+that `Sqrt(NaN) = NaN`. Additionally, `SPV_KHR_float_controls` (the
+`SignedZeroInfNanPreserve` execution mode) is specified to apply to arithmetic
+instructions (OpFAdd, OpFMul, etc.) but the spec does not explicitly state that
+it covers `OpExtInst` (extended instructions). A conformant implementation could
+interpret `SignedZeroInfNanPreserve` as inapplicable to `Sqrt`.
+
+This is a narrower gap than VB-001 (OpFMin NaN is fully "undefined" in the core
+spec). Here the spec is silent rather than explicitly undefined. But silence is
+not a guarantee, and under the tightened P2 ("the lowering must pin the
+IEEE-754 semantics of every emitted op from the target spec alone"), silence is
+not sufficient — we cannot faithfully lower `.tam fsqrt(NaN)` to an op whose
+NaN behavior the spec does not pin.
+
+**Trek impact:** I11 (NaN propagates through every op on every backend). If
+`OpExtInst Sqrt` does not propagate NaN on some Vulkan implementation, a kernel
+computing `sqrt(NaN)` would return a non-NaN on Vulkan while returning NaN on
+CPU and PTX — a cross-backend I11 failure.
+**P2 implication:** Composed-primitive workaround. Same class as VB-001: the
+spec does not guarantee the behavior we require, so the faithful lowering must
+not delegate NaN semantics to the op. Emit an explicit `OpIsNan` guard: if
+input is NaN, return the input NaN directly via `OpSelect`; otherwise emit
+`OpExtInst Sqrt`. The non-NaN path is fully spec-compliant; the NaN path is
+handled by well-defined ops (`OpIsNan`, `OpSelect`) that have no NaN ambiguity.
+
+**Workaround:** Emit an explicit NaN guard for every `.tam fsqrt.f64` on Vulkan:
+
+```
+; fsqrt(x) — I11-compliant SPIR-V emit
+%is_nan_x = OpIsNan %bool %x
+%sqrt_val  = OpExtInst %f64 %glsl450 Sqrt %x
+%result    = OpSelect %f64 %is_nan_x %x %sqrt_val
+```
+
+Three instructions instead of one. The `OpExtInst Sqrt` path is only reached
+for non-NaN inputs where the spec's domain restriction is satisfied. `OpIsNan`
+and `OpSelect` are both fully defined for NaN inputs.
+
+Note: this does not resolve the RoundingMode uncertainty for `fsqrt` — that
+is a separate gap (Vulkan spec mandates ≤1 ULP faithfully rounded for
+extended instructions, not necessarily correctly rounded). The oracle_profile
+for fsqrt remains `WithinULP(1)` regardless of this NaN guard.
+
+**Upstream report:** None filed. The GLSL.std.450 spec gap is a design choice
+(domain restriction language) rather than a clear bug. IEEE 754-2019 §9.2
+intent is that sqrt(NaN) = NaN, but the GLSL spec doesn't say this explicitly.
+**Date logged:** 2026-04-11
+**Status:** OPEN — pending escalation or navigator ruling on whether the
+composed-primitive workaround is mandated (as for VB-001) or whether NVIDIA's
+observed behavior (sqrt(NaN) = NaN in practice) is sufficient to defer. The
+capability matrix currently marks fsqrt NaNPropagation as ImplementationDefined.
+If the workaround is mandated, the capability matrix entry and the Peak 7
+lowering spec both need updating.
+
+---
+
 ## VB-004 — PTX `min.f64` / `max.f64` default does NOT propagate NaN
 
 **Vendor:** NVIDIA  

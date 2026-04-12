@@ -6,20 +6,20 @@
 **Status:** draft, awaiting navigator + pathmaker review
 **Date:** 2026-04-11
 
-**Upstream dependency:** `accuracy-target.md`. Same Cody-Waite and Horner patterns as `exp` and `log`. Phase 1 scope is limited to `|x| ≤ 2^20`; large-argument trig is Phase 2 (Payne-Hanek, Campsite 2.16).
+**Upstream dependency:** `accuracy-target.md`. Same Cody-Waite and Horner patterns as `exp` and `log`. **Phase 1 scope is `|x| ≤ 2^30`** via three-term Cody-Waite reduction of π/2. Large-argument trig beyond `2^30` is Phase 2 (Payne-Hanek, Campsite 2.16). (Amended 2026-04-12 per navigator's "pick 2^30 and commit" direction — the prior draft said 2^20 in the introduction and 2^30 in the testing section; 2^30 is now the consistent claim.)
 
 ---
 
 ## What these functions do
 
 Given `x : f64`, return `sin(x)` / `cos(x)` : f64 with:
-- `max_ulp ≤ 1.0` across 1M random samples drawn exponent-uniformly from `[-2^20, 2^20]`.
+- `max_ulp ≤ 1.0` across 1M random samples drawn exponent-uniformly from `[-2^30, 2^30]`.
 - IEEE specials:
   - `sin(0) = +0` bit-exact. `sin(-0) = -0` bit-exact (odd function preserves sign of zero).
   - `cos(0) = 1.0` bit-exact. `cos(-0) = 1.0` bit-exact (even function).
   - `sin(±inf) = nan` (undefined — `sin` has no limit at infinity), same for `cos`.
   - `sin(nan) = nan`, `cos(nan) = nan`.
-- For `|x| > 2^20`: Phase 1 returns `nan` and documents this as out-of-domain. Phase 2 will handle via Payne-Hanek.
+- For `|x| > 2^30`: Phase 1 returns `nan` and documents this as out-of-domain. Phase 2 will handle via Payne-Hanek.
 
 ## The big picture
 
@@ -40,29 +40,27 @@ So we have two polynomials — `sin_poly(r)` on `[-π/4, π/4]` and `cos_poly(r)
 
 ## The hard part: range reduction
 
-For `|x| < 2^20 ≈ 1e6`, the argument `x / (π/2)` has at most ~21 significant bits in the integer part. Standard Cody-Waite reduction with `π/2` split into two fp64 halves is sufficient:
+Phase 1 uses **three-term Cody-Waite reduction of π/2**, giving `|x| ≤ 2^30 ≈ 1e9` as the supported domain. (Committed 2026-04-12 per navigator's "pick 2^30 and commit" direction.)
 
 ```
-k = round(x / (π/2))              # integer, |k| ≤ 2^21
-r_1 = x - k * piover2_hi          # exact by Sterbenz if piover2_hi has enough trailing zeros
-r   = r_1 - k * piover2_lo        # small correction
+k    = round(x / (π/2))              # integer, |k| ≤ 2^31
+r_1  = x - k * piover2_hi            # exact by Sterbenz (piover2_hi has 30 trailing zero mantissa bits)
+r_2  = r_1 - k * piover2_mid         # second correction (piover2_mid also has 30 trailing zeros)
+r    = r_2 - k * piover2_lo          # third correction, captures remaining bits of π/2
 ```
 
-**Why two parts is enough for `|x| < 2^20`:** `piover2_hi` is an fp64 with enough trailing zeros that `k * piover2_hi` is exact for `|k| ≤ 2^21`. We need ~22 trailing zeros, which leaves 52 - 22 = 30 mantissa bits in `piover2_hi`. That's fewer bits than we'd want for a full-precision `π/2`, so `piover2_lo` carries the remaining ~52 bits. The sum `piover2_hi + piover2_lo ≈ π/2` to ~82 bits of precision.
+**Why three parts.** Each `piover2_hi` and `piover2_mid` has 30 trailing zero mantissa bits, so `k * piover2_{hi,mid}` is exact in fp64 for `|k| ≤ 2^30` (which follows from `|x| ≤ 2^30 → |k| = |round(x · 2/π)| ≤ 2^31 · (2/π) < 2^30.34`, comfortably within the 30-zero window with margin). The three-term split gives `piover2_hi + piover2_mid + piover2_lo ≈ π/2` to ~120 bits of total precision (30 preserved bits per split × 3 + some overlap), which is the right amount for `|x| ≤ 2^30`.
 
-**Why two parts is NOT enough for `|x| > 2^20`:** For larger `x`, `k` grows, and either `piover2_hi` needs more trailing zeros (reducing its precision and thus the precision of `r_1`) or `piover2_lo` gets big enough that the second subtraction no longer gives full precision. At `|x| ~ 2^53`, you need `π/2` to ~160 bits to reduce correctly. That's Payne-Hanek territory. Phase 1 doesn't go there.
+The three constants are committed in `libm-constants.toml` as `piover2_hi`, `piover2_mid`, `piover2_lo`, computed by `gen-constants.py` from mpmath at 100 dps. Their exact bit patterns:
+- `piover2_hi  = 0x3ff921fb40000000`  (1.5707962512969970703125 — low 30 mantissa bits zero)
+- `piover2_mid = 0x3e74442d00000000`  (7.549789415861596e-08  — low 30 mantissa bits zero)
+- `piover2_lo  = 0x3cf8469898cc5170`  (5.390302858158119e-15)
 
-**The precise Phase 1 cut-off:** `|x| ≤ 2^20 - 1`. For `|x| ≥ 2^20`, return `nan` with the documented "out of Phase 1 domain" rationale.
+**Why not two-term (2^20 ceiling).** Two-term Cody-Waite limits us to `|x| ≤ 2^20 ≈ 1e6`. That's fine for applications that only ever feed small arguments, but it's weaker than the three-term version for effectively zero implementation cost (one more `fmul` + `fsub` per call — two ops). The three-term form is uniformly better and the testing section already assumes it. The earlier draft had 2^20 in the introduction and 2^30 in the testing section; that inconsistency is now resolved in favor of 2^30.
 
-### Three-term Cody-Waite?
+**Why three-term is NOT enough for `|x| > 2^30`.** For larger `x`, either `piover2_{hi,mid}` need more trailing zeros (reducing their precision and `r_1`/`r_2`'s precision) or `piover2_lo` gets big enough that the third subtraction no longer captures the residual cleanly. At `|x| ~ 2^53`, you need `π/2` to ~160 bits to reduce correctly — Payne-Hanek territory. Phase 1 caps at `2^30`.
 
-Some libms use a three-term split of `π/2`:
-```
-r_1 = x - k * piover2_hi
-r_2 = r_1 - k * piover2_mid
-r   = r_2 - k * piover2_lo
-```
-This buys precision for `|x|` up to about `2^30`. It's cheap and it's the right extension if we want to push Phase 1 a little further without going full Payne-Hanek. **Recommendation:** emit the three-term version so we effectively cover `|x| ≤ 2^30 ≈ 1e9`, which covers most practical use cases outside of numerical integration and dense grids. The extra ops are minimal (one more `fsub` + one more `fmul`), and it removes a class of unpleasant edge cases.
+**The precise Phase 1 cut-off:** `|x| ≤ 2^30 - 1`. For `|x| ≥ 2^30`, return `nan` with the documented "out of Phase 1 domain" rationale. See Campsite 2.16.
 
 The three constants are computed in mpmath at 100 dps:
 - `piover2_hi`: the top ~30 bits of `π/2` as an fp64 with trailing mantissa bits zeroed

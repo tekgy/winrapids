@@ -127,10 +127,72 @@ The following are explicitly **future work**, not in scope for the trek:
 - Bounded-ULP modes (T1, T2, T3) as opt-in faster paths for users who don't need TamSession sharing
 - Bit-exactness for Kingdom B/C/D (iterative fixed-point, stochastic methods) — some of these may never be achievable, and that's acceptable
 - Formal verification of tambear-libm implementations (Coq, Lean, or similar) — the current trek targets mpmath-oracle ULP verification, not full formal proof
-- Cross-hardware bit-exactness for non-IEEE-754 silicon (posits, approximate computing, analog accelerators) — the claim is "any IEEE-754 compliant ALU," not literally "any ALU"
 - Subnormal bit-exactness on Vulkan backends lacking `shaderDenormPreserveFloat64` (see ESC-001 for the decided scope carve-out)
+- **The post-IEEE-754 future** (its own subsection below — too significant to leave as a one-liner)
 
 Each of these is a real user need that a future phase of tambear may target. None of them invalidate the T4 Phase 1 work — a T4 kernel automatically satisfies any weaker tier a user might select.
+
+### The post-IEEE-754 future: software fp64 as a path off IEEE-754-dependent hardware
+
+*Named but deferred per team-lead decision 2026-04-12 — the logical extension of the "use/force our version" principle after ESC-002 / vendor-bugs.md VB-004. Not Phase 1 scope. Worth naming now so Phase 1 decisions don't close the door.*
+
+Phase 1's compositional claim rests on three preconditions: IR-precision (P1, we own), faithful-lowering (P2, we own), and IEEE-754-compliance-for-the-ops-used (P3, hardware owns and we gate via capability matrix). The weak point is P3 — it's the only precondition we don't control, and it's the reason ESC-001 (Vulkan subnormal) and VB-001–004 exist. Every entry in `vendor-bugs.md` is, at root, "a vendor's P3 implementation doesn't match what we need, so we work around it."
+
+The logical endgame is to remove P3 from the list of preconditions entirely by **emitting software fp64 implementations of every arithmetic op, composed from the target hardware's native integer primitives (or posit primitives, or whatever the target provides)**. Under this model:
+
+- `.tam` IR says `fadd.rn.f64 %dst, %a, %b`
+- Backend lowers to a 200-line integer-arithmetic sequence that implements IEEE-754 fp64 addition bit-for-bit: sign/exponent/mantissa extraction, alignment shifting, guard bits, round-to-nearest-even, overflow/underflow handling, denormal paths, NaN/Inf propagation
+- Target hardware only needs integer ops + memory; no fp64 adder required
+- The compositional claim becomes: given `.tam` source, a backend that faithfully lowers `.tam` to its target's *integer* ISA, and hardware that implements *integer* arithmetic correctly, the output is bit-exact across all such (backend, hardware) pairs
+- P3 narrows from "IEEE-754 for fp64 ops" to "integer arithmetic on ≥32-bit words" — a vastly weaker requirement that essentially every compute substrate satisfies
+
+**What this unlocks:**
+- **Posit-based hardware** (Unum III, John Gustafson's posits)
+- **Approximate / stochastic compute** (probabilistic results, analog fp)
+- **Integer-only microcontrollers** (Cortex-M0-class embedded, IoT)
+- **Custom silicon without fp64** (NPUs, domain-specific accelerators, future ASICs)
+- **Quantum compute substrates** (hybrid classical-quantum workloads). ⚠ **This horizon is closer than it looks.** Microsoft announced the Majorana 1 topological qubit processor in February 2025 ([azure.microsoft.com/.../majorana-1](https://azure.microsoft.com/en-us/blog/quantum/2025/02/19/microsoft-unveils-majorana-1-the-worlds-first-quantum-processor-powered-by-topological-qubits/)). Topological qubits have dramatically longer coherence times than conventional qubits, which is the engineering barrier that's kept useful quantum compute "10–20 years away" for the last decade. If topological qubit architectures scale as hoped, hybrid classical-quantum workloads become a real 2–5 year horizon. Hybrid workloads need classical arithmetic on whatever the quantum accelerator's classical host processor is — which may not be IEEE-754 fp64, depending on the architecture. A tambear that runs on the classical half of a Majorana-class system would need software fp64 if the host doesn't provide hardware fp64 natively. **This is currently the most likely driver pulling the software-fp64 path from Phase 3 into Phase 2.**
+- **GPUs that silently flush subnormals, mis-handle NaN, or contract FMA** — which is most current Vulkan hardware per ESC-001, ESC-002, VB-001, VB-004 — because we no longer depend on those ops being IEEE-compliant
+
+**What this costs:**
+- **Performance.** Hardware fp64 adders take ~1ns; software fp64 add takes ~100–1000ns (20–50 integer ops including conditional branches for denormal handling). Arithmetic kernels slow down by 100–1000×.
+- **Implementation effort.** ~3–5k lines of careful integer code total across `fadd`, `fsub`, `fmul`, `fdiv`, `fsqrt`, plus test vectors for every IEEE-754 corner case. 1–2 person-weeks for a first cut, longer for full edge-case coverage.
+- **Verification burden.** Every software-fp64 op must match hardware fp64 on every input — which means testing against hardware as the oracle, which is circular unless we test against mpmath (which is still the ground truth).
+
+**The intermediate stop — Phase 1.5 or early Phase 2:**
+
+Software fp64 implementations can exist as a **cross-check oracle alongside the hardware fp64 production path**, not as a replacement. The CPU interpreter gains a second mode: "software fp64" mode that routes every arithmetic op through the software implementation instead of `std::f64`. The two modes run on the same test inputs, and we assert bit equality. This gives us:
+
+1. **Independent verification that hardware fp64 matches spec** — if the software and hardware paths disagree, we've found either a hardware bug (like the Intel FDIV bug) or a bug in our software implementation. Both are valuable findings.
+2. **A fifth oracle in the cross-backend diff harness** (CPU-hardware, CPU-software, CUDA PTX, Vulkan SPIR-V, mpmath). Five sources of truth strictly stronger than four.
+3. **Proof of understanding** — the team has to really know IEEE-754 to write a bit-correct software adder. That knowledge is durable and transfers to every future numerical work.
+4. **A staged path to Phase 2/3** — the software implementations start as an oracle and graduate to a production backend once hardware fp64 dependence becomes a limiting factor.
+
+This Phase 1.5 scope is optional and additive. It doesn't change the current trek. It doesn't block any peak. It's a direction to walk *after* Peak 7 summits and the Phase 1 architectural claim is proven.
+
+**Phase 2 or Phase 3 — when software fp64 becomes the production path:**
+
+The triggering conditions for a full software-fp64 production path are:
+- A user emerges whose target hardware doesn't implement fp64 at all, or implements it non-IEEE
+- A vendor gap in `vendor-bugs.md` becomes too expensive to work around with composed primitives (none so far, but hypothetically)
+- A regulatory or audit requirement demands "zero trust on vendor ALU behavior" — every bit provably derived from code we wrote
+- A research direction demands running on a novel substrate where fp64 doesn't exist
+- **A hybrid classical-quantum workload** emerges on a Majorana-class topological quantum processor whose classical host doesn't provide native hardware fp64
+
+**Of these, the quantum path is currently the nearest-term**: Microsoft's Majorana 1 (Feb 2025) is the first topological qubit processor demonstrated, and if the architecture scales, hybrid workloads could be a 2–5 year horizon. Phase 1 proceeds with hardware fp64 and composed-primitive workarounds for Bucket B ops. Phase 1.5 adds the software-fp64 oracle if and when the team has bandwidth. Phase 2/3 promotes software fp64 to production if and when the triggering conditions appear — and the quantum trigger might come first.
+
+**Why we're naming this now instead of discovering it later:**
+
+The "use/force our version" principle from team-lead's ESC-002 ruling has a logical endpoint: *never trust a vendor op for anything*. Phase 1 stops short of this endpoint because the elementary IEEE-754 ops (Bucket A) are spec-pinned and using them IS using our version. But that stopping point is a choice, not an irreducible limit. If future Phase-1-unsatisfied users need a more aggressive "our version" guarantee — one that doesn't depend on the vendor implementing IEEE-754 correctly — the software-fp64 path gets them there. **Naming it now keeps the door open and prevents Phase 1 decisions from accidentally closing it** (e.g., by hard-coding hardware fp64 assumptions into the IR semantics or the backend trait).
+
+**Concretely, Phase 1 should avoid:**
+- IR ops whose semantics only make sense on IEEE-754 hardware (e.g., assuming a specific NaN encoding in the bit layout — we use IEEE-754's canonical NaN but don't exploit it)
+- Backend traits that assume the target has fp64 at all (the trait should accept a "fp64 availability" capability bit)
+- Tests that depend on hardware-specific fp64 behavior beyond what IEEE-754 specifies
+
+None of these are current violations. Phase 1's IR is clean on all three. This subsection is preventive documentation, not a corrective action.
+
+**Status:** deferred, named, documented. Revisit after Peak 7 summits.
 
 ---
 

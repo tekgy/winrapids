@@ -146,15 +146,18 @@ Implemented via branching in .tam IR. (Predicated select could also work — for
 **Front-end dispatch (before range reduction):**
 
 ```
-if isnan(x):                        return nan  (preserving bit pattern)
+if isnan(x):                        return nan  (preserving bit pattern per I11)
 if isinf(x):                        return nan  (sin/cos at infinity is undefined)
-if x == +0.0:                       sin: return +0.0,  cos: return 1.0
-if x == -0.0:                       sin: return -0.0,  cos: return 1.0
+; SIGNED-ZERO NOTE (adversarial B2, 2026-04-12):
+; DO NOT use "if x == +0.0: return +0.0" / "if x == -0.0: return -0.0"
+; Because fcmp_eq(+0.0, -0.0) = true per IEEE 754 §5.10, the first branch
+; catches -0.0 and returns +0.0 (WRONG). Use "return x" to sign-preserve:
+if x == 0.0:                        sin: return x  (sign-preserving),  cos: return 1.0
 if |x| > 2^30:                      return nan  (Phase 1 out-of-domain)
 # otherwise: range reduce and dispatch
 ```
 
-Note `sin(-0.0) = -0.0`. This is the IEEE 754 rule for odd functions and is what every serious libm returns. Our front-end preserves it.
+Note `sin(-0.0) = -0.0`. This is the IEEE 754 rule for odd functions and is what every serious libm returns. The front-end uses `return x` (not `return ±0`) to preserve the input's sign-of-zero bit.
 
 ## Coefficient generation
 

@@ -147,16 +147,29 @@ op 7:  %result    = fadd.f64 %t_hi, %t_lo        ; FINAL: big + small — 0.5 UL
 ### 4.5 Special-value handling (front-end dispatch)
 
 ```
-if x < 0:                     return nan
-if x == 0:                    return -inf       # both +0 and -0
-if x == 1.0:                  return +0.0       # bit-exact
+if isnan(x):                  return x          # I11 preservation — check first
+if x < 0:                     return nan        # B1: STRICT < (not <=); -0 does NOT satisfy x<0
+if x == 0:                    return -inf       # catches both +0 and -0 (fcmp_eq(+0,-0)=true)
 if x == +inf:                 return +inf
-if isnan(x):                  return x          # preserve bit pattern
-# subnormal:
-if x is subnormal:            ... scale x by 2^52, subtract 52*log(2) later
+if x == 1.0:                  return +0.0       # bit-exact
+# subnormal detection (B2: exact .tam IR recipe):
+#   is_subnormal = (exp_bits == 0) & (mantissa_bits != 0)
+#   In .tam IR:
+#     %bits      = bitcast.f64_to_i64 %x
+#     %exp_bits  = shr.i64 %bits, 52          ; logical shift, gives biased exponent
+#     %mant_bits = and.i64 %bits, 0x000fffffffffffff
+#     %exp_zero  = icmp_eq.i64 %exp_bits, 0
+#     %mant_nz   = icmp_ne.i64 %mant_bits, 0
+#     %is_sub    = and.i1 %exp_zero, %mant_nz
+#   Must come AFTER the x < 0 and x == 0 checks so negative subnormals already caught.
+if x is subnormal:            scale by 2^52, subtract 52*log(2) at end
 # normal path:
 proceed with bit extraction
 ```
+
+**B1 note:** The negativity check `x < 0` is strict (`fcmp_lt.f64`). Do NOT use `x <= 0`. Input `-0.0` must return `-inf` (not `nan`), because `fcmp_lt.f64(-0.0, 0.0)` is `false` — `-0.0` is not less than `0.0` per IEEE 754 §5.11. This is why the dispatch order matters.
+
+**B2 note:** The subnormal detection uses the exact .tam IR recipe above. Alternative `x < 2^-1022` would also match negative numbers — which must already be caught before reaching this check. The bitcast+shift+mask recipe is explicit and independent of any comparison that might be sign-sensitive.
 
 ## Coefficient generation
 

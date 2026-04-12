@@ -186,3 +186,33 @@ Following the three-registry convergence pattern (OrderStrategy registry, oracle
 - **Drafted:** 2026-04-12 by Aristotle
 - **Source material:** All three Aristotle deconstructions (notebooks 011, 012, 013 + phase docs under `peak-aristotle/`), plus the 2026-04-12 refinements to `invariants.md` (I7 refined, I11 added) and `README.md` (compositional-claim framing).
 - **Next revision:** When I9′ lands as a refined invariant (pending Peak 2 campsite 2.3), this ledger's I9 row updates to reference the full suite.
+
+---
+
+## Meta-pattern this ledger demonstrates: convention-to-declaration
+
+*Added 2026-04-12 after Aristotle ran the convergence-check methodology on their own four deconstructions and identified the underlying pattern that connects all three Aristotle-convergent registries (OrderStrategy, Oracle, this Guarantee Ledger). See `~/.claude/practices/convergence-check.md` for the full methodology and exemplar finding.*
+
+The Guarantee Ledger is itself an instance of a deeper structural pattern Aristotle identified by applying the convergence check to their own four deconstructions:
+
+> **Every architectural challenge in this trek (and likely most architectural challenges in any system) is fundamentally a convention being enforced implicitly. The fix is always to promote it to an explicit declaration via a named artifact. The Aristotle method should promote convention → declaration only when convention has failed or is about to fail; at small scale, convention is the correct engineering choice even when declaration is structurally available.**
+
+Before this ledger existed, the trek's invariants I1–I11 were *conventions enforced by team habit and code review judgment*. They worked at small scale because everyone had recently read `invariants.md` and was paying attention. They started to fail when:
+- Cross-role coordination pressure increased (more agents, more parallel work, more potential for one role to relax an invariant without the others noticing)
+- The cost of relaxation became unclear ("does relaxing I3 here actually break TamSession content-addressing? I'm not sure")
+- New roles spawned with no shared context for the invariant rationale
+
+The ledger is the convention's promotion to a *named artifact*. Each row pins the why (precondition protected, downstream property guarded) and the cost of relaxation (concrete consequence). The artifact is consulted at review time by reviewers who weren't in the original conversation. The convention becomes a declaration the moment a row is filled in and committed.
+
+**The same pattern shows up in the OrderStrategy registry** (Peak 1.16/1.17): the convention "every backend picks a sensible reduction order" became the declaration "every reduction op references a named OrderStrategy from a registry with capability matrices and bit-exact test vectors." It shows up in the **Oracle registry** (Peak 4.8): the convention "validate against mpmath when in doubt" became the declaration "every libm function has a named oracle TOML with bit-exact, constraint, and identity check sections." Same pattern in the **device capability matrix** (Peak 7 future work, currently scaffolding): the convention "every backend assumes IEEE-754 fp64 hardware" becomes the declaration "every backend publishes a capability matrix specifying which IEEE-754 properties it provides."
+
+**Why was the promotion correct in each case?** Because the convention had grown fragile under pressure. The trek explicitly stresses cross-role coordination, parallel agent work, and high-stakes architectural commitments — the conditions under which informal conventions break first. A smaller, single-author project with a single execution path could keep its commitments as conventions; the ledger and its sibling registries are the right form when conventions stop being load-bearing on their own.
+
+**The tuning knob.** Per Aristotle's finding, convention-to-declaration is *not unqualified progress*. Promotion has its own coordination cost. The ledger should be promoted only when:
+- The convention has demonstrably failed (caught a bug, slipped a review, surprised a teammate, generated an escalation), OR
+- The convention is about to fail because the system has grown past the scale where habits suffice, OR
+- A future failure would be silent rather than loud (silent failures are the strongest argument for preemptive declaration)
+
+For Phase 1 of the trek, all three triggers fired. For a future, smaller phase or a sub-project that doesn't stress invariant boundaries, the right form may remain a convention rather than a ledger. The ledger as artifact is the correct *end-state* of a convention that grew fragile, not the correct *starting-state* of any new commitment.
+
+**Falsification of the meta-pattern itself** is captured as future campsite `aristotle-method-bias-falsification-test` — deconstruct a target where convention-to-declaration is NOT the right move, to test whether the pattern is a real feature of architectural challenges or an artifact of the deconstruction template's bias. Until that test runs, the convention-to-declaration pattern is a strong working hypothesis backed by four convergent observations.

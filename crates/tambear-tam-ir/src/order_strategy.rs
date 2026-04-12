@@ -85,6 +85,18 @@ pub struct StrategyEntry {
     pub compat_class: &'static str,
 }
 
+impl StrategyEntry {
+    /// Returns true if this strategy is compatible with `other` for cross-kernel fusion.
+    ///
+    /// Phase 1 definition: two strategies are fusable when they share the same
+    /// `compat_class`. This is the stub Aristotle v5.2 requires for campsite 1.15.
+    /// The real compatibility predicate (which may allow cross-class fusion under
+    /// specific conditions) lands in Peak 6.
+    pub fn is_fusable_with(&self, other: &StrategyEntry) -> bool {
+        self.compat_class == other.compat_class
+    }
+}
+
 /// A single bit-exact test vector: (input values, expected output).
 pub struct TestVector {
     /// Descriptive label for this test case.
@@ -408,6 +420,27 @@ pub fn all_names() -> Vec<&'static str> {
 /// Return true if `name` is a registered strategy.
 pub fn is_known(name: &str) -> bool {
     registry().contains_key(name)
+}
+
+/// Return true if two named strategies are compatible for cross-kernel fusion.
+///
+/// Two strategies are fusable when they share the same `compat_class`. For
+/// Phase 1 this means identical classes — `sequential` with `sequential`,
+/// `tree_pow2` with `tree_pow2`, `rfa` with `rfa`. Cross-class fusion
+/// (e.g. `sequential` + `tree_pow2`) is not safe: the merged accumulation
+/// order would differ from either strategy's contract.
+///
+/// Returns `None` if either name is not registered (caller should
+/// validate with `is_known` first; this path means a verifier bug).
+///
+/// Campsite 1.15 (Phase 2) may refine this to allow fusability across
+/// strategies within the same class that satisfy an additional compatibility
+/// predicate (e.g. same fanout for tree strategies). For Phase 1, class
+/// equality is sufficient.
+pub fn are_fusable(a: &str, b: &str) -> Option<bool> {
+    let ea = lookup(a)?;
+    let eb = lookup(b)?;
+    Some(ea.compat_class == eb.compat_class)
 }
 
 /// Run the reference implementation for a named strategy on the given values.

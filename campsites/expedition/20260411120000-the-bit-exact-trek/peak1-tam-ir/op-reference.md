@@ -475,7 +475,16 @@ All comparison ops produce a `pred` (boolean predicate) register.
 
 **Signature:** `(f64, f64) → pred`
 
-**Semantics:** `%dst = (%a == %b)`. NaN == anything is false (including NaN == NaN).
+**Semantics:** `%dst = (%a == %b)` using IEEE-754 equality, not bitwise equality.
+
+Key cases:
+- `+0.0 == -0.0` → `true` (IEEE-754 §5.10: the two zeros are equal)
+- `NaN == NaN` → `false` (IEEE-754 §5.11: any comparison with NaN is false)
+- `NaN == x` → `false` for any `x`, including `NaN`
+
+**Backend lowering:** PTX `setp.eq.f64`, SPIR-V `OpFOrdEqual`. Both implement IEEE-754 equality. Do **not** use `OpIEqual` (bitwise) — it would distinguish `+0` from `-0`.
+
+**I11 note:** `fcmp_eq` always returns `false` for NaN inputs — it does not propagate NaN as a value. If you need to detect NaN, use explicit `is_nan` guards (see §5.5).
 
 ---
 

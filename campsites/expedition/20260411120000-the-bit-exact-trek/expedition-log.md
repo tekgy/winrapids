@@ -1314,3 +1314,256 @@ exist, and stop at the boundary where the upstream dependency begins.*
 — naturalist (Entry 012 end)
 
 ---
+
+## Entry 013 — 2026-04-11 — Navigator's three corrections to the blueprint
+
+Navigator's response to the lowering blueprint came back with three
+items. All three actioned.
+
+**Decision 1 confirmed, filed as ABI.** Navigator confirmed the
+length-parameter design and asked for it documented as the ABI contract,
+flagged to pathmaker for campsite 1.17. Filed a check-in note in
+`navigator/check-ins.md`: when 1.17 formalizes the kernel signature
+spec, the IR spec should state that every `buf<f64>` parameter generates
+a corresponding `u32` length parameter in the PTX ABI, appended after
+all buffer pointers, named `param_n_<bufname>` by convention.
+
+**Decision 4 reframed as optimization pass.** The blueprint had the
+immediate-offset form (`[%rd_out+8]`) as simply "preferred." Navigator's
+correction: naive lowering first (runtime multiply → add → atom with
+a separate address register), verify against CPU interpreter, then add
+the optimization as a second pass. The naive lowering is the testable
+reference; the optimization must not change output. Updated the
+blueprint's Decision 4 text to say "optimization pass, not mandatory."
+
+**I11 flag for `min.NaN.f64` added to blueprint.** Navigator confirmed
+I11 is a distinct invariant (the question from Entry 009 got its answer).
+The PTX consequence: `min.NaN.f64` not `min.f64`. Without `.NaN`,
+CUDA's `min.f64` uses IEEE 754-2008 minNum semantics — returns the
+non-NaN operand when exactly one input is NaN. With `.NaN`, NaN on
+either input propagates. I11 requires the latter. Added to the
+blueprint's "what this does NOT cover" section so the Peak 3 implementer
+sees it before they handle those ops. Not a current blocker (Phase 1 IR
+has no min/max); a forward flag.
+
+The path from "question to navigator" (Entry 009) → "I11 added" →
+"blueprint documents PTX form" closed in two exchanges. That's the
+naturalist's loop working cleanly: raise the question precisely, let
+the navigator decide, carry the decision forward into the pre-work
+document where it becomes load-bearing for the implementer.
+
+— naturalist (Entry 013 end)
+
+---
+
+## Entry 014 — 2026-04-11 (late) — Three registries, and the naming-is-the-move observation
+
+Team-lead routed an ask through navigator: document the three-registry
+structural observation from the Aristotle deconstructions. I read
+`peak-aristotle/synthesis.md` first — aristotle had already named the
+convergence at lines 71-81 of their synthesis, with the three artifacts
+in a table and the prediction that a fourth would emerge naturally. The
+structural argument is theirs. My job is to notice what the pattern
+looks like when you step back from the synthesis and watch it on the
+map of the whole expedition.
+
+### The three registries, in three different populated-states
+
+Aristotle's synthesis names three artifacts from three deconstructions:
+
+| Move | Artifact | Owner | Population state (end of day one) |
+|---|---|---|---|
+| I7′ v5.1 | `order_strategies/` registry | IR Architect | Being populated. Campsites 1.16-1.17 under the refined I7. |
+| I9′ v4 | `oracles/` registry + corpora | Adversarial (corpus) + Scientist (runner) | Named but not yet refined into invariant text. Aristotle's synthesis notes: *"the invariant text itself will probably update once campsite 2.3 (ULP harness) actually needs it."* |
+| Meta-goal v5 | `guarantee-ledger.md` | Navigator | **Drafted (188 lines), lives at the expedition root.** Task #12 flipped to completed while I was writing this entry. |
+
+The three are in three different states because the population pace of
+each matches the pace of the work that depends on it. The
+guarantee-ledger is populated *now* because invariant-relaxation
+decisions are being made *now* — ESC-001 needed a review-time home for
+its "precondition-3-violation-with-device-prerequisite" classification,
+and the ledger was drafted to be that home. The `oracles/` registry is
+unpopulated because the code that would read it (Peak 2.3's ULP
+harness) hasn't landed yet. The `order_strategies/` registry is being
+populated in tandem with the campsites that consume it (1.16-1.17,
+inside the same Peak 1 that just completed).
+
+Which is the thing worth noticing: **the three registries are not
+empty slots waiting to be filled. They are slots that get populated at
+the exact moment the work first needs to read them.** Aristotle's
+three deconstructions produced the slots; the populate happens when
+the downstream campsite walks up and asks for what's inside.
+
+### Three independent optimizations, same local minimum
+
+Aristotle didn't design the registry pattern. Each of the three Moves
+was an independent first-principles deconstruction of a different
+invariant — accumulate+gather for I7, mpmath-as-oracle for I9, the
+architectural claim itself for the meta-goal — and each deconstruction
+tried to find the *minimum structural support* that was missing from
+its target. All three landed on the same shape: a named registry of
+formal entries with metadata, review-time enforcement, role-owned
+population, and referenceable-by-name from invariants and campsites.
+
+This is an optimization-process observation, not a taste observation.
+The deconstructions were not collaborating on pattern consistency.
+They each asked "what does this invariant need that it doesn't have?"
+and got the same answer. That's evidence that **named-registry-for-
+tacit-knowledge is a structurally determined local minimum** of the
+search "how do you make implicit architectural knowledge durable?"
+— not a preference aristotle happened to hold.
+
+The shape keeps emerging because the problem keeps having the same
+structure: a piece of knowledge (which total orders are supported, how
+a function has been tested, which invariant protects which
+precondition) that was previously *tacit* — living in people's heads,
+in escalation decisions, in commit messages, in logbook entries — and
+that needs to become *inspectable at review time*. Named registries
+are the minimum-necessary-complexity answer. Enums are too rigid
+(closed set, schema change on growth). Prose documents are too soft
+(no review-time enforcement, no formal content model). Code is too
+concrete (implementation details leak into the spec). A named-entry
+registry with formal content, capability metadata, and a review process
+is what falls out when none of those three failure modes is acceptable.
+
+### Open-ness as epistemic commitment
+
+The word "open" appears in the I7 refinement ("open OrderStrategy
+registry"), in aristotle's synthesis, and in my Entry 010 note about
+the v5 registry. An *open* registry is one where new entries can be
+added by the team over time, through review, without a schema change.
+It is explicitly distinct from a closed enum.
+
+What the open-ness commits to, beyond "we can add things later," is
+this: **the team has declared that the complete set of entries is not
+knowable today, and will not be knowable until the downstream work
+surfaces the need.** The three registries each refuse to enumerate
+their contents upfront. `order_strategies/` will grow as new kingdom
+shapes arrive. `oracles/` will grow as new classes of numerical
+property are surfaced (closed-form-specials → identity → monotonicity →
+TMD-awareness → ...). The guarantee-ledger's row count is fixed at
+I1–I11 today but its cost-of-relaxation columns will grow as
+invariant-relaxation proposals arrive in escalations.
+
+This is an epistemic posture, not just a data-structure choice. It
+says: we don't know the full shape of what we're building; we know the
+shape of the slot where the next piece of knowledge will need to live;
+we commit to using that slot when the next piece arrives. That's a
+different kind of commitment than an invariant, which declares a
+property the code must have. A registry-commitment declares a
+*process* the team will follow when a new kind of knowledge appears.
+
+### The prediction: a fourth registry is probably device capabilities
+
+Aristotle predicted "a fourth registry will appear naturally" and
+named three candidates in synthesis.md line 81: kingdoms, device
+capabilities, and ops. Team-lead's ask says device capabilities is
+most likely. I agree, and I'll say why in the naturalist's terms
+rather than the architect's.
+
+The test for "which registry will emerge next" is: **which piece of
+tacit knowledge is about to cause a problem at a campsite boundary?**
+The registries today are reactive — each was named because a specific
+invariant surfaced a gap that couldn't be closed without structural
+support. The fourth will be named the same way: something the team
+tried to reason about and couldn't, because the knowledge lived in
+the wrong place.
+
+Device capabilities are the most likely next candidate because
+**ESC-001 has already walked up to the problem**. The `vulkaninfo`
+query for `shaderDenormPreserveFloat64` on the RTX 6000 Pro is
+currently a prose note in an escalation and a qualifier in a README.
+It is not yet a named entry in a registry that Peak 7's summit test
+will query at device-selection time. It will need to be, because when
+Peak 7 runs the bit-exact test on a second or third Vulkan device,
+someone will ask "does *that* device support the required fp64
+features?" and the answer will be a structured query against a
+device-capability registry, not a prose lookup in an escalation
+document.
+
+I7 named order_strategies before the IR had them. I9′ named oracles
+before the libm had them. The meta-goal named the guarantee-ledger
+before any invariant had been formally relaxed. Each registry was
+named before it was needed, but not much before. Device capabilities
+will be named the same way — when Peak 7 starts writing the summit
+test and notices that the "does this device support X" question
+appears in the same shape repeatedly. The trigger won't be "someone
+decided we should have a registry." The trigger will be "the same
+query is being asked three times in three places without a home."
+
+My prediction for the specific form: **a `devices/` or
+`capability_matrix/` directory with one entry per (device-family,
+driver-version) pair**, each entry being a small formal document
+listing which IEEE-754 features the device honors — rounding modes,
+subnormal behavior, NaN propagation for min/max (I11's territory),
+FMA contraction defaults (I3's territory), atomic fp64 support (I5's
+territory). The summit test queries this matrix at device-selection
+time. If a required feature is not listed as supported on the target
+device, the test runs with a scope qualifier (the ESC-001 pattern) or
+refuses to claim bit-exactness for that device.
+
+Kingdoms and ops are possible too but later. Kingdoms will appear
+when Peak 2 starts wanting Kingdom B primitives that don't fit
+Kingdom A's commutative-monoid shape. Ops is the most abstract and
+furthest-off — it's really just an index over the other three.
+
+### The meta-observation: four three-way convergences in 24 hours
+
+This is the fourth three-way convergence the expedition has produced
+on day one:
+
+1. **Vector-state commutative monoids for reductions** (scout, navigator, me).
+2. **Bit-exact vs bounded-ULP as two orthogonal tolerance axes** (adversarial P19, my ULP-composition pitfall, aristotle Deconstruction 3).
+3. **NaN propagation as invariant I11** (my question to navigator, scout's independent question, navigator's routing).
+4. **Named registries as the response-shape for tacit architectural knowledge** (aristotle's three independent deconstructions).
+
+Four is a lot for one day. Three of them were content-level
+convergences (different people landing on the same numerical fact or
+invariant). The fourth is a form-level convergence: aristotle's three
+deconstructions each landed on the same artifact shape, for three
+different content domains.
+
+This is worth saying out loud at the expedition level: **this team
+generates knowledge by producing independent observations and
+watching which ones converge.** It's not a process anyone designed;
+it's what falls out when you put several careful observers on
+adjacent facets of a hard problem with a coordinator who listens. The
+convergences aren't coincidences, they're the signal. When three
+people land on the same answer from different starting points, that's
+strong evidence the answer is structurally determined, not a matter
+of taste. And the coordinator's job is to notice which convergences
+are load-bearing and route them into the authoritative documents.
+
+Navigator's routing move (the word they used in check-ins.md) is what
+makes this work. A convergence without a coordinator who routes is
+just three people agreeing in private. A convergence with a
+coordinator who routes becomes an invariant, or a campsite spec, or
+an escalation decision, or a ledger entry. The routing is the
+translation.
+
+### What this entry is NOT
+
+Not a prescription. Not a critique of the registry pattern.
+Aristotle's synthesis is the prescription; navigator's routing is the
+implementation; the three owners (IR Architect, Adversarial +
+Scientist, Navigator) own the registries themselves. This entry is
+the *weather* — the naturalist's record of what the day looked like
+from above, after the aristotle documents landed and the registries
+started populating at their different paces.
+
+If the fourth registry does emerge around device capabilities, I will
+try not to write a long entry celebrating that the prediction was
+right. I'll try to write a short entry naming what was new about how
+it emerged — whether it followed the same reactive pattern (named
+when a campsite boundary surfaced the need) or whether it was named
+proactively (because the team learned from the first three
+registries and started naming slots before the need landed). Both
+outcomes would be informative.
+
+*Fourteen entries. The day actually is closing now. Tomorrow — or
+whatever the trek's reckoning calls the next unit of time — the
+garden is still open.*
+
+— naturalist
+
+---

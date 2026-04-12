@@ -77,9 +77,9 @@ This exponent-uniform sampling is important because it gives equal weight to `1e
 | `tam_sqrt` | `[0, fp64_max]` | exponent-uniform |
 | `tam_exp`  | `[-745.13, 709.78]` (full fp64 representable output range) | exponent-uniform |
 | `tam_ln`   | `(0, fp64_max]` | exponent-uniform |
-| `tam_sin`  | `[-2^20, 2^20]` | exponent-uniform (small) + real-uniform (large) |
-| `tam_cos`  | `[-2^20, 2^20]` | same as sin |
-| `tam_tan`  | (deferred; pathological near π/2+kπ) | — |
+| `tam_sin`  | `[-2^30, 2^30]` | exponent-uniform (small) + real-uniform (large) |
+| `tam_cos`  | `[-2^30, 2^30]` | same as sin |
+| `tam_tan`  | `[-2^30, 2^30]` (excluding pole neighborhoods) | exponent-uniform (excluding `|cos(x_f64)| < 2^-26`) |
 | `tam_pow`  | `a ∈ [2^-100, 2^100]`, `b ∈ [-30, 30]` | exponent-uniform |
 | `tam_tanh` | `[-fp64_max, fp64_max]` | exponent-uniform |
 | `tam_sinh` | `[-710, 710]` | exponent-uniform |
@@ -97,8 +97,10 @@ For functions with a natural symmetry (`sin(-x) = -sin(x)`, etc.), the sampling 
 |---|---|---|---|
 | `tam_sqrt` | **0 ULP** | IEEE 754 mandates correct rounding for `fsqrt`. Our op lowers directly to the hardware `fsqrt.f64`. Tighter than the default. | N/A — already maximal. |
 | `tam_atan2` | **2 ULP** | The `y/x` division step introduces 0.5 ULP, composing with `tam_atan`'s 1 ULP to ~2 ULP worst case. Reaching 1 ULP requires TwoSum/TwoProd double-double arithmetic on the quotient, which is infrastructure that belongs in Phase 2. Team-lead approved this exception 2026-04-12. | Phase 2 replaces the `y/x` step with a Dekker-style double-double computation; the composed bound drops to 1 ULP. |
+| `tam_pow` | **2 ULP** | The composed `exp(b · log(a))` path accumulates ~1 ULP from `log`, ~0.5 ULP from the multiplication `b · log(a)`, and ~1 ULP from `exp` — total ~2 ULP worst case. Reaching 1 ULP requires Dekker-style double-double on the `b · log(a)` intermediate, infrastructure that belongs in Phase 2. Adversarial's special-values matrix assigns 2 ULP for pow 2026-04-11; I concurred 2026-04-12. | Phase 2 upgrades via TwoSum/TwoProd on the `log(a) · b` intermediate per the pow-design.md §12 research. |
+| `tam_tan` | **2 ULP** (with pole exclusion) | tan has poles at `x = (k + 1/2)·π` where it diverges. Near poles the argument sensitivity makes 1-ULP tan structurally unreachable: a 1-ULP error in `x` translates to an unbounded error in `tan(x)` when `cos(x)` is near zero. The Phase 1 implementation `tan = sin/cos` gives ~2 ULP composed. **The 2-ULP bound is scoped to the pole-exclusion zone `|cos(x_f64)| ≥ 2^-26`**; inputs where `|cos(x_f64)| < 2^-26` are flagged by the oracle runner and do not count against the ULP bar (they cannot silently pass either — they're flagged, not ignored). This is analogous to pow's 2 ULP exception but for a different compositional reason. Navigator ruling 2026-04-12. | Phase 2 could use a dedicated tan polynomial with wider internal precision; Phase 3 (CRlibm-class) would exhaustively analyze worst-case rounding near poles. Both are out of Phase 1 scope. |
 
-All other functions: **1 ULP** per the default policy above.
+**All other functions: 1 ULP** per the default policy above. Specifically: `tam_exp`, `tam_ln`, `tam_sin`, `tam_cos`, `tam_tanh`, `tam_sinh`, `tam_cosh`, `tam_atan`, `tam_asin`, `tam_acos` all target ≤ 1 ULP on 1M random samples in their primary domains.
 
 ### Adversarial battery (always on top of random)
 

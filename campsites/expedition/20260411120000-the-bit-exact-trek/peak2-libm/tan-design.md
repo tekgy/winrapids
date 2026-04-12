@@ -13,6 +13,8 @@
 
 **Phase 1 bound: `max_ulp ≤ 2.0`** on 1M random samples, exponent-uniform over `|x| ≤ 2^30` (same bound as sin/cos via three-term Cody-Waite). Per adversarial's matrix; team-lead implicitly approved via sign-off.
 
+**Pole-exclusion clause** (navigator ruling 2026-04-12, via adversarial B2): The 2-ULP bound applies on `|x| ≤ 2^30` **excluding** inputs where `|cos(x_f64)| < 2^-26`. In the pole-exclusion zone, the oracle runner flags the input (sign + finiteness check only) and does not count it against the ULP bar. The exclusion threshold `2^-26` is approximately 1 ULP of `cos(x)` near `cos(x) ≈ 0` — inside this neighborhood, a 1-ULP error in the input produces an unbounded error in `tan` by the chain rule. Excluding this zone makes the 2-ULP claim meaningful and measurable.
+
 Why 2 ULP not 1 ULP: tan has **poles at `x = (k + 1/2)·π`** where the function diverges to `±inf`. Near these poles the function's output is catastrophically sensitive to the input's precision — a 1-ULP error in `x` translates to an unbounded error in `tan(x)`. No Phase 1 implementation can reach 1 ULP uniformly over the domain; 2 ULP is the honest bar given that we compute `tan = sin/cos` with a near-pole guard.
 
 ## IR stub layout
@@ -44,15 +46,16 @@ The same front-end dispatch pattern as sin/cos. The NaN/inf front-end checks:
 ```
 if isnan(x): return x         ; I11 preservation
 if isinf(x): return nan       ; tan(±inf) undefined per IEEE 754
-if x == +0:  return +0        ; sign-preserving
-if x == -0:  return -0        ; sign-preserving
-; otherwise: x in normal domain
+; ELIDE explicit zero check — sign-of-zero falls out of the composition:
+;   tam_sin(±0) = ±0, tam_cos(±0) = 1.0, fdiv(±0, 1.0) = ±0 per IEEE 754.
+;   DO NOT use "if x == +0: return +0" / "if x == -0: return -0" — because
+;   fcmp_eq(+0.0, -0.0) = true per IEEE 754 §5.10, so the first branch
+;   would catch -0 and return +0 (wrong). The composition path is correct
+;   without the explicit branch. (Adversarial B1 resolution, 2026-04-12.)
 s = tam_sin(x)
 c = tam_cos(x)
 return s / c
 ```
-
-Note: `tam_sin` and `tam_cos` already return 0 and 1 respectively for `x = ±0`, so the fallthrough path would give `tan(0) = 0/1 = 0` correctly. The explicit front-end check ensures sign-of-zero preservation (tan is odd, so `tan(-0) = -0` per IEEE 754 convention — and `-0 / 1 = -0` in fp64, which gives the right result anyway). Pathmaker can elide the front-end zero check if it's redundant after verifying sign behavior.
 
 ### Out-of-domain inputs
 

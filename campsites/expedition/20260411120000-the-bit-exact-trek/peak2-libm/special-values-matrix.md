@@ -165,14 +165,15 @@ bit-exact against any correct f64 sqrt implementation.
 
 | Input | Mandated result | Notes |
 |-------|----------------|-------|
-| +0 | +0 | exact |
-| -0 | -0 | exact |
-| +∞ | NaN | invalid |
-| -∞ | NaN | invalid |
-| NaN | NaN | propagates |
-| π/4 | ≈ 1.0 | 1 ULP |
-| π/2 | very large finite or ±∞ | [note 9]: tan(π/2) is ±∞ mathematically, but π/2 in f64 is not exactly π/2 |
-| sub | ≈ sub | |
+| +0 | +0 | bit-exact; sign preserved via composition (B1 fix — no explicit branch) |
+| -0 | -0 | bit-exact; sign preserved via composition (B1 fix) |
+| +∞ | NaN | undefined; IEEE 754 §9.2 |
+| -∞ | NaN | undefined; IEEE 754 §9.2 |
+| NaN | NaN | propagates; preserve bit pattern per I11 |
+| `|x| > 2^30` | NaN | out-of-domain per Phase 1 scope; oracle flags, does not count against ULP bar |
+| f64::consts::PI / 2 | ~1.633e16 (large finite) | NOT ±inf — f64 π/2 is slightly below true π/2; tan value is finite; mpmath oracle verifies exact bit pattern [note 9] |
+| -f64::consts::PI / 2 | ~-1.633e16 (large finite negative) | negative of the above [note 9] |
+| π/4 (f64-rounded) | NOT exactly 1.0 | sin(π/4)/cos(π/4) is implementation-dependent at last bit; mpmath oracle verifies; accuracy target 2 ULP |
 
 ---
 

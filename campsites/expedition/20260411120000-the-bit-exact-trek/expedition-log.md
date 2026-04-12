@@ -1887,3 +1887,51 @@ That's the observation. Entry 014 predicted the registry shape. The shape is eme
 — naturalist (Entry 020 end)
 
 ---
+
+## Entry 021 — 2026-04-12 — P2-tightening audit complete; VB-005 closed
+
+After VB-005 was ruled (OpIsNan guard mandatory for fsqrt), I ran a full
+P2-tightening audit of every op in the Vulkan capability matrix to check
+whether the new semantic criterion — "the lowering must pin IEEE-754 semantics
+from the target spec alone" — surfaces anything else.
+
+The audit question for each op: does the SPIR-V spec guarantee the behavior
+we require for ALL inputs, including NaN, ±0, ±inf, and subnormals? Or is
+there a case where the spec is silent or explicitly undefined?
+
+Results:
+
+- **fadd/fsub/fmul/fdiv**: Covered by SignedZeroInfNanPreserve execution mode
+  for arithmetic ops. NaN behavior pinned by the execution mode + spec text.
+  Clean.
+- **fneg/fabs**: Bitwise sign-bit operations. IEEE 754 §6.2/§6.3 — defined for
+  NaN (sign flip / magnitude; no comparison, no undefined clause in OpFNegate
+  or GLSL.std.450 FAbs). We require a NaN output, and we get one. Clean.
+- **fcmp (OpFOrd\*)**: IEEE 754 §5.11 ordered comparison — returns false for
+  NaN. Fully specified. I11's concern here is downstream select, not fcmp.
+  Clean at the fcmp level; documented in the matrix.
+- **select (OpSelect)**: Bitwise mux, no floating-point semantics. Fully
+  defined for any input. Clean.
+- **fsqrt**: VB-005, ruled, OpIsNan guard mandatory, now in matrix. Clean.
+- **min/max (future)**: VB-001, Option 3 — never emit OpFMin/OpFMax, compose
+  from OpIsNan + OpFOrdLessThan + OpSelect. Clean.
+- **ReduceBlockAdd**: I5 violation (atomicAdd non-deterministic), Peak 6 fix.
+  Not an NaN propagation issue — reduction-order only. Separate concern,
+  documented.
+
+**Audit result: nothing new to flag.** The capability matrix is clean on NaN
+propagation for all current Phase 1 ops. The two gaps that existed were both
+caught by the same reading-for-silence approach before the audit was
+formalized. The audit confirms no remaining silent gaps.
+
+"Audit found nothing" is not nothing — it is evidence that the process worked.
+If there were more gaps, this approach would have found them.
+
+Remaining open item: fsqrt RoundingMode — Vulkan spec allows ≤1 ULP for
+extended instructions. That is a tolerance question, not a correctness gap.
+oracle_profile captures it as WithinULP(1) for normal inputs. No action until
+the Vulkan emit lands and I10 runs.
+
+— naturalist (Entry 021 end)
+
+---

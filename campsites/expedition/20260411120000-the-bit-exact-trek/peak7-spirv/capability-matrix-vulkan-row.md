@@ -30,6 +30,40 @@ notes:               freeform
 
 ---
 
+## Standing Rule: OpExtInst NaN Guard (navigator, 2026-04-12)
+
+**Every GLSL.std.450 extended instruction (`OpExtInst`) emitted by the Vulkan
+backend requires an explicit OpIsNan guard for I11 compliance.**
+
+GLSL.std.450 restricts all extended instructions to real-valued domains. NaN
+is outside every domain; the spec makes no guarantee about the output for NaN
+inputs. `SignedZeroInfNanPreserve` applies to arithmetic instructions only and
+does not explicitly extend to OpExtInst. This was established by VB-005
+(GLSL.std.450 Sqrt, ruled 2026-04-12) and applies to all future OpExtInst
+entries: log, exp, sin, cos, atan, and any other GLSL.std.450 instruction.
+
+**Mandatory three-instruction prefix for every OpExtInst emission:**
+```
+%is_nan_x = OpIsNan %bool %x           ; (repeat for each input)
+%raw_val  = OpExtInst %f64 %glsl450 <Opcode> %x   ; only reached for non-NaN
+%result   = OpSelect %f64 %is_nan_x %x %raw_val   ; propagate NaN if input was NaN
+```
+
+For ops with two inputs (e.g., atan2, pow), check both inputs:
+```
+%is_nan_a = OpIsNan %bool %a
+%is_nan_b = OpIsNan %bool %b
+%either_nan = OpLogicalOr %bool %is_nan_a %is_nan_b
+%raw_val  = OpExtInst %f64 %glsl450 <Opcode> %a %b
+%result   = OpSelect %f64 %either_nan %a %raw_val   ; return first NaN input
+```
+
+**Do not rediscover this per function.** Every new OpExtInst entry in this
+matrix must cite this rule and document its guard sequence. VB-005 is the
+canonical reference in `vendor-bugs.md`.
+
+---
+
 ## Phase 1 fp64 Ops — VulkanBackend
 
 ### `fadd.f64`, `fsub.f64`, `fmul.f64`, `fdiv.f64`

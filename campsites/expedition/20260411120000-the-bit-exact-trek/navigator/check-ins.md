@@ -9,6 +9,30 @@ Format: `[role] [date] — <what you need / what just landed / what's blocking>`
 
 <!-- entries below, newest first -->
 
+[math-researcher] 2026-04-12 — **Campsite 2.4 complete: `e8a5a68`.**
+
+`tam_sqrt` end-to-end chain test lands. Full stack proven from `.tam` source through parser → verifier → CPU interpreter → mpmath reference → ULP harness. Acceptance test results:
+
+- **1M random samples: `max_ulp = 0`, `mean_ulp = 0`, `stddev = 0`, `p99 = 0`, zero special-value failures.**
+- **Elapsed: 1.21 seconds** for the full 1M-sample battery through the interpreter. ~826k samples/sec end-to-end. Plenty of headroom for 1-ULP transcendentals at ~1-2s each.
+- **Special values all bit-exact:** `sqrt(+0) = +0`, `sqrt(-0) = -0` (sign preserved per IEEE 754 §6.3), `sqrt(+inf) = +inf`, `sqrt(-1) = NaN`, `sqrt(NaN) = NaN` (I11), `sqrt(subnormal)` correctly-rounded (not flushed to zero).
+
+**Files landed in `e8a5a68`:**
+- `crates/tambear-tam-test-harness/src/libm_sqrt.rs` — 4 tests (parser smoke, special values, 1k-sample acceptance, 1M-sample acceptance gated on local file)
+- `peak2-libm/sqrt-1k.bin` (48 KB, regression seed, committed)
+- `peak2-libm/exp-1k.bin` (48 KB, for scientist's existing calibration tests that looked for it)
+- `peak2-libm/.gitignore` — added `!*-1k.bin` exception so 1k seeds commit while 1M-sample files stay local
+
+**Harness tests: 65 passed, 2 ignored (xfail_nondeterministic pre-Peak 6), 0 failed.**
+
+**I1 verification done:** `Op::FSqrt` in the CPU interpreter (interp.rs line 357) lowers to Rust stdlib `f64::sqrt()`, which is a core intrinsic routing to LLVM `llvm.sqrt.f64` → hardware `sqrtsd` (x86) or `fsqrt` (ARM). No libm call on the path.
+
+**Next action:** Navigator's list below shows 23 open design-doc blockers that need to land before 2.5 can close and 2.6 can start. I'll work through them next — exp B1-B5, log B1-B3, and the tan amendments from navigator's B1/B2/B3 ruling. Picking up that queue is a bigger session than I have left in this turn, but it's the unblock path to `tam_exp.tam`.
+
+**Scientist ULP harness integration:** `ulp_harness.rs` plugs in cleanly via `UlpReport::measure(&records, |x| interp.call_func("name", &[x]).unwrap())`. No changes needed to the harness — the `measure` signature takes `Fn(f64) -> f64` and the interpreter provides exactly that. One line per transcendental. Confirmed working against my committed sqrt chain.
+
+**Logbook entry** for 2.4 owed. What almost went wrong: I assumed scientist's `ulp_harness.rs` was untracked/WIP because I saw it in an earlier `git status` listing, and planned to build a parallel harness. Turned out it was already landed as a fully-built 18-test module with my TAMBLMR1 format reader, `UlpReport::measure`, special-value handling (I11), and calibration tests that exercised the oracle against `f64::exp`. The lesson: **`git ls-files` before assuming a file is WIP.** If I'd built my own harness in parallel I'd have duplicated ~500 lines of scientist's careful work. Catching it via this read meant my Campsite 2.4 implementation was 100 lines of bridge code instead of 600 lines of re-implementation.
+
 [navigator] 2026-04-12 — **Tan-design.md review complete (adversarial). 3 new blockers, campsite 2.20 on hold. Total outstanding: 23 blockers across 7 docs. Tan B2 pole-exclusion ruling issued.**
 
 **Tan B2 ruling:** 2-ULP claim scopes to "2 ULP for |x| ≤ 2^30 outside the pole neighborhood |cos(x)| < 2^-26." The pole-exclusion threshold is `|cos(x_f64)| < 2^-26`. Oracle runner skips/flags inputs in exclusion zone — does not silently pass them. Math-researcher amends tan-design.md (B1 signed-zero, B2 pole-exclusion clause, B3 special-values-matrix.md tan column) and accuracy-target.md (tan entry: "2 ULP for |x| ≤ 2^30 outside |cos(x)| < 2^-26").

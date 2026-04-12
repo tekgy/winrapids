@@ -36,6 +36,8 @@ struct TomlOracleFile {
     #[serde(default)]
     bit_exact_checks: TomlBitExactSection,
     #[serde(default)]
+    constraint_checks: TomlConstraintSection,
+    #[serde(default)]
     identity_checks: Vec<TomlIdentityCheck>,
 }
 
@@ -64,7 +66,21 @@ struct TomlBitExactSection {
 struct TomlBitExactCase {
     name: String,
     input: toml::Value,     // f64 literal or string expression
-    expected_bits: String,  // hex literal OR named constraint ("NONZERO_SUBNORMAL")
+    expected_bits: String,  // hex literal only (e.g. "0x0000000000000000")
+    rationale: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TomlConstraintSection {
+    #[serde(default)]
+    cases: Vec<TomlConstraintCase>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TomlConstraintCase {
+    name: String,
+    input: toml::Value,    // f64 literal or string expression
+    constraint: String,    // named constraint from the static registry
     rationale: String,
 }
 
@@ -180,54 +196,82 @@ fn eval_toml_value(v: &toml::Value) -> Result<f64, String> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Bit-exact constraint (handles "NONZERO_SUBNORMAL" and hex literals)
+// Bit-exact constraint (hex literals only)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A constraint on the bit pattern of the candidate output.
+/// The required bit pattern for a bit-exact check.
+/// Only exact hex patterns — class constraints live in `[[constraint_checks]]`.
 #[derive(Debug, Clone)]
-pub enum BitExactConstraint {
-    /// The output bits must exactly equal this value.
-    Exact(u64),
-    /// The output must be a positive, nonzero subnormal f64.
-    /// i.e.: bits != 0, (bits >> 52) == 0, (bits >> 63) == 0
-    NonzeroSubnormal,
-}
+pub struct BitExactConstraint(pub u64);
 
 impl BitExactConstraint {
     fn parse(s: &str) -> Result<Self, String> {
         let s = s.trim();
-        match s {
-            "NONZERO_SUBNORMAL" => Ok(BitExactConstraint::NonzeroSubnormal),
-            _ if s.starts_with("0x") || s.starts_with("0X") => {
-                let hex = &s[2..];
-                u64::from_str_radix(hex, 16)
-                    .map(BitExactConstraint::Exact)
-                    .map_err(|_| format!("invalid hex literal: {:?}", s))
-            }
-            _ => {
-                // Try decimal
-                s.parse::<u64>()
-                    .map(BitExactConstraint::Exact)
-                    .map_err(|_| format!("cannot parse expected_bits: {:?}", s))
-            }
+        if s.starts_with("0x") || s.starts_with("0X") {
+            let hex = &s[2..];
+            u64::from_str_radix(hex, 16)
+                .map(BitExactConstraint)
+                .map_err(|_| format!("invalid hex literal: {:?}", s))
+        } else {
+            s.parse::<u64>()
+                .map(BitExactConstraint)
+                .map_err(|_| format!("expected_bits must be a hex literal (0x...); got: {:?}", s))
         }
     }
 
     fn check(&self, actual_bits: u64) -> bool {
-        match self {
-            BitExactConstraint::Exact(expected) => actual_bits == *expected,
-            BitExactConstraint::NonzeroSubnormal => {
-                actual_bits != 0               // not zero
-                && (actual_bits >> 52) == 0    // exponent field == 0 (subnormal)
-                && (actual_bits >> 63) == 0    // sign bit == 0 (positive)
-            }
-        }
+        actual_bits == self.0
     }
 
     fn describe(&self) -> String {
+        format!("0x{:016X}", self.0)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Named constraint registry (class-membership checks)
+//
+// Three entries for Phase 1.  Adversarial flags if new constraint types arise.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A named class constraint on the candidate output value (not bits).
+#[derive(Debug, Clone)]
+pub enum NamedConstraint {
+    /// Positive, nonzero, subnormal f64.
+    /// bits != 0  &&  (bits >> 52) == 0  &&  (bits >> 63) == 0
+    NonzeroSubnormalPositive,
+    /// Finite (not ±inf, not NaN).
+    Finite,
+    /// Positive infinity (bits == 0x7FF0000000000000).
+    InfinitePositive,
+}
+
+impl NamedConstraint {
+    fn parse(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "nonzero_subnormal_positive" => Ok(NamedConstraint::NonzeroSubnormalPositive),
+            "finite"                     => Ok(NamedConstraint::Finite),
+            "infinite_positive"          => Ok(NamedConstraint::InfinitePositive),
+            other => Err(format!("unknown named constraint: {:?} (phase 1 registry: nonzero_subnormal_positive, finite, infinite_positive)", other)),
+        }
+    }
+
+    fn check(&self, x: f64) -> bool {
         match self {
-            BitExactConstraint::Exact(v) => format!("0x{:016X}", v),
-            BitExactConstraint::NonzeroSubnormal => "NONZERO_SUBNORMAL (positive, nonzero, exp=0)".to_string(),
+            NamedConstraint::NonzeroSubnormalPositive => {
+                let bits = x.to_bits();
+                bits != 0 && (bits >> 52) == 0 && (bits >> 63) == 0
+            }
+            NamedConstraint::Finite => x.is_finite(),
+            NamedConstraint::InfinitePositive => x == f64::INFINITY,
+        }
+    }
+
+    fn describe(&self) -> &'static str {
+        match self {
+            NamedConstraint::NonzeroSubnormalPositive => "nonzero_subnormal_positive",
+            NamedConstraint::Finite                   => "finite",
+            NamedConstraint::InfinitePositive         => "infinite_positive",
         }
     }
 }
@@ -244,17 +288,32 @@ pub struct OracleEntry {
     pub reference_records: Vec<RefRecord>,
     /// Named injection sets: (set_name, vec_of_f64_inputs).
     pub injection_sets: Vec<(String, Vec<f64>)>,
-    /// Bit-pattern exact checks (signed-zero, subnormal class, etc.).
+    /// Bit-pattern exact checks: candidate(input).to_bits() == expected (hex only).
     pub bit_exact_checks: Vec<BitExactCheck>,
+    /// Class-membership checks: candidate(input) satisfies a named constraint.
+    pub constraint_checks: Vec<ConstraintCheck>,
     /// Identity checks (looked up in the static registry by name).
     pub identity_checks: Vec<IdentityCheckSpec>,
 }
 
-/// A check that the bit pattern of candidate(input) satisfies a constraint.
+/// A check that candidate(input).to_bits() equals an exact hex bit pattern.
+/// For sign-sensitive values (+0 vs -0, exact inf sign) where ULP distance
+/// would accept the wrong sign.
 pub struct BitExactCheck {
     pub name: String,
     pub input: f64,
     pub constraint: BitExactConstraint,
+    pub rationale: String,
+}
+
+/// A check that candidate(input) belongs to a named output class.
+/// For cases where the exact bit pattern is implementation-determined but
+/// the class is specified (e.g. "must be a positive nonzero subnormal",
+/// "must be finite", "must be +inf").
+pub struct ConstraintCheck {
+    pub name: String,
+    pub input: f64,
+    pub constraint: NamedConstraint,
     pub rationale: String,
 }
 
@@ -273,6 +332,17 @@ pub struct BitExactResult {
     pub input: f64,
     pub constraint: String,   // human-readable description
     pub actual_bits: u64,
+    pub passes: bool,
+    pub rationale: String,
+}
+
+/// Result of a single class-membership constraint check.
+#[derive(Debug, Clone)]
+pub struct ConstraintResult {
+    pub name: String,
+    pub input: f64,
+    pub constraint: &'static str,  // canonical name from NamedConstraint::describe()
+    pub actual: f64,
     pub passes: bool,
     pub rationale: String,
 }
@@ -298,6 +368,8 @@ pub struct OracleReport {
     pub injection_reports: Vec<(String, UlpReport)>,
     /// Bit-pattern exact check results.
     pub bit_exact_results: Vec<BitExactResult>,
+    /// Class-membership constraint check results.
+    pub constraint_results: Vec<ConstraintResult>,
     /// Identity check results.
     pub identity_results: Vec<IdentityResult>,
     /// true iff ALL components pass their claimed bounds.
@@ -323,6 +395,12 @@ impl OracleReport {
         for result in &self.bit_exact_results {
             lines.push(format!("  bit_exact[{}]: input={:?} expected={} actual=0x{:016X} [{}]",
                 result.name, result.input, result.constraint, result.actual_bits,
+                if result.passes { "PASS" } else { "FAIL" }
+            ));
+        }
+        for result in &self.constraint_results {
+            lines.push(format!("  constraint[{}]: input={:?} constraint={} actual={:?} [{}]",
+                result.name, result.input, result.constraint, result.actual,
                 if result.passes { "PASS" } else { "FAIL" }
             ));
         }
@@ -493,6 +571,21 @@ pub fn load_oracle_entry(toml_path: &str, base_dir: &str) -> Result<OracleEntry,
         });
     }
 
+    // Parse constraint checks (class-membership, not bit-exact)
+    let mut constraint_checks = Vec::new();
+    for case in &raw.constraint_checks.cases {
+        let input = eval_toml_value(&case.input)
+            .map_err(|e| format!("constraint_checks[{}].input: {e}", case.name))?;
+        let constraint = NamedConstraint::parse(&case.constraint)
+            .map_err(|e| format!("constraint_checks[{}].constraint: {e}", case.name))?;
+        constraint_checks.push(ConstraintCheck {
+            name: case.name.clone(),
+            input,
+            constraint,
+            rationale: case.rationale.clone(),
+        });
+    }
+
     // Parse identity check specs
     let identity_checks = raw.identity_checks.iter().map(|ic| IdentityCheckSpec {
         name: ic.name.clone(),
@@ -506,6 +599,7 @@ pub fn load_oracle_entry(toml_path: &str, base_dir: &str) -> Result<OracleEntry,
         reference_records,
         injection_sets,
         bit_exact_checks,
+        constraint_checks,
         identity_checks,
     })
 }
@@ -594,6 +688,21 @@ pub fn run_oracle(
         });
     }
 
+    // Class-membership constraint checks
+    let mut constraint_results = Vec::new();
+    for check in &entry.constraint_checks {
+        let actual = candidate(check.input);
+        let passes = check.constraint.check(actual);
+        constraint_results.push(ConstraintResult {
+            name: check.name.clone(),
+            input: check.input,
+            constraint: check.constraint.describe(),
+            actual,
+            passes,
+            rationale: check.rationale.clone(),
+        });
+    }
+
     // Identity checks
     let mut fn_map: HashMap<String, Box<dyn Fn(f64) -> f64>> = HashMap::new();
     let candidate_fn: Box<dyn Fn(f64) -> f64> = Box::new(candidate.clone());
@@ -662,8 +771,9 @@ pub fn run_oracle(
         let injections_ok = injection_reports.iter()
             .all(|(_, r)| r.special_value_failures == 0);
         let bit_exact_ok = bit_exact_results.iter().all(|r| r.passes);
+        let constraints_ok = constraint_results.iter().all(|r| r.passes);
         let identities_ok = identity_results.iter().all(|r| r.passes);
-        random_ok && injections_ok && bit_exact_ok && identities_ok
+        random_ok && injections_ok && bit_exact_ok && constraints_ok && identities_ok
     };
 
     OracleReport {
@@ -672,6 +782,7 @@ pub fn run_oracle(
         random_sample_report,
         injection_reports,
         bit_exact_results,
+        constraint_results,
         identity_results,
         passes,
     }

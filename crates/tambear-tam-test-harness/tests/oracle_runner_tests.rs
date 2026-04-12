@@ -78,11 +78,11 @@ fn oracle_entry_loads_without_error() {
     assert!(exp_neg_inf_check.is_some(),
         "exp_neg_inf_is_positive_zero check must be present (adversarial B1 requirement)");
 
-    // Verify NONZERO_SUBNORMAL is parsed (not errored)
-    let subnormal_check = entry.bit_exact_checks.iter()
+    // Verify subnormal constraint check is parsed (moved from bit_exact to constraint_checks)
+    let subnormal_check = entry.constraint_checks.iter()
         .find(|c| c.name == "exp_subnormal_output_not_zero");
     assert!(subnormal_check.is_some(),
-        "NONZERO_SUBNORMAL check must load without error");
+        "exp_subnormal_output_not_zero constraint check must load without error");
 }
 
 #[test]

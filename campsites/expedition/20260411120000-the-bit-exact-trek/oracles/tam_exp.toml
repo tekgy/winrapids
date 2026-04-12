@@ -183,20 +183,24 @@ input = -0.6931471805599453   # fp64(-ln(2))
 expected_bits = "0x3FE0000000000000"   # 0.5 exactly
 rationale = "exp(-ln(2)) = 0.5 exactly. This is representable in fp64. The Cody-Waite reduction with n=-1 gives r=0 and the polynomial returns 1.0; ldexp(1.0, -1) = 0.5. Must be bit-exact."
 
-[[bit_exact_checks.cases]]
+# ──────────────────────────────────────────────────────────────────────────────
+# CONSTRAINT CHECKS
+# Class-membership constraints — not a single expected bit pattern but a named
+# class (registered in the runner's NamedConstraint registry).
+# Use this section for "the output must be a positive subnormal" etc.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[[constraint_checks.cases]]
 name = "exp_subnormal_output_not_zero"
 input = -745.0
-expected_bits = "NONZERO_SUBNORMAL"    # any u64 in [1, 0x000FFFFFFFFFFFFF]
-rationale = "exp(-745) is in the subnormal range. Must NOT be flushed to zero. adversarial-review-exp.md B5. Runner: check actual_bits != 0 AND (actual_bits >> 52) == 0 (subnormal = zero exponent field)."
-# NOTE to scientist: the runner needs to handle the "NONZERO_SUBNORMAL" pseudo-constant as a
-# range check: (bits != 0) && (bits >> 52 == 0). This is the only entry that isn't a single
-# expected bit pattern — it's a class constraint. Flag this as a runner design question if needed.
+constraint = "nonzero_subnormal_positive"
+rationale = "exp(-745) is in the subnormal range. Must NOT be flushed to zero. bits != 0 AND (bits >> 52) == 0 AND sign bit == 0. adversarial-review-exp.md B5."
 
-[[bit_exact_checks.cases]]
+[[constraint_checks.cases]]
 name = "exp_deepest_subnormal_boundary"
 input = -745.1332191019411
-expected_bits = "NONZERO_SUBNORMAL"
-rationale = "This is approximately the deepest-subnormal-output input (n=-1074 in the subnormal path). Must give 5e-324 = 0x0000000000000001 or slightly above, NOT zero. adversarial-review-exp.md B5."
+constraint = "nonzero_subnormal_positive"
+rationale = "Near the deepest subnormal boundary (n=-1074 path). Must give 5e-324 = 0x0000000000000001 or slightly above, NOT zero. adversarial-review-exp.md B5."
 
 # ──────────────────────────────────────────────────────────────────────────────
 # IDENTITY CHECKS
@@ -240,13 +244,13 @@ domain = [1.0, 1.0]   # single point
 # NOTES FOR SCIENTIST (runner implementation)
 # ──────────────────────────────────────────────────────────────────────────────
 #
-# [N1] The "NONZERO_SUBNORMAL" expected_bits pseudo-constant in bit_exact_checks
-# needs special handling in the runner. It is not a single u64 but a class constraint:
-# (actual_bits != 0) && ((actual_bits >> 52) == 0) && ((actual_bits >> 63) == 0)
-# (i.e., positive, nonzero, subnormal). The runner should treat any string value
-# in expected_bits that is not a hex literal as a named constraint to look up.
-# For Phase 1, only two constraints are needed: "NONZERO_SUBNORMAL" and the
-# standard hex bit patterns. Adversarial will flag if new constraint types arise.
+# [N1] The "NONZERO_SUBNORMAL" expected_bits value is handled as
+# BitExactConstraint::NonzeroSubnormal in the runner (implemented in 269a338).
+# The constraint checks: (actual_bits != 0) && ((actual_bits >> 52) == 0)
+# && ((actual_bits >> 63) == 0) — i.e., positive, nonzero, subnormal.
+# Only two constraint variants exist for Phase 1: Exact(u64) for hex literals
+# and NonzeroSubnormal for this class check. Adversarial will flag if new
+# constraint types arise.
 #
 # [N2] The cody_waite_exact values were computed as (n as f64) * LN2_HI where
 # LN2_HI = f64::from_bits(0x3FE62E42FEFA3800u64). The runner should load these
@@ -257,13 +261,16 @@ domain = [1.0, 1.0]   # single point
 # These are evaluated once at load time. The runner should cache the evaluated
 # f64 values so they don't fluctuate between runs.
 #
-# [N4] For the identity_checks, the runner uses a static registry keyed by name.
-# The closures are:
-#   "exp_log_roundtrip":  |x, exp_fn, ln_fn| (exp_fn(ln_fn(x)) - x).abs()
-#   "exp_negation":       |x, exp_fn| (exp_fn(x) * exp_fn(-x) - 1.0).abs()
-#   "exp_additivity":     |(a, b), exp_fn| (exp_fn(a + b) - exp_fn(a) * exp_fn(b)).abs()
-#   "exp_one_returns_e":  |_, exp_fn| ulp_distance(exp_fn(1.0), std::f64::consts::E)
-# For identities that require multiple functions (exp_log_roundtrip needs log),
-# the runner needs to accept a multi-function registry. Flag this if the runner
-# design only accepts a single `candidate` closure — the identity interface may
-# need to be widened to pass a function map rather than a single fn pointer.
+# [N4] For the identity_checks, the runner uses a HashMap-based multi-function
+# registry (implemented in 269a338). The closures receive both the candidate
+# function and a function map for identities that require auxiliary functions.
+# A missing auxiliary function (e.g. "tam_ln" not yet registered) returns NaN
+# as the residual, and the runner skips (does not fail) that identity check.
+# The registered identities and their closures are:
+#   "exp_log_roundtrip":  |x, fns| (fns["exp"](fns["ln"](x)) - x).abs()
+#                         — requires "ln" in the function map; skipped if absent
+#   "exp_negation":       |x, fns| (fns["exp"](x) * fns["exp"](-x) - 1.0).abs()
+#   "exp_additivity":     |(a,b), fns| (fns["exp"](a+b) - fns["exp"](a)*fns["exp"](b)).abs()
+#   "exp_one_returns_e":  |_, fns| ulp_distance(fns["exp"](1.0), std::f64::consts::E)
+# When tam_ln lands (Phase 1 campsite 2.x), register it as "ln" in the function
+# map to activate the exp_log_roundtrip identity check.

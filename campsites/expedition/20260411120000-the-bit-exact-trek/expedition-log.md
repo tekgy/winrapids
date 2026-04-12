@@ -1935,3 +1935,80 @@ the Vulkan emit lands and I10 runs.
 — naturalist (Entry 021 end)
 
 ---
+
+## Entry 022 — 2026-04-12 — Session ending, persistence complete
+
+Team-lead's broadcast: session ending for a machine transfer. The trek
+resumes on another machine, possibly with a new team spawning from
+persisted state. Three asks: persist in-flight work, generate campsites
+for pickup, garden before shutdown. For naturalist the garden is the
+main deliverable.
+
+### What I've persisted in this final window
+
+- **`~/.claude/garden/2026-04-12-shutdown-naturalist-reflection.md`** —
+  main deliverable. Contains: the cross-layer "corners" observation
+  (vendor ops + vendor libms + vendor GPU runtime all exhibit
+  core-right / corners-ambiguous; tambear's whole invariant set reads
+  as "we own the corners at every layer"), the two findings from
+  running a convergence check on the four day-1 three-way convergences
+  (adversarial upstream in 3 of 4; convergences crystallize into
+  artifacts), the day-one-vs-day-two rhythm reflection, what's worth
+  carrying forward, and what made this session exceptional.
+
+- **`~/.claude/garden/2026-04-12-convention-graduates-when-fragile.md`**
+  — earlier garden entry connecting Entry 014's "slot crystallizes
+  around first entry" framing to aristotle's `deferred-candidates.md`
+  "convention graduates when fragile" framing. Not in the log because
+  it wasn't load-bearing at the time; kept in the garden for future-me.
+
+- **Five campsite pickup points** filed via `campsite create`:
+  - `naturalist/corners-observation` — the cross-layer finding
+  - `naturalist/payne-hanek-pre-read` — Peak 2 Phase 2 research thread
+  - `naturalist/spirv-nocontraction-reliability` — Peak 7 open question
+  - `naturalist/compiler-no-vendor-tooling-lineage` — Terra/Halide/TVM
+    perspective thread
+  - `naturalist/libm-lineage-fuller-version` — peak2-libm/lineage.md
+    extension thread
+  - `naturalist/convergence-meta-finding` — the two findings from the
+    convergence check on my own day-1 convergences
+
+- **This log entry** — a marker so the next session's log reader has
+  a clean handoff point.
+
+### What I am NOT committing
+
+The working tree has modified files from pathmaker, math-researcher,
+the parallel-naturalist, navigator, aristotle. None of them are mine
+and I will leave them for their owners' commit sweeps. My own commit
+(coming after this entry) will target only:
+- This expedition log
+- The two garden files
+
+Per team-lead's commit-hygiene note: targeted `git add`, no `-A`, no
+`.`. Clean commit, hooks intact.
+
+### Standing handoff note for the next session's naturalist
+
+Read this log's entries 001-022 for context. My voice is
+structural-rhyme-and-generalization, sometimes over-reaching. The
+parallel-naturalist's voice (entries 010, 012, 013, 015-017, 019,
+021) is concrete-quote-specific-decisions, trust-but-verify. Both
+flavors are needed. If you are one person, you'll need to cover both.
+If there are two of you, the existing log shows how the two voices
+complement each other without explicit coordination.
+
+The standing instruction from navigator, two words, before the day
+went quiet: *keep going*. That is still the standing instruction.
+Rest state is valid when nothing calls attention. The garden is where
+curiosity lives. The expedition log is where the team's shared weather
+is recorded. The campsites are where pickup points are parked. The
+pitfalls are where "what almost went wrong" accumulates. Use whichever
+venue fits the observation, and don't over-produce in any of them.
+
+*The expedition is well. The trek transfers to another machine. The
+garden travels with it. Nothing important is being lost.*
+
+— naturalist (Entry 022 end)
+
+---

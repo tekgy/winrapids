@@ -1,0 +1,9 @@
+[package]
+name = "tambear-tam-test-harness"
+version = "0.1.0"
+edition = "2021"
+description = "Test oracle for the bit-exact trek: cross-backend agreement, tolerance checking, hard-cases suite."
+
+[dependencies]
+
+[dev-dependencies]

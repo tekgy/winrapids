@@ -596,14 +596,12 @@ fn parse_store_f64(ln: usize, toks: &[String]) -> PResult<Op> {
 fn parse_reduce_block_add(ln: usize, toks: &[String]) -> PResult<Op> {
     // "reduce_block_add.f64 %out_buf, %slot_idx, %val @order(<strategy>)"
     // The three register operands come first (comma-separated), then the
-    // optional @order(...) attribute token. If @order is absent, we error:
-    // BackendDefault is rejected at parse time to give a useful message.
+    // @order(...) attribute. Missing @order is an error: every reduction must
+    // declare an explicit strategy (I7 — total order enables correctness).
     if toks.len() < 4 {
         return Err(ParseError::new(ln, "reduce_block_add.f64 requires: %out, %slot, %val @order(...)"));
     }
     // Find the @order(...) token. The three registers may have trailing commas.
-    // Strategy: find the token starting with "@order" and treat everything
-    // before it (after the mnemonic) as the three register operands.
     let at_order_pos = toks.iter().position(|t| t.starts_with("@order"));
     let (reg_toks, order_tok) = match at_order_pos {
         Some(pos) => (&toks[1..pos], Some(&toks[pos])),
@@ -612,36 +610,28 @@ fn parse_reduce_block_add(ln: usize, toks: &[String]) -> PResult<Op> {
     let (out_buf, slot_idx, val) = parse_three_regs_comma(ln, reg_toks)?;
     let order = match order_tok {
         None => return Err(ParseError::new(ln,
-            "reduce_block_add.f64 requires an @order(...) attribute: \
-             @order(sequential_left) or @order(tree_fixed_fanout(N)). \
-             BackendDefault is not permitted.")),
-        Some(tok) => parse_order_strategy(ln, tok)?,
+            "reduce_block_add.f64 requires an @order(...) attribute naming a registered \
+             strategy, e.g. @order(sequential_left). See the OrderStrategy registry \
+             (order_strategy.rs) for all valid names.")),
+        Some(tok) => parse_order_strategy_ref(ln, tok)?,
     };
     Ok(Op::ReduceBlockAdd { out_buf, slot_idx, val, order })
 }
 
-fn parse_order_strategy(ln: usize, tok: &str) -> PResult<OrderStrategy> {
-    // Accepted forms:
-    //   @order(sequential_left)
-    //   @order(tree_fixed_fanout(N))
-    //   @order(backend_default)    — parsed but rejected by verifier
+fn parse_order_strategy_ref(ln: usize, tok: &str) -> PResult<OrderStrategyRef> {
+    // Accepted form:  @order(<strategy_name>)
+    // The name is extracted and returned as an OrderStrategyRef.
+    // Registry validation happens in the verifier (not the parser), so that
+    // the error message can cite the full list of known names at verify time.
+    // The parser only checks syntax, not semantics.
     let inner = tok
         .strip_prefix("@order(")
         .and_then(|s| s.strip_suffix(')'))
         .ok_or_else(|| ParseError::new(ln, format!("malformed @order attribute: {tok:?}")))?;
-    if inner == "sequential_left" {
-        Ok(OrderStrategy::SequentialLeft)
-    } else if inner == "backend_default" {
-        Ok(OrderStrategy::BackendDefault)
-    } else if let Some(rest) = inner.strip_prefix("tree_fixed_fanout(") {
-        let n_str = rest.strip_suffix(')')
-            .ok_or_else(|| ParseError::new(ln, format!("malformed tree_fixed_fanout: {inner:?}")))?;
-        let n = n_str.parse::<u32>()
-            .map_err(|_| ParseError::new(ln, format!("tree_fixed_fanout fanout must be u32, got {n_str:?}")))?;
-        Ok(OrderStrategy::TreeFixedFanout(n))
-    } else {
-        Err(ParseError::new(ln, format!("unknown order strategy: {inner:?}")))
+    if inner.is_empty() {
+        return Err(ParseError::new(ln, "@order() requires a strategy name"));
     }
+    Ok(OrderStrategyRef::new(inner))
 }
 
 fn parse_ret_f64(ln: usize, toks: &[String]) -> PResult<Op> {

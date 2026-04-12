@@ -152,6 +152,18 @@ assert tam_ln(e)    ≈ 1.0                (within 1 ULP; e itself is rounded)
 
 Plus the 1M random sample battery from Campsite 2.1.
 
+### Round-trip identity tests (per adversarial review A2, 2026-04-12)
+
+Two complementary identity checks. Both are tertiary (sanity net, not primary bar) per the accuracy-target composition rule, but the `log(exp(x)) ≈ x` direction is worth adding explicitly because its error profile is regular across the entire `x` range (unlike the reverse direction, which has regime-dependent error):
+
+1. **`exp(log(x)) ≈ x`** for `x ∈ [1e-100, 1e100]`. Bound: **2 ULP** (two 1-ULP errors compose additively in the result magnitude).
+
+2. **`log(exp(x)) ≈ x`** for `x ∈ [-700, +700]` (i.e., any `x` where `exp(x)` is finite and normal). Bound: **2 ULP**, flat across `x`.
+
+   **Why the log-of-exp bound is flat:** if `exp(x)` is accurate to 1 ULP, then `exp(x) = e^x · (1 + ε)` where `|ε| ≤ 2^-52`. Applying `log` to this gives `log(e^x · (1 + ε)) = x + log(1 + ε) ≈ x + ε` (to first order in ε). The propagated error is `|ε| ≤ 2^-52`, which is **1 ULP at 1.0 regardless of `x`**. Adding `log`'s own 1 ULP contribution, the total is ≤ 2 ULP uniformly. This is a stronger guarantee than the exp-of-log direction (which has a `|b|`-proportional amplification) and is a useful smoke test for the full exp/log pipeline.
+
+Both identities are evaluated via mpmath at 50 digits to get the "true" `x` reference; we then compare our composed result in fp64 against the mpmath truth. If the identity fails but individual functions pass their 1 ULP bars, the failure goes in the composed-budget drift log — **do not raise the individual function bound to pass the identity test** (per navigator's sign-off note).
+
 ## Pitfalls
 
 1. **Subnormal extraction.** The naive `e = (bits >> 52) - 1023` fails for subnormals. Front-end with the `x * 2^52` trick.

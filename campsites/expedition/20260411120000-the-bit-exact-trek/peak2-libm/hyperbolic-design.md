@@ -68,7 +68,17 @@ else:
         return -exp(-x - ln(2)) # sign-flipped mirror
 ```
 
-The threshold at `|x| = 22`: past `|x| = 22`, `e^(-x) < 2^-64`, well below 1 ULP of `e^x / 2`. So dropping the subtraction is safe.
+The threshold at `|x| = 22`: past `|x| = 22`, the term `e^(-x)/2` is below 0.5 ULP of `e^x/2` so dropping the subtraction is safe. **Derivation** (corrected per adversarial review 2026-04-12 B1 — the earlier "e^-22 < 2^-64" claim was mathematically wrong; `e^-22 ≈ 2.8e-10 ≈ 2^-31.8`, not `2^-64`):
+
+For `sinh(x) = (e^x - e^(-x))/2` to round correctly when we drop the `-e^(-x)/2` term, we need
+    |e^(-x)/2| < 0.5 · ulp(e^x/2) = 0.5 · (e^x/2) · 2^-52 = e^x · 2^-54.
+Dividing both sides by `e^(-x)/2`:
+    1 < e^(2x) · 2^-53
+    e^(2x) > 2^53
+    2x > 53 · ln(2) ≈ 36.7
+    x > 18.4
+
+So the strict threshold is `|x| > ~18.4` for the dropped term to be below 0.5 ULP. We use `|x| = 22` with margin to guarantee correctness plus extra slack for accumulated rounding, which gives `e^(-44) ≈ 2^-63.5` in the dropped term vs `~2^-53` for 1 ULP — a ~10-bit safety margin. The same 22 threshold applies to `cosh` and `tanh` for the same reason.
 
 The threshold at `|x| = 1`: below `|x| = 1`, the cancellation loses up to 2 bits, which is already above 1 ULP. The polynomial fit is cheaper and more accurate.
 

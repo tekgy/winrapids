@@ -27,6 +27,7 @@
 //! - Cross-backend test harness → `tambear-tam-test-harness`
 
 pub mod ast;
+pub mod order_strategy;
 pub mod print;
 pub mod parse;
 pub mod verify;

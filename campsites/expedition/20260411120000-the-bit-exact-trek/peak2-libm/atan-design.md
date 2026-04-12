@@ -187,39 +187,59 @@ a result in (-π, π] — the angle in the plane from the positive x-axis
 to the point (x, y).
 ```
 
-Quadrant dispatch:
+Quadrant dispatch (for non-zero, non-inf, non-nan inputs):
 
 | `x` | `y` | Result |
 |---|---|---|
-| `x > 0` | any | `atan(y / x)` |
+| `x > 0` | any finite | `atan(y / x)` |
 | `x < 0` | `y ≥ 0` | `atan(y / x) + π` |
 | `x < 0` | `y < 0` | `atan(y / x) - π` |
 | `x == 0` | `y > 0` | `+π/2` |
 | `x == 0` | `y < 0` | `-π/2` |
-| `x == 0` | `y == 0` | `+0` (by convention) |
 
-Plus a large table of inf/nan cases:
+**Note:** the `x == 0, y == 0` case is NOT in the quadrant dispatch table above. All four signed-zero combinations are distinct and must be handled BEFORE the quadrant dispatch fires, in the special-value dispatch below. See adversarial review B2 (2026-04-12) for why the quadrant-table "+0 by convention" shortcut is wrong: it collapses four IEEE 754-specified results into one.
+
+**Ordered dispatch sequence for `atan2(y, x)` — the complete front-end.** Pathmaker handles cases in this exact order, with early `select`-chain returns:
+
 ```
-atan2(+0, +0) = +0
-atan2(-0, +0) = -0
-atan2(+0, -0) = +π
-atan2(-0, -0) = -π
-atan2(y, +0)   for y > 0 = +π/2
-atan2(y, -0)   for y > 0 = +π/2   (yes, `+π/2` not `-π/2` — signed zero doesn't swap sign of the result when x has magnitude 0)
-atan2(+0, x)   for x > 0 = +0
-atan2(-0, x)   for x > 0 = -0
-atan2(+0, x)   for x < 0 = +π
-atan2(-0, x)   for x < 0 = -π
-atan2(±inf, +inf) = ±π/4
-atan2(±inf, -inf) = ±3π/4
-atan2(±inf, finite) = ±π/2
-atan2(finite, +inf) = ±0 (sign of y)
-atan2(finite, -inf) = ±π (sign of y)
-atan2(nan, x)   = nan
-atan2(y, nan)    = nan
+1. If isnan(x) or isnan(y):     return nan   (preserving a nan bit pattern per I11)
+
+2. Both x and y are zero (handle BEFORE any "one zero" case):
+   If x is +0 and y is +0:       return +0.0       (exact)
+   If x is +0 and y is -0:       return -0.0       (exact)
+   If x is -0 and y is +0:       return +π         (mpmath oracle, 1 ULP)
+   If x is -0 and y is -0:       return -π         (mpmath oracle, 1 ULP)
+
+3. At least one of ±inf cases:
+   If y is +inf and x is +inf:   return +π/4
+   If y is +inf and x is -inf:   return +3π/4
+   If y is -inf and x is +inf:   return -π/4
+   If y is -inf and x is -inf:   return -3π/4
+   If y is +inf and x finite:    return +π/2
+   If y is -inf and x finite:    return -π/2
+   If y is finite and x is +inf: return sign(y) · 0.0   (y's sign, magnitude 0)
+   If y is finite and x is -inf: return sign(y) · π     (y's sign, magnitude π)
+
+4. y is ±0 (y zero, x nonzero non-special):
+   If y is +0 and x > 0:         return +0.0
+   If y is -0 and x > 0:         return -0.0
+   If y is +0 and x < 0:         return +π
+   If y is -0 and x < 0:         return -π
+
+5. x is ±0 (x zero, y nonzero non-special):
+   If x is +0 (or x is -0) and y > 0:  return +π/2
+   If x is +0 (or x is -0) and y < 0:  return -π/2
+   (Note: the sign of x's zero does NOT affect the result when y is nonzero,
+    because |x| = 0 means we're looking straight up or down regardless of sign.
+    This is the non-obvious rule that adversarial's matrix note covers.)
+
+6. Normal path (both x and y nonzero, finite, non-nan):
+   Apply the quadrant dispatch table above using atan(y/x) + quadrant correction.
 ```
 
-This is the biggest special-case table in Phase 1, second only to `pow`. Pathmaker writes a front-end that handles each explicitly. The real-valued path underneath is `atan(y/x)` with the quadrant correction from the table.
+This ordering is load-bearing. In particular, **step 2 (both-zero) must come before step 4 (y-zero) and step 5 (x-zero)**, because step 4 reads x's sign assuming x is a nonzero finite, and if x is ±0 you'd enter the wrong branch. Similarly step 3 (infs) must come before steps 4-5 (zeros) because `+inf` and `+0` have the same sign bit but different magnitudes.
+
+This is the biggest special-case table in Phase 1, second only to `pow`. Pathmaker writes a front-end that handles each case explicitly via `select` cascades. The real-valued path (step 6) underneath is `atan(y/x)` with the quadrant correction from the table.
 
 ### Precision note
 

@@ -58,18 +58,18 @@ Three new primitives are needed: `log_dd`, `dd_mul_f64`, and `exp_dd`. All three
 
 ## Special cases (the actual work)
 
-The IEEE 754 specification for `pow(x, y)` is:
+The IEEE 754-2019 §9.2.1 specification for `pow(x, y)` is (note the sign-of-zero handling: `pown(-0, n)` for odd `n` preserves the negative sign, which is the easy-to-forget rule):
 
 | Case | Result |
 |---|---|
 | `pow(+0, y)` for `y > 0`, non-integer or even | `+0` |
 | `pow(+0, y)` for `y > 0`, odd integer | `+0` |
 | `pow(-0, y)` for `y > 0`, non-integer or even | `+0` |
-| `pow(-0, y)` for `y > 0`, odd integer | `-0` |
+| `pow(-0, y)` for `y > 0`, odd integer | **`-0`** (sign preserved) |
 | `pow(+0, y)` for `y < 0`, non-integer or even | `+inf` (and raises div-by-zero) |
 | `pow(+0, y)` for `y < 0`, odd integer | `+inf` |
 | `pow(-0, y)` for `y < 0`, non-integer or even | `+inf` |
-| `pow(-0, y)` for `y < 0`, odd integer | `-inf` |
+| `pow(-0, y)` for `y < 0`, odd integer | **`-inf`** (sign preserved) |
 | `pow(x, +0)` for any `x` (including nan) | `1` |
 | `pow(x, -0)` for any `x` (including nan) | `1` |
 | `pow(+1, y)` for any `y` (including nan) | `1` |
@@ -122,6 +122,8 @@ Actually wait — the integer-power path doesn't need to be more accurate than t
 
 ## The double-double infrastructure
 
+**NOTE: this section describes the Phase 2 upgrade path.** Phase 1 `tam_pow` targets 2 ULP using plain fp64 intermediates in the `exp(b · log(a))` path. The double-double machinery below is the route to 1 ULP in Phase 2 and is kept here as infrastructure research, not Phase 1 implementation.
+
 Double-double ("dd") represents a value as an fp64 pair `(hi, lo)` such that `hi + lo` is the full value and `|lo| ≤ ulp(hi)/2`. Standard algorithms:
 
 **TwoSum(a, b):** returns `(s, err)` such that `s + err = a + b` exactly, where `s = a + b` in fp64. Pure fp64 ops, no FMA, safe under I3:
@@ -130,6 +132,18 @@ s = a + b
 bb = s - a
 err = (a - (s - bb)) + (b - bb)
 ```
+
+### MANDATORY implementation constraints for TwoProd and TwoSum (I3 enforcement)
+
+**This is not advisory — violating it silently produces wrong answers that don't show up in simple tests.** Per adversarial's review 2026-04-12 (B2, B3):
+
+Every arithmetic operation inside `TwoSum(a, b)`, `TwoProd(a, b)`, `split(a)`, and all double-double compositions **MUST** emit as a separate `.tam` op. Specifically:
+
+- `split(a)` emits three ops: `c = fmul(a, 134217729.0)`, `tmp = fsub(c, a)`, `aH = fsub(c, tmp)`. **No backend may fuse any subexpression into an FMA.**
+- `err = ((aH * bH - p) + aH * bL + aL * bH) + aL * bL` in TwoProd has FIVE multiplies and THREE adds. All emitted separately. Specifically, the subexpression `aH * bH - p` is `tmp = fmul(aH, bH); tmp2 = fsub(tmp, p)` — **NOT** `fma(aH, bH, -p)`. Any contraction here breaks the `p + err = a * b exactly` invariant.
+- Pathmaker's `.tam` emitter already upholds I3 at the IR level (per spec §5.3 "all fp ops are non-contracting, FMA is never emitted"), so this constraint is structurally enforced by the IR. **But** if a future op like `fma.f64` is added to the IR, the pow implementation MUST NOT use it inside TwoSum/TwoProd.
+
+This applies to every double-double invariant in tambear-libm, not just pow. Any Kahan/Neumaier/compensated-sum pattern in future libm functions inherits the same constraint.
 
 **TwoProd(a, b):** returns `(p, err)` such that `p + err = a * b` exactly. Without FMA, this uses Dekker's splitting trick:
 ```
@@ -172,6 +186,21 @@ e_hi = tam_exp(hi)                 # 1 ULP accurate
 # correction: exp(hi + lo) = exp(hi) * exp(lo) ≈ exp(hi) * (1 + lo + lo^2/2 + ...)
 #   for |lo| << 1 (which holds by construction, |lo| ≤ ulp(hi))
 result = e_hi + e_hi * lo          # first-order correction; adequate if |lo| < 2^-30
+
+# Derivation of the 2^-30 bound (per adversarial's B3 review, 2026-04-12):
+# The error from truncating exp(lo) ≈ 1 + lo (instead of the full Taylor series)
+# is |exp(lo) - (1 + lo)| ≈ lo^2 / 2. For |lo| < 2^-30, lo^2/2 < 2^-61, which is
+# below 1 ULP of the result.
+#
+# Domain check for Phase 2 pow (a ∈ [2^-100, 2^100], b ∈ [-30, 30]):
+#   |lo| is the low part of dd_mul_f64(log_dd_lo, b), where log_dd_lo ≤ ulp(log_dd_hi).
+#   For |hi| ≤ 709 (exp domain), ulp(hi) ≤ 709 · 2^-52 ≈ 1.6e-13 ≈ 2^-42.8.
+#   Multiplying by |b| ≤ 30 (which is < 2^5) gives |lo| ≤ 2^-42.8 · 2^5 ≈ 2^-37.8,
+#   comfortably within the 2^-30 bound.
+#
+# If a future phase extends the b domain beyond ±30, this bound must be re-derived
+# and the second-order term e_hi * lo^2 / 2 added to the correction. Do not extend
+# the domain without re-deriving the bound.
 # (If |lo| is larger, add higher-order terms.)
 ```
 

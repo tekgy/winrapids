@@ -98,48 +98,40 @@ impl Reg {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// OrderStrategy
+// OrderStrategyRef
 // ═══════════════════════════════════════════════════════════════════
 
-/// The reduction tree structure for `reduce_block_add.f64`.
+/// A named reference into the OrderStrategy registry.
 ///
-/// This field is part of I7's "total order" half. Every reduction declares its
-/// order explicitly. The verifier rejects `BackendDefault` — it is a reserved
-/// sentinel that programs may not use.
+/// Programs declare their reduction order by name, e.g. `@order(sequential_left)`.
+/// The name is validated against the registry at verify time. Unknown names are
+/// rejected by the verifier (I7 compliance — "backend chooses" is not a total order).
 ///
-/// Phase 1 defines two concrete strategies:
-/// - `SequentialLeft`: left-to-right serial accumulation. The CPU interpreter
-///   always uses this. Bit-exact and portable; slowest on parallel hardware.
-/// - `TreeFixedFanout(fanout)`: balanced binary tree reduction with a fixed
-///   fanout. `fanout = 32` means each warp reduces 32 elements in parallel.
-///   The PTX backend uses `TreeFixedFanout(32)` for the within-warp step.
-///   The value must be a power of two ≥ 2. The host fold step (block partials)
-///   always uses `SequentialLeft` to keep the host-side deterministic.
+/// This is an open reference type, not a closed enum. New strategies are added
+/// to the registry in `order_strategy.rs` without changing this type or any
+/// existing code that pattern-matches on op variants. The AST stays stable;
+/// the registry grows.
 ///
-/// Future phases add additional named strategies (e.g. `PairwiseCascade`,
-/// `KahanCompensated`). The strategy name is the contract — two backends that
-/// both implement `SequentialLeft` produce identical bits.
+/// The full engineering contract for each strategy (formal spec, reference
+/// implementation, bit-exact test vectors, fusion-compatibility metadata)
+/// lives in `order_strategy.rs`. This type is just the name carried by an op.
 ///
-/// **I7 compliance:** `BackendDefault` is rejected by the verifier because
-/// "backend chooses" is not a total order — two backends may choose differently,
-/// destroying bit-exactness. Every reduction must name its order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OrderStrategy {
-    /// Serial left-to-right accumulation: `acc = ((a0 + a1) + a2) + ...`
-    /// Deterministic on every backend. CPU interpreter always uses this.
-    SequentialLeft,
+/// **I7 compliance:** The verifier calls `order_strategy::is_known(&ref_.0)` and
+/// rejects programs that name an unregistered strategy. This prevents programs
+/// from naming strategies that no backend can implement.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OrderStrategyRef(pub String);
 
-    /// Balanced tree reduction with a fixed fanout (must be power of two ≥ 2).
-    /// `TreeFixedFanout(32)` means groups of 32 are reduced in parallel, then
-    /// the partial sums are reduced again, etc.
-    /// PTX backend target: `TreeFixedFanout(32)` for within-warp step.
-    TreeFixedFanout(u32),
+impl OrderStrategyRef {
+    /// Construct from a static string (for use in tests and fixtures).
+    pub fn new(name: impl Into<String>) -> Self {
+        OrderStrategyRef(name.into())
+    }
 
-    /// Reserved sentinel. The verifier rejects any program that uses this.
-    /// Present in the AST so the parser can produce a useful error message
-    /// ("BackendDefault is not permitted — choose SequentialLeft or
-    /// TreeFixedFanout(N)") rather than an unknown-variant panic.
-    BackendDefault,
+    /// The strategy name as a str reference.
+    pub fn name(&self) -> &str {
+        &self.0
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -323,13 +315,14 @@ pub enum Op {
     /// "block" = all elements). PTX backend: shared-memory tree reduce + block-
     /// zero write. Host folds all block partials after dispatch.
     ///
-    /// The `order` field declares the reduction tree structure. The verifier
-    /// rejects `OrderStrategy::BackendDefault` — every reduction must declare
-    /// an explicit order to satisfy I7 (total order enables correctness).
+    /// The `order` field is a named reference into the OrderStrategy registry
+    /// (see `order_strategy.rs`). The verifier rejects unknown strategy names
+    /// to satisfy I7 (total order enables correctness). New strategies are added
+    /// to the registry without changing this type.
     ///
     /// Phase 6 delivers deterministic cross-backend results by making the order
     /// explicit and consistent across CPU, PTX, and SPIR-V backends.
-    ReduceBlockAdd { out_buf: Reg, slot_idx: Reg, val: Reg, order: OrderStrategy },
+    ReduceBlockAdd { out_buf: Reg, slot_idx: Reg, val: Reg, order: OrderStrategyRef },
 
     // ── Function return ───────────────────────────────────────────────────────
 

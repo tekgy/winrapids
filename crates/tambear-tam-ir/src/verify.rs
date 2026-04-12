@@ -342,21 +342,17 @@ impl VerifyCtx {
                 self.expect_ty(out_buf, &Ty::BufF64, errors);
                 self.expect_ty(slot_idx, &Ty::I32, errors);
                 self.expect_ty(val, &Ty::F64, errors);
-                // I7: BackendDefault is forbidden — every reduction must name its order.
-                if matches!(order, OrderStrategy::BackendDefault) {
-                    errors.push(self.err(
-                        "reduce_block_add.f64 uses @order(backend_default), which is not permitted. \
-                         Use @order(sequential_left) or @order(tree_fixed_fanout(N))."
-                    ));
-                }
-                // TreeFixedFanout fanout must be a power of two ≥ 2.
-                if let OrderStrategy::TreeFixedFanout(n) = order {
-                    if *n < 2 || (*n & (*n - 1)) != 0 {
-                        errors.push(self.err(format!(
-                            "reduce_block_add.f64 @order(tree_fixed_fanout({n})): \
-                             fanout must be a power of two ≥ 2"
-                        )));
-                    }
+                // I7: strategy name must be registered. Unknown names are rejected.
+                // This enforces the open-registry contract: any strategy a backend
+                // claims to implement must be in the registry; a program may only
+                // name strategies that exist.
+                if !crate::order_strategy::is_known(order.name()) {
+                    errors.push(self.err(format!(
+                        "reduce_block_add.f64 @order({name}): '{name}' is not a registered \
+                         OrderStrategy. Known strategies: {known:?}",
+                        name = order.name(),
+                        known = crate::order_strategy::all_names(),
+                    )));
                 }
             }
 
@@ -441,7 +437,7 @@ mod tests {
 
     #[test]
     fn verify_accepts_sequential_left_order() {
-        // A reduce with @order(sequential_left) must be accepted.
+        // A reduce with @order(sequential_left) must be accepted — it's a registered strategy.
         let src = ".tam 0.1\n.target cross\nkernel k(buf<f64> %d, buf<f64> %o) {\nentry:\n  %n = bufsize %d\n  %acc = const.f64 0.0\n  loop_grid_stride %i in [0, %n) {\n    %v = load.f64 %d, %i\n    %acc' = fadd.f64 %acc, %v\n  }\n  %s = const.i32 0\n  reduce_block_add.f64 %o, %s, %acc' @order(sequential_left)\n}\n";
         let prog = parse_program(src).unwrap();
         let errors = verify(&prog);
@@ -449,17 +445,29 @@ mod tests {
     }
 
     #[test]
-    fn verify_accepts_tree_fixed_fanout_order() {
-        let src = ".tam 0.1\n.target cross\nkernel k(buf<f64> %d, buf<f64> %o) {\nentry:\n  %n = bufsize %d\n  %acc = const.f64 0.0\n  loop_grid_stride %i in [0, %n) {\n    %v = load.f64 %d, %i\n    %acc' = fadd.f64 %acc, %v\n  }\n  %s = const.i32 0\n  reduce_block_add.f64 %o, %s, %acc' @order(tree_fixed_fanout(32))\n}\n";
+    fn verify_accepts_tree_fixed_fanout_2_order() {
+        // tree_fixed_fanout_2 is registered — must be accepted.
+        let src = ".tam 0.1\n.target cross\nkernel k(buf<f64> %d, buf<f64> %o) {\nentry:\n  %n = bufsize %d\n  %acc = const.f64 0.0\n  loop_grid_stride %i in [0, %n) {\n    %v = load.f64 %d, %i\n    %acc' = fadd.f64 %acc, %v\n  }\n  %s = const.i32 0\n  reduce_block_add.f64 %o, %s, %acc' @order(tree_fixed_fanout_2)\n}\n";
         let prog = parse_program(src).unwrap();
         let errors = verify(&prog);
-        assert!(errors.is_empty(), "tree_fixed_fanout(32) should be accepted: {:?}", errors);
+        assert!(errors.is_empty(), "tree_fixed_fanout_2 should be accepted: {:?}", errors);
     }
 
     #[test]
-    fn verify_rejects_backend_default_order() {
-        // BackendDefault is parsed but must be rejected by the verifier.
-        // We construct the AST directly since the parser also rejects it.
+    fn verify_accepts_rfa_bin_exponent_aligned_order() {
+        // rfa_bin_exponent_aligned is registered (stub) — verifier must accept it.
+        // The interpreter will panic at runtime, but the verifier validates the name.
+        let src = ".tam 0.1\n.target cross\nkernel k(buf<f64> %d, buf<f64> %o) {\nentry:\n  %n = bufsize %d\n  %acc = const.f64 0.0\n  loop_grid_stride %i in [0, %n) {\n    %v = load.f64 %d, %i\n    %acc' = fadd.f64 %acc, %v\n  }\n  %s = const.i32 0\n  reduce_block_add.f64 %o, %s, %acc' @order(rfa_bin_exponent_aligned)\n}\n";
+        let prog = parse_program(src).unwrap();
+        let errors = verify(&prog);
+        assert!(errors.is_empty(), "rfa_bin_exponent_aligned should be accepted by verifier: {:?}", errors);
+    }
+
+    #[test]
+    fn verify_rejects_unregistered_strategy_name() {
+        // An unknown strategy name must be rejected. This covers the old
+        // BackendDefault case: it is no longer a parseable variant; any program
+        // that tries to name an unregistered strategy gets a verifier error.
         use crate::ast::*;
         let prog = Program {
             version: TamVersion::PHASE1,
@@ -478,26 +486,26 @@ mod tests {
                         out_buf: Reg::new("out"),
                         slot_idx: Reg::new("s"),
                         val: Reg::new("v"),
-                        order: OrderStrategy::BackendDefault,
+                        order: OrderStrategyRef::new("backend_default"),
                     }),
                 ],
             }],
         };
         let errors = verify(&prog);
-        assert!(!errors.is_empty(), "BackendDefault should be rejected by verifier");
+        assert!(!errors.is_empty(), "unknown strategy 'backend_default' should be rejected");
         assert!(errors.iter().any(|e| e.message.contains("backend_default")),
-            "expected 'backend_default' in error message, got: {:?}", errors);
+            "expected strategy name in error message, got: {:?}", errors);
     }
 
     #[test]
-    fn verify_rejects_tree_fixed_fanout_non_power_of_two() {
+    fn verify_rejects_empty_strategy_name() {
         use crate::ast::*;
         let prog = Program {
             version: TamVersion::PHASE1,
             target: Target::Cross,
             funcs: vec![],
             kernels: vec![KernelDef {
-                name: "bad_fanout".into(),
+                name: "bad2".into(),
                 params: vec![
                     KernelParam { ty: Ty::BufF64, reg: Reg::new("out") },
                 ],
@@ -509,14 +517,14 @@ mod tests {
                         out_buf: Reg::new("out"),
                         slot_idx: Reg::new("s"),
                         val: Reg::new("v"),
-                        order: OrderStrategy::TreeFixedFanout(3), // 3 is not a power of 2
+                        order: OrderStrategyRef::new("totally_unknown_strategy"),
                     }),
                 ],
             }],
         };
         let errors = verify(&prog);
-        assert!(!errors.is_empty(), "fanout=3 should be rejected");
-        assert!(errors.iter().any(|e| e.message.contains("power of two")),
-            "expected 'power of two' in error message, got: {:?}", errors);
+        assert!(!errors.is_empty(), "unknown strategy name should be rejected");
+        assert!(errors.iter().any(|e| e.message.contains("not a registered")),
+            "expected 'not a registered' in error message, got: {:?}", errors);
     }
 }

@@ -543,11 +543,16 @@ impl<'p> Interpreter<'p> {
 
             // ── Reduction ─────────────────────────────────────────────────────
             // On CPU: one "block" covers all elements. The "reduce" is a direct
-            // accumulation into the slot. No tree reduction needed.
-            // The final value (after the loop) is the total sum.
-            // The `order` field is ignored here: the CPU interpreter always uses
-            // SequentialLeft (serial loop). The PTX backend (Peak 3) will honor
-            // TreeFixedFanout(N). The verifier ensures no BackendDefault reaches here.
+            // store of the value accumulated by the surrounding loop body.
+            // The loop body runs sequentially (SSA phi update = left fold), so the
+            // CPU interpreter effectively executes `sequential_left` regardless of
+            // the declared order strategy. This is correct for Phase 1:
+            //   - sequential_left: the loop body IS the sequential fold.
+            //   - tree_fixed_fanout_2: the loop-then-store is *semantically* the
+            //     same result for exact arithmetic but may differ by a few ULP on
+            //     numerically sensitive inputs. The PTX backend (Peak 3) implements
+            //     the actual tree structure to achieve cross-backend bit-exactness.
+            // The verifier (via the registry) ensures only known strategies reach here.
             Op::ReduceBlockAdd { out_buf, slot_idx, val, order: _ } => {
                 let slot = env.get_i32(slot_idx)? as usize;
                 let v = env.get_f64(val)?;

@@ -194,14 +194,9 @@ fn print_op(out: &mut String, op: &Op, indent: usize) {
 
         // ── Reduction ────────────────────────────────────────────────────────
         Op::ReduceBlockAdd { out_buf, slot_idx, val, order } => {
-            let order_str = match order {
-                OrderStrategy::SequentialLeft => "@order(sequential_left)".to_string(),
-                OrderStrategy::TreeFixedFanout(n) => format!("@order(tree_fixed_fanout({}))", n),
-                OrderStrategy::BackendDefault => "@order(backend_default)".to_string(),
-            };
             format!(
-                "reduce_block_add.f64 {}, {}, {} {}",
-                out_buf.display(), slot_idx.display(), val.display(), order_str
+                "reduce_block_add.f64 {}, {}, {} @order({})",
+                out_buf.display(), slot_idx.display(), val.display(), order.name()
             )
         }
 

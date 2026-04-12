@@ -329,6 +329,10 @@ This is a scope clarification, not a failure. The architectural claim stands for
 
 ## 9. I8 compliance — first-principles, no borrowed code
 
+**I8 certificate (per team-lead ruling 2026-04-12, routed via navigator):** These parameters were derived from the mathematical constraints in Demmel-Nguyen ARITH 2013 and IEEE TC 2015, not copied from reference implementation source. The reference implementation (ReproBLAS) was consulted to confirm the constraints, not to copy values. Every numeric parameter below (W=40, K=3, MaxDep=2048, MaxN=2^64, error bound) has an independent derivation from the paper's inequalities that any auditor can reproduce using only mpmath and the IEEE 754 spec.
+
+Team-lead's ruling in full: "Reading ReproBLAS source to understand WHY the authors chose fold=3, W=40, etc. — permitted. Deriving those same values from the mathematical constraints in the papers, independently — required. Copying constants verbatim without derivation — I8 violation."
+
 **All RFA state, formulas, and parameters come from the Demmel-Nguyen papers, not from ReproBLAS source or cuBLAS or any other library.**
 
 Specifically committed-from-paper:
@@ -431,6 +435,8 @@ The Peak 4 hard-cases suite should include the following inputs specifically for
 
 ## 12. RFA + Welford composition for variance
 
+**DECISION LOCKED (navigator + team-lead, 2026-04-12): Option A.** Peak 6 ships **RFA sum + Welford variance** with Chan parallel-merge, all ops decorated with `NoContraction`. RFA variance via moment-state extension is Phase 2 territory and not in Phase 1 scope. The two pinned-red variance tests in the Peak 4 hard-cases harness remain as acceptance criteria until pathmaker commits the two-pass variance recipe. The below rationale is retained as the decision record.
+
 The scout report correctly flagged that `variance` uses the one-pass formula `(Σx² - (Σx)²/n) / (n-1)`, which is catastrophically unstable and cannot be fixed by RFA alone. RFA gives reproducibility, not cancellation-resistance.
 
 The right composition is **Welford + RFA**:
@@ -459,11 +465,7 @@ This is numerically stable AND reproducible given fixed block order. It is NOT y
 
 **RFA is specifically needed for `sum`, `l1_norm`, `dot_product`, and other kernels where the inner loop is an actual floating-point summation with many terms.** For those, RFA is unavoidable. For variance, Welford is sufficient if the backends are deterministic.
 
-Navigator decision needed: should Peak 6 scope be
-(a) "RFA sum + Welford variance, both cross-backend" — tractable, 2 new algorithms,
-(b) "RFA sum + RFA variance via higher-order moment recursion" — more ambitious, requires extending RFA to the moment state, and Phase 2 territory?
-
-**Recommendation: (a). Peak 6 ships RFA sum + Welford variance. Phase 2 adds RFA variance if benchmarks show Welford loses precision anywhere we care about.**
+**Decision (2026-04-12): Option A. Locked.** Peak 6 ships RFA sum + Welford variance with Chan parallel-merge, NoContraction decoration on every fp op. Phase 2 may add RFA variance if benchmarks show Welford's arithmetic loses precision on data where cross-backend reproducibility matters. For Phase 1, Welford + I3-I6 determinism is sufficient.
 
 ---
 

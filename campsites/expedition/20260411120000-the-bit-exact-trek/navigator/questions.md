@@ -9,7 +9,128 @@ Format: `[role] [date] — <the question>`
 
 <!-- questions below, newest first -->
 
+## Q2 — 2026-04-12 — [math-researcher → pathmaker] Pre-review opinion on OrderStrategy registry entry format
+
+Navigator routed pathmaker's OrderStrategy registry format to me for math-side review (check-ins.md, 2026-04-12 "FOUR — OrderStrategy registry format review incoming"). The specific question navigator asked: does a registry entry's `formal_spec` field need to carry anything beyond prose — specifically, do error bounds and algebraic properties need to be machine-checkable in Phase 1?
+
+My pre-review opinion, so pathmaker has something to react to when they arrive with the draft:
+
+### Recommendation: prose is sufficient for Phase 1, BUT the format must reserve structured slots for future machine-checkability.
+
+**Why prose is enough today:**
+1. Every OrderStrategy entry in Phase 1 has a human owner who reviews it manually (me for math, pathmaker for the Rust type, adversarial for testing). The review is the checker, not the type system.
+2. Machine-checkable error bounds at the registry level would require a small DSL for expressing `|S - T| ≤ n · 2^-80 · M + 7 · ε · |T|` as a structured tree. That's real work for a Phase 1 feature that nobody is yet mis-using.
+3. Prose lets us capture the *why* alongside the *what*. An error bound formula tells you the constant; prose tells you the composition reasoning that produced the constant. The why is where mistakes hide and review catches them.
+
+**Why the format MUST reserve slots for structure:**
+1. Phase 2 will add more OrderStrategy variants (RFA with K=4 for higher accuracy, Kahan with compensated summation, tree-fixed-fanout-4, etc.). Each needs the same metadata. If we start with free-form prose, Phase 2 has to retrofit structure or live with unstructured fields.
+2. The summit test (Peak 7.11) needs per-kernel tolerances vs mpmath. That tolerance derives from the OrderStrategy entry. Machine-readable → Peak 4's ToleranceSpec auto-populates; prose-only → scientist writes it by hand per kernel, drift-prone.
+3. The registry is the contract between math-researcher's design doc and pathmaker's backend emitter. Future reviewers need to diff entries and detect regressions; structure enables that.
+
+### Proposed fields for an OrderStrategy registry entry
+
+Pathmaker, treat this as a math-side wishlist — adjust the Rust type shape to fit whatever the verifier + printer can actually enforce. Illustrative TOML:
+
+```toml
+[[order_strategy]]
+name = "rfa_bin_exponent_aligned"
+description = "Reproducible floating-point accumulation via bin-indexed accumulator (Demmel-Nguyen 2013)"
+
+# Which dataflow patterns this strategy is valid for
+applies_to = ["accumulate(All, *, +)", "gather(FixedBlockOrder, +)"]
+
+# The algebraic invariant the strategy upholds (prose in Phase 1)
+invariant = """
+For any permutation π of the input multiset x[0..n], the result is bit-identical:
+  rfa_sum(x) == rfa_sum(π(x))
+This holds because:
+  (1) AddFloatToIndexed uses the (r | 1) tie-breaking trick, making each
+      deposit's rounding direction independent of accumulator state.
+  (2) AddIndexedToIndexed is commutative and associative over window-aligned
+      fixed-point addition.
+  (3) ConvertIndexedToFloat is a deterministic function of the indexed state.
+"""
+
+[order_strategy.accuracy]
+# Prose description — always required
+description = """
+|S - T| ≤ n · 2^-80 · M + 7 · ε · |T|
+where T is the exact real-valued sum, S is the RFA result, M = max|x_i|,
+and ε = 2^-53 (fp64 machine epsilon). See Demmel-Nguyen ARITH 2013 for
+the proof and Ahrens-Demmel-Nguyen EECS-2016-121 for the constants.
+"""
+
+# Machine-readable formula string — Phase 1 stores it as opaque bytes,
+# Phase 2 parses it into an AST for auto-tolerance computation.
+formula = "n * pow(2, -80) * M + 7 * eps * abs(T)"
+variables = { n = "summand_count", M = "max_abs_input", T = "true_sum", eps = "f64_epsilon" }
+
+# Generation parameters for backend code emission
+[order_strategy.params]
+bin_width_bits = 40
+fold_k = 3
+max_deposits_before_renorm = 2048
+max_summands = 18446744073709551616  # 2^64
+
+# Cross-backend determinism class
+[order_strategy.determinism]
+run_to_run = true      # same GPU, same dispatch, same bits
+gpu_to_gpu = true      # different tree shapes produce same bits (RFA property)
+cpu_to_gpu = true      # bit-exact between CPU interpreter and any GPU backend
+
+# Backend capability requirements
+[order_strategy.backends]
+cpu = { supported = true, notes = "Pure Rust, no libm" }
+ptx = { supported = true, notes = "Requires bitcast + i64 ops (spec §5.4a/b)" }
+spirv = { supported = true, notes = "Requires OpBitcast + Int64 capability; ESC-001 subnormal caveat" }
+
+# I8 audit trail — citations only, no source code
+references = [
+  "Demmel & Nguyen, Fast Reproducible Floating-Point Summation, ARITH 2013",
+  "Demmel & Nguyen, Parallel Reproducible Summation, IEEE TC 64(7):2060-2070, 2015",
+  "Ahrens, Demmel, Nguyen, Efficient Reproducible Floating Point Summation and BLAS, UCB/EECS-2016-121, 2016",
+]
+```
+
+### The critical answer to navigator's specific question
+
+> "Does the formal spec of `rfa_bin_exponent_aligned` need to carry the error bound formula `|S - T| ≤ n·2^-80·M + 7·ε·|T|` in a machine-checkable form, or is prose sufficient for Phase 1?"
+
+**Prose is sufficient for Phase 1, BUT the registry entry must carry the formula as a separate `formula` string field alongside the prose description.** The formula doesn't need to be parsed or evaluated by the Rust type system — it just needs to exist as a machine-readable string that future-Peak-4's tolerance computer can consume. Think of it like a `#[test]` attribute's expected-value string: the type system treats it as opaque bytes, but the downstream test runner parses it. Phase 2 adds the parser; Phase 1 stores the string so Phase 2 has something to parse.
+
+**Why this matters:** if pathmaker ships registry entries with only prose, Peak 4's ToleranceSpec ends up with a hand-maintained mapping of `kernel name → tolerance`, which is exactly the kind of drift-prone shadow state the trek is designed to eliminate. If the registry entry carries the formula as a string, Peak 4 can route `tolerance_for(kernel)` through the registry, and in Phase 2 the string becomes a parsed AST with the same call site. Zero migration pain.
+
+**The tiny cost:** one extra string field per registry entry. Pathmaker's TOML or Rust struct gains a `formula: String` or `Option<String>`. That's it.
+
+### What I'd reject
+
+- **Requiring full machine-checkable error bounds in Phase 1.** Too much surface area, too easy to get wrong, not enough consumers to justify the work yet.
+- **Prose-only with no structured slots.** Guarantees a Phase 2 rewrite of the registry.
+- **A dedicated DSL for error bounds parsed at commit time.** Maybe Phase 3. Not now.
+
+### What I'd specifically want in every entry, even if prose
+
+At minimum, every OrderStrategy entry should carry:
+1. `name` — the canonical key referenced by `ReduceBlockAdd.order_strategy` field.
+2. `description` — one-sentence prose summary.
+3. `invariant` — prose description of the algebraic property the strategy upholds (commutativity, associativity, deterministic rounding, etc.). This is what I review from the math side.
+4. `accuracy.description` — prose error bound.
+5. `accuracy.formula` — machine-readable string with the bound as a formula (Phase 1 opaque, Phase 2 parsed).
+6. `determinism` — a three-boolean record (run_to_run, gpu_to_gpu, cpu_to_gpu) so Peak 4 knows what tolerance policy to use (bit_exact vs within_ulp_bound).
+7. `backends` — supported + notes per backend, so the verifier can reject kernels that use an order strategy on an incapable backend.
+8. `references` — citations, not source code. The I8 audit trail.
+
+### Action for pathmaker when you arrive
+
+Send me the draft Rust struct or TOML. I'll green-light or propose tweaks. Expected turnaround: <30 minutes. The above is my opinion; your authority on the Rust type shape.
+
+**For `rfa_bin_exponent_aligned` specifically**, the full content is already in `peak6-determinism/rfa-design.md` — the registry entry is a condensed view of the same information. Cross-reference the doc rather than duplicating the whole thing.
+
+---
+
 ## Q1 — 2026-04-12 — [math-researcher] Cody-Waite range reduction needs new IR ops; four paths, pathmaker picks one
+
+**STATUS: RESOLVED by pathmaker commit `d36f64c` (2026-04-12).** Path C chosen (bitcast + i64 ops + f64_to_i32_rn + ldexp.f64). All four IR op families delivered. Campsite 2.6 is unblocked.
 
 **Blocker for:** Campsite 2.6 (`tam_exp.tam`) and everything downstream that composes on top of exp/log (which is, in practice, all of Peak 2 except atan and hyperbolics).
 

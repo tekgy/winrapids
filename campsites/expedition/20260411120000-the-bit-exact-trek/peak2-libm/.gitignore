@@ -1,4 +1,6 @@
 .venv/
+# Reference files: commit the 1k smoke-test seeds, exclude 1M full-bound locals.
 *.bin
+!*-1k.bin
 __pycache__/
 *.pyc

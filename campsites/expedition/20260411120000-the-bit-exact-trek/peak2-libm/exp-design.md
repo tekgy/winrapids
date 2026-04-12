@@ -187,9 +187,15 @@ if x == 0:         return 1.0                       // bit-exact 1.0, both +0 an
 // otherwise: proceed to range reduction
 ```
 
-The overflow threshold `x_overflow` is the largest fp64 `x` for which `exp(x)` is finite. Computed from first principles in §4 via mpmath: it's approximately `709.782712893384...`, but we need the *exact* fp64 literal. Same for `x_underflow`.
+**Dispatch ordering is a constraint, not just a code pattern.** (Per adversarial B2, 2026-04-12.) The `isnan(x)` check MUST precede all other comparisons in the front-end dispatch. Rationale: IEEE 754 `fcmp_eq(NaN, anything) = false`, so if we test `x == 0` or `x >= x_overflow` before `isnan(x)`, every comparison returns `false` for a NaN input and the code falls through to the range reduction where `round_nearest(NaN · one_over_ln2)` is undefined. The IR's `f64_to_i32_rn` op is documented to return 0 for NaN input, which would silently produce `exp(NaN) = 1.0` — wrong (I11 violation). **The NaN branch must be first.** Same order-sensitivity applies to all subsequent functions in Peak 2; this is not exp-specific.
 
-Note: on the exact boundary, `exp(709.782712893384)` is the largest finite fp64, approximately `1.798e+308`. One ULP above that is `+inf`. We set the threshold slightly below the exact boundary to guarantee that the poly+reassembly path never sees a value that would require the result to be `+inf` — we hand those to the front-end branch.
+**`x_overflow` is defined empirically, not mathematically.** (Per adversarial B3, 2026-04-12.) The mathematical definition ("largest `x` such that real-valued `exp(x) ≤ fp64_max`") and the implementation definition ("largest fp64 `x` such that `tam_exp(x)` returns a finite value") can differ by 1 ULP at the boundary, because the polynomial + reassembly path introduces rounding that may push `poly_r · 2^n` over `fp64_max` even when the mathematical `exp(x)` is below it. The authoritative definition is:
+
+> `x_overflow = the largest fp64 x such that tam_exp(x), evaluated through the polynomial + ldexp path, returns a finite f64.`
+
+The constant in `libm-constants.toml` is computed from mpmath at 100 dps as approximately `709.7827128933840`, but it MUST be verified empirically after the polynomial coefficients are committed: run `tam_exp(x_overflow)` through the interpreter and confirm finite; run `tam_exp(nextafter(x_overflow, +inf))` and confirm `+inf`. If the verification fails, adjust `x_overflow` downward by one ULP and re-verify. This is a commit-time check in `exp-constants.toml` generation, not an open question at runtime. Same procedure for `x_underflow`: largest negative `x` such that `tam_exp(x)` returns a positive value (including subnormal); one ULP below returns `+0`.
+
+The front-end's overflow/underflow branches must use these empirically-verified values, not the mathematical boundary, to guarantee: (a) `x < x_overflow → poly+reassembly path returns finite`, (b) `x ≥ x_overflow → front-end returns +inf`. The two cases partition the input space with no overlap and no gap.
 
 ## §4 — Coefficient generation plan
 

@@ -9,6 +9,14 @@ Format: `[role] [date] — <what you need / what just landed / what's blocking>`
 
 <!-- entries below, newest first -->
 
+[pathmaker] 2026-04-12 — **Peak 1 complete: campsites 1.16 + 1.17 + I11. 68 tests green. Three commits:**
+
+- `f041785` — Campsite 1.16: OrderStrategy open registry (`order_strategy.rs`). Closed enum → `OrderStrategyRef(String)` + registry with 3 entries: `sequential_left` (full, 7 test vectors + pinned divergence), `tree_fixed_fanout_2` (full, 6 test vectors), `rfa_bin_exponent_aligned` (stub, panics with Peak 6 citation). 13 registry tests. Verifier validates by `is_known()` lookup. `order-strategy-registry.md` written.
+- `e680991` — Campsite 1.17: `KernelAttr::DefaultOrderStrategy(OrderStrategyRef)`. Kernels declare default with `@default_order_strategy(...)` before `kernel` keyword. Parser, printer, verifier updated. `variance_pass.tam` updated. 4 new tests.
+- `748eb53` — I11 NaN propagation: `SelectF64` now checks both value operands for NaN before evaluating pred. 3 targeted tests (the naturalist's scenario + true/false NaN cases). `op-reference.md §5.5` written: per-op NaN table, select trap explanation, PTX emit targets (`min.NaN.f64`, `max.NaN.f64`), I11 added to invariants quick-reference.
+
+**Peak 1 is done.** Campsite 4.6 is unblocked — real `tambear-tam-ir` types can replace the placeholder TamProgram in the test harness.
+
 [navigator] 2026-04-12 — **Structural ULP budget analysis (aristotle addendum). Pending attenuation-assumption clarification before routing to math-researcher.**
 
 Aristotle delivered an addendum to peak-aristotle/f64-base-precision-phases.md filling the structural gap from the original phase doc. Core claim: **fp64's 52 mantissa bits are the minimum at which tambear's composed-operation error budget fits within a useful output for statistical-scale workloads.** Budget arithmetic: 33 useful bits needed + log₂(K) composed chain + log₂(N)/2 reduction ≈ 52 bits. fp32 (23 bits) structurally insufficient — produces near-zero significant digits on billion-element reductions after first composed transform.

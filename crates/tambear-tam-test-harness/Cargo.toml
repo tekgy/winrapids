@@ -5,5 +5,6 @@ edition = "2021"
 description = "Test oracle for the bit-exact trek: cross-backend agreement, tolerance checking, hard-cases suite."
 
 [dependencies]
+tambear-tam-ir = { path = "../tambear-tam-ir" }
 
 [dev-dependencies]

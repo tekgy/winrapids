@@ -1,0 +1,61 @@
+.tam 0.1
+.target cross
+
+; pearson_r_pass: accumulate the five sums needed to compute Pearson r.
+;
+; The host computes:
+;   r = (n * sum_xy - sum_x * sum_y)
+;       / sqrt((n * sum_x2 - sum_x^2) * (n * sum_y2 - sum_y^2))
+;
+; Slot layout:
+;   out[0] = count       ; N
+;   out[1] = sum_x       ; sum of x values
+;   out[2] = sum_y       ; sum of y values
+;   out[3] = sum_x2      ; sum of x^2
+;   out[4] = sum_y2      ; sum of y^2
+;   out[5] = sum_xy      ; sum of x*y
+;
+; Inputs:
+;   %xs  — first input buffer (x values), length N
+;   %ys  — second input buffer (y values), length N
+;   %out — output buffer, at least 6 slots
+;
+; Precondition: len(%xs) == len(%ys). The kernel uses len(%xs) as N.
+; Mismatched lengths are the caller's responsibility.
+
+kernel pearson_r_pass(buf<f64> %xs, buf<f64> %ys, buf<f64> %out) {
+entry:
+  %n      = bufsize %xs
+  %acc_n  = const.f64 0.0   ; count
+  %acc_sx = const.f64 0.0   ; sum_x
+  %acc_sy = const.f64 0.0   ; sum_y
+  %acc_s2x = const.f64 0.0  ; sum_x2
+  %acc_s2y = const.f64 0.0  ; sum_y2
+  %acc_sxy = const.f64 0.0  ; sum_xy
+  loop_grid_stride %i in [0, %n) {
+    %x    = load.f64 %xs, %i
+    %y    = load.f64 %ys, %i
+    %x2   = fmul.f64 %x, %x
+    %y2   = fmul.f64 %y, %y
+    %xy   = fmul.f64 %x, %y
+    %one  = const.f64 1.0
+    %acc_n'   = fadd.f64 %acc_n,   %one
+    %acc_sx'  = fadd.f64 %acc_sx,  %x
+    %acc_sy'  = fadd.f64 %acc_sy,  %y
+    %acc_s2x' = fadd.f64 %acc_s2x, %x2
+    %acc_s2y' = fadd.f64 %acc_s2y, %y2
+    %acc_sxy' = fadd.f64 %acc_sxy, %xy
+  }
+  %s0 = const.i32 0
+  %s1 = const.i32 1
+  %s2 = const.i32 2
+  %s3 = const.i32 3
+  %s4 = const.i32 4
+  %s5 = const.i32 5
+  reduce_block_add.f64 %out, %s0, %acc_n'
+  reduce_block_add.f64 %out, %s1, %acc_sx'
+  reduce_block_add.f64 %out, %s2, %acc_sy'
+  reduce_block_add.f64 %out, %s3, %acc_s2x'
+  reduce_block_add.f64 %out, %s4, %acc_s2y'
+  reduce_block_add.f64 %out, %s5, %acc_sxy'
+}

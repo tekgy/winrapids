@@ -5,10 +5,3 @@ version = 4
 [[package]]
 name = "tambear-tam-ir"
 version = "0.1.0"
-
-[[package]]
-name = "tambear-tam-test-harness"
-version = "0.1.0"
-dependencies = [
- "tambear-tam-ir",
-]

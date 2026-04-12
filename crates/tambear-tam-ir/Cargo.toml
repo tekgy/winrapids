@@ -1,0 +1,12 @@
+[package]
+name = "tambear-tam-ir"
+version = "0.1.0"
+edition = "2021"
+description = "The .tam IR: AST types, text parser, text printer, verifier, and CPU interpreter. Zero deps except std."
+
+[[bin]]
+name = "tam-ir"
+path = "src/main.rs"
+
+[dependencies]
+# Zero deps except std. No exceptions without Navigator approval.

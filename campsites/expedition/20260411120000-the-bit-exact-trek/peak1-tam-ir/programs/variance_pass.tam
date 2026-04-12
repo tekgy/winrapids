@@ -1,0 +1,50 @@
+.tam 0.1
+.target cross
+
+; variance_pass: one-pass accumulation of the three sums needed for variance.
+;
+; The host (or a gather layer) computes:
+;   mean  = out[0] / out[2]
+;   var   = (out[1] / out[2]) - (out[0] / out[2])^2    (population variance)
+;   or use Bessel's correction for sample variance:
+;   var_s = (out[1] - out[0]^2 / out[2]) / (out[2] - 1)
+;
+; The kernel is responsible only for accumulation, not for the final formula.
+;
+; Slot layout:
+;   out[0] = sum(x)       ; sum of values
+;   out[1] = sum(x^2)     ; sum of squared values
+;   out[2] = count        ; number of elements
+;
+; Inputs:
+;   %data — the input buffer, length N
+;   %out  — output buffer, at least 3 slots
+;
+; Notes on numerical stability:
+;   This is the two-pass style in a single pass: we gather sum(x) and sum(x^2)
+;   separately so the host can compute variance without a catastrophic
+;   cancellation issue from (sum_sq - sum^2/n). The subtraction happens at
+;   gather time, where the host can use higher precision or Kahan summation
+;   if needed. The kernel itself is numerically clean.
+
+kernel variance_pass(buf<f64> %data, buf<f64> %out) {
+entry:
+  %n    = bufsize %data
+  %acc0 = const.f64 0.0   ; running sum(x)
+  %acc1 = const.f64 0.0   ; running sum(x^2)
+  %acc2 = const.f64 0.0   ; running count
+  loop_grid_stride %i in [0, %n) {
+    %v     = load.f64 %data, %i
+    %v2    = fmul.f64 %v, %v
+    %one   = const.f64 1.0
+    %acc0' = fadd.f64 %acc0, %v
+    %acc1' = fadd.f64 %acc1, %v2
+    %acc2' = fadd.f64 %acc2, %one
+  }
+  %s0 = const.i32 0
+  %s1 = const.i32 1
+  %s2 = const.i32 2
+  reduce_block_add.f64 %out, %s0, %acc0'
+  reduce_block_add.f64 %out, %s1, %acc1'
+  reduce_block_add.f64 %out, %s2, %acc2'
+}

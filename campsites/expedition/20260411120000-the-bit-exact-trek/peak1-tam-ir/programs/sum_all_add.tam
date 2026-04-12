@@ -1,0 +1,29 @@
+.tam 0.1
+.target cross
+
+; sum_all_add: compute the sum of all elements in a single input buffer.
+;
+; Algorithm:
+;   Initialize accumulator to 0.
+;   For each element v in data: acc += v
+;   Write the partial block sum to out[0].
+;   Host folds partials from all blocks.
+;
+; Inputs:
+;   %data  — the input buffer, length N
+;   %out   — output buffer, at least 1 slot
+;
+; Output:
+;   out[0] = sum of all elements in data
+
+kernel sum_all_add(buf<f64> %data, buf<f64> %out) {
+entry:
+  %n   = bufsize %data
+  %acc = const.f64 0.0
+  loop_grid_stride %i in [0, %n) {
+    %v    = load.f64 %data, %i
+    %acc' = fadd.f64 %acc, %v
+  }
+  %s0 = const.i32 0
+  reduce_block_add.f64 %out, %s0, %acc'
+}

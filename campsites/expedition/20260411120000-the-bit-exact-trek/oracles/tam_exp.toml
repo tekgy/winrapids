@@ -183,24 +183,6 @@ input = -0.6931471805599453   # fp64(-ln(2))
 expected_bits = "0x3FE0000000000000"   # 0.5 exactly
 rationale = "exp(-ln(2)) = 0.5 exactly. This is representable in fp64. The Cody-Waite reduction with n=-1 gives r=0 and the polynomial returns 1.0; ldexp(1.0, -1) = 0.5. Must be bit-exact."
 
-[[bit_exact_checks.cases]]
-name = "exp_overflow_threshold_is_positive_inf"
-input = 709.7827128933840
-expected_bits = "0x7FF0000000000000"   # +inf (NOT -inf = 0xFFF0000000000000)
-rationale = "Overflow from a finite argument must produce +inf not -inf. The injection-set ULP path cannot enforce this: near_overflow inputs are not in the reference binary, so the runner uses candidate(x) as its own reference (ULP=0 always, sign ignored). This bit_exact_check is the only enforcement of overflow sign. Different code path from IEEE special-value input (f64::INFINITY input → +inf is covered by exp_pos_inf_is_positive_inf)."
-
-[[bit_exact_checks.cases]]
-name = "exp_well_above_overflow_is_positive_inf"
-input = 710.0
-expected_bits = "0x7FF0000000000000"   # +inf
-rationale = "Belt-and-suspenders for the overflow sign. 710.0 is well above the overflow threshold. An implementation with a sign error in the overflow fast-path would be caught here. Same injection-set ULP gap as exp_overflow_threshold_is_positive_inf."
-
-[[bit_exact_checks.cases]]
-name = "exp_far_above_overflow_is_positive_inf"
-input = 800.0
-expected_bits = "0x7FF0000000000000"   # +inf
-rationale = "Belt-and-suspenders. 800.0 is far above overflow threshold, exercises any separate deep-overflow fast-path. A sign error that only manifests for very large inputs would be caught here and not by 709.78 or 710.0 entries."
-
 # ──────────────────────────────────────────────────────────────────────────────
 # CONSTRAINT CHECKS
 # Class-membership constraints — not a single expected bit pattern but a named
@@ -212,13 +194,25 @@ rationale = "Belt-and-suspenders. 800.0 is far above overflow threshold, exercis
 name = "exp_overflow_boundary_is_finite"
 input = 709.7827128933839
 constraint = "finite"
-rationale = "709.7827128933839 is the last fp64 value where exp is finite (not +inf). The runner's ULP path cannot verify this because ULP distance is undefined when the reference gives +inf — it skips the input silently. This constraint check pins the output class: must be finite (a large normal fp64), not +inf. adversarial-review-exp.md overflow-boundary analysis."
+rationale = "709.7827128933839 is the last fp64 value where exp is finite. The injection-set ULP path cannot verify this: near_overflow inputs are not in the reference binary, so the runner uses candidate(x) as its own reference (ULP=0, sign ignored). This pins the output class: must be finite (a large normal fp64), not +inf. adversarial-review-exp.md overflow-boundary analysis."
 
 [[constraint_checks.cases]]
-name = "exp_overflow_threshold_is_inf"
+name = "exp_overflow_threshold_is_positive_inf"
 input = 709.7827128933840
 constraint = "infinite_positive"
-rationale = "709.7827128933840 is the claimed overflow threshold: exp rounds to +inf here. Sign must be positive. The bit_exact_check for +inf input covers inf→inf; this covers finite→+inf overflow. The ULP path cannot handle this (ULP distance to +inf is undefined)."
+rationale = "709.7827128933840 is the claimed overflow threshold: exp rounds to +inf here. Sign must be positive (not -inf). Same injection-set ULP gap as above — not in reference binary. Different code path from the IEEE special-value input path (f64::INFINITY → +inf, covered by exp_pos_inf_is_positive_inf in bit_exact_checks)."
+
+[[constraint_checks.cases]]
+name = "exp_well_above_overflow_is_positive_inf"
+input = 710.0
+constraint = "infinite_positive"
+rationale = "Belt-and-suspenders. 710.0 is well above the overflow threshold. Exercises the overflow code path for an input that cannot be confused with the boundary. An implementation with a sign error in the overflow fast-path is caught here."
+
+[[constraint_checks.cases]]
+name = "exp_far_above_overflow_is_positive_inf"
+input = 800.0
+constraint = "infinite_positive"
+rationale = "Belt-and-suspenders. 800.0 is far above overflow, exercising any separate deep-overflow fast-path that may differ from the 709.78 path."
 
 [[constraint_checks.cases]]
 name = "exp_subnormal_output_not_zero"

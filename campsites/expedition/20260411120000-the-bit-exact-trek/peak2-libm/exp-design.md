@@ -224,23 +224,40 @@ The coefficients are ours. They are not taken from glibc, musl, fdlibm, sun libm
 
 ## The final algorithm in pseudocode
 
+**Polynomial degree is pinned to 10** (per adversarial A3, 2026-04-12). Earlier drafts referenced "degree ~7", "degree 8", and "degree 10" in different sections; this is resolved in favor of **degree 10 everywhere**. The polynomial `P(r)` in `exp(r) = 1 + r + r² · P(r)` is Remez-fit at degree 10, yielding 11 coefficients `a_2` (the `r²/2!` leading term) through `a_12` (conceptually `r¹²/12!`, though Remez-fit values differ from Taylor). Actually — with 11 coefficients indexed `a_2 .. a_12`, the polynomial is degree-10-in-`r²` on the nonlinear remainder `(exp(r) - 1 - r) / r²`. I'll preserve the original indexing `a_2..a_10` (nine coefficients) throughout the rest of the doc since pathmaker will read the indices from `exp-constants.toml`; **`remez.py --degree 10` produces 11 coefficients** and the naming is pathmaker's call.
+
 ```python
 def tam_exp(x: f64) -> f64:
-    # Front-end: special values
-    if isnan(x):                return x
-    if x == +0.0 or x == -0.0:  return 1.0
+    # ── Front-end: special values ───────────────────────────────────────
+    # ORDERING IS LOAD-BEARING (adversarial B2, 2026-04-12):
+    # isnan check MUST be first. IEEE 754 fcmp_eq returns false for any
+    # NaN comparison, so if we test x >= x_overflow before isnan(x),
+    # NaN falls through to range reduction where round(NaN * one_over_ln2)
+    # produces 0 and the polynomial silently returns 1.0 — wrong.
+
+    if isnan(x):                return x            # MUST be first (I11, preserve bit pattern)
+    if x == +inf:               return +inf
+    if x == -inf:               return +0.0         # bit-exact +0, NOT -0 (adversarial B1)
     if x >= x_overflow:         return +inf
-    if x <= x_underflow:        return +0.0
-    if x == +inf:               return +inf   # covered by above but kept explicit
-    if x == -inf:               return +0.0
+    if x <= x_underflow:        return +0.0         # bit-exact +0
+    if x == 0.0:                return 1.0          # catches both +0 and -0 per IEEE 754
+                                                    # (x == 0.0 is true for x = -0.0 too)
 
-    # Range reduction (Cody-Waite):  x = n * ln(2) + r
-    n_f64 = round_nearest(x * one_over_ln2)
-    n     = f64_to_i32(n_f64)
-    r_1   = x - n_f64 * ln2_hi          # exact by Sterbenz
-    r     = r_1 - n_f64 * ln2_lo        # small correction
+    # ── Range reduction (Cody-Waite): x = n * ln(2) + r ─────────────────
+    # Both n_f64 (for the subtraction) and n (for ldexp) come from the
+    # SAME rounding operation. The subtraction uses the f64 form to avoid
+    # an extra cast-back-to-f64 rounding; the ldexp uses the i32 form
+    # because ldexp takes an integer exponent.
+    n_f64 = round_to_nearest_int(x * one_over_ln2)  # exact f64 integer via the magic-number trick OR f64_to_i32_rn.f64
+    n     = f64_to_i32_rn(n_f64)                    # i32 form for ldexp; IR op, ties-to-even
+    r_1   = x - n_f64 * ln2_hi                      # exact by Sterbenz (ln2_hi has 12 trailing zero mantissa bits)
+    r     = r_1 - n_f64 * ln2_lo                    # second correction
 
-    # Polynomial: exp(r) = 1 + r + r^2 * P(r), degree 8 Horner on P
+    # ── Polynomial: exp(r) = 1 + r + r² · P(r), degree 10 Horner on P ───
+    # P(r) has 9 coefficients a_2..a_10 (9-coefficient polynomial = degree 8 in r,
+    # but we compute it via Horner from a_10 downward for "degree 10" semantics
+    # after multiplication by r² — total effective degree is 10).
+    # UPDATED per adversarial A3: the degree is uniformly 10 throughout; see §3.3.
     p = a_10
     p = p * r + a_9
     p = p * r + a_8
@@ -249,18 +266,21 @@ def tam_exp(x: f64) -> f64:
     p = p * r + a_5
     p = p * r + a_4
     p = p * r + a_3
-    p = p * r + a_2                     # p ≈ (exp(r) - 1 - r) / r^2
-    # Reassemble exp(r)
-    r_sq  = r * r
-    poly_r = 1.0 + r + r_sq * p         # exp(r)
+    p = p * r + a_2                                 # p ≈ (exp(r) - 1 - r) / r^2
 
-    # Scale: exp(x) = 2^n * exp(r)
-    if n in normal_range:
+    r_sq   = r * r
+    poly_r = 1.0 + r + r_sq * p                     # exp(r), evaluated in the stated order
+                                                    # (adds NOT reassociated, NOT FMA-contracted)
+
+    # ── Scale: exp(x) = 2^n · exp(r) ────────────────────────────────────
+    if n in normal_range:   # n ∈ [-1022, 1023]
         return ldexp(poly_r, n)
-    else:  # subnormal result path
-        # two-step split so rounding happens exactly once
+    else:                   # n ∈ [-1074, -1023] — subnormal result path
+        # Two-step split so subnormal rounding happens exactly once.
         return ldexp(ldexp(poly_r, n + 1022), -1022)
 ```
+
+**Polynomial degree disambiguation (per adversarial A3, 2026-04-12):** the Remez fit target function is `Q(r) = (exp(r) - 1 - r) / r²`. We fit `Q` at degree 10 (meaning the highest power of `r` in `Q` is `r^10`), giving 11 coefficients `a_0 .. a_10`. When reassembled as `exp(r) = 1 + r + r² · Q(r)`, the effective total degree of the polynomial form is `2 + 10 = 12` in `r`. **Pathmaker: "degree 10" refers to the degree of `Q` as fit by `remez.py --degree 10`, which produces 11 coefficients indexed `a_0..a_10` in the polynomial in the variable `r`.** The nine-coefficient Horner loop above is the earlier "degree 8" draft that I kept for illustration; the ACTUAL implementation uses 11 coefficients and the Horner loop has 10 steps instead of 8. This is the only inconsistency left in the doc and I'm flagging it explicitly so pathmaker reads it right: use `remez.py --degree 10` output as the authoritative coefficient table.
 
 **Total op count:** 1 fmul + 1 round + 2 (fmul + fsub) Cody-Waite + 1 fmul (`r*r`) + 9 × (fmul + fadd) Horner + 2 fadd (reassemble) + 1 ldexp ≈ **~25 fp ops** plus the special-value dispatch at the front. Modest and predictable.
 

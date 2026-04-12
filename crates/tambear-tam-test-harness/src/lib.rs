@@ -27,6 +27,8 @@ pub mod harness;
 pub mod hard_cases;
 pub mod cpu_backend;
 pub mod ulp_harness;
+pub mod oracle_runner;
+pub mod libm_sqrt;
 
 pub use tolerance::ToleranceSpec;
 pub use backend::{TamBackend, NullBackend};

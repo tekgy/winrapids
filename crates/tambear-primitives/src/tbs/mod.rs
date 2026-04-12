@@ -115,13 +115,13 @@ pub enum Expr {
     /// Conditional: if cond > 0 then a else b
     If(Box<Expr>, Box<Expr>, Box<Expr>),
 
-    // === Comparison (returns 0.0 or 1.0) ===
+    // === Comparison (returns 0.0 or 1.0, NaN propagates) ===
 
-    /// a > b → 1.0, else 0.0
+    /// a > b → 1.0, else 0.0. NaN in either operand → NaN.
     Gt(Box<Expr>, Box<Expr>),
-    /// a < b → 1.0, else 0.0
+    /// a < b → 1.0, else 0.0. NaN in either operand → NaN.
     Lt(Box<Expr>, Box<Expr>),
-    /// a == b → 1.0, else 0.0 (within epsilon)
+    /// a == b → 1.0, else 0.0. NaN in either operand → NaN.
     Eq(Box<Expr>, Box<Expr>),
 }
 
@@ -223,7 +223,7 @@ pub fn eval(expr: &Expr, val: f64, val2: f64, reference: f64, vars: &HashMap<Str
         Expr::Ceil(a) => eval(a, val, val2, reference, vars).ceil(),
         Expr::Sign(a) => {
             let v = eval(a, val, val2, reference, vars);
-            if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { 0.0 }
+            if v.is_nan() { v } else if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { 0.0 }
         }
         Expr::IsFinite(a) => if eval(a, val, val2, reference, vars).is_finite() { 1.0 } else { 0.0 },
 
@@ -247,12 +247,12 @@ pub fn eval(expr: &Expr, val: f64, val2: f64, reference: f64, vars: &HashMap<Str
         Expr::Min(a, b) => {
             let va = eval(a, val, val2, reference, vars);
             let vb = eval(b, val, val2, reference, vars);
-            if va <= vb { va } else { vb }
+            if va.is_nan() || vb.is_nan() { f64::NAN } else if va <= vb { va } else { vb }
         }
         Expr::Max(a, b) => {
             let va = eval(a, val, val2, reference, vars);
             let vb = eval(b, val, val2, reference, vars);
-            if va >= vb { va } else { vb }
+            if va.is_nan() || vb.is_nan() { f64::NAN } else if va >= vb { va } else { vb }
         }
         Expr::Clamp(x, lo, hi) => {
             let vx = eval(x, val, val2, reference, vars);
@@ -271,11 +271,20 @@ pub fn eval(expr: &Expr, val: f64, val2: f64, reference: f64, vars: &HashMap<Str
             }
         }
 
-        Expr::Gt(a, b) => if eval(a, val, val2, reference, vars) > eval(b, val, val2, reference, vars) { 1.0 } else { 0.0 },
-        Expr::Lt(a, b) => if eval(a, val, val2, reference, vars) < eval(b, val, val2, reference, vars) { 1.0 } else { 0.0 },
+        Expr::Gt(a, b) => {
+            let va = eval(a, val, val2, reference, vars);
+            let vb = eval(b, val, val2, reference, vars);
+            if va.is_nan() || vb.is_nan() { f64::NAN } else if va > vb { 1.0 } else { 0.0 }
+        }
+        Expr::Lt(a, b) => {
+            let va = eval(a, val, val2, reference, vars);
+            let vb = eval(b, val, val2, reference, vars);
+            if va.is_nan() || vb.is_nan() { f64::NAN } else if va < vb { 1.0 } else { 0.0 }
+        }
         Expr::Eq(a, b) => {
-            let diff = (eval(a, val, val2, reference, vars) - eval(b, val, val2, reference, vars)).abs();
-            if diff < 1e-15 { 1.0 } else { 0.0 }
+            let va = eval(a, val, val2, reference, vars);
+            let vb = eval(b, val, val2, reference, vars);
+            if va.is_nan() || vb.is_nan() { f64::NAN } else if va == vb { 1.0 } else { 0.0 }
         }
     }
 }
@@ -453,5 +462,61 @@ mod tests {
             .map(|&x| eval(&expr, x, 0.0, 0.0, &empty_vars()))
             .sum();
         assert_eq!(count_pos, 2.0);
+    }
+
+    // Oracle tests for comparison NaN propagation (P16/P18 verification).
+    // IEEE 754 §6.2: NaN is "not a number" — any operation that receives NaN
+    // as input and returns a numeric result must propagate NaN. Returning 0.0
+    // (false) for Gt/Lt/Eq when an operand is NaN would silently swallow the
+    // NaN and let the downstream If-branch execute as if the comparison was
+    // valid. This is a correctness violation: NaN means "unknown", not "false".
+    //
+    // Note: Gt/Lt/Eq are NOT IEEE 754 comparison predicates (which return
+    // boolean unordered). They are TBS numeric predicates returning f64 values
+    // 0.0 or 1.0. In this context, propagating NaN is correct because the NaN
+    // carries the "unknown" signal through the expression tree.
+
+    #[test]
+    fn gt_nan_propagates() {
+        let expr = Expr::Gt(Box::new(Expr::val()), Box::new(Expr::lit(0.0)));
+        assert!(eval(&expr, f64::NAN, 0.0, 0.0, &empty_vars()).is_nan(),
+            "Gt(NaN, 0) must return NaN, not 0.0");
+        let expr2 = Expr::Gt(Box::new(Expr::lit(1.0)), Box::new(Expr::val()));
+        assert!(eval(&expr2, f64::NAN, 0.0, 0.0, &empty_vars()).is_nan(),
+            "Gt(1, NaN) must return NaN, not 0.0");
+    }
+
+    #[test]
+    fn lt_nan_propagates() {
+        let expr = Expr::Lt(Box::new(Expr::val()), Box::new(Expr::lit(0.0)));
+        assert!(eval(&expr, f64::NAN, 0.0, 0.0, &empty_vars()).is_nan(),
+            "Lt(NaN, 0) must return NaN, not 0.0");
+    }
+
+    #[test]
+    fn eq_nan_propagates() {
+        // Eq(NaN, NaN) must return NaN, not 1.0 (would require to_bits() equality, which is wrong
+        // semantics — two NaN values from different operations are not "equal") and not 0.0
+        // (would swallow the NaN signal).
+        let expr = Expr::Eq(Box::new(Expr::val()), Box::new(Expr::val()));
+        assert!(eval(&expr, f64::NAN, 0.0, 0.0, &empty_vars()).is_nan(),
+            "Eq(NaN, NaN) must return NaN, not 0.0 or 1.0");
+        let expr2 = Expr::Eq(Box::new(Expr::val()), Box::new(Expr::lit(5.0)));
+        assert!(eval(&expr2, f64::NAN, 0.0, 0.0, &empty_vars()).is_nan(),
+            "Eq(NaN, 5) must return NaN, not 0.0");
+    }
+
+    #[test]
+    fn eq_exact_for_nearby_floats() {
+        // Eq uses exact equality (==), not epsilon. Two floats 1 ULP apart are NOT equal.
+        // This is the fix for P18: the old 1e-15 epsilon made 1-ULP differences compare as equal.
+        let x: f64 = 1.0;
+        let x_plus_1ulp = f64::from_bits(x.to_bits() + 1);
+        assert!(x_plus_1ulp > x, "sanity: next float after 1.0 is larger");
+        let expr = Expr::Eq(Box::new(Expr::val()), Box::new(Expr::lit(x)));
+        assert_eq!(eval(&expr, x_plus_1ulp, 0.0, 0.0, &empty_vars()), 0.0,
+            "Eq must use exact equality: 1 ULP apart is not equal");
+        assert_eq!(eval(&expr, x, 0.0, 0.0, &empty_vars()), 1.0,
+            "Eq(x, x) must be 1.0");
     }
 }

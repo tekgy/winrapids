@@ -244,13 +244,18 @@ domain = [1.0, 1.0]   # single point
 # NOTES FOR SCIENTIST (runner implementation)
 # ──────────────────────────────────────────────────────────────────────────────
 #
-# [N1] The "NONZERO_SUBNORMAL" expected_bits value is handled as
-# BitExactConstraint::NonzeroSubnormal in the runner (implemented in 269a338).
-# The constraint checks: (actual_bits != 0) && ((actual_bits >> 52) == 0)
-# && ((actual_bits >> 63) == 0) — i.e., positive, nonzero, subnormal.
-# Only two constraint variants exist for Phase 1: Exact(u64) for hex literals
-# and NonzeroSubnormal for this class check. Adversarial will flag if new
-# constraint types arise.
+# [N1] Three-section oracle format is canonical as of d4141ec (campsite 4.8):
+#   - [[bit_exact_checks.cases]]: hex bit-pattern checks only. BitExactConstraint
+#     is hex-only — non-hex strings are rejected with a clear error.
+#   - [[constraint_checks.cases]]: class-membership checks via NamedConstraint
+#     registry. Phase 1 variants: nonzero_subnormal_positive, finite,
+#     infinite_positive. Add new variants by flagging scientist.
+#   - [[identity_checks]]: algebraic identity sweeps (see N4).
+# The two subnormal entries in this file (exp_subnormal_output_not_zero,
+# exp_deepest_subnormal_boundary) use constraint = "nonzero_subnormal_positive"
+# in [[constraint_checks.cases]], not NONZERO_SUBNORMAL in bit_exact_checks.
+# When generating oracle TOML for new functions, use [[constraint_checks.cases]]
+# from the start — never put named constraints in expected_bits.
 #
 # [N2] The cody_waite_exact values were computed as (n as f64) * LN2_HI where
 # LN2_HI = f64::from_bits(0x3FE62E42FEFA3800u64). The runner should load these

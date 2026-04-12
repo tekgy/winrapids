@@ -165,7 +165,7 @@ Same protocol as `exp` and `log`:
 
 ## Pitfalls
 
-1. **Too-short Cody-Waite.** Using only a two-term split limits us to `|x| < 2^20`. Three-term gets us to `|x| < 2^30` for minimal cost. **Recommendation:** three-term.
+1. **Two-term fallback (which we are NOT using).** A two-term Cody-Waite split would cap the domain at `|x| < 2^20 ≈ 1e6`, which is weaker than Phase 1's `|x| ≤ 2^30`. Phase 1 uses three-term Cody-Waite uniformly; do not regress to two-term under optimization pressure.
 2. **Quadrant dispatch off by one.** Easy to mis-map `k mod 4` to the trig identities. Verified by testing: `sin(π/2) = 1`, `cos(π/2) = 0`, `sin(π) = 0`, `cos(π) = -1`, `sin(3π/2) = -1`, `cos(3π/2) = 0`. Each of these hits a different quadrant.
 3. **Polynomial boundary at `|r| = π/4`.** The Remez fit is done on `[-π/4, π/4]`, but after rounding `k` to nearest and subtracting `k * π/2`, `|r|` can be very slightly above `π/4` due to rounding in the reduction. Fit the polynomial on a slightly wider interval, say `[-π/4 * 1.01, π/4 * 1.01]`, to give margin.
 4. **`sin(0) = 0` bit-exact.** The polynomial form `r + r * r² * S` gives `0` exactly when `r = 0`. Don't introduce any spurious `+ 0.0` that could perturb the sign.
@@ -176,8 +176,8 @@ Same protocol as `exp` and `log`:
 
 ## Testing
 
-- 1M random samples, exponent-uniform in `[-2^20, 2^20]`. Plus 1M in `[-2^30, 2^30]` once the three-term Cody-Waite is in.
-- Adversarial: samples at `k * π/4` for `k ∈ [-2^20, 2^20]`. These land at exact quadrant/octant boundaries and stress the dispatch.
+- 1M random samples, exponent-uniform in `[-2^30, 2^30]`.
+- Adversarial: samples at `k * π/4` for `k ∈ [-2^30, 2^30]` (sampled sparsely — the full integer sweep is `2^31` values, so adversarial picks ~10^4 across that range). These land at exact quadrant/octant boundaries and stress the dispatch.
 - Special values: `sin(0)`, `sin(-0)`, `cos(0)`, `sin(π/2)`, `cos(π/2)`, `sin(π)`, `cos(π)`, etc. Note these aren't bit-exact identities in fp64 because `π/2` itself is rounded — but they're within 1 ULP.
 - Identity: `sin²(x) + cos²(x) ≈ 1` within a composed 3-ULP bound.
 - Identity: `sin(-x) == -sin(x)` bit-exact (odd symmetry).

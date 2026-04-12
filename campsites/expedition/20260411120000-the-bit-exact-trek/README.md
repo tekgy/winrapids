@@ -7,10 +7,22 @@ This expedition delivers the architectural claim that tambear was built on:
 > One compiled `.tam` kernel, the same source of math, the same numerical answers,
 > running on any ALU through only its driver, with no vendor compiler and no
 > vendor math library anywhere in the path.
+>
+> **Scope of bit-exactness (Phase 1):** Bit-exact for all normal fp64 inputs and outputs.
+> Subnormal fp64 behavior is hardware-defined and requires `shaderDenormPreserveFloat64 = true`
+> on Vulkan for full cross-backend bit-exactness. Phase 1 claims bit-exactness in the normal
+> fp64 range only. See `navigator/escalations.md` ESC-001 for the full decision.
+>
+> The claim is compositional: given `.tam` source, a backend that faithfully lowers `.tam`
+> to its target ISA, and hardware that implements IEEE-754 for the ops in use, the output
+> is bit-exact across all such (backend, hardware) pairs. See `trek-plan.md` Part II.5 for
+> the full framing.
+>
+> *Amended 2026-04-12 per ESC-001 (navigator decision).*
 
 ## Read, in order
 
-1. **`invariants.md`** — I1 through I10, the fences around the trek. Memorize these. Every campsite obeys them. Violations are escalations, not decisions.
+1. **`invariants.md`** — I1 through I11, the fences around the trek. Memorize these. Every campsite obeys them. Violations are escalations, not decisions.
 2. **`trek-plan.md`** — the full ~2,000-line map: what we're building, why each step is necessary, the seven peaks, deep design notes per peak, the team structure, the campsite list, the pitfalls, the weather, and the pace rules.
 3. **`first-week-directives.md`** — concrete starting assignments per role. Five agents can start in parallel from day one; this tells each who picks which campsites first.
 4. **`navigator/state.md`** — where the codebase is right now (107 tests green on the vendor-locked path, working `tam-gpu` backend, 26 recipes in the catalog) and what the baseline assumption is.

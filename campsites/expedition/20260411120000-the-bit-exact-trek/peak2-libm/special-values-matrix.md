@@ -411,7 +411,7 @@ Per `tambear-tam-test-harness::ToleranceSpec`:
 | `atan` | 1 ULP | |
 | `asin` | 1 ULP | |
 | `acos` | 1 ULP | |
-| `atan2` | 1 ULP | |
+| `atan2` | 2 ULP | `y/x` division composes with atan's 1 ULP → ~2 ULP worst case. Team-lead exception 2026-04-12; recorded in accuracy-target.md §"Per-function ULP exceptions". Phase 2 fix: Dekker double-double on quotient. |
 | `sinh` | 1 ULP | |
 | `cosh` | 1 ULP | |
 | `tanh` | 1 ULP | |

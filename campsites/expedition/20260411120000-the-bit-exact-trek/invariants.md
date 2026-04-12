@@ -1,4 +1,4 @@
-# Invariants (I1–I10) — the fences around the trek
+# Invariants (I1–I11) — the fences around the trek
 
 **Print this. Read it at the start of every work session. Every campsite obeys these. If a campsite begins to require stepping over one, halt and escalate — never paper over.**
 
@@ -10,10 +10,11 @@
 | **I4** | No implicit reordering of floating-point operations | Compiler-freedom flags like `-ffast-math`, `.ftz`, `-Ofast`, `/fp:fast` | Associativity is false for fp; reordering means different answers |
 | **I5** | No non-deterministic reductions | `atomicAdd` for user-visible final values, parallel reduce with variable block count | Same input → same output on every run, every hardware |
 | **I6** | No silent fallback when a target is missing a feature | "if fp64 unavailable, use fp32" | Silent precision loss — user didn't ask for it |
-| **I7** | Every primitive still decomposes into accumulate + gather | New ops added to `.tam` IR that don't fit this pattern | The library's compositional property depends on this |
+| **I7** | Every primitive is described by a (dataflow pattern, total order) pair. Accumulate+gather is the most common dataflow pattern (Kingdom A). Total order is referenced by name into an open OrderStrategy registry. | New ops added to `.tam` IR that don't declare their order, OR kernels declaring an order outside a backend's capability matrix (→ compile-time reject, never silent relax) | Decomposition enables **speed** via fusion; total order enables **correctness** via bit-exactness. Conflating them was the original trap. Refined per Aristotle I7 Phase 8 finding (2026-04-12). |
 | **I8** | First-principles only for transcendentals | Porting glibc / musl / sun-libm code | Our implementations are our responsibility; borrowed code carries borrowed assumptions |
 | **I9** | mpmath (or equivalent arbitrary-precision reference) is the oracle | Comparing against another libm to "validate" | Two libms can both be wrong; arbitrary-precision is the ground truth |
 | **I10** | Cross-backend diff is continuous, not a final audit | "we'll validate Vulkan later" | Drift compounds; catching it at step 3 is cheap, catching it at step 7 is expensive |
+| **I11** | NaN propagates through every op on every backend | Any comparison-based op (min, max, select, clamp, sign) that silently substitutes a non-NaN for a NaN input; `f64::min(NaN, x)` → x instead of NaN | PTX `min.f64`, SPIR-V `OpFMin`, and CPU `f64::min` all handle NaN differently without explicit guards. Without I11, cross-backend NaN behavior is undefined and backends silently diverge — a correctness failure that pointwise tests don't catch if they never inject NaN. Added 2026-04-12 after adversarial bugs 3-5 and independent convergence by naturalist + scout. |
 
 ## Escalation protocol
 

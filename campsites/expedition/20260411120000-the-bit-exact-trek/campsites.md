@@ -111,16 +111,27 @@ Each campsite's acceptance test: `max_ulp ≤ 1.0` on 1M samples across the decl
 
 **Owner: PTX Assembler (+ SPIR-V Assembler for parallel work on Vulkan).** After Peaks 1, 3.
 
-- **6.1** Decision doc: single-kernel tree reduce vs two-stage host-fold. Recommendation: two-stage host-fold for Phase 1. Accept when the rationale is written.
-- **6.2** Launch config policy: given N, `block` and `grid` are deterministic. Accept when there's a `fn launch_config(n: usize) -> (grid, block)` with tests.
-- **6.3** `reduce_block_partial.f64` in `.tam` IR — semantic: "emit partial to `partials_buf[block_idx]`".
-- **6.4** CPU interpreter: serializes `reduce_block_partial` trivially (one "block" of all items). Accept when interpreter matches atomic version on all Peak-1 tests.
-- **6.5** PTX translator: shared memory declaration, tree reduce, block-zero thread writes partial, then host reads partials and folds.
-- **6.6** Determinism test: run a kernel 100 times on the same input, assert bit-identical output every time. Run once with old atomicAdd → expect flakiness. Run with new code → expect zero flakiness.
-- **6.7** Correctness test: bit-exact match against CPU interpreter for variance, sum, pearson_r, Σ|ln x|.
-- **6.8** Update the entire test suite from Peak 4 to use deterministic reduce; the `@xfail_nondeterministic` marks go away.
-- **6.9** Update the invariant document: I5 is now provably enforced in the test suite.
-- **6.10** Benchmark the perf cost of determinism vs atomicAdd at various N. Document. (It should be small.)
+> **FRAMING CORRECTION (2026-04-11, navigator):** The original sketch here (two-stage host-fold + fixed launch config) achieves `run_to_run` determinism — bit-identical across runs on the same GPU. But the Peak 7 summit test requires `cpu.to_bits() == cuda.to_bits() == vulkan.to_bits()`, which is `gpu_to_gpu` class determinism: bit-identical *across architectures* regardless of tree shape or workgroup count.
+>
+> The right algorithm is the **Reproducible Floating-point Accumulator (RFA)** from Demmel-Ahrens-Nguyen. It partitions the fp64 range into exponent-aligned bins, accumulates each element into the bin whose exponent range contains it, and folds the bins in fixed order. The result is order-independent, tree-shape-independent, and hardware-count-independent. This is NOT wrapping ReproBLAS (that would violate I1/I2) — it's implementing the algorithm from the paper in `.tam` IR from first principles.
+>
+> **Implementation note:** The bin-accumulate step is `accumulate(exponent_bin_grouping, identity, add)` + `gather(fixed_bin_order, add)` — I7-compliant, Kingdom A commutative monoid with vector state (rhymes with Welford).
+>
+> **Papers to read before 6.1** (mandatory, in order):
+> 1. Demmel & Nguyen, "Fast Reproducible Floating-Point Summation," ARITH 2013
+> 2. Demmel & Nguyen, "Parallel Reproducible Summation," IEEE TC 2015
+> 3. Ahrens, Demmel, Nguyen, ReproBLAS tech report EECS-2016-121
+
+- **6.1** Decision doc: explicitly state the target tier (`gpu_to_gpu`), argue why RFA is the right algorithm over fixed-tree, pick the bin count and width. Accept when the rationale is written and reviewer can confirm the tier claim.
+- **6.2** Launch config policy: given N, `block` and `grid` are deterministic. Accept when there's a `fn launch_config(n: usize) -> (grid, block)` with tests. (Still needed — RFA is order-independent but we still need consistent dispatch for other ops.)
+- **6.3** `reduce_rfa.f64` in `.tam` IR — semantic: "accumulate element into exponent-aligned bin vector; fold bins in fixed order for final result." Replaces `reduce_block_partial`.
+- **6.4** CPU interpreter: implement RFA accumulate + fold sequentially. Accept when it matches mpmath for catastrophic-cancellation inputs (the `[1e16, 1.0, -1e16]` test from the hard-cases suite).
+- **6.5** PTX translator: RFA bin-accumulate in shared memory, warp-level reduce per bin, block-zero thread writes bin vector, host folds bin vectors in fixed order.
+- **6.6** Determinism test: run a kernel 100 times on the same input, assert bit-identical output every time.
+- **6.7** Cross-architecture correctness: bit-exact match CPU interpreter == CUDA for variance, sum, pearson_r. This was the original 6.7; now it has teeth because the algorithm is order-independent.
+- **6.8** Update the entire test suite from Peak 4 to use RFA reduce; the `@xfail_nondeterministic` marks go away.
+- **6.9** Update the invariant document: I5 is now provably enforced. Also note: Peak 7's summit test now has a credible algorithm backing it.
+- **6.10** Benchmark the perf cost of RFA vs atomicAdd vs fixed-tree at various N. Document. (Bin-count is fixed; cost scales with bins * threads, not N. Crossover point is the interesting result.)
 
 ---
 

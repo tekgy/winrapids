@@ -1,0 +1,29 @@
+.tam 0.1
+.target cross
+
+; tam_sqrt: the simplest libm function — a thin wrapper over the IEEE 754
+; correctly-rounded fsqrt.f64 op. No range reduction, no polynomial, no
+; special-value dispatch. The IR's fsqrt.f64 inherits IEEE 754 semantics:
+;
+;   sqrt(+0)   = +0        (exact)
+;   sqrt(-0)   = -0        (exact, sign preserved per IEEE 754 §6.3)
+;   sqrt(+inf) = +inf      (exact)
+;   sqrt(x<0)  = nan       (invalid operation, returns qNaN)
+;   sqrt(nan)  = nan       (I11 — NaN propagates through every op)
+;   sqrt(subnormal) = √subnormal (correctly rounded; no flush-to-zero)
+;
+; All handled by the single fsqrt.f64 op. No front-end dispatch needed.
+;
+; Phase 1 bound: max_ulp = 0 (bit-exact vs mpmath oracle). IEEE 754
+; mandates correct rounding for fsqrt, so any deviation from 0 ULP is
+; either a harness bug or a hardware bug, not an algorithm bug.
+;
+; Campsite 2.4. Chain test: this is the end-to-end smoke test that the
+; full stack (.tam parser → CPU interpreter → TAMBLMR1 reference file →
+; ULP harness) works before the polynomial functions depend on it.
+
+func tam_sqrt(f64 %x) -> f64 {
+entry:
+  %result = fsqrt.f64 %x
+  ret.f64 %result
+}

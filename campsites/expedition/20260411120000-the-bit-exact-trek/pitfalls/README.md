@@ -283,3 +283,57 @@ already handles different groupings as separate passes.
 
 This should be discussed with the IR Architect before 1.2 (Rust AST types), as the
 `Grouping` enum needs this variant.
+
+---
+
+## Adversarial baseline bugs (P19–P21)
+
+*Found by the adversarial team during the baseline sweep, 2026-04-11. P19 and P20 are FIXED (commit ad84a51). P21 is the open variance issue routed to campsite 1.4.*
+
+### P19: NaN silently ignored by min/max (FIXED in ad84a51)
+
+`min_all([3.0, NaN, 1.0])` returned 1.0 instead of NaN. Cause: IEEE 754 defines `NaN < x` as false, so NaN never writes to the accumulator. Fix: `if val.is_nan() || val < accs[j] { accs[j] = val; }` — makes NaN sticky.
+
+**Affects**: `min_all`, `max_all`, `range_all`, `midrange`, `linf_norm`. Full details: `pitfalls/nan-silent-ignored-by-min-max.md`.
+
+---
+
+### P20: Identity value leaks on empty or all-NaN input (FIXED in ad84a51)
+
+`min_all([])` returned `+Inf` (the Min identity). `max_all([])` returned `-Inf`. `linf_norm([NaN, NaN])` returned `-Inf` (same root cause as P19). The identity value escapes because the accumulation loop never runs. Fix: post-loop check: if no valid element was accumulated, set Min/Max result to NaN.
+
+**Correct contract** (confirmed in fix): propagate-NaN by default. `using(na_rm: true)` for skip-NaN semantics, explicitly acknowledged by the caller.
+
+Full details: `pitfalls/identity-value-leaked-on-empty-input.md`.
+
+---
+
+### P21: Variance catastrophic cancellation — adversarial confirmation (OPEN, blocks campsite 1.4)
+
+The adversarial team confirmed P08/P16 with financial-scale data: `data = [1e9 + k*1e-6 for k in 0..1000]` — true variance ~8.34e-8, formula returned **-4592.1** (negative, 55 billion times wrong). A second test (`1e8+1` / `1e8-1` alternating, 10000 samples) returned **exactly 0.0**.
+
+The negative result occurs because fp rounding makes `Σx²` slightly smaller than `(Σx)²/n` in certain accumulation sequences — the formula produces a negative "variance" before even being divided by `n-1`. This is an especially bad failure because the result is plausible-looking to a downstream consumer who doesn't inspect the sign.
+
+**Fix**: Two-pass variance in campsite 1.4. First pass: `mean = sum / count`. Second pass: `Σ(x - mean)²` with mean as a loop-invariant constant. Both passes are expressible in the Phase 1 .tam IR. The pathmaker's CPU interpreter already confirmed Welford is expressible; navigator confirmed the two-pass approach as the architectural fix.
+
+Two tests `variance_catastrophic_cancellation_exposed` and `variance_welford_vs_onepass_stress` remain pinned-red in `adversarial_baseline.rs`. They are the acceptance criteria for campsite 1.4.
+
+Full details: `pitfalls/variance-catastrophic-cancellation.md`. Also see `pitfalls/variance-one-pass.md` (scout's earlier analysis) and `pitfalls/recipe-stability-map.md` (full stability classification of all 26 recipes).
+
+---
+
+### P22: Cross-backend agreement is not correctness (STRUCTURAL — ongoing)
+
+**Discovered by**: Adversarial team, 2026-04-11. Fixed in `tbs/mod.rs` (sign, min, max NaN bugs). Structural concern remains.
+
+**What**: The 9 GPU end-to-end tests in `tests/gpu_end_to_end.rs` compare CPU results to NVRTC-compiled GPU results. If the formula is wrong — as with variance on financial data — both backends compute the same wrong answer and the test passes. Agreement is tested; correctness is not.
+
+**Why this is dangerous**: A recipe that catastrophically cancels and returns a negative variance passes all cross-backend consistency tests. The test suite signals "everything is fine" while the answer is 55 billion times wrong. This false confidence is more insidious than a test failure.
+
+**The two distinct properties** (must never be conflated):
+- **Consistency** (`cpu.to_bits() == gpu.to_bits()`): tests that backends agree. This is what I3/I5/I7 enforce. Cross-backend diff harness (Peak 4) tests this.
+- **Correctness** (`|result - true_value| ≤ tolerance`): tests that the answer is mathematically right. Only mpmath oracle comparison (I9) tests this.
+
+**Defense**: Every recipe needs BOTH a cross-backend consistency test AND an oracle comparison test using known ground truth. Create test data with analytically known answers (e.g., `[1, 2, 3, 4, 5]` whose variance is `2.5` exactly), assert the answer matches, then separately assert CPU == GPU.
+
+**See also**: `pitfalls/gpu-tests-missing-adversarial-coverage.md`

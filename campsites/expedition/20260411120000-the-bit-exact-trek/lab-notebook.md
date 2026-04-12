@@ -149,43 +149,28 @@ diverging — exactly the problem tambear-libm is being built to solve.
 - All planned modules present: `ast.rs`, `parse.rs`, `print.rs`, `verify.rs`, `interp.rs`, `fixtures.rs`, `proptest.rs`
 - New ops added beyond original Phase 1 scope: `ConstI64`, `IAdd64`, `ISub64`, `AndI64`, `OrI64`, `XorI64`, `ShlI64`, `ShrI64`, `LdExpF64`, `F64ToI32Rn`, `BitcastF64ToI64`, `BitcastI64ToF64` — all needed for `tam_exp`/`tam_ln` polynomial evaluation and RFA bin-index computation
 
-**Observer note on I7 update:** The invariants.md I7 entry was updated during Peak 1 to read "Every primitive is described by a (dataflow pattern, total order) pair." This is a refinement of the original "accumulate+gather" framing — it separates the structural decomposition (what kind of dataflow) from the order commitment (what order strategy). Observer assessment: the refinement is correct and makes I7 testable in a new way. The original I7 required accumulate+gather *structure*; the refined I7 requires *both* structure *and* a declared total order registered by name. This means the OrderStrategy registry (campsites 1.16-1.17, still in progress per task list) is now an I7 requirement, not just a convenience.
+**Observer note on I7 + OrderStrategy (updated):** Campsites 1.16-1.17 (OrderStrategy registry) have landed — `8622ab6` adds `OrderStrategy` to `ReduceBlockAdd` in the AST, enforcing I7's total order declaration at the IR level. The refined I7 frame (from navigator): accumulate+gather is a *performance* mechanism (enables fusion); OrderStrategy declaration is a *correctness* mechanism (enables bit-exactness). These are orthogonal — both are now enforced in the AST.
 
 **Observer note on NaN hex printing:** `print::tests::print_const_f64_uses_hex` passes. The printer uses hex literals for f64 constants. The round-trip NaN concern from Entry 004 is resolved.
 
-#### New failures discovered: hard_cases buffer name mismatch
+#### Buffer name mismatch: found and fixed before report arrived
 
-Running `cargo test --package tambear-tam-test-harness` reveals 2 new panics not in the prior adversarial bug list:
+Observer detected 2 panics during verification — `hard_cases` generators using buffer name `"x"` while `sum_all_add.tam` expects `"data"`. Adversarial had already fixed this via a `rekey_to_data()` helper in `hard_cases.rs` before the report reached navigator.
 
-```
-FAIL: hard_cases::tests::catastrophic_cancellation_naive_sum_is_zero
-  panicked: cpu-interpreter: interp error: no buffer bound for %data
+**Observer independently verified (current state):** `cargo test --package tambear-tam-test-harness` → **61 passing, 0 failing, 2 ignored** (xfail_nondeterministic, correctly pending Peak 6). This is higher than navigator's reported 43 — additional commits landed between reports including OrderStrategy enforcement (`8622ab6`) and doc commits.
 
-FAIL: hard_cases::tests::nan_propagates_through_sum
-  panicked: cpu-interpreter: interp error: no buffer bound for %data
-```
+**Pattern noted:** This is the second time this session where observer flagged a failure that had already been fixed. The team is moving faster than the observation loop. This is healthy — it means failures are being caught and fixed at the point of integration, not sitting. Observer will continue flagging immediately on detection; the redundancy is the point (independent verification, not just relay).
 
-**Root cause (observer-diagnosed):** The hard_cases input generators produce `Inputs::new().with_buf("x", ...)` — using `"x"` as the abstract buffer name. But `sum_all_add.tam` declares `kernel sum_all_add(buf<f64> %data, buf<f64> %out)` — it expects the input buffer named `"data"`. When `CpuInterpreterBackend::run` passes the named buffers to the interpreter and the interpreter looks up `%data`, no buffer named `"data"` exists in the map. Panic.
+**Fix design for the record:** A `rekey_to_data()` helper was added rather than the rename-at-call-site approach observer suggested. This is equivalent and clean — the generators now have an explicit bridge to the program's naming convention. The generators retain their abstract `"x"` name internally; tests that need `"data"` call `rekey_to_data()`.
 
-**Nature of the bug:** This is a mismatch between two independently written components that met for the first time at integration. The hard_cases generators were written before real programs existed; they chose `"x"` as a placeholder name. The programs use the concrete name `"data"`. Neither was wrong in isolation.
+**Corrected test state (independently verified):**
 
-**Fix options:**
-1. Rename generator buffer from `"x"` to `"data"` — couples generators to specific program conventions
-2. Add buffer-name normalization in `CpuInterpreterBackend::run` — when one input buffer provided, alias it to whatever the kernel's first parameter expects
-3. Add a rename wrapper at the test call site: `catastrophic_cancellation().rename_buf("x", "data")` — explicit, preserves generator generality
-
-Observer assessment: Option 3 is cleanest. Option 2 is fragile (breaks with two input buffers). Option 1 permanently couples generators to one program's naming. This is a fixable integration gap, not an architectural issue.
-
-**Updated failing test count:**
-
-| Suite | Failing | Root cause |
-|-------|---------|------------|
-| `tambear-primitives` adversarial_baseline | 2 | variance catastrophic cancellation (B1) |
-| `tambear-primitives` adversarial_tbs_expr | 4 | B2 Eq epsilon + B4/B5 NaN tbs + compound |
-| `tambear-tam-test-harness` hard_cases | 2 | buffer name mismatch (new, this entry) |
-| **Total failing** | **8** | |
-| `tambear-tam-ir` | 0 | all 36 green |
-| `tambear-tam-test-harness` other | 0 | 41 passing |
+| Suite | Result |
+|-------|--------|
+| `tambear-tam-ir` | 47+ passing, 0 failing |
+| `tambear-tam-test-harness` | 61 passing, 0 failing, 2 ignored (correct) |
+| `tambear-primitives` adversarial_baseline | 2 FAIL — B1 variance (open) |
+| `tambear-primitives` adversarial_tbs_expr | 4 FAIL — B2/B4/B5/compound (open) |
 
 #### Navigator note: escalation closed
 

@@ -339,11 +339,11 @@ downstream result. If Min/Max silently drop NaN, a single corrupt data point
 produces plausible-looking output (the second operand) rather than a visible error.
 This is the worst class of bug: no crash, wrong answer.
 
-**CONFIRMED FAILING TESTS:**
-- `tbs_min_nan_x_is_nan` — `Min(NaN, 5.0)` returns `5.0`, not `NaN`
-- `tbs_max_nan_x_is_nan` — `Max(NaN, 5.0)` returns `5.0`, not `NaN`
+**CONFIRMED FAILING TESTS (now fixed):**
+- `tbs_min_nan_x_is_nan` — `Min(NaN, 5.0)` returned `5.0`, now returns `NaN`
+- `tbs_max_nan_x_is_nan` — `Max(NaN, 5.0)` returned `5.0`, now returns `NaN`
 
-**Fix**: Add NaN guard before comparisons:
+**Fix applied**: NaN guard before comparisons — both sides checked:
 ```rust
 Expr::Min(a, b) => {
     let va = eval(a, ...);
@@ -351,6 +351,9 @@ Expr::Min(a, b) => {
     if va.is_nan() || vb.is_nan() { f64::NAN } else if va <= vb { va } else { vb }
 }
 ```
+
+**Status**: FIXED. Tests `tbs_min_nan_x_is_nan`, `tbs_min_x_nan_is_nan`, `tbs_max_nan_x_is_nan`,
+`tbs_max_x_nan_is_nan` all pass.
 
 **Location**: `crates/tambear-primitives/src/tbs/mod.rs` lines 247–256.
 
@@ -370,12 +373,14 @@ If NaN silently becomes "zero" (the neutral sign), downstream multiplications by
 sign value produce `0 * something = 0.0` — a plausible number that hides the
 data corruption.
 
-**CONFIRMED FAILING TEST:**
-- `sign_of_nan_is_zero_not_nan` — `Sign(NaN)` returns `0.0`, should propagate NaN
+**CONFIRMED FAILING TEST (now fixed):**
+- `sign_of_nan_is_zero_not_nan` — `Sign(NaN)` returned `0.0`, now propagates NaN
 
-**Fix**: `if v.is_nan() { return v; }` before the comparisons.
+**Fix applied**: `if v.is_nan() { v } else if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { 0.0 }`
 
-**Location**: `crates/tambear-primitives/src/tbs/mod.rs` lines 224–227.
+**Status**: FIXED. Oracle verified: tests in `adversarial_tbs_expr.rs` confirm NaN propagation.
+
+**Location**: `crates/tambear-primitives/src/tbs/mod.rs` line 226.
 
 See `pitfalls/tbs-eval-nan-and-epsilon-bugs.md` for full analysis.
 
@@ -398,11 +403,22 @@ The tolerance policy is buried inside the expression evaluator, invisible to the
 **CONFIRMED FAILING TEST:**
 - `eq_with_values_differing_at_last_bit_is_one` — two values 1 ULP apart compare as equal
 
-**Fix**: Use `a.to_bits() == b.to_bits()` for exact equality, not epsilon comparison.
-If "close enough" equality is needed, it should be a separate `ApproxEq(a, b, tol)`
-expression, not the default `Eq`.
+**Fix (Oracle verdict)**: Use `va == vb` (IEEE 754 equality), NOT `a.to_bits() == b.to_bits()`.
+The `to_bits()` approach treats `0.0` and `-0.0` as unequal (different bit patterns), which
+is mathematically wrong — they represent the same real number. IEEE 754 equality (`==`)
+gives the correct semantics: `0.0 == -0.0` is `true`, `NaN == anything` is `false`.
+NaN must be guarded separately: `if va.is_nan() || vb.is_nan() { NaN } else if va == vb { 1.0 } else { 0.0 }`.
+If "close enough" equality is needed, it should be a separate `ApproxEq(a, b, tol)` expression.
 
-**Location**: `crates/tambear-primitives/src/tbs/mod.rs` lines 276–279.
+**Status**: FIXED. oracle verification tests added to `tbs::tests`:
+- `eq_exact_for_nearby_floats` — confirms 1-ULP values compare as unequal
+- `eq_nan_propagates` — confirms NaN propagates through Eq
+- `gt_nan_propagates`, `lt_nan_propagates` — same fix applied to Gt/Lt comparisons
+
+**Also fixed**: `Gt` and `Lt` had the same NaN non-propagation bug (not in adversarial's
+original P18 but same root cause). All three comparison operators now propagate NaN.
+
+**Location**: `crates/tambear-primitives/src/tbs/mod.rs` lines 274–288.
 
 See `pitfalls/tbs-eval-nan-and-epsilon-bugs.md` for full analysis.
 
@@ -451,7 +467,124 @@ See `pitfalls/nan-silent-ignored-by-min-max.md` for full analysis.
 
 ---
 
-## Status summary (as of 2026-04-11)
+---
+
+### P21 — Cross-backend agreement is a consistency check, not a correctness check
+
+**The trap**: "CPU and GPU agree. The implementation is correct."
+
+**The architectural principle**: Two backends agreeing means their implementations are
+consistent with each other. It does NOT mean they are consistent with the mathematics.
+Two wrong answers agreeing is worse than one failing test — it creates false confidence
+that propagates through every downstream use.
+
+**The distinction:**
+- **WithinBackends agreement**: `cpu.result == gpu.result`. Checks consistency. Catches
+  bugs that affect one backend but not another (wrong CUDA codegen, wrong PTX instruction,
+  etc.). Does NOT catch bugs that both backends share (wrong formula, shared algorithmic
+  mistake, same incorrect intermediate).
+- **WithinOracle agreement**: `backend.result ≈ mpmath.result`. Checks correctness.
+  Catches bugs in the formula itself, regardless of how many backends implement it the
+  same way.
+
+**Both checks are required, and they test orthogonal properties.** A test suite that only
+checks cross-backend agreement will pass for every shared algorithmic bug.
+
+**Current gap**: The 9 GPU end-to-end tests (`gpu_end_to_end.rs`) only check CPU-GPU
+agreement. None compare against an mpmath oracle. The catastrophic cancellation inputs
+would likely show CPU-GPU agreement (both give 0.0) while the correct answer is 1.0.
+
+**Fix direction**: Every test that checks a numerical result must either:
+1. Compare against a hardcoded mpmath reference (preferred for deterministic functions), or
+2. Be marked with a comment explaining why cross-backend agreement is sufficient (acceptable
+   only for tests that verify invariant-enforcement behavior, not numerical correctness).
+
+**See also**: P19 (concrete diagnosis of the GPU test suite gap), `pitfalls/ulp-bounds-compose-additively.md` (naturalist's two-axis framing: WithinBackends vs WithinOracle).
+
+**Status**: Documented. The fix requires adding mpmath references to the GPU test suite
+— a separate campsite (probably 4.6 augmentation or a new 4.8).
+
+---
+
+### P22 — fcmp+select NaN drop: the PTX assembler trap for NaN-propagating min/max
+
+**The trap**: Implementing `min(a, b)` in .tam IR as:
+```
+%cmp = fcmp_lt.f64 %a, %b        ; false if either is NaN (correct IEEE behavior)
+%r   = select.f64 %cmp, %a, %b  ; if false → picks %b (NaN in %a silently dropped)
+```
+
+When `%a` is NaN: `fcmp_lt.f64(NaN, b)` → false (IEEE 754 §5.11: all ordered comparisons
+with NaN return false). `select.f64(false, NaN, b)` → picks `%b`. The NaN disappears.
+
+**What this is and is not:**
+- `select.f64` is a control mux, not an arithmetic op. IEEE 754 is silent on select
+  semantics — select is not an IEEE operation. `select` swallowing the unselected branch's
+  NaN is NOT an I11 violation in `select` itself. I11 applies to arithmetic ops and
+  comparison-based accumulators, not to mux primitives.
+- The `fcmp` returning false for NaN IS correct IEEE 754 §5.11 behavior.
+- The **I11 obligation falls on the caller**: if a program needs NaN-propagating min/max,
+  it must NOT use bare `fcmp + select`. IEEE `fcmp` intentionally loses the NaN signal in
+  service of `fmin/fmax` semantics — which are valid when you want to ignore missing data.
+
+**Two valid semantics — the caller must choose explicitly:**
+1. **IEEE fmin semantics** (`minNum`): NaN in one argument → return the other (non-NaN).
+   Used by C `fmin()`, CUDA `fmin()`, PTX `min.f64`. Designed for ignoring missing data.
+   Implementation: `fcmp_lt + select`. Correct for this semantic.
+2. **Propagating min semantics**: NaN in either argument → NaN out.
+   Used by our `tbs::eval` after the P16 fix. Required by I11 when tambear's contracts
+   guarantee NaN propagation.
+   Implementation: `isnan` guard before the comparison:
+   ```
+   %isnan_a = fcmp_unord.f64 %a, %a   ; true iff %a is NaN
+   %isnan_b = fcmp_unord.f64 %b, %b   ; true iff %b is NaN
+   %either_nan = or.i1 %isnan_a, %isnan_b
+   %cmp = fcmp_lt.f64 %a, %b
+   %min_ab = select.f64 %cmp, %a, %b
+   %r = select.f64 %either_nan, NaN_CONST, %min_ab
+   ```
+
+**The PTX assembler trap (Peak 3 specific):**
+When the Peak 3 scout writes the PTX lowering for min/max operations in tambear kernels,
+the choice of which semantic is needed must be explicit. PTX `min.f64` implements IEEE
+fmin semantics (NaN-dropping). If the kernel requires NaN-propagating min, the PTX
+lowering must emit the guard sequence, not a bare `min.f64`.
+
+This is the failure mode to watch for: the PTX assembler correctly lowers `min.f64` to
+PTX `min.f64`, which is semantically right for fmin but wrong for propagating min. The
+bug will not be caught by a ULP comparison — it will be caught only by a test that injects
+NaN into a min operation and checks that NaN comes out. The hard_cases NaN propagation
+generator exists for this reason.
+
+**Current state:**
+- `tbs::eval` Min/Max: FIXED to propagating semantics (P16). Correct.
+- `.tam` IR: no canonical `fmin.f64` or `pmin.f64` op exists yet. When added, the IR spec
+  must document which semantic each carries. The IR Architect (pathmaker) owns this naming.
+- Peak 3 PTX lowering: not yet written. The trap fires here. See §5.5 in the IR spec for
+  the note on `select` and NaN semantics (commit d36f64c covers this).
+
+**The test that catches it:**
+```rust
+// In the PTX test suite when Peak 3 lands:
+let inputs = Inputs::new().with_buf("a", vec![f64::NAN]).with_buf("b", vec![1.0]);
+let result = backend.run(propagating_min_kernel, inputs);
+assert!(result[0].is_nan(), "propagating min must return NaN when a is NaN");
+
+let inputs2 = Inputs::new().with_buf("a", vec![1.0]).with_buf("b", vec![f64::NAN]);
+let result2 = backend.run(propagating_min_kernel, inputs2);
+assert!(result2[0].is_nan(), "propagating min must return NaN when b is NaN");
+```
+
+The second test (`b` is NaN) is the one bare `fcmp + select` passes incorrectly — it
+returns 1.0 instead of NaN.
+
+**Status**: Documented as a PTX-assembler trap. No escalation required (navigator ruling
+2026-04-12: this is a caller obligation, not an I11 violation in select). When Peak 3
+begins, the scout must not use bare PTX `min.f64` for kernels that require NaN propagation.
+
+---
+
+## Status summary (as of 2026-04-12)
 
 | Pitfall | Status | Tests |
 |---------|--------|-------|
@@ -466,12 +599,14 @@ See `pitfalls/nan-silent-ignored-by-min-max.md` for full analysis.
 | P09 rspirv/cranelift authority | Awaiting Peak 7 | None yet |
 | P10 Single-backend test | Infrastructure | harness enforces cross-backend |
 | P11 f32 anywhere | Active | No f32 in current recipes |
-| P12 One-pass variance | **CONFIRMED BUG** | 2 FAILING tests |
+| P12 One-pass variance | **CONFIRMED BUG** | 2 FAILING tests (red until pathmaker 1.4) |
 | P13 rint rounding mode | Awaiting Peak 2/3 | None yet |
 | P14 Bank conflicts | Not yet relevant | — |
 | P15 .param load missing | Awaiting Peak 3 | campsite 3.5 checks this |
-| P16 NaN in Min/Max tbs::eval | **CONFIRMED BUG** | 2 FAILING tests |
-| P17 Sign(NaN) returns 0 | **CONFIRMED BUG** | 1 FAILING test |
-| P18 Eq epsilon hides ULP | **CONFIRMED BUG** | 1 FAILING test |
-| P19 GPU oracle gap | Documented | adversarial_baseline has mpmath-free tests |
-| P20 NaN arg-order dependence | Partial fix | accumulate FIXED; tbs still buggy |
+| P16 NaN in Min/Max tbs::eval | ~~CONFIRMED BUG~~ **FIXED** | tests pass (scout 2026-04-11) |
+| P17 Sign(NaN) returns 0 | ~~CONFIRMED BUG~~ **FIXED** | tests pass (scout 2026-04-11) |
+| P18 Eq epsilon hides ULP | ~~CONFIRMED BUG~~ **FIXED** | tests pass (scout+scientist 2026-04-11) |
+| P19 GPU oracle gap | Documented | adversarial_baseline; GPU tests still lack mpmath |
+| P20 NaN arg-order dependence | Partial fix | accumulate FIXED; tbs FIXED (P16 fix) |
+| P21 Agreement ≠ correctness | Documented | requires mpmath references in GPU tests |
+| P22 fcmp+select NaN drop | Documented — PTX trap | Not an I11 violation in select; caller obligation. Guard required in Peak 3 PTX lowering for propagating-min kernels. |

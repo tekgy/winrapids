@@ -91,3 +91,62 @@ which produces the reference files this harness will use for gold-standard compa
 infrastructure here (4.4/4.5) are complementary.  When Peak 2 lands a new libm
 function, the Test Oracle adds a row to the parity table and fills in the measured
 ULP error.
+
+---
+
+# Oracle verification session — P16/P17/P18 (2026-04-11, continued)
+
+**Adversarial reported**: six bugs in the baseline session. Three in `tbs::eval`:
+P16 (Min/Max NaN), P17 (Sign NaN), P18 (Eq epsilon).
+
+**Oracle independent verification**: read `tbs/mod.rs` against IEEE 754 §6.2 (NaN propagation)
+and the expedition's tolerance policy (I3: bit-exact for all pure operations).
+
+## What was done
+
+Confirmed and adjudicated all three bugs.  Applied one oracle correction to the adversarial's
+proposed fix:
+
+- **P16/P17 (Sign/Min/Max NaN)**: adversarial's fix was correct.  Verified by reading the
+  code and confirming that IEEE 754 comparison semantics (`<=` false when NaN) cause the
+  wrong branch to fire.  Fixed in earlier session; oracle-verified as correct.
+
+- **P18 (Eq epsilon) — oracle correction**: adversarial proposed `to_bits()` equality.
+  This is WRONG for `Eq(0.0, -0.0)` — they have different bit patterns but are mathematically
+  equal.  The correct fix is `va == vb` (IEEE 754 equality) with a separate NaN guard.
+  Changed the implementation accordingly.
+
+- **Gt/Lt NaN propagation**: not in adversarial's report, but same root cause as P18.
+  Both comparison operators had the same missing NaN guard.  Fixed in the same pass.
+  Added oracle verification tests.
+
+## What almost went wrong
+
+**The `to_bits()` equality trap.** The adversarial's suggestion of `a.to_bits() == b.to_bits()`
+for `Expr::Eq` is the "obvious" fix to the epsilon problem — and it's wrong.  `0.0` and
+`-0.0` have different bit patterns but are mathematically equal (they compare `==` in IEEE 754).
+Using bit-pattern equality makes `Eq(0.0, -0.0)` return `0.0` (false), which would break any
+recipe that uses `Eq` to check for a zero result.  IEEE 754 `==` is the correct equality
+primitive.  The oracle's job is exactly this: catching fixes that solve the original problem
+but introduce a new one.
+
+## What tempted me off-path
+
+Accepting the adversarial's report at face value without verifying the proposed fixes.  The
+oracle role exists precisely to not do this.  The adversarial is correct about *finding* bugs;
+the oracle verifies independently and adjudicates *fixes*.
+
+## What the next traveler should know
+
+**All three NaN bugs (P16/P17/P18) are fixed.**  The `tbs::eval` function now correctly propagates
+NaN through: Sign, Min, Max, Gt, Lt, Eq.  4 oracle verification tests cover these in `tbs::tests`.
+
+**The two variance tests still fail intentionally.** `variance_catastrophic_cancellation_exposed`
+and `variance_welford_vs_onepass_stress` are confirmed bugs (P12) that require the two-pass .tam
+IR from pathmaker 1.4.  They are not `#[ignore]` — they stay as failing tests so every CI run
+sees the variance bug as a permanent red light until it is fixed.
+
+**Total test count at end of this session:**
+- 102 lib tests in `tambear-primitives` — all pass
+- 47 adversarial tests — all pass
+- 2 adversarial variance tests — intentionally failing (P12, pending pathmaker 1.4)

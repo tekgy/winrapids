@@ -1,7 +1,7 @@
 # Pitfall: Expr::Eq Uses Absolute Epsilon 1e-15
 
-**Status: KNOWN BUG — no recipe currently uses Expr::Eq, so blast radius is zero today.**
-**Flag to pathmaker when they reach campsite 1.9 (type-checker) and the .tam IR fcmp_eq op.**
+**Status: FIXED in tbs::eval and codegen/cuda.rs (scout, 2026-04-11). Pitfall doc retained as specification for fcmp_eq.f64 IR semantics.**
+**Original blast radius was zero — no recipe used Expr::Eq. Fix landed proactively.**
 
 ## What the code does
 
@@ -52,33 +52,37 @@ No current recipe uses equality comparison in its accumulate or gather expressio
 The `adversarial_tbs_expr.rs` failing test documents the bug but cannot be triggered
 by any current recipe running through the GPU.
 
-## The fix — when it's needed
+## The fix (as landed)
 
-The correct semantics for `fcmp_eq.f64` in the `.tam` IR are bit-exact equality:
+**Scientist correction (2026-04-11):** The initial proposed fix of `va.to_bits() == vb.to_bits()` was wrong.
+`+0.0` and `-0.0` have different bit patterns (`0x0000...` vs `0x8000...`) but are mathematically equal.
+`to_bits()` would make them compare unequal, introducing a new bug while fixing the old one.
+
+The correct fix — IEEE value equality with explicit NaN propagation:
 
 ```rust
 Expr::Eq(a, b) => {
     let va = eval(a, ...);
     let vb = eval(b, ...);
-    if va.to_bits() == vb.to_bits() { 1.0 } else { 0.0 }
+    if va.is_nan() || vb.is_nan() { f64::NAN } else if va == vb { 1.0 } else { 0.0 }
 }
 ```
 
-And correspondingly in `codegen/cuda.rs`:
-```c
-(__double_as_longlong(A) == __double_as_longlong(B) ? 1.0 : 0.0)
-```
+- `+0.0 == -0.0` → 1.0 (IEEE 754: they compare equal)
+- `NaN == anything` → NaN (propagates, doesn't silently return 0.0)
+- `1.0 == 1.0` → 1.0
+- `1.0 == 1.0 + ulp` → 0.0
 
-Note: `+0.0` and `-0.0` have different bit patterns but are mathematically equal.
+**Also fixed:** `Gt` and `Lt` had the same missing NaN guard (scientist catch). Same fix applied.
+
 The IR spec must document which semantics `fcmp_eq.f64` uses. Choices:
 1. **Bit-exact**: `+0 != -0`, NaN != NaN. Use for "are these the exact same bits?"
-2. **IEEE value equality**: `+0 == -0`, NaN != NaN. Use for "are these the same value?"
+2. **IEEE value equality**: `+0 == -0`, NaN != NaN. Use for "are these the same value?" (this is what landed)
 3. **Unordered equality**: NaN == NaN. Unusual — avoid unless there's a specific need.
 
-**Recommendation**: tambear policy should be IEEE value equality (+0 == -0) with NaN
-propagation (Eq(NaN, anything) → NaN, not 0.0). This aligns with how the other boolean
-expressions (Gt, Lt) handle NaN: they return 0.0, which means "the comparison is false."
-Consistently, Eq(NaN, x) should return 0.0 (the comparison cannot be established).
+**Recommendation**: tambear policy is IEEE value equality (+0 == -0) with NaN propagation
+(Eq(NaN, anything) → NaN). This matches the fix in tbs::eval and the analogous behavior
+in fmin/fmax/Gt/Lt. Consistent NaN propagation across ALL comparison ops.
 
 If "fuzzy" equality is needed, it should be a separate expression:
 `ApproxEq(a, b, tol)` where `tol` is explicit and caller-supplied, not hardcoded.

@@ -36,10 +36,101 @@ See `invariants.md` for the full table and escalation protocol. Quick list:
 - **I4** — No implicit reordering of fp operations
 - **I5** — No non-deterministic reductions
 - **I6** — No silent fallback for missing hardware features
-- **I7** — Every primitive decomposes into accumulate + gather
+- **I7** — Every primitive is described by a (dataflow pattern, total order) pair
 - **I8** — First-principles only for transcendentals
 - **I9** — mpmath (or equivalent arbitrary-precision) is the oracle
 - **I10** — Cross-backend diff is continuous, not a final audit
+
+---
+
+## Part II.5 — The Guarantee Spectrum: why bit-exact, for whom, and at what cost
+
+*Added 2026-04-12 after Aristotle deconstructions of I7 and the bit-exact meta-goal. Revised same day to incorporate Phase 8 Forced Rejection findings. This section reframes the trek's architectural claim from "we picked bit-exact because it's correct" to "we picked bit-exact because a specific downstream architecture depends on it, and here's that architecture." The reframing survives scope-collapse pressure at hard cases: when someone argues "bounded-ULP is fine here, let's relax," the framing makes visible exactly what guarantee they'd be giving up.*
+
+### The claim is compositional, not unilateral
+
+The trek's central guarantee is not "tambear produces identical bits everywhere." It is:
+
+> **Given .tam source, a backend that faithfully lowers .tam to its target ISA, and hardware that implements IEEE-754 for the ops in use, the output is bit-exact across all such (backend, hardware) pairs.**
+
+Three preconditions, three sources of responsibility:
+
+1. **IR-precision** — the `.tam` source is precise enough that there is exactly one meaning for each written kernel, with no freedom for a backend to reinterpret. *Tambear owns this*, via the IR design (declared total order via OrderStrategy, explicit rounding modes, bit-exact constants, no ambiguous ops).
+
+2. **Faithful lowering** — each backend (CPU interpreter, tam→PTX, tam→SPIR-V, and future doors) translates `.tam` IR to its target instruction stream without reinterpretation, without silent reordering, without fallback substitutions. *Tambear owns this too*, via our own assemblers and our own tambear-libm.
+
+3. **IEEE-754 compliance for the ops in use** — the hardware ALU implements IEEE-754 semantics for every op the kernel uses. *This is a hardware prerequisite*, documented per device, not something we control. When a device lacks a required feature (e.g., `shaderDenormPreserveFloat64` absent on the Blackwell's Vulkan stack), the kernel is either rejected at compile time or the hardware prerequisite is declared and the kernel's domain is narrowed to the ops the hardware does comply for.
+
+**This matters because it makes the claim honest.** If we stated bit-exactness unconditionally, ESC-001 (Vulkan subnormal behavior) would read as a claim failure. Under the compositional framing, ESC-001 is a precondition-3 narrowing: the hardware doesn't comply with IEEE-754 for subnormal fp64 ops unless you enable a driver feature; we declare that feature as a prerequisite and document the narrower domain. The claim still holds for every (backend, hardware) pair where all three preconditions hold. Future hardware surprises will land in the same slot — precondition 3 is the "hardware reality" box, and ESC-001 is the template for how to handle surprises without relaxing the core claim.
+
+**Every invariant in I1–I10 protects one of these three preconditions.** The Guarantee Ledger (at `guarantee-ledger.md`) maps each invariant to the specific precondition it protects and the exact cost of relaxing it. When someone proposes relaxing an invariant, the ledger is the mandatory checklist — they must cite which precondition they're violating and what user-facing property is being traded away. The ledger becomes institutional memory that outlasts individual reviewer judgment.
+
+### Two axes, not one
+
+The first and most important clarification: **cross-hardware numerical libraries have two separable design axes, and the trek targets one of them.**
+
+| Axis | What it's about | What tambear does on it |
+|---|---|---|
+| **Speed** — does this workload run in 1 pass or N passes over memory? Does it fuse? Does it parallelize? | Fusion, scheduling, parallelism, grouping patterns | **Decomposition into accumulate + gather** (what I7 used to say). This is a performance mechanism. The Kingdom A recipes fuse into minimum passes; Kingdom B/C/D decompose differently. |
+| **Correctness** — given the same source, does this kernel produce the *same bits* on different hardware? | Total order, rounding mode, NaN semantics, reduction shape | **Declared total order + explicit rounding + no implicit reordering** (I3, I4, I5, and the refined I7). This is the bit-exact guarantee. |
+
+**These two axes are orthogonal and should never be conflated.** The original I7 framing ("every primitive decomposes into accumulate + gather") sounded like a correctness principle but was actually a speed principle. Decomposition enables fusion, which is a speed win. Bit-exactness across hardware comes from the *total order* axis, not the decomposition axis — a library without accumulate+gather could still be bit-exact across hardware by pinning every op's order. It would just be slow.
+
+The trek's stated meta-goal ("one compiled `.tam` kernel, the same source of math, the same numerical answers, running on any ALU") lives on the **correctness** axis. Decomposition is load-bearing for tambear the product (it's why fusion works), but it's not load-bearing for the trek's claim. The trek proves correctness; decomposition is how the library stays fast while being correct.
+
+### The spectrum of cross-hardware guarantees
+
+A cross-hardware numerical library can target any of these points:
+
+| Tier | What it guarantees | What the backend can do | What the user can do |
+|---|---|---|---|
+| **T0 — no cross-hardware claim** | each backend is its own numerical world | anything | replicate per-backend; nothing cross-machine |
+| **T1 — loose bounded-ULP (≤ 10 ULPs)** | two backends agree within 10 ULPs on any input | use its own libm, its own reductions, its own FMA usage | use results for "close enough" decisions only |
+| **T2 — tight bounded-ULP (≤ 1 ULP)** | two backends agree within 1 ULP on any input | some latitude on FMA and reduction shape | use results for most decisions, but cannot rely on equality tests |
+| **T3 — bit-exact for pure arithmetic, bounded-ULP for transcendentals** | `a + b` is bit-identical cross-backend; `sin(x)` is within the libm's ULP bound | freedom in transcendental implementation, rigor in arithmetic | equality-test arithmetic results; tolerate libm-bounded variation |
+| **T4 — fully bit-exact** | every declared op produces identical 64-bit patterns cross-backend | zero latitude — every op sequence is pinned | equality test any output; hash outputs; content-address them; cache across machines |
+
+**Phase 1 of the trek targets T4 for Kingdom A accumulate+gather operations with declared OrderStrategy.** Phases 2+ may extend to Kingdom B/C/D, stochastic methods, and iterative fixed-point — those may need to live at T3 or T2 initially. The weaker tiers are **declared future work**, not alternatives-considered-and-rejected. A user who needs T1 today runs tambear with a "loose mode" that doesn't exist yet; when we build it, every T4 kernel also satisfies T2/T1/T0 automatically.
+
+### Which users need which tier?
+
+The spectrum matters because different users need different guarantees:
+
+- **Research prototyping** (someone trying a method for the first time): T0 or T1 is fine. They're looking for the shape of the answer, not reproducibility.
+- **Standard scientific computing** (climate models, simulations, stats): T2 is usually sufficient. Paper-worthy results don't depend on the last 3 ULPs.
+- **ML training and inference**: T1–T2 for training (gradient noise dominates anyway); T2–T3 for inference (reproducibility for debugging, not for the math).
+- **Financial settlement** (risk calculations, position marking, regulatory reporting): T4 required. Two runs on two machines must produce the same number to the last bit, or the settlement fails audit.
+- **Physics simulation with checkpointing** (restart a long-running simulation on a different machine): T4 required for restart-from-checkpoint to land in the same state.
+- **Audit-required regulated compute** (pharmaceutical trials, clinical decision support, certified control systems): T4 required plus formal verification of the tambear-libm implementations themselves.
+- **Content-addressed persistent store** (TamSession in tambear itself): **T4 required**. This is the load-bearing case inside tambear's own architecture. TamSession caches intermediate results by content hash so that "have I computed this already?" is an O(1) hash lookup. If the same source produces different bits on different machines, the cache never hits across machines, and the sharing contract collapses. The entire TamSession sharing story — 15 methods sharing a distance matrix, 6 sharing an FFT — depends on bit-exact cross-hardware outputs.
+
+**TamSession content-addressing is the tambear-specific case that bounded-ULP cannot satisfy.** Even T3 (bit-exact arithmetic, bounded-ULP transcendentals) breaks TamSession, because a kernel using `tam_log` inside a gather would produce different hashes on different backends under T3. The only tier that makes TamSession's cross-machine cache work is T4, everywhere, including transcendentals. This is why tambear-libm exists: our own transcendentals, bit-identical across every backend, so content-addressing works for every recipe including the ones that use `log`, `exp`, `sin`, `pow`.
+
+### The cost of T4 — and why we pay it
+
+T4 is the most expensive point on the spectrum. It requires:
+- Our own transcendental library (Peak 2) — we cannot use vendor libms
+- Our own PTX assembler and SPIR-V assembler (Peaks 3 and 7) — we cannot use vendor source compilers
+- Deterministic reductions (Peak 6) via RFA — we cannot use atomicAdd for user-visible results
+- Declared total order on every accumulate (the refined I7) — we cannot let the backend pick
+- Cross-backend diffing as continuous integration (Peak 4) — we cannot defer verification to the end
+
+The work is expensive. The payoff is the TamSession sharing contract, cross-machine cache hits, auditable reproducibility, and equality-testable outputs. These are specific downstream benefits, not vague "better software" claims.
+
+### What this framing protects against
+
+When Peak 3 or Peak 6 hits a hard case and someone argues "bounded-ULP would be sufficient here — let's relax," the framing makes the cost of relaxation visible. Relaxing bit-exact anywhere breaks TamSession's content-addressing for the kernels that touch the relaxed region. The question stops being "is close enough close enough?" and becomes "are we willing to give up cross-machine cache hits for these kernels?" That question has a concrete answer per kernel, and it keeps the team honest when the work gets hard.
+
+### Deferred scope, explicitly
+
+The following are explicitly **future work**, not in scope for the trek:
+- Bounded-ULP modes (T1, T2, T3) as opt-in faster paths for users who don't need TamSession sharing
+- Bit-exactness for Kingdom B/C/D (iterative fixed-point, stochastic methods) — some of these may never be achievable, and that's acceptable
+- Formal verification of tambear-libm implementations (Coq, Lean, or similar) — the current trek targets mpmath-oracle ULP verification, not full formal proof
+- Cross-hardware bit-exactness for non-IEEE-754 silicon (posits, approximate computing, analog accelerators) — the claim is "any IEEE-754 compliant ALU," not literally "any ALU"
+- Subnormal bit-exactness on Vulkan backends lacking `shaderDenormPreserveFloat64` (see ESC-001 for the decided scope carve-out)
+
+Each of these is a real user need that a future phase of tambear may target. None of them invalidate the T4 Phase 1 work — a T4 kernel automatically satisfies any weaker tier a user might select.
 
 ---
 

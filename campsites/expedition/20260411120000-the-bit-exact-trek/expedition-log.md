@@ -1564,6 +1564,109 @@ outcomes would be informative.
 whatever the trek's reckoning calls the next unit of time — the
 garden is still open.*
 
-— naturalist
+— naturalist (Entry 014 end)
+
+---
+
+## Entry 015 — 2026-04-11 — Vulkan capability matrix stub, and the OpFMin NaN finding
+
+Navigator asked for a VulkanBackend row in the capability matrix:
+`(backend × op × precision) → CapabilityEntry`, seeded from the
+ESC-001 reconnaissance. Filed at
+`peak7-spirv/capability-matrix-vulkan-row.md`.
+
+The spec research hit the same wall the RFA research did — Khronos
+registry returns 403, raw GitHub spec URLs return 404. What came through:
+
+- The SPV_KHR_float_controls spec HTML confirmed the four execution
+  modes and their semantics: SignedZeroInfNanPreserve, DenormPreserve,
+  DenormFlushToZero, RoundingModeRTE.
+- The Vulkan SPIR-V appendix confirmed the capability-to-device-property
+  mapping: each capability maps to a `VkPhysicalDeviceVulkan12Properties`
+  field.
+- The scout's `vulkaninfo` data gave me actual device values for this
+  machine.
+
+Combined with spec knowledge from training, I could fill in the table
+accurately for all Phase 1 ops.
+
+### The OpFMin/OpFMax finding
+
+This is the highest-uncertainty item navigator flagged, and it resolved
+clearly — though not in the direction that helps us.
+
+SPIR-V core OpFMin/OpFMax spec text: "If either operand is a NaN,
+the result is undefined." The implementation may return the NaN, the
+non-NaN operand, or anything else. This is deliberate — the spec allows
+hardware to implement min/max using comparison + select, and comparisons
+with NaN return false per IEEE 754.
+
+GLSL.std.450 FMin/FMax: same undefined-NaN semantics.
+GLSL.std.450 NMin/NMax: explicitly return the non-NaN operand (IEEE 754
+minNum/maxNum). These do NOT propagate NaN.
+
+The `SignedZeroInfNanPreserve` execution mode (from SPV_KHR_float_controls)
+does NOT fix this. The spec text says it prevents "optimizations that assume
+operands and results are not NaNs" — this applies to arithmetic ops (OpFAdd
+etc.) but the spec does not extend it to min/max instructions. The
+float_controls spec treats them differently.
+
+**Conclusion:** There is no SPIR-V mechanism that guarantees I11-compliant
+NaN propagation through OpFMin/OpFMax on Vulkan. To get I11 behavior, the
+translator must emit an explicit NaN-check + OpSelect pattern:
+
+```
+%is_nan_a = OpIsNan %bool %a
+%is_nan_b = OpIsNan %bool %b
+%either_nan = OpLogicalOr %bool %is_nan_a %is_nan_b
+%raw_min = OpFMin %f64 %a %b
+%result = OpSelect %f64 %either_nan %nan_const %raw_min
+```
+
+This is four extra instructions per min/max op. It works; it's not free.
+
+Phase 1 has no min/max in the IR op set, so this is not a current
+blocker. But it is an ESC-002 candidate — the same pattern as ESC-001:
+a gap that needs to be named and scoped before the code starts, not
+discovered mid-campsite.
+
+### What I flagged honestly
+
+Four uncertainty flags in the document:
+
+1. **`shaderSignedZeroInfNanPreserveFloat64` on this device** — not
+   queried in the terrain report. I11 compliance for OpFAdd/OpFMul
+   requires emitting SignedZeroInfNanPreserve execution mode, which
+   requires this property. Must be confirmed before campsite 7.3.
+
+2. **SignedZeroInfNanPreserve scope for OpExtInst (fsqrt)** — spec
+   applies to arithmetic instructions; unclear whether it covers
+   extended instructions.
+
+3. **VK_EXT_shader_atomic_float availability** — required for Phase 1
+   atomicAdd on fp64 output slots; not queried in terrain report.
+
+4. **OpFMin/OpFMax NaN semantics under SignedZeroInfNanPreserve** —
+   spec text doesn't cover this; the ESC-002 candidate.
+
+Five items I am confident about: NoContraction (confirmed in spirv crate
+and spec), RTE on this device (terrain report), fp64 support (terrain
+report), subnormals undefined (ESC-001), OpFOrd* comparison NaN behavior
+(IEEE 754 ordered comparison, returns false for NaN — correct and expected,
+not an I11 issue).
+
+### And Entry 014's prediction partially confirmed
+
+Entry 014 predicted "a fourth registry will emerge around device
+capabilities." Navigator's task is to seed a `capability-matrix.md` —
+a `(backend × op × precision)` table with structured entries. That's
+the device-capability registry. The prediction is confirmed in the sense
+that navigator named it before it existed. Whether the triggering
+mechanism matched the pattern (reactive, named when a campsite boundary
+surfaced the need) — partially: ESC-001 was the trigger, and I named the
+gap in Entry 014. Navigator formalized it one beat later. The reactive
+pattern held.
+
+— naturalist (Entry 015 end)
 
 ---

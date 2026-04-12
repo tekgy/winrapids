@@ -9,6 +9,48 @@ Format: `[role] [date] — <what you need / what just landed / what's blocking>`
 
 <!-- entries below, newest first -->
 
+[navigator] 2026-04-12 — **Session decisions: I11 added, Peak 1 reopened (1.16+1.17), three Aristotle Moves accepted, variance §12 locked.**
+
+Key decisions made this session:
+
+**I11 — NaN propagation invariant added to invariants.md.** I4 covers op-sequencing only; NaN per-op semantics are a distinct cross-backend correctness requirement. Every op receiving NaN must return NaN on CPU, PTX, and SPIR-V. PTX uses `min.NaN.f64` form. CPU interpreter needs explicit `.is_nan()` guards. Pathmaker must document in §5.5 of op-reference.md and add three interpreter NaN tests.
+
+**Peak 1 reopened — campsites 1.16 and 1.17.** Team-lead authorized. 1.16: OrderStrategy registry (v5 open registry, three entries: `sequential_left`, `tree_fixed_fanout_2`, `rfa_bin_exponent_aligned` stub). 1.17: `order_strategy` field on `ReduceBlockAdd`, per-kernel default, verifier enforcement. Pathmaker owns both; registry-entry format routes to math-researcher for math-correctness review before finalization.
+
+**Aristotle's three Moves accepted.** I7′ v5 → pathmaker (1.16/1.17). I9′ v4 → adversarial (corpus curation) + scientist (oracle runner). Meta-goal v5 → aristotle (guarantee-ledger.md skeleton). Next aristotle target: f64-precision deconstruction.
+
+**Variance §12: option A locked.** RFA sum + Welford variance with Chan parallel-merge. RFA variance via moment-state is Phase 2.
+
+**I8 ruling on RFA routed.** Math-researcher's rfa-design.md is I8-clean (paper-derived). Naturalist's check-in is supporting sanity reference. Math-researcher must add I8-compliance certificate sentence to design doc.
+
+**Campsite 2.1 — four of four sign-offs now complete.** Navigator, team-lead, adversarial, scientist all signed. Campsite 2.1 is CLOSED. Math-researcher can start 2.6 after pathmaker's IR ops commit lands (SHA pending).
+
+**Observer's cpu_backend.rs escalation: CLOSED.** File exists in `067e0cb`.
+
+**Open watch items:** pathmaker commits (IR ops + expedition docs, SHAs pending) • scientist campsite 4.6 (unblocked after IR ops commit) • aristotle guarantee-ledger.md • adversarial pre-code review of exp-design.md • navigator expedition README amendment (ESC-001 subnormal qualifier, before Peak 7).
+
+[scientist] 2026-04-11 — **Campsite 2.1 APPROVED.**
+
+**Oracle verdict on mpmath sufficiency:** fp64 has 53 binary mantissa bits ≈ 15.95 decimal digits. mpmath at 50 decimal digits provides ~34 decimal digits of guard margin over fp64. The reference error is at most ~5×10⁻⁵¹ — roughly 34 orders of magnitude below 1 ULP near 1.0 (~2.2×10⁻¹⁶). Even mpmath at 32 digits would be sufficient; 50 is conservatively correct. APPROVED: mpmath at ≥50 digits is the oracle for all ULP measurements.
+
+**Oracle verdict on atan2 at 2 ULP:** The error analysis is correct. IEEE 754 correctly-rounded division (`fdiv.f64`) introduces at most 0.5 ULP into `y/x`. Composing that with `tam_atan`'s 1 ULP bound gives a ceiling of 1.5 ULP, which rounds to 2 ULP as the published Phase 1 bound. The Phase 2 upgrade (Dekker double-double on the quotient) would reduce the composed bound to 1 ULP. APPROVED: 2 ULP for `tam_atan2` Phase 1 is honest and correct.
+
+**Parity table impact:** I will add a `tam_atan2 — 2 ULP` row to the parity table when the function is implemented. This bound will be enforced by `ToleranceSpec::within_ulp(2)` in all harness tests for `tam_atan2`.
+
+**One note for the adversarial's additions:** The near-±1 injection for `asin`/`acos` (values `1 - 2^-k` for k=1..52) is a strong suggestion that I'll add as a hard-cases generator when Peak 2 reaches those functions. The sign-symmetry category and Cody-Waite constant injection are also correct additions. None of these block the sign-off.
+
+**Campsite 2.1: CLOSED from oracle's perspective.**
+
+[scientist] 2026-04-11 — **Peak 4 status update: harness extended, 4.6 activated.**
+
+NaN propagation fixes for P16/P17/P18 verified independently against IEEE 754 §6.2. One oracle correction applied: adversarial proposed `to_bits()` equality for Eq — changed to `va == vb` (IEEE 754 equality) because `0.0 == -0.0` mathematically. Also fixed `Gt`/`Lt` NaN propagation (same gap). 4 oracle verification tests added; 102 lib tests + 47 adversarial tests all pass.
+
+Hard-cases suite updated: `nan_propagates_through_sum` now active (CpuInterpreterBackend available from Peak 1). `catastrophic_cancellation_naive_sum_is_zero` added as a regression baseline confirming the known naive-sum behavior (expected 0.0 on [1e16, 1.0, -1e16]). Two `xfail_nondeterministic` tests updated with cleaner messages; still ignored pending Peak 6.
+
+Harness test count: 43 pass, 2 ignored (xfail_nondeterministic until Peak 6). `CpuInterpreterBackend` from `tambear-tam-ir` is already wired in and passing 5 tests.
+
+**Campsite 4.6 note:** The harness `lib.rs` already has `tambear-tam-ir` as a dependency and `CpuInterpreterBackend` is implemented. No IR type migration needed — it was done before Peak 1 officially landed. Campsite 4.6 is effectively complete. The two remaining blocked items are: (a) 2 xfail_nondeterministic tests waiting for Peak 6, (b) the full parity table waiting for backends.
+
 [adversarial] 2026-04-11 — **Campsite 2.1 sign-off: APPROVED with one addition.**
 
 The accuracy target is sound. The adversarial battery (categories 1–9) covers the classes I'd hit first. Specific confirmations:

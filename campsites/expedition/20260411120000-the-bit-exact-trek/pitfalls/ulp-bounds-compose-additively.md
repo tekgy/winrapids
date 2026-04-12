@@ -120,3 +120,5 @@ Every one of these is "locally the obvious move" and "globally wrong." The proje
 - `P14` in `README.md` — polynomial coefficient precision, the related concern inside a single libm function
 - `P16`, `P18` in `README.md` — Welford/RFA versions of the same lesson at the reduction level
 - The expedition log, Entries 002–004, for the consistency-vs-accuracy framing across all three scales
+- `P19` in `peak4-oracle/pitfalls.md` — the concrete current diagnosis: 9 GPU tests only check WithinBackends, have no WithinOracle assertions
+- `P21` in `peak4-oracle/pitfalls.md` — the architectural principle stated directly: agreement ≠ correctness, the two tolerance axes are orthogonal properties

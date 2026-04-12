@@ -9,14 +9,15 @@
 //! 1. `load_oracle_entry` correctly parses `oracles/tam_exp.toml` including:
 //!    - f64 literal corpus values
 //!    - String expression corpus values ("inf", "-inf", "nan", "ln(2)", etc.)
-//!    - Hex bit-pattern expected_bits ("0x0000000000000000")
-//!    - "NONZERO_SUBNORMAL" pseudo-constraint
-//!    - Identity check specs
+//!    - `[[bit_exact_checks.cases]]` — hex bit-pattern checks (signed-zero, exact inf)
+//!    - `[[constraint_checks.cases]]` — named class constraints (nonzero_subnormal_positive)
+//!    - `[[identity_checks]]` specs
 //!
 //! 2. `run_oracle` produces a correct `OracleReport` including:
 //!    - Random sample ULP measurement (from exp-1k.bin)
 //!    - Injection set ULP reports (NaN propagation, special values)
-//!    - Bit-exact check results (signed-zero, NONZERO_SUBNORMAL class)
+//!    - Bit-exact check results (signed-zero, exact infinity)
+//!    - Constraint check results (positive subnormal class membership)
 //!    - Identity check results (exp_negation, exp_one_returns_e)
 //!
 //! 3. The calibration baseline (`f64::exp`) passes the 1-ULP claimed bound.

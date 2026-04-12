@@ -4,7 +4,7 @@
 //! TAM, the proof engine, the optimizer, and the IDE all read this.
 
 use super::{Grouping, Op};
-use crate::tbs::metadata::{Property, Domain, NanBehavior, Cost};
+use crate::tbs::metadata::{Property, NanBehavior, Cost};
 use crate::tbs::shape::ShapeSig;
 
 /// Complete metadata for a Grouping variant.

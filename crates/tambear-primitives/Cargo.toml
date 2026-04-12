@@ -9,3 +9,8 @@ description = "Flat catalog of mathematical primitives. One folder per primitive
 # tambear will eventually depend on US, not the other way around.
 
 [dev-dependencies]
+# The vendor door. Only pulled in for integration tests that actually
+# hit GPU silicon. The `codegen` module itself has zero runtime deps —
+# it emits strings — which keeps the core library clean.
+tam-gpu = { path = "../tam-gpu", default-features = true }
+bytemuck = { version = "1", features = ["derive"] }

@@ -23,3 +23,4 @@ pub mod tbs;
 pub mod accumulates;
 pub mod gathers;
 pub mod recipes;
+pub mod codegen;

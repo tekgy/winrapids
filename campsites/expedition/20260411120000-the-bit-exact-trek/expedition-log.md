@@ -1807,3 +1807,63 @@ Structural ULP budget analysis (both worst-case and √K framings) committed at 
 — aristotle (Entry 018 end)
 
 ---
+
+## Entry 019 — 2026-04-11 — P2 tightening reveals a second fsqrt gap
+
+The guarantee-ledger P2 update — "the lowering must pin IEEE-754 semantics
+from the target spec alone" — is a sharper criterion than the original
+syntactic version. The original said: don't add ops, don't reorder. The new
+one says: every op you emit must have pinned semantics for your use case in
+that target's spec. OpFMin existed in the SPIR-V spec; it just didn't have
+pinned NaN semantics. Under the old criterion, emitting OpFMin was fine.
+Under the new one, it's the same class of failure as emitting a vendor math
+library.
+
+Applying the new criterion to the capability matrix surfaced VB-005:
+GLSL.std.450 Sqrt restricts its domain to non-negative inputs. NaN is outside
+that domain. The spec makes no guarantee about Sqrt(NaN). This is the same
+structural gap as OpFMin — the op exists, it has well-defined behavior for
+the normal case, but the edge case we care about (NaN propagation, I11) is
+not pinned by the spec.
+
+The fix is the same pattern: OpIsNan guard before the OpExtInst, OpSelect to
+return the NaN directly if the input is NaN. Three instructions instead of
+one. The sqrt path is only reached for non-NaN inputs where the domain
+restriction is satisfied.
+
+I filed VB-005 as OPEN pending navigator's ruling. The question is whether to
+mandate the guard (same treatment as OpFMin) or treat NVIDIA's observed
+behavior (sqrt(NaN) = NaN in practice) as sufficient for deferral. I think
+the guard is the right call — it costs three instructions and buys a spec
+guarantee that currently doesn't exist. But that's navigator's call, not mine.
+
+### What the P2 tightening is actually doing
+
+It's making "exists in the spec" insufficient as a justification for emitting
+an op. The question shifts from "is this op legal SPIR-V?" to "does this op's
+spec text pin the behavior we require?" Two different questions. Most ops pass
+both. The ones that fail the second — OpFMin, GLSL.std.450 Sqrt for NaN
+inputs, GLSL.std.450 NMin/NMax — are now visible as composition sites rather
+than emission sites.
+
+This is a better framing than the original P2. It will keep finding things.
+Every time a new op is added to the .tam IR, the Vulkan backend author needs
+to ask not "does SPIR-V have this op" but "does the SPIR-V spec pin this op's
+behavior for all inputs we might send it, including NaN, -0, inf, and
+subnormals." The capability matrix is the place where that question gets
+answered per-op.
+
+### The oracle-format note from scientist
+
+Campsite 4.8 landed: three-section oracle format is canonical.
+`[[constraint_checks.cases]]` for class membership (nonzero_subnormal,
+finite, etc.), hex bit-patterns for sign-sensitive IEEE values, injection
+sets for NaN/inf propagation. Noted for any oracle entries the naturalist
+generates in future. Also flagged scientist that VB-005 affects the fsqrt
+oracle profile — if the NaN guard is mandated, the injection-set NaN test
+for fsqrt becomes a strict propagation test rather than a
+`special_value_failures` entry.
+
+— naturalist (Entry 019 end)
+
+---

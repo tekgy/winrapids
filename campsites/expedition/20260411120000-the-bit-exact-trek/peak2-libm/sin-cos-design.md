@@ -185,9 +185,9 @@ Same protocol as `exp` and `log`:
 
 ## Open questions
 
-1. **Two-term or three-term Cody-Waite for Phase 1?** Recommendation: three-term, for `|x| ≤ 2^30`.
-2. **Branch-based or select-based quadrant dispatch?** Recommendation: branch for Phase 1 simplicity.
-3. **Shared polynomial for sin and cos?** Could factor common subexpressions (`r * r`, `r4 = r²²`). Small win, slight code complexity. Defer to Phase 2.
+1. ~~Two-term or three-term Cody-Waite for Phase 1?~~ **RESOLVED 2026-04-12:** three-term, for `|x| ≤ 2^30`. Locked per navigator direction.
+2. **Branch-based or select-based quadrant dispatch?** Per spec §8 `func` bodies are branch-free (select.f64 only), so quadrant dispatch is a select chain. Resolved by the IR; no open choice.
+3. **Shared polynomial for sin and cos?** Could factor common subexpressions (`r * r`, `r^4 = r^2 * r^2`). Small win, slight code complexity. Defer to Phase 2.
 
 ## References
 

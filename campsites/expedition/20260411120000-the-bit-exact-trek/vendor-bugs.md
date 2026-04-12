@@ -70,12 +70,12 @@ for fsqrt remains `WithinULP(1)` regardless of this NaN guard.
 (domain restriction language) rather than a clear bug. IEEE 754-2019 §9.2
 intent is that sqrt(NaN) = NaN, but the GLSL spec doesn't say this explicitly.
 **Date logged:** 2026-04-11
-**Status:** OPEN — pending escalation or navigator ruling on whether the
-composed-primitive workaround is mandated (as for VB-001) or whether NVIDIA's
-observed behavior (sqrt(NaN) = NaN in practice) is sufficient to defer. The
-capability matrix currently marks fsqrt NaNPropagation as ImplementationDefined.
-If the workaround is mandated, the capability matrix entry and the Peak 7
-lowering spec both need updating.
+**Status:** MITIGATED — Navigator ruled 2026-04-12: OpIsNan guard mandatory.
+P2 tightening explicitly closes the "observed NVIDIA behavior" argument — the
+lowering must pin IEEE-754 semantics from the target spec alone; observed
+behavior is not a spec guarantee. Capability matrix fsqrt entry updated:
+NaNPropagation → Strict. Scientist notified: fsqrt oracle entry gets standard
+NaN injection test (special_value_failures == 0), no runner changes needed.
 
 ---
 

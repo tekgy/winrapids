@@ -106,36 +106,46 @@ status: Supported
 caveats:
   SubnormalHandling: ImplementationDefined (same as fadd — ESC-001 applies)
 
-  NaNPropagation: ImplementationDefined
-    GLSL.std.450 Sqrt is not an arithmetic op in the OpFAdd sense. The
-    SignedZeroInfNanPreserve mode's application to extended instructions
-    (OpExtInst) is not explicitly specified in SPV_KHR_float_controls.
-    UNCERTAINTY FLAG: unknown whether SignedZeroInfNanPreserve covers
-    OpExtInst operations or only core SPIR-V arithmetic ops.
+  NaNPropagation: Strict (via mandatory OpIsNan guard — VB-005, ruled 2026-04-12)
+    GLSL.std.450 Sqrt restricts domain to non-negative inputs; NaN is outside
+    the specified domain with no spec guarantee about Sqrt(NaN).
+    SignedZeroInfNanPreserve applies to arithmetic instructions and does not
+    explicitly extend to OpExtInst. Navigator ruling: mandate the OpIsNan guard.
+    Observed NVIDIA behavior is not a spec guarantee; lowering must pin
+    semantics from the spec alone (tightened P2).
 
-  RoundingMode: Unspecified
-    GLSL.std.450 Sqrt is specified as "correctly rounded" (0 ULP) for
-    real inputs, but the Vulkan spec says "faithfully rounded" (1 ULP)
-    for extended instructions unless shaderRoundingModeRTEFloat64 is
-    enabled. With RTE execution mode, sqrt.f64 on NVIDIA is correctly
-    rounded in practice, but the Vulkan spec does not mandate this.
+    MANDATORY EMIT SEQUENCE for every .tam fsqrt.f64 on Vulkan:
+      %is_nan_x = OpIsNan %bool %x
+      %sqrt_val  = OpExtInst %f64 %glsl450 Sqrt %x
+      %result    = OpSelect %f64 %is_nan_x %x %sqrt_val
+
+    OpExtInst Sqrt is only reached for non-NaN inputs. Correct by construction.
+
+  RoundingMode: Unspecified (spec allows ≤1 ULP for extended instructions)
+    GLSL.std.450 Sqrt is specified as "correctly rounded" (0 ULP) for real
+    inputs, but the Vulkan spec allows "faithfully rounded" (1 ULP) for
+    extended instructions. With RTE execution mode, sqrt.f64 on NVIDIA is
+    correctly rounded in practice, but the spec does not mandate this.
 
   FMAContraction: N/A (square root is not a multiply-add chain)
 
 order_strategies: N/A (single-value op, no accumulation)
 
-oracle_profile: WithinULP(1)
-  Cannot claim BitExact for sqrt across backends — Vulkan spec mandates
-  faithfully rounded (≤1 ULP), not correctly rounded, for extended
-  instructions. In practice NVIDIA gives correctly rounded. Use WithinULP(1)
-  for cross-backend tolerance; use mpmath for oracle comparison.
+oracle_profile: BitExact (NaN inputs) | WithinULP(1) (normal inputs)
+  NaN inputs: BitExact. OpIsNan guard guarantees NaN-in → NaN-out by
+  construction; identical to CPU interpreter. No ULP tolerance needed.
+  Normal inputs: WithinULP(1). Vulkan spec allows ≤1 ULP ("faithfully
+  rounded") for extended instructions; spec does not mandate correctly
+  rounded. In practice NVIDIA gives correctly rounded, but WithinULP(1)
+  is the spec-safe cross-backend tolerance. RoundingMode uncertainty
+  remains open — does not affect NaN case.
 
 notes:
-  - Use GLSL.std.450 Sqrt (opcode 31), NOT a custom polynomial —
-    the extended instruction is the right path here since it's
-    within Vulkan's guaranteed accuracy bounds.
-  - sqrt(NaN) behavior: UNCERTAINTY FLAG — not confirmed from spec.
-    CPU interpreter returns NaN; Vulkan may differ without SignedZeroInfNanPreserve.
+  - Use GLSL.std.450 Sqrt (opcode 31), NOT a custom polynomial.
+  - ALWAYS emit the three-instruction OpIsNan guard (VB-005). Never emit
+    bare OpExtInst Sqrt for fsqrt — NaN behavior is not spec-guaranteed.
+  - NaN oracle test: standard injection, special_value_failures == 0 required.
+    No per-backend exemption needed (guard is always emitted).
 ```
 
 ---
@@ -400,13 +410,12 @@ All ESC-002 pre-flight queries resolved 2026-04-11. Remaining uncertainty:
 
 **Open (spec-level, not device-level):**
 
-1. **SignedZeroInfNanPreserve scope for OpExtInst (fsqrt).** The float_controls
-   spec text applies to arithmetic instructions. Whether it extends to
-   GLSL.std.450 Sqrt (an OpExtInst) is not explicitly specified. NVIDIA in
-   practice preserves NaN through sqrt. Conservative approach: emit an explicit
-   `OpIsNan` guard for fsqrt inputs if I11 on sqrt becomes a requirement.
-   Currently fsqrt NaNPropagation is documented as ImplementationDefined and
-   oracle_profile is WithinULP(1) — consistent with this uncertainty.
+1. **SignedZeroInfNanPreserve scope for OpExtInst (fsqrt).** RESOLVED 2026-04-12.
+   Navigator ruled (VB-005): OpIsNan guard mandatory. The spec ambiguity is
+   resolved by composition — the guard takes ownership of NaN semantics at the
+   lowering boundary. Capability matrix fsqrt entry updated: NaNPropagation →
+   Strict. Remaining uncertainty for fsqrt is RoundingMode only (Vulkan spec
+   allows ≤1 ULP for extended instructions; oracle_profile stays WithinULP(1)).
 
 2. **OpFMin/OpFMax NaN semantics under SignedZeroInfNanPreserve.** Confirmed
    not covered (ESC-002 finding). Resolved: OpFMin/OpFMax are never emitted

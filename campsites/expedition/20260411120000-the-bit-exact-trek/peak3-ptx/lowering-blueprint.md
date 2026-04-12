@@ -461,10 +461,17 @@ LOOP_EXIT:
   how to export module symbols) is not addressed here.
 - **`min.f64` / `max.f64` and I11 NaN semantics**: Phase 1 has no
   min/max ops in the IR op set, so this isn't a current concern. But
-  when they are added: the correct PTX emit is `min.NaN.f64` (not
-  `min.f64`). The `.NaN` modifier forces NaN propagation — if either
-  operand is NaN, the result is NaN. Without `.NaN`, CUDA's `min.f64`
-  returns the non-NaN operand when exactly one input is NaN ("minNum"
-  behavior per IEEE 754-2008 §5.3.1), which violates I11. The same
-  applies to `max.NaN.f64`. Add this note to the PTX emit for those
-  ops when they appear in the IR.
+  when they are added: the correct PTX emit depends on the target ISA version.
+  See `vendor-bugs.md` VB-004 for the full policy. Summary:
+  - **PTX ISA 7.5+ (SM 80 Ampere and later, including RTX 6000 Pro Blackwell SM 120)**:
+    emit `min.NaN.f64` / `max.NaN.f64`. The `.NaN` modifier forces NaN
+    propagation — if either operand is NaN, the result is NaN. This is the
+    correct I11-compliant path. Never emit bare `min.f64` / `max.f64` — these
+    follow C99 `fmin` semantics (return the non-NaN operand), violating I11.
+  - **Pre-ISA 7.5 targets (Turing/Volta, SM 70/75)**: compose from
+    `setp.unordered.f64` (isnan check) + `setp.lt.f64` + `selp.f64`, same
+    logical structure as the SPIR-V six-instruction composition in VB-001.
+    See VB-004 for the full six-instruction PTX sequence.
+  The PTX path is simpler than the SPIR-V path because PTX has a native
+  NaN-propagating variant (`.NaN` modifier). SPIR-V has none; it must always
+  compose (VB-001, ESC-002 Option 3).

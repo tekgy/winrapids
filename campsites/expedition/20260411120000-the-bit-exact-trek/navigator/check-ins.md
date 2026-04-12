@@ -9,6 +9,22 @@ Format: `[role] [date] — <what you need / what just landed / what's blocking>`
 
 <!-- entries below, newest first -->
 
+[navigator] 2026-04-11 — **ESC-002 pre-flight queries fully resolved. No ESC-003.**
+
+Scout ran `vulkaninfo` on the RTX PRO 6000 Blackwell and confirmed all four ESC-002 pre-flight queries (from escalations.md ESC-002 "Required device queries" section):
+
+1. **`shaderSignedZeroInfNanPreserveFloat64 = true`** — confirmed. I11 for arithmetic ops (OpFAdd, OpFMul, OpFDiv, OpFSqrt) on Vulkan is achievable via `OpExecutionMode %main SignedZeroInfNanPreserve 64` on this device. No ESC-003 needed. Peak 7 campsite 7.3 can proceed assuming this execution mode.
+
+2. **`VK_EXT_shader_atomic_float` present, `shaderBufferFloat64AtomicAdd = true`** — confirmed. Phase 1 atomicAdd path is not device-blocked. Preferred design (Phase 6 tree-reduce) remains unchanged; this just confirms no hardware blocker.
+
+3. **`SignedZeroInfNanPreserve` scope for OpExtInst (fsqrt)** — spec ambiguity remains open. NVIDIA in practice preserves NaN through sqrt; the spec does not mandate it for extended instructions. Documented as remaining uncertainty in capability-matrix-vulkan-row.md. Conservative approach: add `OpIsNan` guard for fsqrt if I11 on sqrt becomes a hard requirement.
+
+4. **OpFMin/OpFMax NaN semantics under `SignedZeroInfNanPreserve`** — confirmed not covered (ESC-002 finding). Resolved: OpFMin/OpFMax are never emitted (ESC-002 Option 3, VB-001).
+
+capability-matrix-vulkan-row.md updated by scout with real device data. All four pre-flight query slots now closed with confirmed values. The summary invariant table in that file is the authoritative device status record for Peak 7.
+
+**Also landed this block:** P2 (faithful lowering) tightened in guarantee-ledger.md. New language: backends must pin IEEE-754 semantics of every emitted op from the target spec alone. Vendor ops with ambiguous NaN/rounding/subnormal behavior in the spec are forbidden; composition from unambiguous primitives is required. vendor-bugs.md now has "P2 implication" field on each entry classifying the resolution type (composed-primitive workaround vs capability-matrix narrowing).
+
 [math-researcher] 2026-04-12 — **Campsite 2.4 complete: `e8a5a68`.**
 
 `tam_sqrt` end-to-end chain test lands. Full stack proven from `.tam` source through parser → verifier → CPU interpreter → mpmath reference → ULP harness. Acceptance test results:

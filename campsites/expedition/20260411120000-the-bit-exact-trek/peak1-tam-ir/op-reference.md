@@ -17,16 +17,18 @@ Backends: CPU interpreter (`interp.rs`), PTX assembler (Peak 3), SPIR-V assemble
 1. Constants
 2. Buffer ops
 3. Floating-point arithmetic
-4. Integer arithmetic
-5. Floating-point comparisons
-6. Integer comparisons
-7. Select
-8. Transcendental stubs (libm contract)
-9. Reduction
-10. Return
-11. Structured control flow
-12. Function and kernel declarations
-13. Program header
+4. Integer arithmetic (i32)
+5. Integer arithmetic (i64) — added for RFA and bitcasting
+6. Float ↔ integer conversion — added for tam_exp/tam_ln and RFA
+7. Floating-point comparisons
+8. Integer comparisons
+9. Select
+10. Transcendental stubs (libm contract)
+11. Reduction
+12. Return
+13. Structured control flow
+14. Function and kernel declarations
+15. Program header
 
 ---
 
@@ -217,9 +219,21 @@ All f64 arithmetic ops observe IEEE 754-2008 round-to-nearest-even semantics. In
 
 ---
 
-## 4. Integer arithmetic
+## 4. Integer arithmetic (i32)
 
-All integer ops use signed 32-bit (i32) arithmetic with two's-complement wrap semantics.
+All i32 ops use signed 32-bit arithmetic with two's-complement wrap semantics.
+
+### `const.i32`
+
+```
+%dst = const.i32 <decimal>
+```
+
+**Signature:** `() → i32`
+
+**Semantics:** Signed 32-bit integer literal.
+
+---
 
 ### `iadd.i32`
 
@@ -257,7 +271,175 @@ All integer ops use signed 32-bit (i32) arithmetic with two's-complement wrap se
 
 ---
 
-## 5. Floating-point comparisons
+## 5. Integer arithmetic (i64)
+
+Added to support Peak 6 RFA (reproducible floating-point accumulation) and exponent manipulation in `tam_ln`.
+
+All i64 ops use signed 64-bit two's-complement arithmetic.
+
+### `const.i64`
+
+```
+%dst = const.i64 <decimal>
+```
+
+**Signature:** `() → i64`
+
+**Semantics:** Signed 64-bit integer literal.
+
+---
+
+### `iadd.i64`
+
+```
+%dst = iadd.i64 %a, %b
+```
+
+**Signature:** `(i64, i64) → i64`
+
+**Semantics:** `%dst = %a + %b` (wrapping)
+
+---
+
+### `isub.i64`
+
+```
+%dst = isub.i64 %a, %b
+```
+
+**Signature:** `(i64, i64) → i64`
+
+**Semantics:** `%dst = %a - %b` (wrapping)
+
+---
+
+### `and.i64`
+
+```
+%dst = and.i64 %a, %b
+```
+
+**Signature:** `(i64, i64) → i64`
+
+**Semantics:** `%dst = %a & %b` (bitwise AND)
+
+---
+
+### `or.i64`
+
+```
+%dst = or.i64 %a, %b
+```
+
+**Signature:** `(i64, i64) → i64`
+
+**Semantics:** `%dst = %a | %b` (bitwise OR). Requested by math-researcher for RFA exponent extraction.
+
+---
+
+### `xor.i64`
+
+```
+%dst = xor.i64 %a, %b
+```
+
+**Signature:** `(i64, i64) → i64`
+
+**Semantics:** `%dst = %a ^ %b` (bitwise XOR)
+
+---
+
+### `shl.i64`
+
+```
+%dst = shl.i64 %a, %shift
+```
+
+**Signature:** `(i64, i32) → i64`
+
+**Semantics:** `%dst = %a << %shift` (logical shift left, wrapping for shift ≥ 64)
+
+---
+
+### `shr.i64`
+
+```
+%dst = shr.i64 %a, %shift
+```
+
+**Signature:** `(i64, i32) → i64`
+
+**Semantics:** `%dst = %a >> %shift` (arithmetic shift right, sign-extending)
+
+---
+
+## 6. Float ↔ integer conversion
+
+Added to support `tam_exp` (range reduction) and `tam_ln` (exponent extraction), and Peak 6 RFA bin-index computation.
+
+### `ldexp.f64`
+
+```
+%dst = ldexp.f64 %mantissa, %exp
+```
+
+**Signature:** `(f64, i32) → f64`
+
+**Semantics:** `%dst = %mantissa * 2^%exp`. Correct IEEE 754 semantics including subnormal handling, overflow to ±infinity, underflow to ±0.0. Equivalent to C `ldexp`. Required by `tam_exp` for range reconstruction after polynomial evaluation.
+
+**Invariants:** Does NOT call any vendor `ldexp`. CPU interpreter uses bit-manipulation on the exponent field. PTX backend emits `ex2.approx.f64` + scaling or equivalent correct form. SPIR-V backend uses `OpLdexp`.
+
+**Tests:** Not yet tested directly; exercised via `tam_exp` when libm lands.
+
+---
+
+### `f64_to_i32_rn`
+
+```
+%dst = f64_to_i32_rn %a
+```
+
+**Signature:** `(f64) → i32`
+
+**Semantics:** Convert f64 to i32 using round-to-nearest-even (banker's rounding). Saturates at `INT32_MAX` / `INT32_MIN` for out-of-range values. NaN → 0. Required by `tam_exp` to compute `n = round(x / ln2)` for argument reduction.
+
+**Tests:** Not yet tested directly.
+
+---
+
+### `bitcast.f64.i64`
+
+```
+%dst = bitcast.f64.i64 %a
+```
+
+**Signature:** `(f64) → i64`
+
+**Semantics:** Reinterpret the bit pattern of `%a` (IEEE 754 double) as a signed 64-bit integer. No value conversion. The sign bit of the resulting i64 is the sign bit of the f64. Used for exponent extraction in `tam_ln` and RFA bin-index computation.
+
+**CPU:** `f64::to_bits() as i64`. **PTX:** `mov.b64`. **SPIR-V:** `OpBitcast`.
+
+**Tests:** Not yet tested directly.
+
+---
+
+### `bitcast.i64.f64`
+
+```
+%dst = bitcast.i64.f64 %a
+```
+
+**Signature:** `(i64) → f64`
+
+**Semantics:** Reinterpret the bit pattern of `%a` (i64) as an IEEE 754 double. Inverse of `bitcast.f64.i64`. Used to reconstruct f64 with a manipulated exponent field.
+
+**CPU:** `f64::from_bits(v as u64)`. **PTX:** `mov.b64`. **SPIR-V:** `OpBitcast`.
+
+**Tests:** Not yet tested directly. `bitcast.f64.i64 ∘ bitcast.i64.f64 = identity` is the round-trip invariant.
+
+---
+
+## 7. Floating-point comparisons
 
 All comparison ops produce a `pred` (boolean predicate) register.
 
@@ -522,6 +704,103 @@ Every `.tam` file begins with two header lines:
 
 ---
 
+## §5.5 NaN propagation — invariant I11
+
+**Added campsite I11 (2026-04-12), promoted from adversarial bug P17/P18/P20 +
+independent convergence by naturalist + scout.**
+
+### The invariant
+
+> NaN propagates through every op on every backend.
+
+Any op that takes a NaN input must produce NaN output. This applies to arithmetic,
+comparisons, selects, min, max, clamp, and every other op in the IR.
+
+### Why this is an invariant, not a choice
+
+PTX `min.f64`, SPIR-V `OpFMin`, and CPU `f64::min` all handle NaN differently:
+
+- PTX `min.f64 %r, %a, %b`: if either input is NaN, the result is the other input
+  (NaN is treated as missing data, not a propagating signal).
+- SPIR-V `OpFMin` (Vulkan): the behavior is undefined when either input is NaN.
+- CPU `f64::min`: result is the other input (same as PTX).
+
+Without explicit guards, `min(NaN, x) = x` on PTX and CPU, but may be
+implementation-defined on SPIR-V. Two backends silently disagree. This is a
+cross-backend bit-exactness failure that pointwise tests miss unless they inject NaN.
+
+### The select trap (naturalist's finding)
+
+The most common form of the bug is the select pattern used to implement min/max:
+
+```
+%pred = fcmp_gt.f64 %a, %b    ; NaN > x = false (IEEE 754)
+%r    = select.f64  %pred, %a, %b
+```
+
+If `%a` is NaN: `fcmp_gt(NaN, x) = false` → `select(false, NaN, x) = x`.
+The NaN is silently swallowed.
+
+The fix in the CPU interpreter: `SelectF64` checks BOTH value operands for NaN
+before evaluating the predicate. If either is NaN, the result is NaN.
+
+### Per-op NaN behavior (Phase 1 complete op list)
+
+| Op | NaN behavior |
+|---|---|
+| `const.f64 nan` | Produces NaN (the canonical quiet NaN bit pattern) |
+| `fadd.f64 NaN, x` | NaN |
+| `fsub.f64 NaN, x` | NaN |
+| `fmul.f64 NaN, x` | NaN |
+| `fdiv.f64 NaN, x` | NaN |
+| `fneg.f64 NaN` | NaN (sign bit flips, payload preserved) |
+| `fabs.f64 NaN` | NaN (sign bit cleared, payload preserved) |
+| `fsqrt.f64 NaN` | NaN |
+| `fcmp_gt.f64 NaN, x` | `false` (IEEE 754: all comparisons with NaN are false) |
+| `fcmp_lt.f64 NaN, x` | `false` |
+| `fcmp_eq.f64 NaN, x` | `false` (including NaN == NaN) |
+| `select.f64 _, NaN, _` | NaN (I11 guard: if either value is NaN, result is NaN) |
+| `select.f64 _, _, NaN` | NaN (I11 guard) |
+| `select.f64 p, x, y` (x,y finite) | `x` if p else `y` (no NaN) |
+| `reduce_block_add.f64` | NaN (fold propagates NaN naturally via addition) |
+| `load.f64` | Passes through whatever bits are in the buffer |
+| `store.f64` | Stores whatever bits (including NaN) |
+| `bitcast.f64.i64` | Returns the bit pattern of the NaN (not NaN per se — an i64) |
+| `bitcast.i64.f64` | Returns whatever f64 the bits represent (may be NaN) |
+| `f64_to_i32_rn NaN` | 0 (saturation: NaN maps to 0, documented in §6) |
+| `ldexp.f64 NaN, n` | NaN |
+| `tam_exp NaN` | NaN (libm contract) |
+| `tam_ln NaN` | NaN |
+| `tam_sin NaN` | NaN |
+| `tam_cos NaN` | NaN |
+| `tam_pow NaN, x` | NaN |
+| `tam_pow x, NaN` | NaN |
+
+### Backend emit targets for NaN-safe min/max (Peak 3 / Peak 7)
+
+When Peak 3 (PTX) and Peak 7 (SPIR-V) implement patterns that produce min/max
+semantics, they must use NaN-propagating variants:
+
+**PTX:**
+- `min.NaN.f64 %r, %a, %b` — NaN-propagating min (PTX ISA §9.7.3, requires sm_80+)
+- `max.NaN.f64 %r, %a, %b` — NaN-propagating max
+- For older targets: `testp.notanumber.f64 %pred, %a; @%pred mov.f64 %r, %a` guard.
+
+**SPIR-V / Vulkan:**
+- `OpIsNan` + `OpSelect` guard: explicitly check both inputs before OpFMin/OpFMax.
+- Or: use SPIR-V extension `SPV_INTEL_float_controls2` if available.
+
+The CPU interpreter (Peak 5) implements the guard directly in `SelectF64`.
+
+### Test coverage
+
+Three tests added in campsite I11:
+1. `i11_select_f64_nan_on_true_propagates` — select(false, NaN, 1.0) → NaN
+2. `i11_select_f64_nan_on_false_propagates` — select(true, 1.0, NaN) → NaN
+3. `i11_select_f64_comparison_with_nan_input_propagates` — abs(NaN) → NaN (the naturalist's bug)
+
+---
+
 ## Appendix: Type system summary
 
 | Type | Register suffix convention | Description |
@@ -550,3 +829,4 @@ Every `.tam` file begins with two header lines:
 | I8 | First-principles transcendentals | Stubs declared; libm fills them at 5.2 |
 | I9 | mpmath oracle | Tests must match mpmath at 50+ digits |
 | I10 | Cross-backend diff | Replay harness (Peak 4) enforces this |
+| I11 | NaN propagates everywhere | SelectF64 guards in interp.rs; PTX min.NaN.f64 |

@@ -508,9 +508,25 @@ impl<'p> Interpreter<'p> {
             }
 
             // ── Select (branch-free) ──────────────────────────────────────────
+            // I11: NaN propagates through SelectF64. If either value operand is
+            // NaN, the result is NaN regardless of the predicate. This prevents
+            // the pattern `fcmp_gt(NaN, x) → false` + `select(false, NaN, x) → x`
+            // from silently swallowing NaN. Programs that need NaN-unsafe min/max
+            // semantics must use a separate op explicitly designed for that.
+            //
+            // PTX emit target: use `selp.f64` AFTER checking both value operands
+            // for NaN (via `testp.notanumber.f64`). SPIR-V: add OpIsNan guards.
+            // See also: spec.md §5.5, peak3-ptx/lowering-blueprint.md §NaN.
             Op::SelectF64 { dst, pred, on_true, on_false } => {
-                let p = env.get_pred(pred)?;
-                let r = if p { env.get_f64(on_true)? } else { env.get_f64(on_false)? };
+                let vt = env.get_f64(on_true)?;
+                let vf = env.get_f64(on_false)?;
+                // I11: if either value is NaN, propagate NaN.
+                let r = if vt.is_nan() || vf.is_nan() {
+                    f64::NAN
+                } else {
+                    let p = env.get_pred(pred)?;
+                    if p { vt } else { vf }
+                };
                 env.set(dst, Val::F64(r));
             }
             Op::SelectI32 { dst, pred, on_true, on_false } => {
@@ -862,5 +878,132 @@ mod tests {
             ("out", &mut out),
         ]).unwrap();
         assert_eq!(out[0], 55.0, "parse+run sum_all_add([1..=10]) should be 55.0");
+    }
+
+    // ── I11: NaN propagation tests ────────────────────────────────────────
+
+    /// Helper: build a function `select_nan_test(x) -> select(x >= 0, x, -x)`
+    /// where the input may be NaN. Verifies that I11 is enforced by the interpreter.
+    fn make_nan_select_prog(name: &str) -> Program {
+        // select(pred, on_true, on_false) where on_true = NaN literal.
+        // fcmp_gt(nan_val, 0.0) -> false (IEEE 754)
+        // select(false, nan_val, zero) -> should be NaN per I11 (both values checked)
+        Program {
+            version: TamVersion::PHASE1,
+            target: Target::Cross,
+            funcs: vec![FuncDef {
+                name: name.into(),
+                params: vec![FuncParam { reg: Reg::new("x") }],
+                body: vec![
+                    Op::ConstF64 { dst: Reg::new("zero"), value: 0.0 },
+                    // pred = x > 0
+                    Op::FCmpGt {
+                        dst: Reg::new("pred"),
+                        a: Reg::new("x"),
+                        b: Reg::new("zero"),
+                    },
+                    // neg = -x
+                    Op::FNeg { dst: Reg::new("negx"), a: Reg::new("x") },
+                    // r = select(pred, x, -x)  [abs-value pattern]
+                    Op::SelectF64 {
+                        dst: Reg::new("r"),
+                        pred: Reg::new("pred"),
+                        on_true: Reg::new("x"),
+                        on_false: Reg::new("negx"),
+                    },
+                    Op::RetF64 { val: Reg::new("r") },
+                ],
+            }],
+            kernels: vec![],
+        }
+    }
+
+    #[test]
+    fn i11_select_f64_nan_on_true_propagates() {
+        // I11: select(pred, NaN, finite) → NaN.
+        // If on_true is NaN, result must be NaN regardless of pred.
+        let prog = Program {
+            version: TamVersion::PHASE1,
+            target: Target::Cross,
+            funcs: vec![FuncDef {
+                name: "select_nan_true".into(),
+                params: vec![],
+                body: vec![
+                    Op::ConstF64 { dst: Reg::new("nan_v"), value: f64::NAN },
+                    Op::ConstF64 { dst: Reg::new("one"), value: 1.0 },
+                    // pred = false (1.0 > 2.0 is false, so on_false would be selected)
+                    Op::ConstF64 { dst: Reg::new("two"), value: 2.0 },
+                    Op::FCmpGt { dst: Reg::new("pred"), a: Reg::new("one"), b: Reg::new("two") },
+                    // select(false, NaN, 1.0) — on_true=NaN, on_false=1.0
+                    // I11: result must be NaN (not 1.0)
+                    Op::SelectF64 {
+                        dst: Reg::new("r"),
+                        pred: Reg::new("pred"),
+                        on_true: Reg::new("nan_v"),
+                        on_false: Reg::new("one"),
+                    },
+                    Op::RetF64 { val: Reg::new("r") },
+                ],
+            }],
+            kernels: vec![],
+        };
+        let interp = Interpreter::new(&prog);
+        let result = interp.call_func("select_nan_true", &[]).unwrap();
+        assert!(result.is_nan(),
+            "I11: select(false, NaN, 1.0) must propagate NaN, got {}", result);
+    }
+
+    #[test]
+    fn i11_select_f64_nan_on_false_propagates() {
+        // I11: select(pred, finite, NaN) → NaN.
+        let prog = Program {
+            version: TamVersion::PHASE1,
+            target: Target::Cross,
+            funcs: vec![FuncDef {
+                name: "select_nan_false".into(),
+                params: vec![],
+                body: vec![
+                    Op::ConstF64 { dst: Reg::new("nan_v"), value: f64::NAN },
+                    Op::ConstF64 { dst: Reg::new("one"), value: 1.0 },
+                    // pred = true (1.0 < 2.0)
+                    Op::ConstF64 { dst: Reg::new("two"), value: 2.0 },
+                    Op::FCmpLt { dst: Reg::new("pred"), a: Reg::new("one"), b: Reg::new("two") },
+                    // select(true, 1.0, NaN) — on_true=1.0, on_false=NaN
+                    // I11: result must be NaN (not 1.0)
+                    Op::SelectF64 {
+                        dst: Reg::new("r"),
+                        pred: Reg::new("pred"),
+                        on_true: Reg::new("one"),
+                        on_false: Reg::new("nan_v"),
+                    },
+                    Op::RetF64 { val: Reg::new("r") },
+                ],
+            }],
+            kernels: vec![],
+        };
+        let interp = Interpreter::new(&prog);
+        let result = interp.call_func("select_nan_false", &[]).unwrap();
+        assert!(result.is_nan(),
+            "I11: select(true, 1.0, NaN) must propagate NaN, got {}", result);
+    }
+
+    #[test]
+    fn i11_select_f64_comparison_with_nan_input_propagates() {
+        // I11: the naturalist's bug. fcmp_gt(NaN, x) → false (IEEE 754 behavior).
+        // Then select(false, NaN_branch, x) must NOT silently return x.
+        // The guard is on the VALUE operands, not the predicate.
+        //
+        // Kernel: abs(x) = select(x > 0, x, -x)
+        // When x=NaN: x > 0 = false, so select(false, NaN, -NaN) = NaN (both are NaN).
+        // This test checks that the select propagates NaN in this scenario.
+        let prog = make_nan_select_prog("abs_nan_test");
+        let interp = Interpreter::new(&prog);
+        // Normal inputs still work.
+        assert_eq!(interp.call_func("abs_nan_test", &[3.0]).unwrap(), 3.0);
+        assert_eq!(interp.call_func("abs_nan_test", &[-5.0]).unwrap(), 5.0);
+        // NaN input: both on_true (NaN) and on_false (-NaN) are NaN, so result is NaN.
+        let result = interp.call_func("abs_nan_test", &[f64::NAN]).unwrap();
+        assert!(result.is_nan(),
+            "I11: abs(NaN) via select must propagate NaN, got {}", result);
     }
 }

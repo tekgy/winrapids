@@ -20,7 +20,8 @@ Created `src/oracle_runner.rs`:
 - `load_oracle_entry(toml_path, base_dir)` — reads adversarial's TOML oracle entries
 - `run_oracle(entry, candidate_name, candidate)` — produces structured `OracleReport`
 - String expression evaluator for corpus values: handles `"ln(2)"`, `"-ln(2)"`, `"ln(2) + 1e-15"`, `"10*ln(2)"`, `"inf"`, `"-inf"`, `"nan"`, and unary minus
-- `BitExactConstraint` enum: `Exact(u64)` for hex literals, `NonzeroSubnormal` for class constraints
+- Three orthogonal check categories: `bit_exact_checks` (hex-only `BitExactConstraint(u64)`), `constraint_checks` (`NamedConstraint` enum: `NonzeroSubnormalPositive`, `Finite`, `InfinitePositive`), and injection sets (NaN/inf propagation via `special_value_failures`)
+- `ConstraintResult` in `OracleReport`; `passes` is conjunctive over all five check categories
 - Static identity registry: `exp_log_roundtrip`, `exp_negation`, `exp_additivity`, `exp_one_returns_e` — pre-compiled Rust closures keyed by name
 
 Created `tests/oracle_runner_tests.rs` with 5 passing tests including calibration baseline (`f64::exp` ≤ 1 ULP from mpmath), broken-candidate detection, and NaN propagation verification.
@@ -42,6 +43,8 @@ Created `tests/oracle_runner_tests.rs` with 5 passing tests including calibratio
 **`TamAtan` match arms missing.** The pathmaker added `TamAtan` to `ast.rs` (part of I11 NaN propagation work) but didn't propagate the variant to `print.rs`, `verify.rs`, and `interp.rs`. This blocked the build when I tried to run the oracle runner tests. Added the three missing match arms as stubs (all panic with the campsite 5.2 stub message, matching the existing pattern for unimplemented transcendentals).
 
 **The injection set ULP "0.0" design decision.** Injection corpus inputs that aren't in the reference binary get `candidate(x)` as their own reference — so ULP = 0 always for those inputs. This is intentional: injection sets exist to test NaN/inf propagation via `special_value_failures`, not precision. But it's visually misleading — a report showing `injection[special_values]: max_ulp=0, passes=true` looks like "perfect accuracy" when it means "NaN propagation verified, precision unverified." This is documented in the code and is a Phase 2 refinement target. The bit_exact_checks section handles sign-sensitive precision for special inputs.
+
+**The overflow-boundary ULP gap (B3, found post-commit).** After the constraint_checks commit landed, the adversarial asked whether the runner enforces the sign of `+inf` for finite overflow inputs like 709.7827128933840. The answer: `ulp_distance_with_special` handles `reference=+inf` correctly when the input is in the reference binary (signed-infinity branch: candidate must match reference, wrong sign gets `u64::MAX`). But the `near_overflow` injection-set inputs are almost certainly not in the reference binary — they were chosen as boundary cases, not as random/stratified samples. The synthetic-reference path (candidate as own reference) gives ULP=0 regardless of sign. A candidate returning `-inf` for 710.0 would silently pass. The fix — `bit_exact_checks` entries for the overflow boundary inputs with `expected_bits = "0x7FF0000000000000"` — was identified by the adversarial and is being added to `tam_exp.toml`. This is the same class of gap as B1 (signed zero): ULP distance is structurally blind to sign on the synthetic-reference path. Every sign-sensitive output in an injection set needs a `bit_exact_checks` backstop.
 
 ---
 

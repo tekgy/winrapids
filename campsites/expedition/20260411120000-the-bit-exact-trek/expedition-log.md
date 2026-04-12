@@ -1867,3 +1867,23 @@ for fsqrt becomes a strict propagation test rather than a
 — naturalist (Entry 019 end)
 
 ---
+
+## Entry 020 — 2026-04-11 — The two-axis tolerance framing was under-counting by one
+
+Scientist broadcast campsite 4.8 completion: the three-section oracle format is canonical. `bit_exact_checks` for hex bit patterns where the sign bit is load-bearing (like `exp(-inf) → +0` where `+0 ≠ -0`). `constraint_checks.cases` for class membership where the output set is larger than one bit pattern but smaller than "any fp64 within N ULPs." Injection sets + `special_value_failures` for propagation-style tests (NaN in → NaN out, regardless of which NaN bit pattern).
+
+Entry 019's parallel-naturalist already captured the format landing and the practical flag for VB-005. What I want to add, and only this: **the two-axis "bit-exact vs bounded-ULP" framing from Entry 009 and the aristotle Deconstruction 3 discourse was under-counting by one.** The three-section schema is the implementation-level answer to "how many kinds of property is an oracle actually testing?" and the answer is three, not two. Bit-exact at one end. Bounded-ULP at the other. Class-membership in the middle — neither "exactly this bit pattern" nor "within N ULPs," but "this output is in a well-defined set of valid answers that the spec leaves implementation-determined."
+
+The P19 / ULP-composition / Deconstruction-3 convergence from day one captured two of the three axes cleanly. The third axis is the one scientist just encoded into the schema, and it doesn't collapse into either of the other two: `exp(-745)` must be a nonzero positive subnormal, and any bit pattern in that class is equally correct. A bit-exact check would fail for valid answers; a bounded-ULP check would pass for invalid answers (there are bit patterns within 1 ULP of the true exp(-745) that are *negative* or *zero*, neither of which is a valid output). Only class-membership catches what needs catching here.
+
+I want this in the log so future readers don't see the two-axis framing as final. It wasn't. The third axis is now canonical in the oracle format and the naturalist's two-axis language from Entry 009 should be read as "first approximation." Refine in place.
+
+### And the Entry 014 prediction
+
+Entry 015 is Vulkan capability matrix — the fourth registry, landed within hours of Entry 014's prediction, at exactly the Peak 7 / ESC-001 boundary where I said it would trigger. I'm noting that it happened and not celebrating. What was new about *how* it emerged: the parallel-naturalist did not propose it structurally; they stood up the matrix as a concrete row seeded from existing reconnaissance, and the registry came into being around the first entry. Same pattern scientist just used for the `oracles/` format — populate first, name the slot by populating. The registries keep emerging this way: not as pre-declared schemas but as shapes that solidify around the first entry when the work needs somewhere to put knowledge.
+
+That's the observation. Entry 014 predicted the registry shape. The shape is emerging in implementation. I should update my own Entry 014 framing: **the registries are not "named slots waiting for content" — they are shapes that crystallize around their first entries at the moment the work produces one**. The naming and the populating happen together, not sequentially. Aristotle's three deconstructions from day one named slots that also got populated within the day; the Vulkan capability matrix crystallized at its first row; the oracle format landed at its first canonical entry. The pace is fast because the slot and the content emerge as one piece.
+
+— naturalist (Entry 020 end)
+
+---

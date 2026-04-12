@@ -338,10 +338,26 @@ impl VerifyCtx {
                 self.define(dst, Ty::F64, errors);
             }
 
-            Op::ReduceBlockAdd { out_buf, slot_idx, val } => {
+            Op::ReduceBlockAdd { out_buf, slot_idx, val, order } => {
                 self.expect_ty(out_buf, &Ty::BufF64, errors);
                 self.expect_ty(slot_idx, &Ty::I32, errors);
                 self.expect_ty(val, &Ty::F64, errors);
+                // I7: BackendDefault is forbidden — every reduction must name its order.
+                if matches!(order, OrderStrategy::BackendDefault) {
+                    errors.push(self.err(
+                        "reduce_block_add.f64 uses @order(backend_default), which is not permitted. \
+                         Use @order(sequential_left) or @order(tree_fixed_fanout(N))."
+                    ));
+                }
+                // TreeFixedFanout fanout must be a power of two ≥ 2.
+                if let OrderStrategy::TreeFixedFanout(n) = order {
+                    if *n < 2 || (*n & (*n - 1)) != 0 {
+                        errors.push(self.err(format!(
+                            "reduce_block_add.f64 @order(tree_fixed_fanout({n})): \
+                             fanout must be a power of two ≥ 2"
+                        )));
+                    }
+                }
             }
 
             Op::RetF64 { val } => {
@@ -419,5 +435,88 @@ mod tests {
         let errors = verify(&prog);
         assert!(!errors.is_empty(), "should catch missing ret");
         assert!(errors.iter().any(|e| e.message.contains("must end with ret.f64")));
+    }
+
+    // ── OrderStrategy verifier tests (I7 enforcement) ──────────────────────
+
+    #[test]
+    fn verify_accepts_sequential_left_order() {
+        // A reduce with @order(sequential_left) must be accepted.
+        let src = ".tam 0.1\n.target cross\nkernel k(buf<f64> %d, buf<f64> %o) {\nentry:\n  %n = bufsize %d\n  %acc = const.f64 0.0\n  loop_grid_stride %i in [0, %n) {\n    %v = load.f64 %d, %i\n    %acc' = fadd.f64 %acc, %v\n  }\n  %s = const.i32 0\n  reduce_block_add.f64 %o, %s, %acc' @order(sequential_left)\n}\n";
+        let prog = parse_program(src).unwrap();
+        let errors = verify(&prog);
+        assert!(errors.is_empty(), "sequential_left should be accepted: {:?}", errors);
+    }
+
+    #[test]
+    fn verify_accepts_tree_fixed_fanout_order() {
+        let src = ".tam 0.1\n.target cross\nkernel k(buf<f64> %d, buf<f64> %o) {\nentry:\n  %n = bufsize %d\n  %acc = const.f64 0.0\n  loop_grid_stride %i in [0, %n) {\n    %v = load.f64 %d, %i\n    %acc' = fadd.f64 %acc, %v\n  }\n  %s = const.i32 0\n  reduce_block_add.f64 %o, %s, %acc' @order(tree_fixed_fanout(32))\n}\n";
+        let prog = parse_program(src).unwrap();
+        let errors = verify(&prog);
+        assert!(errors.is_empty(), "tree_fixed_fanout(32) should be accepted: {:?}", errors);
+    }
+
+    #[test]
+    fn verify_rejects_backend_default_order() {
+        // BackendDefault is parsed but must be rejected by the verifier.
+        // We construct the AST directly since the parser also rejects it.
+        use crate::ast::*;
+        let prog = Program {
+            version: TamVersion::PHASE1,
+            target: Target::Cross,
+            funcs: vec![],
+            kernels: vec![KernelDef {
+                name: "bad".into(),
+                params: vec![
+                    KernelParam { ty: Ty::BufF64, reg: Reg::new("out") },
+                ],
+                attrs: vec![],
+                body: vec![
+                    Stmt::Op(Op::ConstF64 { dst: Reg::new("v"), value: 1.0 }),
+                    Stmt::Op(Op::ConstI32 { dst: Reg::new("s"), value: 0 }),
+                    Stmt::Op(Op::ReduceBlockAdd {
+                        out_buf: Reg::new("out"),
+                        slot_idx: Reg::new("s"),
+                        val: Reg::new("v"),
+                        order: OrderStrategy::BackendDefault,
+                    }),
+                ],
+            }],
+        };
+        let errors = verify(&prog);
+        assert!(!errors.is_empty(), "BackendDefault should be rejected by verifier");
+        assert!(errors.iter().any(|e| e.message.contains("backend_default")),
+            "expected 'backend_default' in error message, got: {:?}", errors);
+    }
+
+    #[test]
+    fn verify_rejects_tree_fixed_fanout_non_power_of_two() {
+        use crate::ast::*;
+        let prog = Program {
+            version: TamVersion::PHASE1,
+            target: Target::Cross,
+            funcs: vec![],
+            kernels: vec![KernelDef {
+                name: "bad_fanout".into(),
+                params: vec![
+                    KernelParam { ty: Ty::BufF64, reg: Reg::new("out") },
+                ],
+                attrs: vec![],
+                body: vec![
+                    Stmt::Op(Op::ConstF64 { dst: Reg::new("v"), value: 1.0 }),
+                    Stmt::Op(Op::ConstI32 { dst: Reg::new("s"), value: 0 }),
+                    Stmt::Op(Op::ReduceBlockAdd {
+                        out_buf: Reg::new("out"),
+                        slot_idx: Reg::new("s"),
+                        val: Reg::new("v"),
+                        order: OrderStrategy::TreeFixedFanout(3), // 3 is not a power of 2
+                    }),
+                ],
+            }],
+        };
+        let errors = verify(&prog);
+        assert!(!errors.is_empty(), "fanout=3 should be rejected");
+        assert!(errors.iter().any(|e| e.message.contains("power of two")),
+            "expected 'power of two' in error message, got: {:?}", errors);
     }
 }

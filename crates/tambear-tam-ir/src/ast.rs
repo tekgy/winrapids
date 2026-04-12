@@ -98,6 +98,51 @@ impl Reg {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// OrderStrategy
+// ═══════════════════════════════════════════════════════════════════
+
+/// The reduction tree structure for `reduce_block_add.f64`.
+///
+/// This field is part of I7's "total order" half. Every reduction declares its
+/// order explicitly. The verifier rejects `BackendDefault` — it is a reserved
+/// sentinel that programs may not use.
+///
+/// Phase 1 defines two concrete strategies:
+/// - `SequentialLeft`: left-to-right serial accumulation. The CPU interpreter
+///   always uses this. Bit-exact and portable; slowest on parallel hardware.
+/// - `TreeFixedFanout(fanout)`: balanced binary tree reduction with a fixed
+///   fanout. `fanout = 32` means each warp reduces 32 elements in parallel.
+///   The PTX backend uses `TreeFixedFanout(32)` for the within-warp step.
+///   The value must be a power of two ≥ 2. The host fold step (block partials)
+///   always uses `SequentialLeft` to keep the host-side deterministic.
+///
+/// Future phases add additional named strategies (e.g. `PairwiseCascade`,
+/// `KahanCompensated`). The strategy name is the contract — two backends that
+/// both implement `SequentialLeft` produce identical bits.
+///
+/// **I7 compliance:** `BackendDefault` is rejected by the verifier because
+/// "backend chooses" is not a total order — two backends may choose differently,
+/// destroying bit-exactness. Every reduction must name its order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderStrategy {
+    /// Serial left-to-right accumulation: `acc = ((a0 + a1) + a2) + ...`
+    /// Deterministic on every backend. CPU interpreter always uses this.
+    SequentialLeft,
+
+    /// Balanced tree reduction with a fixed fanout (must be power of two ≥ 2).
+    /// `TreeFixedFanout(32)` means groups of 32 are reduced in parallel, then
+    /// the partial sums are reduced again, etc.
+    /// PTX backend target: `TreeFixedFanout(32)` for within-warp step.
+    TreeFixedFanout(u32),
+
+    /// Reserved sentinel. The verifier rejects any program that uses this.
+    /// Present in the AST so the parser can produce a useful error message
+    /// ("BackendDefault is not permitted — choose SequentialLeft or
+    /// TreeFixedFanout(N)") rather than an unknown-variant panic.
+    BackendDefault,
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Ops
 // ═══════════════════════════════════════════════════════════════════
 
@@ -271,16 +316,20 @@ pub enum Op {
 
     // ── Reduction ────────────────────────────────────────────────────────────
 
-    /// `reduce_block_add.f64 %out_buf, %slot_idx:i32, %val:f64`
+    /// `reduce_block_add.f64 %out_buf, %slot_idx:i32, %val:f64 @order(<strategy>)`
     ///
     /// Semantic: the accumulated value of `%val` over this block's slice is
     /// written into `%out_buf[%slot_idx]`. CPU interpreter: direct store (one
     /// "block" = all elements). PTX backend: shared-memory tree reduce + block-
     /// zero write. Host folds all block partials after dispatch.
     ///
-    /// Phase 6 makes this deterministic across GPU backends. Until then it is
-    /// tagged `@xfail_nondeterministic` in the replay harness.
-    ReduceBlockAdd { out_buf: Reg, slot_idx: Reg, val: Reg },
+    /// The `order` field declares the reduction tree structure. The verifier
+    /// rejects `OrderStrategy::BackendDefault` — every reduction must declare
+    /// an explicit order to satisfy I7 (total order enables correctness).
+    ///
+    /// Phase 6 delivers deterministic cross-backend results by making the order
+    /// explicit and consistent across CPU, PTX, and SPIR-V backends.
+    ReduceBlockAdd { out_buf: Reg, slot_idx: Reg, val: Reg, order: OrderStrategy },
 
     // ── Function return ───────────────────────────────────────────────────────
 

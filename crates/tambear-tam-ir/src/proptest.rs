@@ -170,6 +170,7 @@ fn random_kernel(rng: &mut Rng, kernel_idx: usize) -> KernelDef {
             out_buf: Reg::new("out"),
             slot_idx: Reg::new(&slot_name),
             val: Reg::prime(format!("acc{}", j)),
+            order: OrderStrategy::SequentialLeft,
         }));
     }
 

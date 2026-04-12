@@ -545,7 +545,10 @@ impl<'p> Interpreter<'p> {
             // On CPU: one "block" covers all elements. The "reduce" is a direct
             // accumulation into the slot. No tree reduction needed.
             // The final value (after the loop) is the total sum.
-            Op::ReduceBlockAdd { out_buf, slot_idx, val } => {
+            // The `order` field is ignored here: the CPU interpreter always uses
+            // SequentialLeft (serial loop). The PTX backend (Peak 3) will honor
+            // TreeFixedFanout(N). The verifier ensures no BackendDefault reaches here.
+            Op::ReduceBlockAdd { out_buf, slot_idx, val, order: _ } => {
                 let slot = env.get_i32(slot_idx)? as usize;
                 let v = env.get_f64(val)?;
                 let slice = self.get_buf_mut(out_buf, buf_map)?;

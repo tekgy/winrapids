@@ -44,7 +44,7 @@ entry:
   %s0 = const.i32 0
   %s1 = const.i32 1
   %s2 = const.i32 2
-  reduce_block_add.f64 %out, %s0, %acc0'
-  reduce_block_add.f64 %out, %s1, %acc1'
-  reduce_block_add.f64 %out, %s2, %acc2'
+  reduce_block_add.f64 %out, %s0, %acc0' @order(sequential_left)
+  reduce_block_add.f64 %out, %s1, %acc1' @order(sequential_left)
+  reduce_block_add.f64 %out, %s2, %acc2' @order(sequential_left)
 }

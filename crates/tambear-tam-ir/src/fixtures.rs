@@ -45,12 +45,15 @@ pub fn variance_pass_program() -> Program {
                 Stmt::Op(ConstI32 { dst: Reg::new("s2"), value: 2 }),
                 Stmt::Op(ReduceBlockAdd {
                     out_buf: Reg::new("out"), slot_idx: Reg::new("s0"), val: Reg::prime("acc0"),
+                    order: OrderStrategy::SequentialLeft,
                 }),
                 Stmt::Op(ReduceBlockAdd {
                     out_buf: Reg::new("out"), slot_idx: Reg::new("s1"), val: Reg::prime("acc1"),
+                    order: OrderStrategy::SequentialLeft,
                 }),
                 Stmt::Op(ReduceBlockAdd {
                     out_buf: Reg::new("out"), slot_idx: Reg::new("s2"), val: Reg::prime("acc2"),
+                    order: OrderStrategy::SequentialLeft,
                 }),
             ],
         }],
@@ -85,6 +88,7 @@ pub fn sum_all_add_program() -> Program {
                 Stmt::Op(ConstI32 { dst: Reg::new("s0"), value: 0 }),
                 Stmt::Op(ReduceBlockAdd {
                     out_buf: Reg::new("out"), slot_idx: Reg::new("s0"), val: Reg::prime("acc"),
+                    order: OrderStrategy::SequentialLeft,
                 }),
             ],
         }],

@@ -43,16 +43,58 @@ def tam_pow(a, b):
     if handled:
         return value
 
-    # --- Integer-b fast path ---
+    # --- Negative-base + integer-exponent handling (adversarial B4, 2026-04-12) ---
+    # The real-valued path below requires a > 0 (because log(a) is undefined
+    # for a < 0). For a < 0, we route to one of two sub-paths depending on
+    # whether b is a small or large integer:
+    #
+    # Case A: a < 0, b is a small integer (|b| <= 32): use integer_power
+    #   directly. It handles negative a correctly via repeated signed multiply.
+    #
+    # Case B: a < 0, b is a large integer (|b| > 32): compute pow(|a|, b) via
+    #   the real-valued path, then re-sign via (-1)^b. Requires is_odd_integer(b)
+    #   to determine sign.
+    #
+    # Case C: a < 0, b is non-integer: already caught by handle_special_cases
+    #   (returns NaN per IEEE 754 §9.2.1).
+    if a < 0:
+        if is_small_integer(b) and abs(b_as_int) <= 32:
+            return integer_power(a, b_as_int)            # Case A
+        # Case B: route through |a| and re-sign
+        # Precondition here: b is a large integer; by spec-§9.2.1 non-integer
+        # large b was already caught by handle_special_cases.
+        magnitude = real_valued_pow(abs(a), b)
+        if is_odd_integer(b):
+            return -magnitude
+        else:
+            return magnitude
+
+    # --- Integer-b fast path for a > 0 ---
     if is_small_integer(b):
         return integer_power(a, b_as_int)
 
     # --- Real-valued path: a^b = exp(b * log(a)) ---
-    assert a > 0           # negative-a with non-integer b was caught in specials
+    assert a > 0    # negative-a with non-integer b caught in specials;
+                    # negative-a with integer b caught above
+    return real_valued_pow(a, b)
+
+
+def real_valued_pow(a, b):
+    """Compute a^b for a > 0 via exp(b * log(a)).
+    Phase 1: plain fp64 intermediate. Phase 2: Dekker double-double."""
+    assert a > 0
     log_hi, log_lo = log_dd(a)              # double-double log
     prod_hi, prod_lo = dd_mul_f64(log_hi, log_lo, b)   # double-double multiply
     return exp_dd(prod_hi, prod_lo)          # exp with double-double input
 ```
+
+**`is_odd_integer(b)` helper:** For `|b| ≤ 2^53`, it's `(floor(b) == b) and (int(floor(b)) % 2 != 0)`. For `|b| > 2^53`, every representable fp64 is an even integer (lowest mantissa bits lost to exponent), so `is_odd_integer(b) = false` trivially.
+
+**Testing additions for B4:**
+- `pow(-2.0, 3.0) == -8.0` bit-exact
+- `pow(-2.0, 4.0) == 16.0` bit-exact
+- `pow(-3.0, -1.0)` within 2 ULP of `-1/3`
+- `pow(-4.0, 100.0)` via large-integer path, ULP-checked vs mpmath
 
 Three new primitives are needed: `log_dd`, `dd_mul_f64`, and `exp_dd`. All three are thin wrappers over the existing `tam_ln` and `tam_exp` with extended-precision tracking.
 

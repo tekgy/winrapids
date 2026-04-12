@@ -467,6 +467,16 @@ This is numerically stable AND reproducible given fixed block order. It is NOT y
 
 **Decision (2026-04-12): Option A. Locked.** Peak 6 ships RFA sum + Welford variance with Chan parallel-merge, NoContraction decoration on every fp op. Phase 2 may add RFA variance if benchmarks show Welford's arithmetic loses precision on data where cross-backend reproducibility matters. For Phase 1, Welford + I3-I6 determinism is sufficient.
 
+**OrderStrategy registry entries for variance's block-partial fold** (team-lead ruling 2026-04-12, Amendment 6 from pending-amendments-wip.md):
+
+The Welford+Chan merge tree shape is part of the order_strategy, not just the merge formula. Two named entries:
+
+1. **`welford_chan_left_to_right_fold`** — sequential host-side fold of block partials, block 0 first. Phase 1 default. Simplest. Bit-identical on any (backend, hardware) pair where I3/I4/I5/I6 hold.
+
+2. **`welford_chan_balanced_pairwise_tree_fanout_2`** — pow2 balanced tree. Different bit signature from option 1 because `merge(merge(A, B), C) ≠ merge(A, merge(B, C))` at the last ULP of `mean`, propagating through `M2`. Phase 2 optimization for large block counts.
+
+The variance recipe declares `welford_chan_left_to_right_fold` as its Phase 1 `order_strategy`. `welford_chan_balanced_pairwise_tree_fanout_2` is available as a Phase 2 named alternative with a distinct bit signature. This follows the OrderStrategy registry pattern established in Peak 1 (campsite 1.16 / campsite 1.17): the `order_strategy` field names the tree shape in the registry, and consumers can inspect `are_fusable("welford_chan_left_to_right_fold", ...)` to check compatibility.
+
 ---
 
 ## 13. Summary table of this doc's answers to navigator's five questions

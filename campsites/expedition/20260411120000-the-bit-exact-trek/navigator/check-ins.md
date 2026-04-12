@@ -9,6 +9,26 @@ Format: `[role] [date] — <what you need / what just landed / what's blocking>`
 
 <!-- entries below, newest first -->
 
+[navigator] 2026-04-12 — **VB-005 ruled (fsqrt NaN guard mandatory) + Peak 2 sequencing confirmed.**
+
+**VB-005 (GLSL.std.450 Sqrt NaN underspecification):** Scout filed VB-005 — GLSL.std.450 Sqrt makes no guarantee about NaN behavior. Ruling: mandate the OpIsNan guard, same as VB-001 (OpFMin). P2 tightening we landed explicitly closes the "observed NVIDIA behavior" argument. The lowering must pin IEEE-754 semantics from the target spec alone; observed behavior is not a spec guarantee. Three-instruction workaround (OpIsNan + OpExtInst Sqrt + OpSelect) mandated. Scout to update VB-005 status → MITIGATED and capability-matrix fsqrt entry → NaNPropagation: Strict.
+
+**Peak 2 sequencing confirmed:** exp design blockers (B1–B5) are on the critical path to campsite 2.6 (tam_exp). All other design blockers (tan, log, sin-cos, pow, hyperbolic, atan) block their own campsite but not 2.6. Math-researcher can start 2.6 as soon as exp B1–B5 are closed; other design amendments proceed in parallel with 2.6 implementation.
+
+**Tanh B4 ruling (reconfirmed):** Two-call form `(exp(x) - exp(-x)) / (exp(x) + exp(-x))` — no expm1, no carve-out. Error at boundary ≤2 ULP worst case, acceptable as documented. Adversarial review doc already updated. Math-researcher to amend hyperbolic-design.md accordingly.
+
+**Stale messages resolved:** Large batch of stale messages processed after usage limit reset. All pre-reset work confirmed resolved: campsite 4.8 (d4141ec), constraint_checks three-section format canonical (67 tests passing), pow B2/B3 resolved in design doc, scout's capability matrix updated for Option 3, aristotle's expedition-log cross-reference written (Entry 018). No new actions required from those messages.
+
+[navigator] 2026-04-11 — **trek-plan.md Part II.5 extended: software fp64 future scope + BackendTrait discipline.**
+
+team-lead added a post-IEEE-754 scope subsection to Part II.5 documenting three phases: Phase 1 (current, hardware fp64 + composed workarounds), Phase 1.5 (software fp64 as cross-check oracle), Phase 2/3 (software fp64 as production path, triggered by hybrid classical-quantum workloads — Majorana timeline puts this at 2–5 years, not someday).
+
+**Structural observation for the record:** the software fp64 path is what the compositional claim looks like when P3 (hardware IEEE-754 compliance) is removed from the precondition list. The claim becomes P1 + P2 → bit-exact, with P3 replaced by our own integer-implemented fp64. This is a future guarantee-ledger extension, not a current action.
+
+**Current action (pathmaker):** BackendTrait shape must keep a "fp64_available" capability bit addable without breaking changes. Design the capabilities interface as a struct or `has_capability(CapabilityBit)` query — not a hardcoded method signature that assumes hardware fp64. Pathmaker notified.
+
+**No Phase 1 scope change.** All other invitations (aristotle deconstruction, naturalist quantum timeline thread, scout future-targets list) are exploratory, not assigned.
+
 [navigator] 2026-04-11 — **ESC-002 pre-flight queries fully resolved. No ESC-003.**
 
 Scout ran `vulkaninfo` on the RTX PRO 6000 Blackwell and confirmed all four ESC-002 pre-flight queries (from escalations.md ESC-002 "Required device queries" section):

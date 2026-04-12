@@ -295,17 +295,45 @@ def tam_exp(x: f64) -> f64:
 7. **Handling `x = NaN` by letting it fall through to `round(x / ln2)`.** Undefined. Front-end the NaN check.
 8. **Using `exp(x) = exp(x/2)^2` as a "simplification."** Doubles the number of polynomial evaluations; halves the accuracy.
 
-## Testing plan (per accuracy-target.md)
+## Testing plan (per accuracy-target.md, amended 2026-04-12 for adversarial review)
 
 Per Campsite 2.1 battery, this function must pass:
 
 1. **1M random samples**, exponent-uniform across `[x_underflow, x_overflow]`. `max_ulp ≤ 1.0`.
-2. **Special values**: `exp(0)=1`, `exp(-0)=1`, `exp(+inf)=+inf`, `exp(-inf)=+0`, `exp(nan)=nan`.
-3. **Subnormal results**: `exp(-740)`, `exp(-744)`, `exp(-745)` all produce correct subnormal values (Campsite 2.8).
-4. **Overflow**: `exp(709.8)` produces `+inf` (Campsite 2.9).
-5. **Near-zero inputs**: `exp(1e-20)` returns `1 + 1e-20` to full precision (not flushed to 1.0).
-6. **Polynomial boundary**: `exp(ln(2)/2)` and `exp(-ln(2)/2)` are both within 1 ULP, both with `n=0` and with `|n|=1`.
-7. **Identity**: `exp(log(x)) ≈ x` for `x ∈ [1e-100, 1e100]`, within 2 ULPs (two 1-ULP errors compose).
+
+2. **Special values (bit-exact checks — per adversarial B1):**
+   - `tam_exp(+0.0).to_bits() == 0x3ff0000000000000`  (1.0)
+   - `tam_exp(-0.0).to_bits() == 0x3ff0000000000000`  (1.0)
+   - `tam_exp(+inf) == +inf` (sign bit 0, exponent all ones, mantissa 0)
+   - **`tam_exp(-inf).to_bits() == 0x0000000000000000`**  (bit-exact `+0.0`, NOT `-0.0` — adversarial B1)
+   - **`tam_exp(-746.0).to_bits() == 0x0000000000000000`**  (underflow path, bit-exact `+0.0` — adversarial B1)
+   - `tam_exp(nan).is_nan() && preserves_nan_bit_pattern`  (I11)
+   - `tam_exp(0.0) == 1.0` exact
+   - `tam_exp(1.0)` within 1 ULP of `e ≈ 2.71828...`
+
+   **The bit-pattern check for `-inf` and `-746.0` is load-bearing.** A test that only checks `result == 0.0` silently passes for `-0.0` too because IEEE 754 defines `+0.0 == -0.0 = true`. The failure mode adversarial B1 flagged (glibc historically returned `-0` for some exp underflow inputs due to a sign-propagation bug in the subnormal path) is invisible to numeric equality; only bit-pattern equality catches it. See commit history for the historical glibc bug.
+
+3. **Subnormal results (adversarial B5 adds boundary pairs):**
+   - `tam_exp(-740.0)` produces a subnormal f64, ULP-checked vs mpmath (Campsite 2.8).
+   - **`tam_exp(-744.4)`** — mid-subnormal range, mpmath reference, ULP-checked.
+   - **`tam_exp(-745.1)`** — near the deepest subnormal boundary. Result is approximately `2^-1074 · c` for some `c` near 1. mpmath reference required.
+   - **`tam_exp(nextafter(x_subnormal_begin, -inf))`** — the first argument where the result is subnormal rather than the smallest normal. ULP-checked.
+   - **`tam_exp(x_subnormal_begin)`** — should equal exactly `fp64_min_normal = 2^-1022` OR the nearest fp64, verified against mpmath.
+   - **`tam_exp(x_underflow)`** — smallest input for which the result is nonzero. Verified finite.
+   - **`tam_exp(nextafter(x_underflow, -inf))`** — one ULP past underflow. Must be bit-exact `+0.0` (not `-0.0`, per B1).
+
+4. **Overflow:**
+   - `tam_exp(709.8)` produces `+inf`.
+   - **`tam_exp(x_overflow)`** — largest finite result. mpmath-verified, must be finite.
+   - **`tam_exp(nextafter(x_overflow, +inf))`** — one ULP past overflow. Must be `+inf`.
+
+5. **Near-zero inputs:** `tam_exp(1e-20)` returns `1 + 1e-20` to full precision (not flushed to 1.0). Verified via `(result - 1.0) == 1e-20` bit-exact.
+
+6. **Polynomial boundary:** `tam_exp(ln(2)/2)` and `tam_exp(-ln(2)/2)` are both within 1 ULP, both with `n=0` and with `|n|=1`.
+
+7. **Cody-Waite exact inputs (adversarial B4).** For `n ∈ {-1074, -1023, -512, -256, -1, 0, 1, 256, 512, 1023}`, compute `x = n · ln2_hi` in fp64 (the Cody-Waite constant multiplied by a structured integer). Run `tam_exp(x)` and verify against mpmath. These are structured inputs where `r_1 = x - n · ln2_hi = 0.0` exactly, so `r = -n · ln2_lo` takes values up to `|1023 · ln2_lo| ≈ 5.6e-11`. The Remez fit guarantees max error over the full interval, but structured inputs test whether the error at these specific points is still within 1 ULP. **This is ~10 forced inputs, trivial to enumerate.** A generator for these goes into `gen-reference.py` as a new category `cody_waite_exact_exp` if not already present.
+
+8. **Identity:** `exp(log(x)) ≈ x` for `x ∈ [1e-100, 1e100]`, within 2 ULPs (two 1-ULP errors compose). Plus `log(exp(x)) ≈ x` for `x ∈ [-700, +700]`, within 2 ULPs (flat bound — see log-design.md).
 
 ## What the pathmaker hands off
 

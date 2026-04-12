@@ -162,6 +162,9 @@ pub enum Op {
 
     // ── Integer arithmetic ────────────────────────────────────────────────────
 
+    /// `const.i64 %dst = <value>`
+    ConstI64 { dst: Reg, value: i64 },
+
     /// `iadd.i32 %dst = %a, %b`
     IAdd { dst: Reg, a: Reg, b: Reg },
 
@@ -173,6 +176,55 @@ pub enum Op {
 
     /// `icmp_lt %dst:pred = %a:i32, %b:i32`
     ICmpLt { dst: Reg, a: Reg, b: Reg },
+
+    /// `iadd.i64 %dst = %a:i64, %b:i64`
+    IAdd64 { dst: Reg, a: Reg, b: Reg },
+
+    /// `isub.i64 %dst = %a:i64, %b:i64`
+    ISub64 { dst: Reg, a: Reg, b: Reg },
+
+    /// `and.i64 %dst = %a:i64, %b:i64`
+    AndI64 { dst: Reg, a: Reg, b: Reg },
+
+    /// `or.i64 %dst = %a:i64, %b:i64`  — needed for RFA exponent extraction
+    OrI64 { dst: Reg, a: Reg, b: Reg },
+
+    /// `xor.i64 %dst = %a:i64, %b:i64`
+    XorI64 { dst: Reg, a: Reg, b: Reg },
+
+    /// `shl.i64 %dst = %a:i64, %shift:i32`  — logical shift left
+    ShlI64 { dst: Reg, a: Reg, shift: Reg },
+
+    /// `shr.i64 %dst = %a:i64, %shift:i32`  — arithmetic shift right
+    ShrI64 { dst: Reg, a: Reg, shift: Reg },
+
+    // ── Float ↔ integer conversion and reinterpretation ───────────────────────
+
+    /// `ldexp.f64 %dst = %mantissa:f64, %exp:i32`  — %dst = %mantissa * 2^%exp
+    ///
+    /// Correct IEEE 754 semantics: handles subnormals, overflow to infinity,
+    /// and underflow to zero. Required for tam_exp range reconstruction.
+    /// Equivalent to C `ldexp(mantissa, exp)`.
+    LdExpF64 { dst: Reg, mantissa: Reg, exp: Reg },
+
+    /// `f64_to_i32_rn %dst:i32 = %a:f64`  — f64 → i32, round-to-nearest-even
+    ///
+    /// Required for tam_exp argument reduction (computing n = round(x / ln2)).
+    /// Saturates at INT32_MIN / INT32_MAX for out-of-range inputs.
+    F64ToI32Rn { dst: Reg, a: Reg },
+
+    /// `bitcast.f64.i64 %dst:i64 = %a:f64`  — reinterpret f64 bits as i64
+    ///
+    /// No value conversion. The bit pattern of %a (IEEE 754 double) is
+    /// reinterpreted directly as a signed 64-bit integer. Used for exponent
+    /// and mantissa extraction in tam_ln and RFA bin-index computation.
+    BitcastF64ToI64 { dst: Reg, a: Reg },
+
+    /// `bitcast.i64.f64 %dst:f64 = %a:i64`  — reinterpret i64 bits as f64
+    ///
+    /// Inverse of `bitcast.f64.i64`. Assembles an f64 from a bit pattern.
+    /// Used to reconstruct f64 values with manipulated exponent fields.
+    BitcastI64ToF64 { dst: Reg, a: Reg },
 
     // ── Floating-point comparisons (produce Pred) ─────────────────────────────
 
@@ -306,12 +358,31 @@ pub struct FuncParam {
 ///   <stmts>
 /// }
 /// ```
+///
+/// Optional attributes go in the `attrs` field. Phase 1 defines one attribute:
+/// `accumulator_state_size` (bytes of shared memory per accumulator, for RFA).
 #[derive(Debug, Clone, PartialEq)]
 pub struct KernelDef {
     pub name: String,
     pub params: Vec<KernelParam>,
+    /// Optional kernel attributes. See `KernelAttr`.
+    pub attrs: Vec<KernelAttr>,
     /// The body, in order. The verifier checks structural constraints.
     pub body: Vec<Stmt>,
+}
+
+/// A kernel attribute — key/value metadata on a kernel definition.
+///
+/// Phase 1 attributes:
+///
+/// - `accumulator_state_size: <bytes>` — size in bytes of the per-thread
+///   accumulator state buffer needed by the kernel (e.g. 52 for RFA fold=3).
+///   GPU backends use this to allocate shared memory. CPU backend ignores it.
+///   Parser syntax: `@accumulator_state_size(<decimal>)` before `kernel`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KernelAttr {
+    /// `@accumulator_state_size(<bytes>)`
+    AccumulatorStateSize(usize),
 }
 
 /// A function definition (for tambear-libm).
@@ -404,6 +475,7 @@ mod tests {
             kernels: vec![KernelDef {
                 name: "sum_all_add".into(),
                 params: vec![],
+                attrs: vec![],
                 body: vec![],
             }],
         };

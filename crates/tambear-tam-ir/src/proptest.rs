@@ -173,7 +173,7 @@ fn random_kernel(rng: &mut Rng, kernel_idx: usize) -> KernelDef {
         }));
     }
 
-    KernelDef { name, params, body }
+    KernelDef { name, params, attrs: vec![], body }
 }
 
 /// Generate a minimal well-typed function.

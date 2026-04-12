@@ -265,6 +265,8 @@ impl VerifyCtx {
                 self.define(dst, Ty::F64, errors);
             }
 
+            Op::ConstI64 { dst, .. } => self.define(dst, Ty::I64, errors),
+
             Op::IAdd { dst, a, b } | Op::ISub { dst, a, b } | Op::IMul { dst, a, b } => {
                 self.expect_ty(a, &Ty::I32, errors);
                 self.expect_ty(b, &Ty::I32, errors);
@@ -274,6 +276,36 @@ impl VerifyCtx {
                 self.expect_ty(a, &Ty::I32, errors);
                 self.expect_ty(b, &Ty::I32, errors);
                 self.define(dst, Ty::Pred, errors);
+            }
+
+            Op::IAdd64 { dst, a, b } | Op::ISub64 { dst, a, b }
+            | Op::AndI64 { dst, a, b } | Op::OrI64 { dst, a, b } | Op::XorI64 { dst, a, b } => {
+                self.expect_ty(a, &Ty::I64, errors);
+                self.expect_ty(b, &Ty::I64, errors);
+                self.define(dst, Ty::I64, errors);
+            }
+            Op::ShlI64 { dst, a, shift } | Op::ShrI64 { dst, a, shift } => {
+                self.expect_ty(a, &Ty::I64, errors);
+                self.expect_ty(shift, &Ty::I32, errors);
+                self.define(dst, Ty::I64, errors);
+            }
+
+            Op::LdExpF64 { dst, mantissa, exp } => {
+                self.expect_ty(mantissa, &Ty::F64, errors);
+                self.expect_ty(exp, &Ty::I32, errors);
+                self.define(dst, Ty::F64, errors);
+            }
+            Op::F64ToI32Rn { dst, a } => {
+                self.expect_ty(a, &Ty::F64, errors);
+                self.define(dst, Ty::I32, errors);
+            }
+            Op::BitcastF64ToI64 { dst, a } => {
+                self.expect_ty(a, &Ty::F64, errors);
+                self.define(dst, Ty::I64, errors);
+            }
+            Op::BitcastI64ToF64 { dst, a } => {
+                self.expect_ty(a, &Ty::I64, errors);
+                self.define(dst, Ty::F64, errors);
             }
 
             Op::FCmpGt { dst, a, b } | Op::FCmpLt { dst, a, b } | Op::FCmpEq { dst, a, b } => {

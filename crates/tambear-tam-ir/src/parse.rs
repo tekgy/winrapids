@@ -259,7 +259,7 @@ fn parse_kernel(lex: &mut Lexer) -> PResult<KernelDef> {
 
     let body = parse_kernel_body(lex, ln)?;
 
-    Ok(KernelDef { name, params, body })
+    Ok(KernelDef { name, params, attrs: vec![], body })
 }
 
 fn parse_kernel_signature(ln: usize, line: &str) -> PResult<(String, Vec<KernelParam>)> {
@@ -414,6 +414,12 @@ fn parse_op(ln: usize, toks: &[String]) -> PResult<Op> {
             }
             Ok(Op::ConstI32 { dst, value: parse_i32(ln, &operands[0])? })
         }
+        "const.i64" => {
+            if operands.len() != 1 {
+                return Err(ParseError::new(ln, "const.i64 takes one literal"));
+            }
+            Ok(Op::ConstI64 { dst, value: parse_i64(ln, &operands[0])? })
+        }
         "bufsize" => {
             if operands.len() != 1 {
                 return Err(ParseError::new(ln, "bufsize takes one register"));
@@ -474,6 +480,56 @@ fn parse_op(ln: usize, toks: &[String]) -> PResult<Op> {
         "icmp_lt" => {
             let (a, b) = parse_two_regs_comma(ln, operands)?;
             Ok(Op::ICmpLt { dst, a, b })
+        }
+        "iadd.i64" => {
+            let (a, b) = parse_two_regs_comma(ln, operands)?;
+            Ok(Op::IAdd64 { dst, a, b })
+        }
+        "isub.i64" => {
+            let (a, b) = parse_two_regs_comma(ln, operands)?;
+            Ok(Op::ISub64 { dst, a, b })
+        }
+        "and.i64" => {
+            let (a, b) = parse_two_regs_comma(ln, operands)?;
+            Ok(Op::AndI64 { dst, a, b })
+        }
+        "or.i64" => {
+            let (a, b) = parse_two_regs_comma(ln, operands)?;
+            Ok(Op::OrI64 { dst, a, b })
+        }
+        "xor.i64" => {
+            let (a, b) = parse_two_regs_comma(ln, operands)?;
+            Ok(Op::XorI64 { dst, a, b })
+        }
+        "shl.i64" => {
+            let (a, shift) = parse_two_regs_comma(ln, operands)?;
+            Ok(Op::ShlI64 { dst, a, shift })
+        }
+        "shr.i64" => {
+            let (a, shift) = parse_two_regs_comma(ln, operands)?;
+            Ok(Op::ShrI64 { dst, a, shift })
+        }
+        "ldexp.f64" => {
+            let (mantissa, exp) = parse_two_regs_comma(ln, operands)?;
+            Ok(Op::LdExpF64 { dst, mantissa, exp })
+        }
+        "f64_to_i32_rn" => {
+            if operands.len() != 1 {
+                return Err(ParseError::new(ln, "f64_to_i32_rn takes one register"));
+            }
+            Ok(Op::F64ToI32Rn { dst, a: parse_reg(ln, &operands[0])? })
+        }
+        "bitcast.f64.i64" => {
+            if operands.len() != 1 {
+                return Err(ParseError::new(ln, "bitcast.f64.i64 takes one register"));
+            }
+            Ok(Op::BitcastF64ToI64 { dst, a: parse_reg(ln, &operands[0])? })
+        }
+        "bitcast.i64.f64" => {
+            if operands.len() != 1 {
+                return Err(ParseError::new(ln, "bitcast.i64.f64 takes one register"));
+            }
+            Ok(Op::BitcastI64ToF64 { dst, a: parse_reg(ln, &operands[0])? })
         }
         "fcmp_gt.f64" => {
             let (a, b) = parse_two_regs_comma(ln, operands)?;
@@ -625,6 +681,11 @@ fn parse_i32(ln: usize, s: &str) -> PResult<i32> {
         .map_err(|_| ParseError::new(ln, format!("invalid i32 literal: {s:?}")))
 }
 
+fn parse_i64(ln: usize, s: &str) -> PResult<i64> {
+    s.parse::<i64>()
+        .map_err(|_| ParseError::new(ln, format!("invalid i64 literal: {s:?}")))
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Multi-register helpers (strip trailing commas)
 // ═══════════════════════════════════════════════════════════════════
@@ -770,5 +831,111 @@ mod tests {
         let prog = parse_program(src)
             .unwrap_or_else(|e| panic!("parse failed: {}", e));
         assert_eq!(prog.kernel("pearson_r_pass").unwrap().params.len(), 3);
+    }
+
+    // ── New op parse tests (added with i64 / bitcast / ldexp / f64_to_i32_rn ops) ──
+
+    #[test]
+    fn parse_bitcast_f64_to_i64() {
+        let src = ".tam 0.1\n.target cross\nkernel k(buf<f64> %d) {\nentry:\n  %n = bufsize %d\n  %c = const.f64 1.0\n  %b = bitcast.f64.i64 %c\n}\n";
+        let prog = parse_program(src).unwrap();
+        match &prog.kernel("k").unwrap().body[2] {
+            Stmt::Op(Op::BitcastF64ToI64 { dst, a }) => {
+                assert_eq!(dst.name, "b");
+                assert_eq!(a.name, "c");
+            }
+            other => panic!("expected BitcastF64ToI64, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_bitcast_i64_to_f64() {
+        let src = ".tam 0.1\n.target cross\nkernel k() {\nentry:\n  %x = const.i64 4607182418800017408\n  %f = bitcast.i64.f64 %x\n}\n";
+        let prog = parse_program(src).unwrap();
+        match &prog.kernel("k").unwrap().body[1] {
+            Stmt::Op(Op::BitcastI64ToF64 { dst, a }) => {
+                assert_eq!(dst.name, "f");
+                assert_eq!(a.name, "x");
+            }
+            other => panic!("expected BitcastI64ToF64, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_f64_to_i32_rn() {
+        let src = ".tam 0.1\n.target cross\nfunc f(f64 %x) -> f64 {\nentry:\n  %n = f64_to_i32_rn %x\n  %c = const.f64 0.0\n  ret.f64 %c\n}\n";
+        let prog = parse_program(src).unwrap();
+        match &prog.funcs[0].body[0] {
+            Op::F64ToI32Rn { dst, a } => {
+                assert_eq!(dst.name, "n");
+                assert_eq!(a.name, "x");
+            }
+            other => panic!("expected F64ToI32Rn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_ldexp_f64() {
+        let src = ".tam 0.1\n.target cross\nfunc f(f64 %m) -> f64 {\nentry:\n  %e = const.i32 3\n  %r = ldexp.f64 %m, %e\n  ret.f64 %r\n}\n";
+        let prog = parse_program(src).unwrap();
+        match &prog.funcs[0].body[1] {
+            Op::LdExpF64 { dst, mantissa, exp } => {
+                assert_eq!(dst.name, "r");
+                assert_eq!(mantissa.name, "m");
+                assert_eq!(exp.name, "e");
+            }
+            other => panic!("expected LdExpF64, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_i64_arithmetic() {
+        let src = ".tam 0.1\n.target cross\nkernel k() {\nentry:\n  %a = const.i64 100\n  %b = const.i64 200\n  %c = iadd.i64 %a, %b\n  %d = isub.i64 %c, %a\n  %e = and.i64 %a, %b\n  %f = or.i64 %a, %b\n  %g = xor.i64 %a, %b\n}\n";
+        let prog = parse_program(src).unwrap();
+        let body = &prog.kernel("k").unwrap().body;
+        assert!(matches!(body[0], Stmt::Op(Op::ConstI64 { .. })));
+        assert!(matches!(body[2], Stmt::Op(Op::IAdd64 { .. })));
+        assert!(matches!(body[3], Stmt::Op(Op::ISub64 { .. })));
+        assert!(matches!(body[4], Stmt::Op(Op::AndI64 { .. })));
+        assert!(matches!(body[5], Stmt::Op(Op::OrI64  { .. })));
+        assert!(matches!(body[6], Stmt::Op(Op::XorI64 { .. })));
+    }
+
+    #[test]
+    fn parse_i64_shifts() {
+        let src = ".tam 0.1\n.target cross\nkernel k() {\nentry:\n  %a = const.i64 1\n  %n = const.i32 5\n  %b = shl.i64 %a, %n\n  %c = shr.i64 %b, %n\n}\n";
+        let prog = parse_program(src).unwrap();
+        let body = &prog.kernel("k").unwrap().body;
+        assert!(matches!(body[2], Stmt::Op(Op::ShlI64 { .. })));
+        assert!(matches!(body[3], Stmt::Op(Op::ShrI64 { .. })));
+    }
+
+    /// Roundtrip test: build a program with new ops by-hand, print it, re-parse it.
+    #[test]
+    fn roundtrip_new_ops_bitcast_and_conversion() {
+        // Build a function that uses BitcastF64ToI64, BitcastI64ToF64, F64ToI32Rn
+        let prog = Program {
+            version: TamVersion::PHASE1,
+            target: Target::Cross,
+            funcs: vec![FuncDef {
+                name: "probe_new_ops".into(),
+                params: vec![FuncParam { reg: Reg::new("x") }],
+                body: vec![
+                    Op::BitcastF64ToI64 { dst: Reg::new("xi"), a: Reg::new("x") },
+                    Op::BitcastI64ToF64 { dst: Reg::new("xf"), a: Reg::new("xi") },
+                    Op::F64ToI32Rn { dst: Reg::new("n"), a: Reg::new("x") },
+                    Op::RetF64 { val: Reg::new("xf") },
+                ],
+            }],
+            kernels: vec![],
+        };
+        use crate::print::print_program;
+        let text = print_program(&prog);
+        let parsed = parse_program(&text)
+            .unwrap_or_else(|e| panic!("parse failed: {}\n\ntext:\n{}", e, text));
+        assert_eq!(parsed.funcs[0].body.len(), 4);
+        assert!(matches!(parsed.funcs[0].body[0], Op::BitcastF64ToI64 { .. }));
+        assert!(matches!(parsed.funcs[0].body[1], Op::BitcastI64ToF64 { .. }));
+        assert!(matches!(parsed.funcs[0].body[2], Op::F64ToI32Rn { .. }));
     }
 }

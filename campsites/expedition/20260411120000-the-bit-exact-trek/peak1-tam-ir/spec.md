@@ -138,6 +138,53 @@ icmp_lt   %dst:pred = %a:i32, %b:i32
 No `idiv` or `imod` in Phase 1. Not needed for any current recipe. If a future
 recipe requires them, add them then.
 
+### 5.4a i64 integer arithmetic
+
+Needed for bitcast-based exponent manipulation in libm and RFA. No i64 division
+in Phase 1.
+
+```
+const.i64   %dst:i64 = <decimal>
+iadd.i64    %dst:i64 = %a:i64, %b:i64
+isub.i64    %dst:i64 = %a:i64, %b:i64
+and.i64     %dst:i64 = %a:i64, %b:i64
+or.i64      %dst:i64 = %a:i64, %b:i64
+xor.i64     %dst:i64 = %a:i64, %b:i64
+shl.i64     %dst:i64 = %a:i64, %shift:i32   ; logical shift left
+shr.i64     %dst:i64 = %a:i64, %shift:i32   ; arithmetic shift right (sign-preserving)
+```
+
+### 5.4b Float ↔ integer conversion and reinterpretation
+
+These are pure bit-level operations. I1 and I8 do not apply — they are not
+transcendentals. Every backend lowers them to a register alias or a single
+instruction (PTX `mov.b64`, SPIR-V `OpBitcast`, CPU `f64::to_bits` /
+`f64::from_bits`).
+
+```
+bitcast.f64.i64  %dst:i64 = %a:f64    ; reinterpret f64 bits as i64 (no conversion)
+bitcast.i64.f64  %dst:f64 = %a:i64    ; reinterpret i64 bits as f64 (no conversion)
+f64_to_i32_rn    %dst:i32 = %a:f64    ; f64→i32 round-to-nearest-even, saturate at INT32 bounds
+ldexp.f64        %dst:f64 = %m:f64, %n:i32   ; %m * 2^%n, correct IEEE boundary handling
+```
+
+**`f64_to_i32_rn` semantics:** Round-to-nearest-even (banker's rounding). Matches
+PTX `cvt.rni.s32.f64`. Saturates at INT32_MIN / INT32_MAX for out-of-range inputs.
+For NaN input, result is 0.
+
+**`ldexp.f64` semantics:** `%dst = %m * 2^%n`. Handles subnormals, overflow to
+infinity, and underflow to zero per IEEE 754. Equivalent to C's `ldexp(m, n)`.
+On PTX: implemented via exponent-field integer add in the bit representation —
+NOT via any vendor libm call. The CPU interpreter uses bit manipulation; the PTX
+backend does likewise.
+
+**Design note:** `ldexp.f64` could alternatively be composed from `bitcast.f64.i64`,
+integer add on the exponent field, and `bitcast.i64.f64`. That composition is
+valid and more explicit, but `ldexp.f64` is retained as a first-class op because
+it has non-trivial boundary behavior (subnormal inputs, exponent underflow/overflow)
+that is easier to specify and test at one named location than distributed across
+a bitcast + integer sequence.
+
 ### 5.5 Floating-point comparisons
 
 Comparisons produce `pred`-typed registers.
@@ -150,6 +197,19 @@ fcmp_eq.f64  %dst:pred = %a, %b
 
 NaN behavior follows IEEE 754: all comparisons with NaN produce `false`
 (except `fcmp_eq` with two NaN operands, which also produces `false`).
+
+**NaN propagation through select:** Because comparisons produce `pred = false`
+for any NaN input, a `select.f64` downstream of a NaN-producing comparison will
+always select the `on_false` branch — it does NOT propagate NaN. This is
+argument-order-dependent: `fcmp_gt.f64 NaN, 5.0` and `fcmp_gt.f64 5.0, NaN`
+both produce `false`, but reversing the `select` arguments changes which branch
+is taken. Programs that need NaN propagation through conditionals must check for
+NaN explicitly with a dedicated `isnan` test before the comparison. There is no
+`isnan` op in Phase 1; if needed, use `fcmp_eq.f64 %x, %x` (produces `false`
+exactly when `%x` is NaN) then `select`.
+
+This is a correctness-affecting semantics choice, not just documentation. Every
+backend must implement this behavior identically.
 
 ### 5.6 Select (branch-free conditional)
 

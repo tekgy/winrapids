@@ -153,10 +153,24 @@ fn print_op(out: &mut String, op: &Op, indent: usize) {
         Op::FAbs  { dst, a }   => format!("{} = fabs.f64 {}", dst.display(), a.display()),
 
         // ── Integer arithmetic ────────────────────────────────────────────────
+        Op::ConstI64 { dst, value } => format!("{} = const.i64 {}", dst.display(), value),
         Op::IAdd { dst, a, b } => format!("{} = iadd.i32 {}, {}", dst.display(), a.display(), b.display()),
         Op::ISub { dst, a, b } => format!("{} = isub.i32 {}, {}", dst.display(), a.display(), b.display()),
         Op::IMul { dst, a, b } => format!("{} = imul.i32 {}, {}", dst.display(), a.display(), b.display()),
         Op::ICmpLt { dst, a, b } => format!("{} = icmp_lt {}, {}", dst.display(), a.display(), b.display()),
+        Op::IAdd64 { dst, a, b } => format!("{} = iadd.i64 {}, {}", dst.display(), a.display(), b.display()),
+        Op::ISub64 { dst, a, b } => format!("{} = isub.i64 {}, {}", dst.display(), a.display(), b.display()),
+        Op::AndI64 { dst, a, b } => format!("{} = and.i64 {}, {}", dst.display(), a.display(), b.display()),
+        Op::OrI64  { dst, a, b } => format!("{} = or.i64 {}, {}", dst.display(), a.display(), b.display()),
+        Op::XorI64 { dst, a, b } => format!("{} = xor.i64 {}, {}", dst.display(), a.display(), b.display()),
+        Op::ShlI64 { dst, a, shift } => format!("{} = shl.i64 {}, {}", dst.display(), a.display(), shift.display()),
+        Op::ShrI64 { dst, a, shift } => format!("{} = shr.i64 {}, {}", dst.display(), a.display(), shift.display()),
+
+        // ── Float ↔ integer conversion ────────────────────────────────────────
+        Op::LdExpF64 { dst, mantissa, exp } => format!("{} = ldexp.f64 {}, {}", dst.display(), mantissa.display(), exp.display()),
+        Op::F64ToI32Rn { dst, a } => format!("{} = f64_to_i32_rn {}", dst.display(), a.display()),
+        Op::BitcastF64ToI64 { dst, a } => format!("{} = bitcast.f64.i64 {}", dst.display(), a.display()),
+        Op::BitcastI64ToF64 { dst, a } => format!("{} = bitcast.i64.f64 {}", dst.display(), a.display()),
 
         // ── Floating-point comparisons ────────────────────────────────────────
         Op::FCmpGt { dst, a, b } => format!("{} = fcmp_gt.f64 {}, {}", dst.display(), a.display(), b.display()),
@@ -229,6 +243,7 @@ mod tests {
             kernels: vec![KernelDef {
                 name: "test".into(),
                 params: vec![],
+                attrs: vec![],
                 body: vec![
                     Stmt::Op(Op::ConstF64 { dst: Reg::new("x"), value: 1.0 }),
                 ],

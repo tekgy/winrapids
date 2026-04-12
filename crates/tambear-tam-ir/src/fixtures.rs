@@ -22,6 +22,7 @@ pub fn variance_pass_program() -> Program {
                 KernelParam { ty: Ty::BufF64, reg: Reg::new("data") },
                 KernelParam { ty: Ty::BufF64, reg: Reg::new("out") },
             ],
+            attrs: vec![],
             body: vec![
                 Stmt::Op(BufSize { dst: Reg::new("n"), buf: Reg::new("data") }),
                 Stmt::Op(ConstF64 { dst: Reg::new("acc0"), value: 0.0 }),
@@ -69,6 +70,7 @@ pub fn sum_all_add_program() -> Program {
                 KernelParam { ty: Ty::BufF64, reg: Reg::new("data") },
                 KernelParam { ty: Ty::BufF64, reg: Reg::new("out") },
             ],
+            attrs: vec![],
             body: vec![
                 Stmt::Op(BufSize { dst: Reg::new("n"), buf: Reg::new("data") }),
                 Stmt::Op(ConstF64 { dst: Reg::new("acc"), value: 0.0 }),

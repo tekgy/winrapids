@@ -71,6 +71,22 @@ pub fn verify(prog: &Program) -> Vec<VerifyError> {
     }
     for kernel in &prog.kernels {
         let mut ctx = VerifyCtx::new(format!("kernel '{}'", kernel.name));
+        // Validate kernel attributes.
+        for attr in &kernel.attrs {
+            match attr {
+                KernelAttr::AccumulatorStateSize(_) => {} // no validation needed
+                KernelAttr::DefaultOrderStrategy(r) => {
+                    if !crate::order_strategy::is_known(r.name()) {
+                        errors.push(ctx.err(format!(
+                            "@default_order_strategy({}): '{}' is not a registered \
+                             OrderStrategy. Known strategies: {:?}",
+                            r.name(), r.name(),
+                            crate::order_strategy::all_names(),
+                        )));
+                    }
+                }
+            }
+        }
         // Bind kernel parameters
         for param in &kernel.params {
             ctx.define(&param.reg, param.ty.clone(), &mut errors);
@@ -526,5 +542,63 @@ mod tests {
         assert!(!errors.is_empty(), "unknown strategy name should be rejected");
         assert!(errors.iter().any(|e| e.message.contains("not a registered")),
             "expected 'not a registered' in error message, got: {:?}", errors);
+    }
+
+    // ── Campsite 1.17: default_order_strategy attr validation ──────────────
+
+    #[test]
+    fn verify_accepts_default_order_strategy_attr() {
+        let src = "\
+.tam 0.1
+.target cross
+@default_order_strategy(sequential_left)
+kernel k(buf<f64> %d, buf<f64> %o) {
+entry:
+  %n = bufsize %d
+  %acc = const.f64 0.0
+  loop_grid_stride %i in [0, %n) {
+    %v = load.f64 %d, %i
+    %acc' = fadd.f64 %acc, %v
+  }
+  %s = const.i32 0
+  reduce_block_add.f64 %o, %s, %acc' @order(sequential_left)
+}
+";
+        let prog = parse_program(src).unwrap();
+        let errors = verify(&prog);
+        assert!(errors.is_empty(), "valid @default_order_strategy should be accepted: {:?}", errors);
+    }
+
+    #[test]
+    fn verify_rejects_unknown_default_order_strategy_attr() {
+        use crate::ast::*;
+        let prog = Program {
+            version: TamVersion::PHASE1,
+            target: Target::Cross,
+            funcs: vec![],
+            kernels: vec![KernelDef {
+                name: "bad_attr".into(),
+                params: vec![
+                    KernelParam { ty: Ty::BufF64, reg: Reg::new("out") },
+                ],
+                attrs: vec![
+                    KernelAttr::DefaultOrderStrategy(OrderStrategyRef::new("not_a_real_strategy")),
+                ],
+                body: vec![
+                    Stmt::Op(Op::ConstF64 { dst: Reg::new("v"), value: 1.0 }),
+                    Stmt::Op(Op::ConstI32 { dst: Reg::new("s"), value: 0 }),
+                    Stmt::Op(Op::ReduceBlockAdd {
+                        out_buf: Reg::new("out"),
+                        slot_idx: Reg::new("s"),
+                        val: Reg::new("v"),
+                        order: OrderStrategyRef::new("sequential_left"),
+                    }),
+                ],
+            }],
+        };
+        let errors = verify(&prog);
+        assert!(!errors.is_empty(), "unknown @default_order_strategy should be rejected");
+        assert!(errors.iter().any(|e| e.message.contains("not_a_real_strategy")),
+            "expected strategy name in error: {:?}", errors);
     }
 }

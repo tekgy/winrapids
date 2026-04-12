@@ -401,8 +401,9 @@ pub struct FuncParam {
 /// }
 /// ```
 ///
-/// Optional attributes go in the `attrs` field. Phase 1 defines one attribute:
-/// `accumulator_state_size` (bytes of shared memory per accumulator, for RFA).
+/// Optional attributes go in the `attrs` field. Phase 1 defines two attributes:
+/// `accumulator_state_size` (bytes of shared memory per accumulator, for RFA) and
+/// `default_order_strategy` (the kernel-level default reduction order, per I7).
 #[derive(Debug, Clone, PartialEq)]
 pub struct KernelDef {
     pub name: String,
@@ -421,10 +422,21 @@ pub struct KernelDef {
 ///   accumulator state buffer needed by the kernel (e.g. 52 for RFA fold=3).
 ///   GPU backends use this to allocate shared memory. CPU backend ignores it.
 ///   Parser syntax: `@accumulator_state_size(<decimal>)` before `kernel`.
+///
+/// - `default_order_strategy: <name>` — the default OrderStrategy for all
+///   `reduce_block_add` ops in this kernel. Per-op `@order(...)` overrides this.
+///   Parser syntax: `@default_order_strategy(sequential_left)` before `kernel`.
+///
+///   This is campsite 1.17's contribution. A kernel declares its default at the
+///   top, and individual ops override when needed. The verifier enforces that
+///   every `reduce_block_add` op has an effective order strategy — either from
+///   the per-op `@order(...)` or from the kernel's `@default_order_strategy(...)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KernelAttr {
     /// `@accumulator_state_size(<bytes>)`
     AccumulatorStateSize(usize),
+    /// `@default_order_strategy(<name>)` — default reduction order for this kernel.
+    DefaultOrderStrategy(OrderStrategyRef),
 }
 
 /// A function definition (for tambear-libm).

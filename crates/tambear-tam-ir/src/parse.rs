@@ -135,10 +135,15 @@ pub fn parse_program(src: &str) -> PResult<Program> {
         match toks.first().map(String::as_str) {
             Some("func") => funcs.push(parse_func(&mut lex)?),
             Some("kernel") => kernels.push(parse_kernel(&mut lex)?),
+            Some(t) if t.starts_with('@') => {
+                // Kernel attributes appear before the `kernel` keyword.
+                // Collect all @... lines, then expect `kernel`.
+                kernels.push(parse_kernel_with_attrs(&mut lex)?);
+            }
             _ => {
                 return Err(ParseError::new(
                     ln,
-                    format!("expected 'func' or 'kernel', got {:?}", toks),
+                    format!("expected 'func', 'kernel', or '@<attr>', got {:?}", toks),
                 ))
             }
         }
@@ -251,6 +256,52 @@ fn parse_func_body(lex: &mut Lexer, _start_ln: usize) -> PResult<Vec<Op>> {
 // ═══════════════════════════════════════════════════════════════════
 
 fn parse_kernel(lex: &mut Lexer) -> PResult<KernelDef> {
+    parse_kernel_inner(lex, vec![])
+}
+
+fn parse_kernel_with_attrs(lex: &mut Lexer) -> PResult<KernelDef> {
+    // Collect all @... attribute lines that precede the `kernel` keyword.
+    let mut attrs = Vec::new();
+    loop {
+        let (_ln, toks) = lex.peek_line().unwrap();
+        match toks.first().map(String::as_str) {
+            Some(t) if t.starts_with('@') => {
+                let (ln, toks) = lex.expect_line("kernel attribute")?;
+                let attr = parse_kernel_attr(ln, &toks.join(" "))?;
+                attrs.push(attr);
+            }
+            Some("kernel") => break,
+            Some(other) => {
+                let (ln, _) = lex.peek_line().unwrap();
+                return Err(ParseError::new(ln, format!(
+                    "expected 'kernel' after attribute(s), got {:?}", other
+                )));
+            }
+            None => {
+                let (ln, _) = lex.peek_line().unwrap();
+                return Err(ParseError::new(ln, "expected 'kernel' after attribute(s)"));
+            }
+        }
+    }
+    parse_kernel_inner(lex, attrs)
+}
+
+fn parse_kernel_attr(ln: usize, line: &str) -> PResult<KernelAttr> {
+    if let Some(inner) = line.strip_prefix("@accumulator_state_size(").and_then(|s| s.strip_suffix(')')) {
+        let n = inner.parse::<usize>()
+            .map_err(|_| ParseError::new(ln, format!("@accumulator_state_size: expected usize, got {inner:?}")))?;
+        return Ok(KernelAttr::AccumulatorStateSize(n));
+    }
+    if let Some(inner) = line.strip_prefix("@default_order_strategy(").and_then(|s| s.strip_suffix(')')) {
+        if inner.is_empty() {
+            return Err(ParseError::new(ln, "@default_order_strategy() requires a strategy name"));
+        }
+        return Ok(KernelAttr::DefaultOrderStrategy(OrderStrategyRef::new(inner)));
+    }
+    Err(ParseError::new(ln, format!("unknown kernel attribute: {:?}", line)))
+}
+
+fn parse_kernel_inner(lex: &mut Lexer, attrs: Vec<KernelAttr>) -> PResult<KernelDef> {
     let (ln, toks) = lex.expect_line("kernel header")?;
     let line = toks.join(" ");
     let (name, params) = parse_kernel_signature(ln, &line)?;
@@ -259,7 +310,7 @@ fn parse_kernel(lex: &mut Lexer) -> PResult<KernelDef> {
 
     let body = parse_kernel_body(lex, ln)?;
 
-    Ok(KernelDef { name, params, attrs: vec![], body })
+    Ok(KernelDef { name, params, attrs, body })
 }
 
 fn parse_kernel_signature(ln: usize, line: &str) -> PResult<(String, Vec<KernelParam>)> {
@@ -968,5 +1019,59 @@ mod tests {
         assert!(matches!(parsed.funcs[0].body[0], Op::BitcastF64ToI64 { .. }));
         assert!(matches!(parsed.funcs[0].body[1], Op::BitcastI64ToF64 { .. }));
         assert!(matches!(parsed.funcs[0].body[2], Op::F64ToI32Rn { .. }));
+    }
+
+    // ── Campsite 1.17: @default_order_strategy kernel attribute ──────────────
+
+    #[test]
+    fn parse_kernel_default_order_strategy_attr() {
+        // A kernel with @default_order_strategy(...) before the kernel keyword
+        // must parse and produce the correct KernelAttr.
+        let src = "\
+.tam 0.1
+.target cross
+@default_order_strategy(sequential_left)
+kernel k(buf<f64> %d, buf<f64> %o) {
+entry:
+  %n = bufsize %d
+  %acc = const.f64 0.0
+  loop_grid_stride %i in [0, %n) {
+    %v = load.f64 %d, %i
+    %acc' = fadd.f64 %acc, %v
+  }
+  %s = const.i32 0
+  reduce_block_add.f64 %o, %s, %acc' @order(sequential_left)
+}
+";
+        let prog = parse_program(src)
+            .unwrap_or_else(|e| panic!("parse failed: {}", e));
+        let kernel = prog.kernel("k").unwrap();
+        assert_eq!(kernel.attrs.len(), 1);
+        match &kernel.attrs[0] {
+            KernelAttr::DefaultOrderStrategy(r) => {
+                assert_eq!(r.name(), "sequential_left");
+            }
+            other => panic!("expected DefaultOrderStrategy, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_variance_pass_with_default_order_strategy_roundtrip() {
+        // The updated variance_pass.tam now includes @default_order_strategy.
+        // It must parse and roundtrip via print→parse.
+        let src = include_str!("../../../campsites/expedition/20260411120000-the-bit-exact-trek/peak1-tam-ir/programs/variance_pass.tam");
+        let prog = parse_program(src)
+            .unwrap_or_else(|e| panic!("parse failed: {}", e));
+        let kernel = prog.kernel("variance_pass").unwrap();
+        // Should have the default_order_strategy attr.
+        assert!(kernel.attrs.iter().any(|a| matches!(a, KernelAttr::DefaultOrderStrategy(_))),
+            "expected DefaultOrderStrategy attr, got: {:?}", kernel.attrs);
+        // Roundtrip.
+        use crate::print::print_program;
+        let text = print_program(&prog);
+        let reparsed = parse_program(&text)
+            .unwrap_or_else(|e| panic!("roundtrip parse failed: {}\n\n{}", e, text));
+        assert_eq!(reparsed.kernel("variance_pass").unwrap().attrs,
+                   prog.kernel("variance_pass").unwrap().attrs);
     }
 }

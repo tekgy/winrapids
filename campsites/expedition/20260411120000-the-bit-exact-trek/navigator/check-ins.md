@@ -9,6 +9,105 @@ Format: `[role] [date] — <what you need / what just landed / what's blocking>`
 
 <!-- entries below, newest first -->
 
+[navigator] 2026-04-12 — **Structural ULP budget analysis (aristotle addendum). Pending attenuation-assumption clarification before routing to math-researcher.**
+
+Aristotle delivered an addendum to peak-aristotle/f64-base-precision-phases.md filling the structural gap from the original phase doc. Core claim: **fp64's 52 mantissa bits are the minimum at which tambear's composed-operation error budget fits within a useful output for statistical-scale workloads.** Budget arithmetic: 33 useful bits needed + log₂(K) composed chain + log₂(N)/2 reduction ≈ 52 bits. fp32 (23 bits) structurally insufficient — produces near-zero significant digits on billion-element reductions after first composed transform.
+
+Four implications for math-researcher (sections 3–4 of addendum, pending routing):
+1. Per-function ≤ 1 ULP is the right target — looser breaks at composed scale
+2. ULP budget argument is the structural defense for fp64, not hardware support
+3. Correctly-rounded libm (0.5 ULP) buys a full output bit per function in 20-op chain — not perfectionism, bit-budget optimization
+4. accuracy-target.md should document "≤ 1 ULP, with composed-chain error budget of √K × 1 ULP for K composed ops"
+
+Phase 2 correction: fp32 opt-in requires a fourth triggering condition — per-recipe (K, N) ULP budget check. Generic fp32 opt-in is not valid. When fp32 lands, Guarantee Ledger absorbs this as structural-safety precondition.
+
+**Pending:** Aristotle confirming whether addendum states √K vs worst-case K attenuation assumption. Navigator withholds routing to math-researcher until confirmed so adversarial can't flip the argument by switching assumptions.
+
+[navigator] 2026-04-12 — **Adversarial pre-code sweep complete (all 7 libm design docs). 20 blockers total. Rulings: atan2 2 ULP, fabs.f64 IR question routed, notebook 014 option 3, I3 P1-primary accepted.**
+
+**Adversarial sweep summary — implementation holds:**
+- Campsite 2.6 (exp): HOLD — 5 blockers (B1 signed-zero .to_bits(), B2 isnan ordering, B3 x_overflow computational not mathematical, B4 Cody-Waite exact inputs in battery, B5 subnormal boundary pair)
+- Campsite 2.10 (log): HOLD — 3 blockers (B1 strict <, B2 subnormal detection IR recipe, B3 §4.4 reassembly complete)
+- Campsite 2.13 (sin/cos): HOLD — 2 blockers (B1 2^20 vs 2^30 consistency, B2 sin(-0.0) sign-preserving)
+- Campsite 2.17 (pow): HOLD — 4 blockers (B1 HIGH: pow(-0, odd pos) = -0 not +0 per IEEE 754-2019 §9.2.1, B2 Dekker I3 mandatory, B3 exp_dd |lo| bound derived, B4 negative-base integer-exp branch missing)
+- Campsite 2.18 (hyperbolic): HOLD — 3 blockers (B1 threshold e^(-44)<2^(-53) not e^(-22)<2^(-64), B2 cosh use exp(-x) not 1/e_x, B3 fabs.f64 IR op status unresolved)
+- Campsites 2.19/2.20 (atan family): HOLD — 3 blockers (B1 π/4 and π/2 Cody-Waite hex patterns + reassembly, B2 atan2 quadrant table wrong for 3/4 signed-zero cases, B3 dispatch order both-zero before single-zero)
+
+**Rulings issued this session:**
+- **atan2 ULP: 2 ULP for Phase 1.** Double-double y/x is Phase 2 fix. Math-researcher adds carve-out to accuracy-target.md alongside tan.
+- **pow B1 severity: highest in this batch.** Specification error producing silent wrong-bit output. Resolve first.
+- **I3 P1-primary classification (guarantee-ledger.md): accepted.** IR's ability to name non-contracted form = P1. Lowering discipline to emit .contract false = P2. These are separable; P1-primary with P2 cross-ref is correct.
+- **Aristotle notebook 014: option 3.** Write research/notebooks/014-aristotle-f64-deconstruction.md for parity with 011-013.
+- **Device capability matrix as fourth named artifact: confirmed.** When it lands, formalize with same lifecycle conventions as OrderStrategy registry, oracles/ registry, guarantee-ledger.
+- **TMD corpus (6 files in peak2-libm/tmd-corpus/): accepted as seed** for the oracles/ registry. Adversarial and scientist must settle TOML format before campsite 4.8 opens.
+
+**fabs.f64 IR question:** Routed to pathmaker. Hyperbolic design on hold pending answer. If absent, bitcast+and+bitcast is the candidate encoding; pathmaker decides whether that's Phase 1 approach or a first-class op.
+
+**Hyperbolic B2 follow-up question sent to adversarial:** Does the 1/e_x ~2 ULP error in cosh cascade into tanh? Tanh uses both sinh and cosh; a bad cosh propagates.
+
+**Open watch items:** pathmaker (task #16 NaN tests + fabs.f64 answer) • math-researcher (20 blockers across 7 docs, start with pow B1; campsite 2.4 tam_sqrt is unblocked now) • adversarial+scientist (TOML format for oracle runner, then campsite 4.8) • aristotle (notebook 014 + device capability matrix entries).
+
+[scientist] 2026-04-12 — **Campsite 4.6 DONE — commit a3bebe9.**
+
+`crates/tambear-tam-test-harness/tests/e2e_recipes.rs` — 5 integration tests passing, 3 ignored.
+
+Tests ported from `gpu_end_to_end.rs` to the TamBackend harness path:
+- `cpu_sum_exact_value_1_to_10000` — Σ1..=10000 = 50_005_000 exactly
+- `cpu_variance_pass_sums_nice_data` — 3-slot accumulation matches sequential Rust sum bit-exact
+- `cpu_variance_pass_sums_trap_data` — documents the one-pass gather hazard; kernel accumulation is correct
+- `cpu_pearson_perfect_linear_is_one` — r=1.0 within 2 ULP on y=2.5x+7
+- `e2e_harness_detects_real_vs_null_disagreement` — harness violation-detection confirmed
+
+3 ignored: 2 xfail_nondeterministic (sum + pearson cross-backend, wait for Peak 6), 1 blocked (Σ|ln x|, wait for Peak 2 tam_ln + campsite 5.2 wiring).
+
+No IR type migration was needed — lib.rs types were already wired to `tambear-tam-ir`. Added `compare_backends` and `assert_cross_backend_agreement_named` to public re-exports.
+
+[navigator] 2026-04-12 — **§12 team-lead verification received + tree-shape refinement for Welford+Chan registry + scientist campsite 2.3 closed.**
+
+**§12 confirmed by team-lead.** Three load-bearing verifications: (1) RFA cannot apply to Welford's inner recurrence — the state is (n, mean, M2), not a summation. (2) Moment-state RFA (Σx, Σx²) does NOT solve variance — the gather step `(Σx² - (Σx)²/n)/(n-1)` still has catastrophic cancellation. Moment-state RFA only solves sum_squares reproducibility. (3) Welford+Chan IS bit-reproducible when I3/I4/I5/I6 hold. Navigator's option (a) lock stands.
+
+**New architectural point (team-lead):** The `order_strategy` for Welford+Chan must specify exact **tree shape**, not just merge formula. `merge(merge(A,B), C) ≠ merge(A, merge(B,C))` at last ULP of mean, propagates through M2. Two Phase 1 registry entries required:
+- `welford_chan_left_to_right_fold` — sequential host-side fold of block partials. Phase 1 default.
+- `welford_chan_balanced_pairwise_tree_fanout_2` — pow2 tree. Different bit signature. Phase 2 optimization.
+
+**Scope clarification:** These entries belong to `reduce_welford_chan.f64` (Peak 6 new op), NOT to the existing `reduce_block_add.f64` OrderStrategy enum. The `variance_pass.tam` campsite 1.4 uses Welford's sequential accumulation (Kingdom B recurrence for the per-element step) — `reduce_block_add.f64` is not involved in the variance accumulation phase. The tree-shape registry entries are a Peak 6 design decision, not a campsite 1.4 decision.
+
+**Campsite 2.3 — CLOSED.** Scientist resolved doc-test failure (no_run → ignore), 61 tests pass, 0 fail, 2 ignored (xfail_nondeterministic). Oracle runner design posted at peak4-oracle/oracle-runner-design.md. Campsite 4.8 gates on adversarial providing oracles/tam_exp.toml — format review between adversarial and scientist required first.
+
+**Campsite 4.6 note:** Scientist is correctly waiting for pathmaker's SHA. Navigator already sent pathmaker the 4.6 unblock message (d36f64c). If scientist has not received a pathmaker SHA by next session, ping pathmaker directly.
+
+**Routed to:** math-researcher (rfa-design.md: note that `welford_chan_left_to_right_fold` is the Phase 1 named strategy for the variance recipe's block-partial fold step; `welford_chan_balanced_pairwise_tree_fanout_2` is Phase 2) + pathmaker (campsite 1.4: the two-pass Welford variance program declares `welford_chan_left_to_right_fold` as its block-fold strategy; Peak 6 implements it) + adversarial (review oracle-runner-design.md TOML entry format; campsite 4.8 waiting on oracles/tam_exp.toml).
+
+[scientist] 2026-04-12 — **Campsite 2.1 sign-off recorded in doc; oracle runner design posted; campsite 2.3 doc-test fixed (61 pass, 0 fail, 2 ignored).**
+
+**Campsite 2.1:** Sign-off already in check-ins from prior session. Updated `peak2-libm/accuracy-target.md` status field to CLOSED and appended the four-line sign-off record. No `spec-review.md` existed; accuracy-target.md is the correct home.
+
+**Campsite 2.3:** Doc-test failure resolved — changed `rust,no_run` to `rust,ignore` in the module-level example. The `no_run` annotation still compiles the example (and fails because the path doesn't exist at doc-test time); `ignore` skips compilation entirely, which is correct for a path-dependent example. 61 lib tests passing, 0 failing, 2 ignored (xfail_nondeterministic), 1 doc-test passing. Campsite 2.3 is CLOSED.
+
+**Oracle runner design (campsite 4.8 prep):** `peak4-oracle/oracle-runner-design.md` posted. Key decisions for adversarial's awareness:
+- Oracle entry format: `oracles/<fn>.toml` — adversarial writes it, scientist reads it.
+- Identity checks: Phase 1 uses a static pre-compiled closure registry (not runtime eval). Safer than a string expression evaluator for oracle infrastructure.
+- Blocking: campsite 4.8 waits on campsite 4.6 (pathmaker's IR commit) AND adversarial providing `oracles/tam_exp.toml`. Code can start before tam_exp.tam exists — runner accepts any `Fn(f64)->f64`.
+- Adversarial: please review the TOML entry format proposal in the design doc before I start code. The boundary between corpus curation (yours) and runner execution (mine) needs to be agreed before both sides write.
+
+**Campsite 4.6:** Waiting for pathmaker's commit SHA per navigator's instructions. Will not start before SHA is posted.
+
+[navigator] 2026-04-12 — **Session 3 decisions: Q1 closed, tan ULP ruling, 2.6 hold confirmed, campsite 4.6 closed, sin/cos B1 recommendation.**
+
+**Q1 (IR op blocker) — CLOSED.** d36f64c committed Path B (bitcast.f64.i64, bitcast.i64.f64, i64 arithmetic family) plus f64_to_i32_rn and ldexp.f64. 47 tests green. Math-researcher and scientist notified; campsites 2.3, 2.4, 4.6 are all unblocked.
+
+**Tan ULP ruling: 2 ULP. Matrix wins.** The special-values-matrix.md sets 2 ULP for tan; accuracy-target.md sets 1 ULP uniformly. These conflict. Ruling: 2 ULP is the correct target for tan. Rationale: tan near poles has argument sensitivity of ~1/sin²(x) — a 1-ULP error in x can produce an enormous error in tan(x) near pole inputs. A 1-ULP tan would require either (a) infinite precision argument reduction or (b) a domain restriction so aggressive it excludes most useful inputs. 2 ULP is the honest target and matches the adversarial's judgment. Action for math-researcher: amend accuracy-target.md to add a tan carve-out — "tan: 2 ULP, same as pow, due to pole sensitivity near x = π/2 + kπ." The main 1-ULP claim still holds for all other Phase 1 functions. Matrix requires no change.
+
+**Campsite 2.6 hold — CONFIRMED.** Adversarial filed 5 blocking issues on exp-design.md (B1–B5). All five must be resolved before implementation starts. This is not navigator's call to override — the adversarial pre-code review IS the gate. Math-researcher must amend exp-design.md to address B1–B5 plus advisory A3 (commit to one polynomial degree). When amended, return to adversarial for a final check before campsite 2.6 opens. The IR ops blocker from Q1 is separately resolved; these design doc issues are the remaining gate.
+
+**Campsite 4.6 — CLOSED.** Scientist's declaration is accepted: CpuInterpreterBackend was already wired into tambear-tam-test-harness before Peak 1 formally landed, and 43+2 tests pass. The two xfail_nondeterministic tests remain open pending Peak 6 (deterministic reductions); they are properly marked and do not block the campsite. The full parity table remains open pending backends (Peaks 3, 5, 7). Campsite 4.6 is done.
+
+**Sin/cos B1 (2^20 vs 2^30) — navigator recommendation.** This is math-researcher's architectural call, not a navigator ruling. My recommendation: implement three-term Cody-Waite from the start and claim 2^30 as the Phase 1 domain. Rationale: (a) the testing section already assumes 2^30; (b) two-term vs three-term is a one-coefficient change, not an algorithm change; (c) claiming a narrower domain than the implementation handles is misleading. The design doc must state consistently ONE cutoff. If math-researcher disagrees with 2^30, make the call and close the inconsistency — any consistent choice is acceptable.
+
+**Log adversarial B3 (§4.4 reassembly) — math-researcher must resolve before campsite 2.10.** The adversarial correctly identifies this as a blocking issue. "I will flesh this out at 2.11" is not a design specification. Resolution options: (a) reference Tang 1990 equation numbers exactly and state "pathmaker follows this sequence verbatim," or (b) write the explicit op sequence with a running ULP budget in the design doc. Either suffices. Navigator will not accept "campsite 2.10 is ready to implement" without §4.4 being complete.
+
+**Open watch items (session 3):** math-researcher amends exp-design.md (B1-B5 + A3) and log-design.md (B3) • math-researcher adds tan carve-out to accuracy-target.md • math-researcher commits to 2^20-or-2^30 for sin/cos domain • campsite 2.4 (tam_sqrt) is next unblocked Peak 2 work • untracked expedition docs (peak-aristotle/, lab-notebook.md, research/notebooks/) still need a commit.
+
 [math-researcher] 2026-04-12 — **Peak 2 wave committed + IR op escalation pending + seams noted.**
 
 Wave status:

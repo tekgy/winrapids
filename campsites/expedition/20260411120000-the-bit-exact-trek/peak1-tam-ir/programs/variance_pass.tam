@@ -27,6 +27,10 @@
 ;   gather time, where the host can use higher precision or Kahan summation
 ;   if needed. The kernel itself is numerically clean.
 
+; Campsite 1.17: kernel declares its default reduction strategy.
+; Per-op @order() attributes below are consistent with this default
+; and serve as explicit documentation for each accumulation slot.
+@default_order_strategy(sequential_left)
 kernel variance_pass(buf<f64> %data, buf<f64> %out) {
 entry:
   %n    = bufsize %data

@@ -74,6 +74,17 @@ fn print_func(out: &mut String, func: &FuncDef, indent: usize) {
 
 fn print_kernel(out: &mut String, kernel: &KernelDef, indent: usize) {
     let pad = spaces(indent);
+    // Emit kernel attributes before the kernel keyword.
+    for attr in &kernel.attrs {
+        match attr {
+            KernelAttr::AccumulatorStateSize(n) => {
+                out.push_str(&format!("{}@accumulator_state_size({})\n", pad, n));
+            }
+            KernelAttr::DefaultOrderStrategy(r) => {
+                out.push_str(&format!("{}@default_order_strategy({})\n", pad, r.name()));
+            }
+        }
+    }
     let params: Vec<String> = kernel.params.iter()
         .map(|p| {
             let ty_str = match &p.ty {

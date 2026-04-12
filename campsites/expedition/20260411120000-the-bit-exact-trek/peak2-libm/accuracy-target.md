@@ -1,8 +1,9 @@
 # Campsite 2.1 — The Accuracy Target
 
 **Owner:** math-researcher
-**Status:** draft, awaiting navigator sign-off
+**Status:** CLOSED — all four sign-offs complete (navigator, team-lead, adversarial, scientist)
 **Date:** 2026-04-11
+**Closed:** 2026-04-12
 
 ---
 
@@ -149,12 +150,14 @@ If **any** of these fails, the function is not done. The remedy is to diagnose t
 - Observer: per-function ULP histograms go in the lab notebook.
 - Navigator: if anyone proposes raising the bound to "get unblocked," route it to escalations.md. The bound is not advisory.
 
-## Sign-off required
+## Sign-off record
 
-Before the first line of libm `.tam` code is written:
-- [ ] navigator reads this doc, signs off or requests changes
-- [ ] adversarial reads this doc, confirms the battery covers the pitfalls they'd hit us with
-- [ ] scientist reads this doc, confirms mpmath at 50 digits is a sufficient oracle
+All sign-offs complete. Campsite 2.1 is CLOSED.
+
+- [x] **navigator** — APPROVED 2026-04-11. Accuracy target correct and sufficient. IR dependency check added (ldexp.f64, f64_to_i32_rn must land before tam_exp code starts).
+- [x] **team-lead** — APPROVED (per navigator check-in 2026-04-12, all four noted complete).
+- [x] **adversarial** — APPROVED 2026-04-11. Four additions noted: (1) near-±1 sampling for asin/acos, (2) sign-symmetry category, (3) Cody-Waite exact-constant injection, (4) tan/pow ULP tension flagged for math-researcher resolution. None block the sign-off.
+- [x] **scientist** — APPROVED 2026-04-11. Oracle verdict: mpmath at 50 digits gives ~34 decimal digits guard margin over fp64; reference error ~5×10⁻⁵¹ vs 1 ULP ~2.2×10⁻¹⁶. Even 32 digits would be sufficient; 50 is conservatively correct. atan2 at 2 ULP is honest: fdiv.f64 contributes ≤0.5 ULP, composing with tam_atan's 1 ULP gives ≤1.5 ULP → 2 ULP published bound. Both claims APPROVED.
 
 Once these three sign-offs land in `navigator/check-ins.md`, Campsite 2.1 is closed and Campsite 2.2 can start.
 

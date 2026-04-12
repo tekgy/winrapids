@@ -166,6 +166,7 @@ pub fn all_cases() -> Vec<(&'static str, Inputs)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::TamBackend;
 
     // Validate the generators produce the right shapes and known values.
     // These tests don't run any backend — they test the generators themselves.
@@ -281,35 +282,82 @@ mod tests {
     // until Peak 6 lands.  The Test Oracle removes those marks post-Peak-6.
     // -----------------------------------------------------------------------
 
-    #[test]
-    #[ignore = "no backend yet — will be activated when Peak 5 (cpu-interpreter) lands"]
-    fn catastrophic_cancellation_sum_is_one() {
-        // When CPU interpreter backend is available:
-        // run sum_all program on catastrophic_cancellation() input
-        // assert output[0] == 1.0 (requires compensated summation to pass)
-        todo!("wire up CpuInterpreterBackend");
+    // NOTE: CpuInterpreterBackend is now available (Peak 1 complete).
+    // Activate backend-dependent tests below.
+
+    fn sum_all_add_program() -> crate::TamProgram {
+        crate::TamProgram::from_source(include_str!(
+            "../../../campsites/expedition/20260411120000-the-bit-exact-trek/peak1-tam-ir/programs/sum_all_add.tam"
+        )).expect("sum_all_add.tam should parse and verify")
     }
 
+    /// Re-key the "x" buffer from a generator to "data" so it matches sum_all_add.tam.
+    ///
+    /// The hard-case generators use a generic "x" name; sum_all_add.tam expects %data.
+    fn rekey_to_data(inputs: Inputs) -> Inputs {
+        let data = inputs.buffers.into_iter()
+            .find(|(name, _)| name == "x")
+            .map(|(_, v)| v)
+            .unwrap_or_default();
+        Inputs::new().with_buf("data", data)
+    }
+
+    /// Baseline document: naive fadd accumulation on catastrophic cancellation input.
+    ///
+    /// input: [1e16, 1.0, -1e16]
+    /// true sum: 1.0
+    /// naive fadd sum: 0.0  (the 1.0 is below the precision of 1e16 ± ulp)
+    ///
+    /// This confirms the known catastrophic cancellation bug in the naive kernel.
+    /// This test is NOT expected to produce 1.0 — it documents the CURRENT behavior
+    /// as a regression baseline.  A future compensated-summation kernel would replace
+    /// this with an assertion that the output is 1.0.
+    ///
+    /// See pitfall P12 / variance-numerical-analysis.md for full discussion.
     #[test]
-    #[ignore = "no backend yet — will be activated when Peak 5 lands"]
+    fn catastrophic_cancellation_naive_sum_is_zero() {
+        let backend = crate::cpu_backend::CpuInterpreterBackend::new();
+        let program = sum_all_add_program();
+        let inputs = rekey_to_data(catastrophic_cancellation());
+        let out = backend.run(&program, &inputs);
+        // IEEE 754: (1e16 + 1.0) rounds to 1e16; 1e16 + (-1e16) = 0.0.
+        // This is the documented naive-sum behavior — not the correct answer.
+        assert_eq!(out.slots[0], 0.0,
+            "naive fadd loses the 1.0 term: catastrophic cancellation confirmed (P12)");
+    }
+
+    /// NaN propagation: sum of [1.0, NaN, 3.0] must be NaN.
+    ///
+    /// IEEE 754 §6.2: any fp operation with NaN input produces NaN output.
+    /// The naive fadd accumulator propagates NaN correctly through addition.
+    #[test]
     fn nan_propagates_through_sum() {
-        // Sum of [1.0, NaN, 3.0] must be NaN
-        todo!("wire up CpuInterpreterBackend");
+        let backend = crate::cpu_backend::CpuInterpreterBackend::new();
+        let program = sum_all_add_program();
+        let inputs = rekey_to_data(nan_propagation());
+        let out = backend.run(&program, &inputs);
+        assert!(out.slots[0].is_nan(),
+            "sum of data containing NaN must be NaN; got {}", out.slots[0]);
     }
 
     #[test]
-    #[ignore = "no backend yet; xfail_nondeterministic until Peak 6"]
+    #[ignore = "xfail_nondeterministic — remove after Peak 6 (deterministic tree reduce)"]
     fn cross_backend_agree_on_sum_huge_n() {
-        // I5: reduction must be deterministic.  This test is xfail until
+        // I5: reduction must be deterministic across backends.  This test is xfail until
         // Peak 6 replaces atomicAdd with fixed-order tree reduce.
+        // When unblocked: run CpuInterpreterBackend + CudaPtxRawBackend on huge_n(),
+        // assert bit_exact agreement on every slot.
         todo!("wire up CpuInterpreterBackend + CudaPtxRawBackend");
     }
 
     #[test]
-    #[ignore = "no backend yet; xfail_nondeterministic until Peak 6"]
+    #[ignore = "xfail_nondeterministic — remove after Peak 6 (deterministic tree reduce)"]
     fn cross_backend_agree_on_variance_one_pass_trap() {
-        // This is the core correctness check for variance:
-        // CPU and GPU must agree bit-exactly after Peak 6.
+        // I5 + P12: CPU and GPU must agree bit-exactly on the one-pass-trap input
+        // after Peak 6.  Both will give the same wrong answer (catastrophic
+        // cancellation) until pathmaker 1.4 (two-pass kernel) also lands.
+        // At that point: assert that both backends agree AND that the result is
+        // within the acceptance criterion (|σ̂² - 0.01| < 1e-6).
         todo!("wire up backends");
     }
 }

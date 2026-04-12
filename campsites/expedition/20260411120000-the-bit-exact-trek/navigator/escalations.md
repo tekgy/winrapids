@@ -76,39 +76,75 @@ I11-compliant min/max for fp64. The `.NaN` modifier that PTX provides
 
 **Navigator decision:**
 
-Option 1 — mandate the four-instruction workaround. Reasoning:
+*(Draft by scout proposed Option 1. Superseded by team-lead directive
+2026-04-11. Final ruling below.)*
 
-I11 is a cross-backend correctness invariant, not a performance invariant.
-The cost (four extra SPIR-V instructions per min/max call) is known, bounded,
-and small. The alternative — fragmenting I11 into per-op per-backend
-exceptions — makes the invariant progressively unenforceable as new ops
-are added. The workaround pattern is:
-- Correct: verified by construction (OpIsNan + OpSelect cannot produce a
-  non-NaN result when either input is NaN).
-- Testable: the Peak 4 hard-cases suite already generates NaN inputs; the
-  Vulkan backend must pass them the same as the CPU interpreter.
-- Visible: the capability matrix row for Vulkan min/max documents the
-  workaround explicitly, so the Peak 7 implementer knows what they're
-  emitting and why.
+**Option 3 — do not emit OpFMin or OpFMax at all. Compose min/max from
+well-defined primitives.** Reasoning:
 
-Options 2 and 3 are not acceptable because they treat a known, solvable
-problem as a permanent exception. The workaround exists; use it.
+Option 1 (four-instruction workaround with a NaN constant) still references
+OpFMin as the non-NaN path. The implementation-defined NaN behavior of
+OpFMin means we are relying on a vendor guarantee ("returns the non-NaN
+operand when inputs are normal") that the spec does not provide. This is a
+latent correctness dependency, not a true fix.
+
+Option 3 eliminates the dependency entirely. Every instruction in the
+composed sequence has fully-defined IEEE-754 behavior:
+- `OpIsNan` — always true when input is NaN, no undefined behavior.
+- `OpFOrdLessThan` — returns false when either operand is NaN (IEEE
+  ordered comparison; this is the definition of "ordered").
+- `OpSelect` — a bitwise mux; no floating-point semantics at all.
+
+The composed sequence is six instructions (vs. five for Option 1 or four
+for the original workaround), but the instruction count is irrelevant: this
+is a future-op concern, not a hot path we are optimizing today.
+
+**The composed min(a, b) sequence for SPIR-V:**
+
+```
+%is_nan_a    = OpIsNan %bool %a
+%is_nan_b    = OpIsNan %bool %b
+%lt          = OpFOrdLessThan %bool %a %b   ; false if either is NaN
+%min_non_nan = OpSelect %f64 %lt %a %b
+%min_b_nan   = OpSelect %f64 %is_nan_b %b %min_non_nan
+%result      = OpSelect %f64 %is_nan_a %a %min_b_nan
+```
+
+For max(a, b), replace `OpFOrdLessThan` with `OpFOrdGreaterThan` and swap
+the `%a %b` arguments in `%min_non_nan`.
+
+This is not a narrowing of the I11 claim. I11 is fully satisfied on Vulkan
+by taking ownership of NaN semantics at the lowering boundary rather than
+delegating to OpFMin. The claim holds: NaN propagates through min/max on
+every backend.
+
+Options 2 (WeakOnComparison documentation) and the original Option 1
+(OpIsNan guard around OpFMin) are not acceptable. Option 2 fragments I11.
+Option 1 leaves a latent dependency on undefined OpFMin behavior.
 
 **Actions:**
 
-- The capability matrix row for Vulkan min/max (currently in
-  `capability-matrix-vulkan-row.md` under "OpFMin/OpFMax — future") must
-  be updated to reflect Option 1 as the decided approach. The `status`
-  field changes from `Partial (I11-conditional)` to `Supported (workaround
-  required)` and the notes section documents the four-instruction pattern.
-  Naturalist to update the stub; pathmaker incorporates when Peak 7 starts.
+- **vendor-bugs.md entry VB-001** (created 2026-04-11) documents this gap
+  and the workaround. Trek-wide policy: when any team member finds a vendor
+  IEEE-754 gap, log it in `vendor-bugs.md` with the workaround.
 
-- When the .tam IR adds a min/max op (not yet), pathmaker must document in
-  the op's spec entry: "Vulkan backend emits the four-instruction NaN-safe
-  sequence, not bare OpFMin/OpFMax."
+- **capability-matrix-vulkan-row.md** (at `peak7-spirv/`) must be updated:
+  the OpFMin/OpFMax row status changes from `Partial (I11-conditional)` to
+  `Supported (composition required — never emit OpFMin/OpFMax)` and the
+  notes section documents the six-instruction sequence above. Scout to
+  update the stub; pathmaker incorporates when Peak 7 starts.
 
-- The Peak 7 campsite 7.1 pre-flight checklist (see below) must include
-  confirming this workaround against the device before implementation begins.
+- **When the .tam IR adds a min/max op** (not in Phase 1 today), pathmaker
+  must document in the op's spec entry: "Vulkan backend emits the
+  six-instruction composed NaN-safe sequence. OpFMin and OpFMax are never
+  emitted."
+
+- **Peak 3 (PTX):** PTX does not share this gap — `min.NaN.f64` and
+  `max.NaN.f64` are NaN-propagating by spec. Peak 3 pathmaker must use
+  these variants, not bare `min.f64` / `max.f64`.
+
+- **The Peak 7 campsite 7.1 pre-flight checklist** must confirm the
+  composed sequence against the device before implementation begins.
 
 - No campsite is currently blocked by this decision. It is a scope
   clarification for a future op, analogous to ESC-001's treatment of

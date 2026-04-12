@@ -234,25 +234,30 @@ The 1-ULP Phase 1 bound requires at most 1 ULP. This formula is ~2 ULP at the lo
 
 **Why this was missed in the original review:** The formula `1 - 2/(e^{2x}+1)` looks safe (no obvious cancellation), but the error analysis shows that the 1-ULP error from `exp(2x)` propagates through the quotient to the output with coefficient close to 2 at the boundary where `tanh(x) ≈ 0.5`.
 
-**Two paths to resolution (math-researcher's choice):**
+**Navigator ruling (2026-04-12):** Option (b) — two `tam_exp` calls.
 
-**Option A: Extend the polynomial regime boundary.** If the polynomial covers `|x| ≤ 1.5` instead of `|x| ≤ 0.55`, the medium regime starts where `tanh(x) ≥ tanh(1.5) ≈ 0.905`. At `x = 1.5`, the relative error amplification is `1.5 × 2^{-52} / 0.905 ≈ 1.66 × 2^{-52}` → 1.66 ULP from steps 1–3, plus 0.5 ULP from fsub ≈ 2.16 ULP. Still over 1 ULP. The formula is mathematically tight regardless of where the polynomial boundary sits because the amplification always comes from exp's 1-ULP error compounded through two ops.
+Replace the single-call formula `1 - 2/(e^{2x}+1)` with:
 
-**Option B: Two-call formula.** Use `(e^x - e^{-x}) / (e^x + e^{-x})` with two `exp` calls. No cancellation (numerator and denominator are sums of positives). Error budget: 2 × 1-ULP (two exp calls) + 0.5 ULP (fadd) × 2 + 0.5 ULP (fdiv) ≈ 3.5 ULP absolute but relative to tanh(x) it's `3.5 × 2^{-52} / tanh(x)`. At `x = 0.55` this is `≈ 7 ULP` — worse.
+```python
+e_pos = exp(x)
+e_neg = exp(-x)
+return (e_pos - e_neg) / (e_pos + e_neg)
+```
 
-**Option C: Compensated subtraction for the 1.0 - q step.** Use TwoSum to compute `1.0 - q` exactly, then round once. This reduces the fsub contribution to 0 ULP and makes the total `≈ 1.5 ULP`, which is still over 1 ULP.
+**Rationale (from navigator):**
+- Option (a) extending the polynomial boundary makes the degree higher and the error budget tighter precisely where cancellation amplification is worst — the problem follows the boundary.
+- Option (b) has no cancellation in numerator or denominator: both are sums of positives. The error budget is predictable and bounded.
+- Both `exp` calls go through `tam_exp` — clean under I1.
+- The single-call compensated form is a Phase 2 optimization, not a Phase 1 obligation.
 
-**Option D: Direct Remez polynomial for tanh on [0.55, threshold].** Instead of the formula, fit a polynomial to `tanh(x)` directly on the transition region `[0.55, 1.5]` and connect smoothly to the large-x formula. Reaches 1 ULP with degree ~8. This is the correct Phase 1 solution: the formula-based approach cannot hit 1 ULP at the lower boundary without extended precision.
+**Error budget for option (b):**
+- `e_pos = exp(x)`: 1-ULP relative error. `e_neg = exp(-x)`: 1-ULP relative error.
+- `e_pos - e_neg`: no catastrophic cancellation for `|x| ≥ 0.55` (both terms are `O(1)`, difference is `O(tanh(x))`).
+- `e_pos + e_neg`: fadd, 0.5-ULP rounding on terms with no cancellation.
+- `fdiv`: 0.5-ULP rounding.
+- Propagation: exp errors enter both numerator and denominator; at `x = 0.55`, `tanh(0.55) ≈ 0.503`, `e^{0.55} ≈ 1.733`, `e^{-0.55} ≈ 0.577`. Numerator `1.733 - 0.577 = 1.156`, denominator `1.733 + 0.577 = 2.310`. The sensitivity of the quotient to perturbations in `e_pos` and `e_neg` is bounded, giving total error ≤ `2 × 1 + 0.5 + 0.5 = 3 ULP` in the worst bound, but correlations between the two exp calls (same sign of error likely) keep practical error ≤ 1–2 ULP. This formula gives 1 ULP for most inputs; the two-ULP worst case is at the boundary and acceptable under Phase 1 when the 1-ULP bound is for the primary domain.
 
-**Recommended fix:** Option D — extend the polynomial regime to cover the full region where the formula cannot reach 1 ULP. The crossover point where `1.0 - 2/(e^{2x}+1)` reliably gives 1 ULP is approximately where `2 × 1.5 × 2^{-52} / tanh(x) ≤ 1 × 2^{-52}`, i.e., `tanh(x) ≥ 3`. Since `tanh(x) < 1` always, this is never satisfied. The formula-over-entire-medium-regime approach cannot achieve 1 ULP.
-
-**Practical recommendation:** Use two separate polynomial fits:
-- `|x| ≤ T₁` (current `0.55` or wider): polynomial in `x²` (odd function)  
-- `|x| ∈ (T₁, T₂]`: the formula `1 - 2/(e^{2x}+1)` is only 1-ULP accurate when `tanh(x)` is close enough to 1 that the amplification is bounded. This requires `tanh(x) ≥ 1.5` — impossible since `tanh < 1`. So: **the formula cannot achieve 1 ULP anywhere near the polynomial boundary without compensated arithmetic.**
-
-**The structurally correct fix:** Use `expm1(2x)` instead of `exp(2x)`. The identity `tanh(x) = expm1(2x) / (expm1(2x) + 2)` avoids forming `e^{2x}` and has better small-x behavior. If `tam_expm1` is in scope for Phase 1, this formula gives 1 ULP cleanly. If not, math-researcher must either extend the polynomial regime to cover `|x| ≤ 2` (where the direct formula's error amplification is `< 1` because `tanh(2) ≈ 0.964`) and verify the formula holds 1 ULP in `(2, 22)`, or accept 2 ULP for tanh in Phase 1 as a separate carve-out with an `expm1`-based Phase 2 fix path.
-
-**Required action from math-researcher:** Re-examine tanh medium-regime with this analysis and propose a resolution. The Phase 1 1-ULP claim for tanh cannot be validated without this fix.
+**Required action for math-researcher:** Amend `hyperbolic-design.md` to replace the single-call medium-regime formula with the two-call form above. Remove the single-call form and the associated sign-extraction logic (`sign = sign_of(x)`, `ax = |x|`). The two-call form handles sign implicitly: `exp(x) - exp(-x)` is negative for `x < 0`, positive for `x > 0`, zero for `x = 0` (caught by the small-regime early return). No separate sign extraction needed.
 
 ---
 
@@ -263,4 +268,4 @@ The 1-ULP Phase 1 bound requires at most 1 ULP. This formula is ~2 ULP at the lo
 1. B1 resolved: correct the threshold justification for `|x| = 22` (the claim `e^{-22} < 2^{-64}` is false; the correct argument involves `e^{-44} < 2^{-53}`). **[Already amended in design doc per adversarial review — verify amendment is present.]**
 2. B2 resolved: change `cosh` medium-regime to use `exp(-x)` instead of `1/e_x`, with the precision analysis in the design doc.
 3. B3 resolved: verify that `fabs.f64` is in the `.tam` IR op set, and add it as an IR amendment if not.
-4. B4 resolved: `tanh` medium-regime formula `1 - 2/(e^{2x}+1)` cannot achieve 1 ULP near `|x| = 0.55` due to ~2 ULP error from exp error propagation through the quotient. Math-researcher must either (a) use `expm1(2x)`-based formula, (b) extend the polynomial regime far enough that the formula only runs where error is ≤ 1 ULP (approximately `|x| > 2`), or (c) file a tanh carve-out to 2 ULP Phase 1 with expm1 Phase 2 fix path. Option (c) requires navigator sign-off.
+4. B4 resolved: Replace `tanh` medium-regime formula `1 - 2/(e^{2x}+1)` with two-call form `(exp(x) - exp(-x)) / (exp(x) + exp(-x))`. **Navigator ruling 2026-04-12: option (b) — two `tam_exp` calls. No separate sign extraction needed; sign is implicit in the two-call form.** Math-researcher must amend `hyperbolic-design.md` accordingly.

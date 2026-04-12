@@ -50,14 +50,15 @@ caveats:
       OpExecutionMode %main DenormPreserve 64
     but this requires shaderDenormPreserveFloat64 = true (false here).
 
-  NaNPropagation: Strict (conditional on SignedZeroInfNanPreserve)
+  NaNPropagation: Strict (SignedZeroInfNanPreserve confirmed supported)
     SPV_KHR_float_controls: SignedZeroInfNanPreserve execution mode
     prevents optimizations that assume no NaN/inf. Without it, arithmetic
     ops may assume NaN cannot occur and optimize accordingly.
-    Device property: shaderSignedZeroInfNanPreserveFloat64 — NOT QUERIED
-    in terrain report (see uncertainty flag below).
+    Device property: shaderSignedZeroInfNanPreserveFloat64 = true
+    CONFIRMED 2026-04-11 via vulkaninfo (VkPhysicalDeviceVulkan12Properties).
     SPIR-V emit to enable: OpExecutionMode %main SignedZeroInfNanPreserve 64
     I11 compliance for arithmetic (OpFAdd/OpFMul etc.) requires this mode.
+    This device supports it — no ESC-003 needed.
 
   RoundingMode: RTE_Guaranteed
     Device: shaderRoundingModeRTEFloat64 = true (confirmed in terrain report)
@@ -86,8 +87,8 @@ oracle_profile: BitExact (with CPU)
 
 notes:
   - Must emit OpExecutionMode %main RoundingModeRTE 64 explicitly.
-  - Must emit OpExecutionMode %main SignedZeroInfNanPreserve 64
-    (pending confirmation that device supports it — query shaderSignedZeroInfNanPreserveFloat64).
+  - Must emit OpExecutionMode %main SignedZeroInfNanPreserve 64.
+    Device support confirmed: shaderSignedZeroInfNanPreserveFloat64 = true.
   - std430 layout required: OpDecorate %_arr_f64 ArrayStride 8.
   - All four ops confirmed available for fp64 on this device.
 ```
@@ -262,11 +263,13 @@ caveats:
 
   Extension dependency: VK_EXT_shader_atomic_float
     Required for OpAtomicFAddEXT on fp64 buffers.
-    UNCERTAINTY FLAG: not confirmed whether this extension is available
-    on this device. Scout terrain report does not query it.
-    Alternative: tree reduce to a single thread, then non-atomic store.
-    This avoids the extension entirely and is I5-compliant when combined
-    with Peak 6's fixed-order reduction.
+    CONFIRMED 2026-04-11: VkPhysicalDeviceShaderAtomicFloatFeaturesEXT present.
+      shaderBufferFloat64Atomics   = true
+      shaderBufferFloat64AtomicAdd = true
+    Extension is available and fp64 atomic add is supported on this device.
+    Preferred design is still tree-reduce-to-one (avoids atomics entirely,
+    I5-compliant without the extension) — extension availability just means
+    Phase 1 is not blocked if atomicAdd is used temporarily.
 
 order_strategies: [TreeFixedFanout(2)]
   SequentialLeft is not implementable as a single atomic (would require
@@ -291,69 +294,87 @@ notes:
 
 ---
 
-### `OpFMin` / `OpFMax` (future — not in Phase 1 IR)
+### `.tam min.f64` / `.tam max.f64` → SPIR-V composition (future — not in Phase 1 IR)
 
 **These ops are NOT in the Phase 1 IR op set.** This entry is a forward
-specification for when min/max ops are added. ESC-002 is OPEN (filed
-2026-04-11, navigator decision: Option 1 — mandate workaround).
+specification for when min/max ops are added. ESC-002 is DECIDED (filed
+2026-04-11, team-lead ruling: Option 3 — never emit OpFMin or OpFMax).
+Logged as VB-001 in `vendor-bugs.md`.
 
 ```
-status: Supported (workaround required — ESC-002 decision: Option 1)
+status: Supported (composition required — never emit OpFMin/OpFMax)
 
 caveats:
-  NaNPropagation: Strict (via mandatory four-instruction workaround)
-    ESC-002 (navigator, 2026-04-11): Option 1 selected — mandate the
-    four-instruction NaN-safe sequence for all Vulkan min/max emissions.
+  NaNPropagation: Strict (via six-instruction composed sequence)
+    ESC-002 (team-lead, 2026-04-11): Option 3 selected. Do not emit OpFMin
+    or OpFMax. These instructions have undefined NaN behavior in SPIR-V core
+    ("if either operand is a NaN, the result is undefined") and cannot appear
+    in a faithful lowering of a .tam min/max op. Compose from well-defined
+    primitives that individually have correct IEEE-754 specs.
 
-    Background: SPIR-V OpFMin/OpFMax — "If either operand is a NaN,
-    the result is undefined." GLSL.std.450 NMin/NMax explicitly return
-    the non-NaN operand (wrong direction for I11). SignedZeroInfNanPreserve
-    does not extend to OpFMin/OpFMax per the float_controls spec.
-    No native SPIR-V instruction provides I11-compliant min/max.
+    Background: GLSL.std.450 NMin/NMax explicitly return the non-NaN operand
+    (wrong direction for I11). SignedZeroInfNanPreserve does not extend to
+    OpFMin/OpFMax per the float_controls spec. No native SPIR-V instruction
+    provides I11-compliant min/max.
 
-    MANDATORY EMIT PATTERN for every .tam min.f64 / max.f64 on Vulkan:
-      %is_nan_a  = OpIsNan %bool %a
-      %is_nan_b  = OpIsNan %bool %b
-      %either_nan = OpLogicalOr %bool %is_nan_a %is_nan_b
-      %raw_min   = OpFMin %f64 %a %b          (or OpFMax for max)
-      %result    = OpSelect %f64 %either_nan %nan_const %raw_min
+    MANDATORY EMIT SEQUENCE for every .tam min.f64 on Vulkan:
+      %is_nan_a    = OpIsNan %bool %a
+      %is_nan_b    = OpIsNan %bool %b
+      %lt          = OpFOrdLessThan %bool %a %b   ; false if either is NaN
+      %min_non_nan = OpSelect %f64 %lt %a %b
+      %min_b_nan   = OpSelect %f64 %is_nan_b %b %min_non_nan
+      %result      = OpSelect %f64 %is_nan_a %a %min_b_nan
 
-    Cost: 4 extra instructions per min/max call. Correct by construction.
-    PTX contrast: min.NaN.f64 (one instruction, native I11 compliance).
+    For max(a, b): replace OpFOrdLessThan with OpFOrdGreaterThan and
+    adjust OpSelect operand order accordingly.
+
+    This sequence is correct by construction: OpIsNan is always well-defined,
+    OpFOrdLessThan returns false when either operand is NaN (IEEE ordered
+    comparison), OpSelect is a bitwise mux with no floating-point semantics.
+    No dependency on undefined behavior at any point.
+
+    PTX contrast: min.NaN.f64 (one instruction, native I11 compliance, ISA 7.5+).
+    CPU contrast: explicit is_nan guards in interpreter (same logical structure).
 
   SubnormalHandling: ImplementationDefined (same as arithmetic — ESC-001)
-  RoundingMode: N/A
+  RoundingMode: N/A (min/max is exact, no rounding)
   FMAContraction: N/A
 
 order_strategies: N/A (single-element comparison, no accumulation)
 oracle_profile: BitExact
-  With the workaround, NaN inputs propagate to NaN output on all backends.
-  Non-NaN inputs: min/max is exact (no rounding), BitExact with CPU.
+  Composed sequence with no undefined ops → NaN propagates correctly.
+  Non-NaN inputs: result is exact (comparison + select, no rounding).
+  BitExact with CPU interpreter and PTX backend.
 
 notes:
-  - Do NOT use bare OpFMin/OpFMax or GLSL.std.450 FMin/FMax: undefined NaN.
-  - Do NOT use GLSL.std.450 NMin/NMax: these suppress NaN (wrong direction).
+  - NEVER emit OpFMin, OpFMax, GLSL.std.450 FMin, or GLSL.std.450 FMax.
+    All have undefined NaN behavior. This is an absolute prohibition.
+  - NEVER emit GLSL.std.450 NMin/NMax: explicitly suppress NaN (wrong direction).
+  - The six-instruction sequence is the only correct Vulkan lowering.
   - Pathmaker must document in the .tam IR op entry for min/max:
-    "Vulkan backend emits the four-instruction NaN-safe sequence."
-  - ESC-002 filed: navigator/escalations.md. Status: OPEN.
+    "Vulkan backend composes from OpIsNan + OpFOrdLessThan + OpSelect.
+     OpFMin/OpFMax are never emitted."
+  - ESC-002: navigator/escalations.md. Status: DECIDED (Option 3).
+  - VB-001: vendor-bugs.md. Status: MITIGATED.
 ```
 
 ---
 
-## Open Device Queries (for Peak 7 pre-flight checklist)
+## Device Property Status (ESC-002 pre-flight queries — RESOLVED 2026-04-11)
 
-The following properties were NOT queried in `scout-vulkan-terrain.md` and must
-be checked before Peak 7 campsite 7.1 begins:
+All four ESC-002 pre-flight queries confirmed via `vulkaninfo` on RTX PRO 6000 Blackwell.
 
-| Property | Why needed | Expected value |
+| Property | Status | Value |
 |---|---|---|
-| `shaderSignedZeroInfNanPreserveFloat64` | I11 compliance for arithmetic ops | Unknown — query required |
-| `VK_EXT_shader_atomic_float` (extension) | AtomicFAdd for Phase 1 ReduceBlockAdd | Unknown — query required |
-| `shaderDenormPreserveFloat64` (execution mode) | ESC-001 — already known: false | false (confirmed) |
-| `maxComputeWorkGroupSize[0]` | Must be ≥ 256 for fixed workgroup size | Expected ≥ 1024 for Blackwell |
+| `shaderSignedZeroInfNanPreserveFloat64` | CONFIRMED | **true** — SignedZeroInfNanPreserve 64 execution mode CAN be emitted. I11 on arithmetic ops achievable. |
+| `VK_EXT_shader_atomic_float` | CONFIRMED | **Present** — `shaderBufferFloat64AtomicAdd = true`. OpAtomicFAddEXT on fp64 supported. |
+| `shaderDenormPreserveFloat64` | CONFIRMED (ESC-001) | **false** — Subnormal handling undefined. ESC-001 resolution applies. |
+| `shaderDenormFlushToZeroFloat64` | CONFIRMED (ESC-001) | **false** — GPU makes no denorm guarantee either way. |
+| `shaderRoundingModeRTEFloat64` | CONFIRMED (terrain report) | **true** — RTE execution mode supported and recommended. |
 
-To query, run: `vulkaninfo --json | python -c "import sys,json; d=json.load(sys.stdin); ..."` 
-or check `vulkan.gpuinfo.org` for this device model.
+**All pre-flight queries complete. No ESC-003 needed. Campsite 7.1 may proceed when
+Peak 7 is scheduled.** The I11 on arithmetic path is achievable via
+`OpExecutionMode %main SignedZeroInfNanPreserve 64` on this device.
 
 ---
 
@@ -367,40 +388,39 @@ or check `vulkan.gpuinfo.org` for this device model.
 | I5 (deterministic reductions) | VIOLATION in Phase 1 | atomicAdd non-deterministic; Peak 6 tree-reduce fixes |
 | I6 (no silent fallback) | CLEAN | fp64 confirmed (`shaderFloat64 = true`) |
 | I8 (first-principles libm) | CLEAN | SPIR-V arithmetic ops, no rcp/sqrt.approx equivalents in core |
-| I11 (NaN propagation) | CONDITIONAL | Requires SignedZeroInfNanPreserve for arithmetic; OpFMin/OpFMax NaN undefined |
-| ESC-001 (subnormals) | OPEN | Both denorm flags false; summit test 7.11 must skip subnormal inputs on this device |
-| ESC-002 (NaN in min/max) | LATENT | Not a blocker today (no min/max in Phase 1 IR); escalate before min/max ops are added |
+| I11 (NaN propagation) | ACHIEVABLE | Arithmetic: SignedZeroInfNanPreserve 64 confirmed supported. Min/max: six-instruction composition (ESC-002 Option 3, VB-001) |
+| ESC-001 (subnormals) | SCOPED | Both denorm flags false; summit test 7.11 skips subnormal inputs on this device |
+| ESC-002 (NaN in min/max) | DECIDED | Option 3: never emit OpFMin/OpFMax. Composed from OpIsNan + OpFOrdLessThan + OpSelect. Not a Phase 1 blocker. |
 
 ---
 
-## Research Uncertainties — Flagged Honestly
+## Research Uncertainties — Status
 
-Items marked UNCERTAINTY FLAG above, summarized:
+All ESC-002 pre-flight queries resolved 2026-04-11. Remaining uncertainty:
 
-1. **`shaderSignedZeroInfNanPreserveFloat64` on this device.** The terrain report
-   didn't query it. I11 compliance for OpFAdd/OpFMul requires this execution mode
-   to be emitted, and emitting it requires the device to support the property.
-   Must be confirmed before campsite 7.3 (arithmetic op emit).
+**Open (spec-level, not device-level):**
 
-2. **SignedZeroInfNanPreserve scope for OpExtInst (fsqrt).** The float_controls
-   spec text applies to arithmetic instructions. Whether it applies to extended
-   instructions (GLSL.std.450 Sqrt) is not confirmed. NVIDIA in practice
-   preserves NaN through sqrt, but the spec doesn't mandate it.
+1. **SignedZeroInfNanPreserve scope for OpExtInst (fsqrt).** The float_controls
+   spec text applies to arithmetic instructions. Whether it extends to
+   GLSL.std.450 Sqrt (an OpExtInst) is not explicitly specified. NVIDIA in
+   practice preserves NaN through sqrt. Conservative approach: emit an explicit
+   `OpIsNan` guard for fsqrt inputs if I11 on sqrt becomes a requirement.
+   Currently fsqrt NaNPropagation is documented as ImplementationDefined and
+   oracle_profile is WithinULP(1) — consistent with this uncertainty.
 
-3. **VK_EXT_shader_atomic_float availability.** Required for Phase 1 atomicAdd
-   on fp64 output slots. If unavailable, Phase 1 must use tree-reduce-to-one
-   approach (which is the better design anyway — no atomics needed).
+2. **OpFMin/OpFMax NaN semantics under SignedZeroInfNanPreserve.** Confirmed
+   not covered (ESC-002 finding). Resolved: OpFMin/OpFMax are never emitted
+   (ESC-002 Option 3, VB-001). Composed from OpIsNan + OpFOrdLessThan +
+   OpSelect. Not an open question — a documented known prohibition.
 
-4. **OpFMin/OpFMax NaN semantics under SignedZeroInfNanPreserve.** The spec
-   text does not explicitly cover this case. This is the ESC-002 candidate.
+**Confirmed (sourced from vulkaninfo or terrain report or spec):**
 
-Items I am confident about (sourced from terrain report or confirmed spec):
-
-- NoContraction decoration (42u32): confirmed in spirv crate, confirmed in spec
-- RoundingModeRTE on this device: confirmed (shaderRoundingModeRTEFloat64 = true)
-- fp64 shader support: confirmed (shaderFloat64 = true)
-- Subnormal handling undefined: confirmed (both flags false, ESC-001)
-- OpFOrd* comparison NaN behavior: IEEE 754 ordered comparison, returns false for NaN
-  (this is correct and expected behavior, not an I11 issue)
-- SPIR-V 1.4 on this device: confirmed
-- std430 layout requirement: confirmed (ArrayStride 8 for fp64 elements)
+- `shaderSignedZeroInfNanPreserveFloat64 = true` (confirmed 2026-04-11)
+- `VK_EXT_shader_atomic_float` present, `shaderBufferFloat64AtomicAdd = true` (confirmed 2026-04-11)
+- NoContraction decoration (42u32): spirv crate + spec
+- `shaderRoundingModeRTEFloat64 = true`: terrain report
+- `shaderFloat64 = true`: terrain report
+- Both denorm flags false: terrain report + ESC-001
+- OpFOrd* comparison NaN behavior: IEEE 754 ordered comparison (returns false for NaN — correct, not an I11 issue)
+- SPIR-V 1.4 on this device: terrain report
+- std430 layout (ArrayStride 8): terrain report

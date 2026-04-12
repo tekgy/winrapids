@@ -1733,3 +1733,77 @@ held. Nothing was papered over.
 — naturalist (Entry 016 end)
 
 ---
+
+## Entry 017 — 2026-04-11 — The pre-flight queries answer well
+
+Noticed I'd sent the ESC-002 scout message to myself (naturalist and scout
+are the same agent). So I ran the queries directly.
+
+`vulkaninfo --json` returns only loader warnings on this machine — the JSON
+mode doesn't emit device data to stdout. The text mode works. Grep for the
+relevant fields gave clean results.
+
+### The result that matters most
+
+`shaderSignedZeroInfNanPreserveFloat64 = true`
+
+This is the one I was worried about. If it had been false, I11 on the Vulkan
+arithmetic path would have needed a different approach — the execution mode
+can't be requested if the device doesn't report support, and without it
+the spec allows the driver to assume NaN cannot appear in arithmetic ops.
+We would have needed OpIsNan guards on every arithmetic op, not just min/max.
+
+It's true. The device supports it. We emit `OpExecutionMode %main
+SignedZeroInfNanPreserve 64` at the top of every SPIR-V module and I11 holds
+for OpFAdd, OpFMul, OpFDiv, OpFSqrt on this hardware. No ESC-003.
+
+### The second result
+
+`VK_EXT_shader_atomic_float` is present and `shaderBufferFloat64AtomicAdd =
+true`. This means Phase 1's atomicAdd path is not blocked by a missing
+extension. Also irrelevant to correctness because Phase 6 replaces atomicAdd
+with tree reduce — but good to know the extension is there if a Phase 1
+prototype needs it. The full atomic features block also showed
+`shaderSharedFloat64AtomicAdd = true` and `shaderBufferFloat64Atomics = true`.
+More capability than we need for Phase 1. Blackwell is generous here.
+
+### What this closes
+
+The capability matrix stub for Vulkan now has no open uncertainty flags on
+device properties. Everything in the "confirmed" column is actually confirmed.
+The remaining uncertainty is spec-level, not device-level:
+
+- SignedZeroInfNanPreserve scope for OpExtInst (fsqrt) — spec doesn't
+  explicitly say it covers extended instructions. NVIDIA preserves NaN through
+  sqrt in practice. Conservative path: add an OpIsNan guard if needed.
+- OpFMin/OpFMax NaN — ESC-002. Already decided. Workaround mandated.
+
+Both are documented. Neither is unresolved.
+
+### The arc
+
+ESC-001 found a gap (subnormal handling undefined). Named it, scoped it, moved on.
+ESC-002 found a gap (min/max NaN undefined natively). Named it, mandated the
+workaround, moved on.
+The pre-flight queries filled in four blanks in the capability matrix. The
+best-case answer came back for the most load-bearing one.
+
+The Vulkan backend for Peak 7 has a clean spec to implement against. When
+Peak 7 is scheduled, the implementer picks up `capability-matrix-vulkan-row.md`
+and knows exactly which SPIR-V execution modes to emit, which decorations go
+on which result IDs, and exactly what happens in the one edge case (min/max NaN)
+that has no native equivalent.
+
+That's what pre-work is for.
+
+— naturalist (Entry 017 end)
+
+---
+
+## Entry 018 — aristotle, 2026-04-12 — Cross-reference: f64 addendum landing
+
+Structural ULP budget analysis (both worst-case and √K framings) committed at `e05d495` as part of "RFA doc: I8 certificate + variance locked to option A; Q2 registry pre-review" — content is at `peak-aristotle/f64-base-precision-phases.md`. The commit message does not reference the addendum (the f64 phase doc was accidentally swept into an RFA-focused commit); this log entry is the canonical pointer for future history searches.
+
+— aristotle (Entry 018 end)
+
+---

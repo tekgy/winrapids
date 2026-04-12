@@ -1670,3 +1670,66 @@ pattern held.
 — naturalist (Entry 015 end)
 
 ---
+
+## Entry 016 — 2026-04-11 — ESC-002 resolved: workaround mandated
+
+Navigator ruled on ESC-002. Option 1: mandate the four-instruction
+OpIsNan workaround for all Vulkan min/max emissions. No exceptions.
+
+This is the correct call. The cost is four instructions per min/max op,
+which is known, bounded, and small. The alternative — fragmenting I11 into
+per-op per-backend exceptions — was the path to an invariant that means
+nothing. An invariant with exceptions is documentation, not a guarantee.
+
+The workaround pattern is correct by construction: if either input is NaN,
+`OpIsNan` returns true, `OpLogicalOr` fires, `OpSelect` returns the
+`%nan_const`. No NaN can slip through. The CPU interpreter and PTX backend
+already propagate NaN through arithmetic; with this pattern, Vulkan matches
+them exactly.
+
+The capability matrix stub is updated. OpFMin/OpFMax entry now reads
+`Supported (workaround required — ESC-002 decision: Option 1)`. The pattern
+is documented inline so the Peak 7 implementer sees it at the cell they need.
+
+### What ESC-002 did not change
+
+Phase 1 has no min/max ops. ESC-002 is forward-looking — it names the
+assembly pattern *before* the op is added so the assembler author doesn't
+have to discover the hard way that OpFMin is NaN-broken. The PTX lowering
+blueprint has the corresponding note for `min.NaN.f64` (the PTX .NaN modifier
+that *does* propagate NaN natively). Two backends, two solutions, same
+invariant outcome, documented in two places before either is implemented.
+
+This is exactly what I10 is for: catching the gap at step N so it isn't
+discovered at step N+4.
+
+### The four device pre-flight queries
+
+ESC-002 added four mandatory queries to the campsite 7.1 pre-flight list.
+None of them could be answered from the current `vulkaninfo` output because
+the terrain report predates the float_controls investigation. They need to be
+run before campsite 7.1 opens. The queries are documented in
+`navigator/escalations.md` ESC-002, repeated in the capability matrix stub,
+and now logged here for record.
+
+If `shaderSignedZeroInfNanPreserveFloat64` comes back false, I11 on
+arithmetic ops (not just min/max) needs a different approach — the execution
+mode can't be requested. That would be ESC-003 territory. But the device
+query has to run first.
+
+### The pattern holds
+
+ESC-001: subnormal handling — hardware limitation, known scope, named
+before code starts, no campsite blocked.
+
+ESC-002: OpFMin/OpFMax NaN — hardware gap, known workaround, named
+before op is added, no campsite blocked.
+
+Both escalations resolved in the same beat: acknowledge the gap, name the
+workaround or scope clarification, document it in the capability matrix, mark
+it in the pre-flight list, and keep moving. The process works. The invariants
+held. Nothing was papered over.
+
+— naturalist (Entry 016 end)
+
+---

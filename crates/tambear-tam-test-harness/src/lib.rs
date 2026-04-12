@@ -26,10 +26,11 @@ pub mod backend;
 pub mod harness;
 pub mod hard_cases;
 pub mod cpu_backend;
+pub mod ulp_harness;
 
 pub use tolerance::ToleranceSpec;
 pub use backend::{TamBackend, NullBackend};
-pub use harness::{run_all_backends, assert_cross_backend_agreement, AgreementReport};
+pub use harness::{run_all_backends, assert_cross_backend_agreement, assert_cross_backend_agreement_named, compare_backends, AgreementReport};
 pub use cpu_backend::CpuInterpreterBackend;
 
 // ---------------------------------------------------------------------------

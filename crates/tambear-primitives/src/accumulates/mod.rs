@@ -135,6 +135,12 @@ pub fn execute_pass_cpu(
         Op::Or  => 0.0,
     }).collect();
 
+    // Track whether Min/Max ever saw a real (non-NaN) element. If not, the
+    // identity value must not escape as a result — return NaN instead.
+    // (Bug 2: NaN inputs are silently ignored by IEEE comparisons; I3/I4.)
+    // (Bug 3: empty input or all-NaN input leaks ±Inf as a plausible value.)
+    let mut min_max_n_real = 0usize;
+
     // Single pass through data — all expressions evaluated per element
     let empty_vars = std::collections::HashMap::new();
     for (i, &x) in data.iter().enumerate() {
@@ -144,12 +150,32 @@ pub fn execute_pass_cpu(
             let val = crate::tbs::eval(expr, x, second, reference, &empty_vars);
             match pass.op {
                 Op::Add => accs[j] += val,
-                Op::Max => if val > accs[j] { accs[j] = val; },
-                Op::Min => if val < accs[j] { accs[j] = val; },
+                // NaN-sticky: if val is NaN, IEEE `>` / `<` return false and the
+                // accumulator silently keeps its old value. Force NaN to propagate.
+                Op::Max => {
+                    if val.is_nan() { accs[j] = f64::NAN; }
+                    else if val > accs[j] { accs[j] = val; }
+                },
+                Op::Min => {
+                    if val.is_nan() { accs[j] = f64::NAN; }
+                    else if val < accs[j] { accs[j] = val; }
+                },
                 Op::Mul => accs[j] *= val,
                 Op::And => accs[j] = if accs[j] > 0.5 && val > 0.5 { 1.0 } else { 0.0 },
                 Op::Or  => accs[j] = if accs[j] > 0.5 || val > 0.5 { 1.0 } else { 0.0 },
             }
+        }
+        // Count real elements for the empty/all-NaN guard below.
+        if matches!(pass.op, Op::Min | Op::Max) && !x.is_nan() {
+            min_max_n_real += 1;
+        }
+    }
+
+    // Post-loop guard: if no real element was ever processed, the identity
+    // value (±Inf) must not escape. Return NaN to signal "no data."
+    if matches!(pass.op, Op::Min | Op::Max) && min_max_n_real == 0 {
+        for acc in accs.iter_mut() {
+            *acc = f64::NAN;
         }
     }
 

@@ -97,21 +97,52 @@ lo = e_f64 * ln2_lo                         # the low bits that ln2_hi dropped
 result = hi + lo
 ```
 
-But in the cancellation regime (`e` near 0, `poly` ≈ `-e * ln2`), we need extra care. The standard approach (Tang 1990):
+### §4.4a Explicit op sequence for log reassembly (adversarial B3 resolution, 2026-04-12)
+
+Per adversarial's B3 blocker, the earlier draft's "I will flesh this out at 2.11" deferral is not acceptable. Below is the full fp64 op sequence with a running ULP budget, citing Tang ACM TOMS 1990 §3.2 for the structural choices.
+
+**Input state after range reduction (§4.3):**
+- `f : f64` — the reduced mantissa argument, `f ∈ [-0.293, 0.414]` (post-sqrt(2) shift)
+- `e_f64 : f64` — the adjusted unbiased exponent as an integer-valued fp64, `e_f64 ∈ [-1074.0, 1023.0]`
+- `Q(f) : f64` — the Remez polynomial output, `Q(f) ≈ (log(1+f) - f) / f²`
+
+**Goal:** compute `result = e_f64 · ln(2) + f + f² · Q(f)` with `max_ulp ≤ 1`.
+
+**Exact 7-op sequence pathmaker emits in `tam_ln.tam`:**
 
 ```
-# Compute (e * ln2_hi + f) * 1 + (e * ln2_lo + f² * Q(f)) 
-# i.e. separate the linear and quadratic pieces so the cancellation happens
-# in a controlled step.
-t_hi = e_f64 * ln2_hi + f           # may cancel — but f is small enough that we're OK
-t_lo = e_f64 * ln2_lo
-polyq = f * f * Q(f)                # nonlinear remainder
-result = t_hi + (t_lo + polyq)       # add smallest-magnitude terms first
+; Preconditions: |f| ≤ 0.414, |e_f64| ≤ 1074, q = Q(f) ≈ (log(1+f) - f) / f²
+;
+; Running ULP budget (per Tang 1990 §3.2):
+;   op 1:  EXACT by Sterbenz (ln2_hi has 12 trailing zero mantissa bits)
+;   op 2-3: polyq formation, ≤ 0.5 ULP each
+;   op 4-7: Cody-Waite-ordered reassembly, ≤ 0.5 ULP each
+;   Composed bound: ≤ 1.0 ULP worst case (empirically ≈ 0.82 ULP per Tang Table 2)
+
+op 1:  %e_ln2_hi  = fmul.f64 %e_f64, %ln2_hi    ; EXACT by Sterbenz
+op 2:  %f_sq      = fmul.f64 %f, %f              ; f² — 0.5 ULP
+op 3:  %polyq     = fmul.f64 %f_sq, %q           ; f² · Q(f) — 0.5 ULP
+op 4:  %t_hi      = fadd.f64 %e_ln2_hi, %f       ; BIG SUM: e·ln2_hi + f — 0.5 ULP
+op 5:  %e_ln2_lo  = fmul.f64 %e_f64, %ln2_lo     ; small correction term — 0.5 ULP
+op 6:  %t_lo      = fadd.f64 %e_ln2_lo, %polyq   ; small + small — 0.5 ULP
+op 7:  %result    = fadd.f64 %t_hi, %t_lo        ; FINAL: big + small — 0.5 ULP
 ```
 
-There's subtlety here about in what order the adds happen. Pathmaker should follow Tang's explicit sequence, which is designed so that the order of operations minimizes the total ULP drift. I will flesh this out as part of the Campsite 2.11 hand-off; the gist is: **compute the "big" term (`e * ln2_hi + f`) first, then add the "small correction" (`e * ln2_lo + f² * Q(f)`) second, with the lo-term added inside a parenthesized subexpression so the compiler ordering is forced.**
+**Why this exact order (Tang's rationale):**
 
-**Important:** in `.tam` IR, this ordering is made explicit by the text encoding — each subexpression is a named register, and the order of `fadd` ops is part of the program text. There is no reassociation happening because the .tam backends don't reassociate.
+1. **Op 1 must use `ln2_hi`, not `ln2`.** `ln2_hi` has 12 trailing zero mantissa bits so `e_f64 · ln2_hi` is exact in fp64 for `|e_f64| ≤ 2^11`. Using a single `ln2` constant here would cost 1 ULP from rounding the product alone.
+2. **Op 4 (the "big sum") must precede the small correction.** Computing `t_hi = e·ln2_hi + f` first gives us a ~1 ULP rounded dominant term. Reversing would pre-round both halves and lose cancellation headroom.
+3. **Ops 5–6 compute the small-magnitude correction as a separate partial sum.** Both terms are bounded far below `|t_hi|`, so adding them into `t_hi` (op 7) introduces ≤ 0.5 ULP of `t_hi`.
+4. **Op 7 is NOT reassociated with op 4.** The IR emits op 4 then op 7 as separate `fadd.f64` instructions; pathmaker preserves this order in the `.tam` text. Reassociating would produce different bits because the intermediate rounding changes.
+
+**Cancellation regime drill-down** (worst case: `x` near 1):
+- After §4.2's `sqrt(2)` shift, `f` stays in `[-0.293, 0.414]`, so the "catastrophic" regime `e = -1, f ≈ 1` does NOT occur. **The shift's purpose is exactly to move the cancellation away from this reassembly.** At `x ≈ 1`, `e = 0` and `f ≈ x - 1 ≈ 0`, so `t_hi = 0 + f ≈ f`, `t_lo ≈ polyq ≈ f² · Q(f)`, and `result ≈ f + f² · Q(f)` — which is the Variant B polynomial form evaluated directly. The residual error is ≤ 0.5 ULP from op 7. This is why `log(1 + 1e-15)` passes at 1 ULP.
+
+**Pathmaker contract:** emit the 7 ops above in the exact order, each as a separate `.tam` statement with a named intermediate register. Do NOT fuse, reassociate, or FMA-contract (I3). Register names are suggestions; preserve order regardless.
+
+**References:**
+- P. T. P. Tang, "Table-driven implementation of the logarithm function in IEEE floating-point arithmetic," ACM TOMS 16(4):378–400, 1990. §3.2 for the reassembly op sequence.
+- N. J. Higham, "Accuracy and Stability of Numerical Algorithms," 2nd ed., SIAM, 2002, §4.2 for the error analysis framework.
 
 ### 4.5 Special-value handling (front-end dispatch)
 

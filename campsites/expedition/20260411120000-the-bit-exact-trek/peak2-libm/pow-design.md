@@ -1,0 +1,212 @@
+# `tam_pow` — Algorithm Design Document
+
+**Campsite 2.17.** Design for `tam_pow(a, b) = a^b` for `f64` inputs.
+
+**Owner:** math-researcher
+**Status:** draft, awaiting navigator + pathmaker review
+**Date:** 2026-04-11
+
+**Upstream dependency:** `exp-design.md`, `log-design.md`, `accuracy-target.md`.
+**Downstream:** this is one of the most-consumed libm functions in statistical and ML code. Also one of the most-buggy-edge-case libm functions ever.
+
+---
+
+## What this function does
+
+`pow(a, b)` returns `a` raised to the power `b`, for `a, b : f64`.
+
+**`pow` is not a single mathematical function.** It is a union of:
+- Real-valued power `a^b = exp(b * log(a))` when `a > 0`.
+- Integer-valued power `a^n = a * a * ... * a` when `b` is a (representable) integer, including `a < 0` (because then `a^n` is well-defined).
+- A set of conventional values for edge cases: `pow(0, 0) = 1`, `pow(-1, ±inf) = 1`, `pow(+1, nan) = 1`, `pow(0, negative) = +inf` (divide-by-zero), `pow(negative, non-integer) = nan`.
+
+The IEEE 754 standard and the C standard specify ~20 distinct edge cases for `pow` explicitly. Most of `tam_pow`'s code is case dispatch, not math. **The design prioritizes handling the case table correctly; the real-valued path is comparatively trivial on top of `exp` and `log`.**
+
+## Accuracy target
+
+Per `accuracy-target.md`: `max_ulp ≤ 1.0` on 1M random samples drawn from:
+- `a ∈ [2^-100, 2^100]` (exponent-uniform)
+- `b ∈ [-30, 30]` (real-uniform)
+
+This is deliberately narrower than `a` ∈ `[fp64_min, fp64_max]` because `pow` accuracy degrades as `|b * log(a)|` approaches the `exp` overflow/underflow edges. The wider box is Phase 2 territory.
+
+**The composed-error bound.** `pow(a, b) = exp(b * log(a))`. If `log(a)` is accurate to 1 ULP and `exp(x)` is accurate to 1 ULP, the *composed* error in `pow` is at best 2 ULPs from the two function errors, plus 1 ULP from the multiplication `b * log(a)`, plus multiplication by `b` amplifies any error in `log(a)` by a factor of `|b|`. So for `|b| = 30` and 1 ULP accuracy in `log(a)`, the error in `b * log(a)` is ~30 ULPs in *absolute terms for that intermediate*, and after `exp` this translates to a relative error in the final result of... it depends on how quickly `exp` varies. For modest `b`, the final error is a few ULPs — which is **larger than our 1 ULP bound**.
+
+**The fix: double-double arithmetic in the intermediate.**
+
+For `tam_pow` alone (not for `tam_exp` or `tam_ln`), we need to carry `log(a)` as a double-double (a pair of fp64 values, `log_hi` + `log_lo`, with `log_hi + log_lo ≈ true log(a)` to ~106 bits of precision), multiply by `b` in double-double, and pass the double-double sum to `exp`. This is the one place in Phase 1 where we break the "pure fp64" rule *inside* a libm function. Double-double arithmetic still only uses `fadd`, `fsub`, `fmul`, `fdiv`, `fsqrt` — no FMA, no contraction — so I3 is still honored. It just uses more of them.
+
+Alternative: fit `log` to double-double accuracy directly via a second polynomial on the low part. Same effect; different structure. Recommendation: use double-double for the pow intermediate via Dekker's TwoSum and TwoProd algorithms (which are pure fp64 arithmetic with no contraction — see Dekker 1971, or Muller HFPA §4).
+
+## The algorithm skeleton
+
+```
+def tam_pow(a, b):
+    # --- Huge case dispatch front-end (most of the code) ---
+    handled, value = handle_special_cases(a, b)
+    if handled:
+        return value
+
+    # --- Integer-b fast path ---
+    if is_small_integer(b):
+        return integer_power(a, b_as_int)
+
+    # --- Real-valued path: a^b = exp(b * log(a)) ---
+    assert a > 0           # negative-a with non-integer b was caught in specials
+    log_hi, log_lo = log_dd(a)              # double-double log
+    prod_hi, prod_lo = dd_mul_f64(log_hi, log_lo, b)   # double-double multiply
+    return exp_dd(prod_hi, prod_lo)          # exp with double-double input
+```
+
+Three new primitives are needed: `log_dd`, `dd_mul_f64`, and `exp_dd`. All three are thin wrappers over the existing `tam_ln` and `tam_exp` with extended-precision tracking.
+
+## Special cases (the actual work)
+
+The IEEE 754 specification for `pow(x, y)` is:
+
+| Case | Result |
+|---|---|
+| `pow(+0, y)` for `y > 0`, non-integer or even | `+0` |
+| `pow(+0, y)` for `y > 0`, odd integer | `+0` |
+| `pow(-0, y)` for `y > 0`, non-integer or even | `+0` |
+| `pow(-0, y)` for `y > 0`, odd integer | `-0` |
+| `pow(+0, y)` for `y < 0`, non-integer or even | `+inf` (and raises div-by-zero) |
+| `pow(+0, y)` for `y < 0`, odd integer | `+inf` |
+| `pow(-0, y)` for `y < 0`, non-integer or even | `+inf` |
+| `pow(-0, y)` for `y < 0`, odd integer | `-inf` |
+| `pow(x, +0)` for any `x` (including nan) | `1` |
+| `pow(x, -0)` for any `x` (including nan) | `1` |
+| `pow(+1, y)` for any `y` (including nan) | `1` |
+| `pow(-1, +inf)` | `1` |
+| `pow(-1, -inf)` | `1` |
+| `pow(x, nan)` | `nan` (except `pow(1, nan) = 1`, `pow(x, 0) = 1`) |
+| `pow(nan, y)` | `nan` (except `pow(nan, 0) = 1`) |
+| `pow(+inf, y > 0)` | `+inf` |
+| `pow(+inf, y < 0)` | `+0` |
+| `pow(-inf, y > 0)`, odd integer | `-inf` |
+| `pow(-inf, y > 0)`, non-integer or even | `+inf` |
+| `pow(-inf, y < 0)`, odd integer | `-0` |
+| `pow(-inf, y < 0)`, non-integer or even | `+0` |
+| `pow(x, +inf)` for `|x| > 1` | `+inf` |
+| `pow(x, +inf)` for `|x| < 1` | `+0` |
+| `pow(x, -inf)` for `|x| > 1` | `+0` |
+| `pow(x, -inf)` for `|x| < 1` | `+inf` |
+| `pow(x, y)` for `x < 0`, `y` non-integer | `nan` |
+
+**The dispatch is ~30 branches.** Pathmaker writes a long front-end that handles these in order, returning early for each match. Once all the specials are out of the way, the remaining case is `a > 0, a ≠ 1, b ≠ 0, |a|, |b|` finite and non-special — that's where the real-valued path runs.
+
+**Is `b` an integer?** `b : f64` is an integer iff `floor(b) == b` (and `b` is finite). Ranges are split:
+- `|b| < 2^53`: we can directly detect integer-ness and compute `floor(b)` exactly.
+- `|b| ≥ 2^53`: every fp64 `b` in this range is already an integer (mantissa has no fractional bits). But for even/odd determination, we need `b mod 2`. Since large fp64 integers lose their lowest bits, all such `b` are even in fp64 representation. So for `|b| ≥ 2^53`, treat as "even integer."
+
+**Integer-power fast path.** For `|b| ≤ 30` (or whatever threshold), compute `a^b` via repeated squaring: `O(log b)` multiplies instead of `exp(b * log(a))`. This is both faster and more accurate for small integer exponents. **Threshold at `|b| ≤ 32`**, skip for non-integer or larger `b`.
+
+Repeated squaring in fp64:
+```
+def integer_power(a, n):
+    if n < 0:
+        return 1 / integer_power(a, -n)
+    result = 1.0
+    base = a
+    while n > 0:
+        if n & 1:
+            result = result * base
+        base = base * base
+        n >>= 1
+    return result
+```
+
+Each fp64 multiply is ~0.5 ULP error on average; `k` multiplies accumulate to `~sqrt(k) * 0.5 ULP` on average and `k * 0.5 ULP` worst case. For `|n| ≤ 32` that's `≤ 16 ULPs` worst case, which is WORSE than 1 ULP. Hmm.
+
+Actually wait — the integer-power path doesn't need to be more accurate than the real-valued path. For small integer `n`, the accuracy of `a^n` via repeated squaring is already very good: since each multiply is `0.5 ULP` on average with full cancellation of intermediate rounding, the accumulated error is bounded by roughly `(2n - 1) * 0.5 ULP` in the worst case (each multiply contributes `0.5 ULP`). For `n = 10`, that's `9.5 ULPs` worst case, or `~3 ULPs` RMS. Still above our 1 ULP bound.
+
+**The fix for integer path:** do the multiplies in double-double to preserve precision, then round back to fp64 at the end. This costs a few more multiplies per step but preserves 1 ULP easily. Or: skip the fast path for integer `b` and always go through the `exp(b * log(a))` route with double-double intermediate. The `exp(b * log(a))` route *does* give 1 ULP for integer `b` via the double-double machinery.
+
+**Recommendation for Phase 1:** skip the integer-b fast path entirely. Always go through `exp_dd(b * log_dd(a))`. Simpler, no second code path, same accuracy. Phase 2 can add the integer fast path if benchmarks show it matters.
+
+## The double-double infrastructure
+
+Double-double ("dd") represents a value as an fp64 pair `(hi, lo)` such that `hi + lo` is the full value and `|lo| ≤ ulp(hi)/2`. Standard algorithms:
+
+**TwoSum(a, b):** returns `(s, err)` such that `s + err = a + b` exactly, where `s = a + b` in fp64. Pure fp64 ops, no FMA, safe under I3:
+```
+s = a + b
+bb = s - a
+err = (a - (s - bb)) + (b - bb)
+```
+
+**TwoProd(a, b):** returns `(p, err)` such that `p + err = a * b` exactly. Without FMA, this uses Dekker's splitting trick:
+```
+def split(a):
+    c = a * 134217729.0      # 2^27 + 1
+    aH = c - (c - a)
+    aL = a - aH
+    return aH, aL
+# Then:
+p = a * b
+aH, aL = split(a)
+bH, bL = split(b)
+err = ((aH * bH - p) + aH * bL + aL * bH) + aL * bL
+```
+6 multiplies + 6 adds + 4 subs, no FMA. This is the Dekker 1971 algorithm.
+
+**Double-double multiply by fp64:** given `(hi, lo)` and a scalar `b`, return `(prod_hi, prod_lo)`:
+```
+p, e = TwoProd(hi, b)
+e2 = lo * b
+sum = e + e2
+prod_hi, prod_lo = TwoSum(p, sum)  # renormalize
+```
+
+**log_dd(a):** computed by running `tam_ln` at double precision as the `hi` part, then computing `log(a) - hi` via a Taylor correction in mpmath style — i.e., since `hi ≈ log(a)`, we have `a ≈ exp(hi)`, so `a / exp(hi) ≈ 1 + tiny`, and `log(a / exp(hi)) ≈ a/exp(hi) - 1` to very high precision. The `lo` part is this correction. Practical computation:
+```
+hi = tam_ln(a)                    # 1 ULP accurate in fp64
+scale = exp_fast(hi)              # use lower-precision exp, 1-2 ULP is fine
+ratio = a / scale                 # very close to 1
+lo = tam_ln_near_1(ratio)          # log(1 + small) via specialized polynomial
+# hi + lo = double-double log(a)
+```
+This is one way. A cleaner way is to fit `log` directly to double-double via a higher-degree polynomial that outputs a pair. That's the Phase 2 path.
+
+**Recommendation for Phase 1:** the first version uses the scale-and-correct approach above. It's ugly but correct, and it sets up a clean seam for Phase 2 to replace.
+
+**exp_dd(hi, lo):** compute `exp(hi + lo)` to 1 ULP in fp64:
+```
+e_hi = tam_exp(hi)                 # 1 ULP accurate
+# correction: exp(hi + lo) = exp(hi) * exp(lo) ≈ exp(hi) * (1 + lo + lo^2/2 + ...)
+#   for |lo| << 1 (which holds by construction, |lo| ≤ ulp(hi))
+result = e_hi + e_hi * lo          # first-order correction; adequate if |lo| < 2^-30
+# (If |lo| is larger, add higher-order terms.)
+```
+
+## Pitfalls
+
+1. **Getting the special-case table wrong.** The 30-case table is the most-tested part of this function. Add every entry as an adversarial test with named expected output.
+2. **`pow(0, 0) = 1`, not `0` or `nan`.** This is by convention. Some libms got it wrong historically; we do not.
+3. **`pow(-1, ±inf) = 1`.** Because `-1` has magnitude `1`, and `1^anything = 1`. Another convention-trap.
+4. **`pow(nan, 0) = 1` and `pow(1, nan) = 1`.** Edge cases where nan doesn't propagate. Convention-trap.
+5. **Odd/even integer detection for negative bases.** Must be done in fp64 without going through `int` truncation (which would mis-round for very large `b`). Check the parity of the mantissa's lowest set bit relative to the exponent.
+6. **Sign preservation for odd-integer exponents of negative bases.** `pow(-2, 3) = -8`, not `+8`. The `exp(log|a| * b)` path loses the sign; must multiply by `(-1)^n` at the end for odd integer `b`.
+7. **Subnormal results.** For `pow(tiny, big)`, the result may underflow through the subnormal range. The `exp_dd` reassembly must handle this correctly, same as plain `tam_exp`.
+
+## Testing
+
+- 1M random samples from `a ∈ [2^-100, 2^100]`, `b ∈ [-30, 30]`. `max_ulp ≤ 1.0`.
+- All 30 special-value cases, bit-exact.
+- Integer exponent test: `pow(2, n)` for `n ∈ [-30, 30]` must return exactly `2^n` (which is representable in fp64).
+- `pow(a, 0.5)` must equal `sqrt(a)` to 1 ULP for `a ≥ 0`. (This tests the log/exp/mul pipeline against the `fsqrt` oracle.)
+- `pow(a, 2.0)` for integer-flag test: must equal `a * a` bit-exact.
+- `pow(a, 1.0) == a` bit-exact.
+
+## Open questions
+
+1. **Double-double inside a single libm function — is that consistent with the project's "pure fp64" aesthetic?** Yes. Double-double is just fp64 pairs manipulated with fp64 ops. The .tam IR sees only fp64. The `pow` function is the one place in Phase 1 where we use pairs of fp64 as a richer number representation, because a single fp64 intermediate cannot carry enough precision for `pow` to hit 1 ULP. Other functions don't need this.
+2. **Is Dekker's Split constant (2^27 + 1 = 134217729) an issue for FMA-contracted backends?** The split is `a * const - (a * const - a)`, which looks like it could contract. We must emit it as three explicit ops and no FMA. I3 again.
+3. **Phase 1 fallback for `|b| > 30`?** Recommend: return a warning value (just `pow` via exp/log without the double-double cleanup), documented as >1 ULP outside the primary domain. Phase 2 extends the bound.
+
+## References
+
+- T. J. Dekker, "A floating-point technique for extending the available precision," Numerische Mathematik 18:224–242, 1971. (TwoSum, TwoProduct, and the splitting trick.)
+- J.-M. Muller et al., "Handbook of Floating-Point Arithmetic," 2nd ed., 2018, Chapter 4 (double-word arithmetic) and Chapter 12 (`pow`).
+- IEEE 754-2019, §9.2 (pow special cases) and Annex A.
+- D. Goldberg, "What Every Computer Scientist Should Know About Floating-Point Arithmetic," ACM Computing Surveys 23(1):5–48, 1991. (Overview and rationale for the special-case table.)

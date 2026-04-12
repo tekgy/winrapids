@@ -1,0 +1,173 @@
+# `tam_ln` — Algorithm Design Document
+
+**Campsite 2.10.** Algorithm selection and design for `tam_ln(f64) -> f64`, the natural logarithm.
+
+**Owner:** math-researcher
+**Status:** draft, awaiting navigator + pathmaker review
+**Date:** 2026-04-11
+
+**Upstream dependency:** `accuracy-target.md` (≤ 1 ULP faithful rounding), `exp-design.md` (uses same Cody-Waite, Remez, Horner patterns).
+
+---
+
+## What this function does
+
+Given `x : f64`, return `log(x) : f64` (natural log, base e) with:
+- `max_ulp ≤ 1.0` across 1M random samples drawn exponent-uniformly from `(0, fp64_max]`.
+- IEEE 754 specials: `log(1) = +0` exactly, `log(+inf) = +inf`, `log(nan) = nan`.
+- `log(0) = -inf` (both `+0` and `-0` — `log(-0)` is defined as `-inf` per IEEE 754, NOT NaN).
+- `log(x) = nan` for any `x < 0`. Also set the invalid-operation flag if we track it; Phase 1 doesn't track fp flags.
+- `log(1) == 0.0` bit-exact.
+
+## The big picture
+
+For any positive fp64 `x`, we can decompose:
+
+```
+x = m * 2^e                  with m ∈ [1, 2),  e = unbiased exponent
+log(x) = log(m) + e * log(2)
+```
+
+Extracting `e` and `m` is a bit-level operation — `e` is the unbiased exponent field of the fp64 representation, `m` is the fp64 value with exponent field forced to `0` (biased = 1023). Both are *exact* and *free* — no arithmetic is involved, just bit manipulation. This is why `log` has a cleaner range reduction than `exp`.
+
+`log(m)` on `[1, 2)` is then a polynomial problem, and `e * log(2)` is a scalar multiply of a cheap integer by a constant.
+
+The wrinkle: `log(m)` on `[1, 2)` is small at `m = 1` (`log(1) = 0`) and larger at `m = 2` (`log(2) ≈ 0.693`). The function is smooth, but a direct polynomial on `[1, 2)` needs careful conditioning because catastrophic cancellation happens near `m = 1` if we're not careful.
+
+## Sub-steps
+
+### 4.1 Extract `e` and `m`
+
+`x_bits = f64_to_bits(x)`. The unbiased exponent is `e = (x_bits >> 52) - 1023`. The fraction is `m = bits_to_f64((x_bits & 0x000FFFFFFFFFFFFF) | 0x3FF0000000000000)`, which is `x`'s mantissa with exponent forced to `0`, giving `m ∈ [1, 2)`.
+
+**Edge case: subnormals.** If `x` is subnormal (biased exponent = 0, mantissa ≠ 0), the standard `(bits >> 52) - 1023` gives `e = -1023`, which is wrong; the real exponent is `-1022` and the leading bit of the mantissa is *not* implicit. For Phase 1 we front-end subnormals:
+- Compute an adjusted `m` and `e` via one multiplication: `x' = x * 2^52`, which turns a subnormal `x` into a normal number `x'` with `log(x') = log(x) + 52 * log(2)`. Then apply the normal-path extraction to `x'` and subtract `52 * log(2)` at the end.
+
+**Edge case: `x = 1.0` exactly.** `m = 1`, `e = 0`, polynomial must return exactly `0`. The polynomial form below guarantees `P(0) = 0`, so this is automatic.
+
+### 4.2 Shift `m` for conditioning near 1
+
+Direct `log(m)` on `[1, 2)` has a zero at `m = 1`, so we define `f = m - 1`, `f ∈ [0, 1)`, and our polynomial approximates `log(1 + f)`.
+
+But there's a numerical issue. The range `[1, 2)` in fp64 has its mantissa densely distributed near 1 (where `m - 1` is small and relative precision of `m - 1` is good) and its mantissa less densely distributed near 2 (where `m - 1 ≈ 1` and precision is fine too). The problem is that the polynomial's convergence is worst near `m = 2` (`f = 1`), where the Taylor series for `log(1 + f) = f - f²/2 + f³/3 - ...` converges slowly.
+
+**The fix used by Tang 1990 and most modern libms:** if `m > sqrt(2)`, rewrite `log(m) = log(m/2) + log(2)` so the polynomial input is now `m/2 ∈ [1, sqrt(2))`, i.e., `f = m/2 - 1 ∈ [0, sqrt(2) - 1) ≈ [0, 0.414)`. This halves the interval and makes the polynomial degree requirement much lower.
+
+Concretely:
+```
+if m >= sqrt(2):
+    m  = m / 2       # but: we cheat — just add 1 to e and set m's exponent accordingly
+    e += 1
+f = m - 1           # f in [sqrt(2)/2 - 1, sqrt(2) - 1) = [-0.293, 0.414)
+```
+
+The divide-by-2 is just an exponent-field decrement; no arithmetic cost. After this transformation, `f ∈ [-0.293, 0.414)` is a smaller and more symmetric interval around 0, which gives better Remez minimax behavior.
+
+**Alternative: use `f = (m - 1) / (m + 1)`** — this is the classical "log via atanh" trick. `log(m) = 2 * atanh(f) = 2 * (f + f³/3 + f⁵/5 + ...)`. The substitution makes `f ∈ [0, 1/3)` symmetric about `0`, and the series is odd — only odd powers of `f`. This is the form used in Tang's table-driven log.
+
+**Our choice for Phase 1: the simple `f = m - 1` form with the `sqrt(2)` shift.**
+
+Rationale: the atanh form is beautiful but requires a divide (`(m-1)/(m+1)`) for each call, which is expensive on every backend and introduces one more op where rounding can bite. The simple form reaches 1 ULP at polynomial degree ~14 after the sqrt(2) shift; that's more ops than atanh's degree ~7 but no fdiv. For Phase 1 correctness-first, avoiding the fdiv wins. Phase 2 can re-evaluate — Tang's table-driven form may win on speed regardless.
+
+### 4.3 Polynomial on the reduced interval
+
+Remez-minimax fit `log(1 + f)` on `[-0.293, 0.414]` to degree 14. The polynomial form:
+
+```
+log(1 + f) ≈ f + f² * Q(f)                  Variant B, same idea as exp
+```
+
+where `Q(f)` is the Remez-fit polynomial for `(log(1+f) - f) / f²`. This isolates the leading `f` term (known exactly, no rounding) and polynomial-fits the nonlinear remainder. `Q(f)` is degree 12.
+
+Horner evaluation, inside-out, no FMA contraction. Same rule as exp.
+
+### 4.4 Reassemble
+
+```
+result = poly + e_f64 * ln2_hi + e_f64 * ln2_lo
+```
+
+Wait — this needs care. If `e` is large (say 1000) and `poly` is small (say 0.01), then `e * ln2_hi` dominates and adding `poly` at the end is fine. If `e = 0` and `poly` is the whole answer, then `e * ln2_hi = 0` exactly (because `e_f64 = 0.0`), so the sum is just `poly`. In between, there's a regime where catastrophic cancellation could bite: `e = 1`, `m ≈ 1`, so `poly ≈ 0` and `e * ln2 ≈ 0.693` — no cancellation. `e = -1`, `m ≈ 2`, `poly ≈ 0.693`, `e * ln2 ≈ -0.693`, sum ≈ 0 — **this is the cancellation regime**.
+
+For 1 ULP we need the cancellation regime to still give us 1-ULP accuracy. The answer is Cody-Waite again on `ln(2)`:
+
+```
+hi = e_f64 * ln2_hi + poly                  # poly is much smaller than e * ln2_hi for large |e|
+lo = e_f64 * ln2_lo                         # the low bits that ln2_hi dropped
+result = hi + lo
+```
+
+But in the cancellation regime (`e` near 0, `poly` ≈ `-e * ln2`), we need extra care. The standard approach (Tang 1990):
+
+```
+# Compute (e * ln2_hi + f) * 1 + (e * ln2_lo + f² * Q(f)) 
+# i.e. separate the linear and quadratic pieces so the cancellation happens
+# in a controlled step.
+t_hi = e_f64 * ln2_hi + f           # may cancel — but f is small enough that we're OK
+t_lo = e_f64 * ln2_lo
+polyq = f * f * Q(f)                # nonlinear remainder
+result = t_hi + (t_lo + polyq)       # add smallest-magnitude terms first
+```
+
+There's subtlety here about in what order the adds happen. Pathmaker should follow Tang's explicit sequence, which is designed so that the order of operations minimizes the total ULP drift. I will flesh this out as part of the Campsite 2.11 hand-off; the gist is: **compute the "big" term (`e * ln2_hi + f`) first, then add the "small correction" (`e * ln2_lo + f² * Q(f)`) second, with the lo-term added inside a parenthesized subexpression so the compiler ordering is forced.**
+
+**Important:** in `.tam` IR, this ordering is made explicit by the text encoding — each subexpression is a named register, and the order of `fadd` ops is part of the program text. There is no reassociation happening because the .tam backends don't reassociate.
+
+### 4.5 Special-value handling (front-end dispatch)
+
+```
+if x < 0:                     return nan
+if x == 0:                    return -inf       # both +0 and -0
+if x == 1.0:                  return +0.0       # bit-exact
+if x == +inf:                 return +inf
+if isnan(x):                  return x          # preserve bit pattern
+# subnormal:
+if x is subnormal:            ... scale x by 2^52, subtract 52*log(2) later
+# normal path:
+proceed with bit extraction
+```
+
+## Coefficient generation
+
+Same protocol as `exp-design.md` §4:
+- `remez.py` fits `Q(f) = (log(1 + f) - f) / f²` on `[-0.293, 0.414]` at degree 12, mpmath 100 dps.
+- Coefficients committed to `log-constants.toml`.
+- `ln2_hi`, `ln2_lo` are shared with `exp-constants.toml` — same decomposition, same bit patterns. They live in a shared `libm-constants.toml` that both files depend on.
+- Also precompute: `sqrt(2)` threshold for the `m` shift; `52 * ln2_hi` and `52 * ln2_lo` for the subnormal path.
+
+## Special cases and testing
+
+Campsite 2.12 is the special-value test:
+
+```
+assert tam_ln(1.0)  == 0.0              # bit-exact
+assert tam_ln(0.0)  == -inf
+assert tam_ln(-0.0) == -inf
+assert tam_ln(-1.0) is nan
+assert tam_ln(+inf) == +inf
+assert tam_ln(nan)  is nan
+assert tam_ln(2.0)  ≈ 0.6931471805599453  (1 ULP)
+assert tam_ln(e)    ≈ 1.0                (within 1 ULP; e itself is rounded)
+```
+
+Plus the 1M random sample battery from Campsite 2.1.
+
+## Pitfalls
+
+1. **Subnormal extraction.** The naive `e = (bits >> 52) - 1023` fails for subnormals. Front-end with the `x * 2^52` trick.
+2. **The `m / 2` shift.** Don't do a literal divide; decrement the exponent field. Literal divide introduces a rounding that isn't there otherwise.
+3. **Cancellation at `e = -1`, `m ≈ 2`.** The sum `e * ln2 + poly` is near zero and loses bits. Cody-Waite decomposition of `ln(2)` plus ordered summation fixes this.
+4. **`log(1.0) == 0.0`.** Must be bit-exact zero. The polynomial form `log(1+f) = f + f² * Q(f)` gives this automatically when `f = 0`. Don't introduce any `+ tiny_constant` that would perturb it.
+5. **Handling of negative inputs.** `log(-x)` is `nan`, not `-log(x)`. Front-end dispatch.
+6. **Parsing of `log(x)` at `x` just below `1.0`.** `x = 1.0 - ε` gives `m = (1.0 - ε)` which after normalization is actually `m ≈ 2 - 2ε`, `e = -1`. Then `f = m - 1 ≈ 1 - 2ε`, and we're at the worst-conditioned end of the polynomial, where the sqrt(2) shift will trigger and move us to `m' = m/2 ≈ 0.5 - ε`, `e' = 0`, `f' ≈ -0.5 - ε` — still fine, inside the polynomial interval.
+
+## Open questions
+
+1. **Do we want `log` and `log2` and `log10` as separate primitives or as `log(x) / log(b)` compositions?** For Phase 1, implement `log` natively and let `log2`/`log10` be compositions if users ask for them. Phase 2 can add natively-fit polynomials for them. (This is an anti-YAGNI question — the structure doesn't guarantee we need them in Phase 1, so defer.)
+2. **Tang's table-driven form vs simple polynomial?** Recommendation is simple for Phase 1, table-driven for Phase 2. Same reasoning as `exp`.
+
+## References
+
+- P. T. P. Tang, "Table-driven implementation of the logarithm function in IEEE floating-point arithmetic," ACM TOMS 16(4):378–400, 1990.
+- W. J. Cody & W. Waite, "Software Manual for the Elementary Functions," Prentice-Hall, 1980, §9 (log).
+- J.-M. Muller et al., "Handbook of Floating-Point Arithmetic," 2nd ed., 2018.

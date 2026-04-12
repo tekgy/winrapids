@@ -52,11 +52,34 @@ or with tambear, mpmath breaks the tie.
 | tam_pow | 0.0, 0.0 | 1.0 (convention) | ? | Pending Peak 2 |
 | tam_atan2 | 0.0, 0.0 | 0.0 (convention) | ? | Pending Peak 2 |
 
+## TBS expression evaluator NaN correctness (P16/P17/P18)
+
+These are expression-evaluator bugs in the CPU reference implementation (`tbs::eval`),
+independent of backends. All three were independently verified by Oracle against IEEE 754.
+
+| Expr | Input | Expected (IEEE 754) | Old tambear | Fixed tambear | Status |
+|------|-------|---------------------|-------------|---------------|--------|
+| Min(NaN, 5.0) | NaN | NaN | 5.0 (wrong) | NaN | FIXED |
+| Min(5.0, NaN) | NaN | NaN | NaN (happened to be OK) | NaN | was OK, now explicit |
+| Max(NaN, 5.0) | NaN | NaN | 5.0 (wrong) | NaN | FIXED |
+| Max(5.0, NaN) | NaN | NaN | NaN (happened to be OK) | NaN | was OK, now explicit |
+| Sign(NaN) | NaN | NaN | 0.0 (wrong) | NaN | FIXED |
+| Gt(NaN, 0.0) | NaN | NaN | 0.0 (wrong) | NaN | FIXED |
+| Lt(NaN, 0.0) | NaN | NaN | 0.0 (wrong) | NaN | FIXED |
+| Eq(NaN, x) | NaN | NaN | 0.0 (wrong, was 1e-15 epsilon) | NaN | FIXED |
+| Eq(1.0, 1.0+1ULP) | near-1.0 | 0.0 (unequal) | 1.0 (wrong, 1e-15 epsilon) | 0.0 | FIXED |
+
+**Oracle reasoning for Eq**: `==` (IEEE 754 equality) is correct; `to_bits()` equality is wrong
+because it makes `0.0 != -0.0` which violates mathematical equality. NaN must be guarded
+separately. Adversarial's `to_bits()` suggestion was partially right (fix the epsilon) but
+used the wrong equality primitive.
+
 ---
 
 ## Update log
 
 | Date | What changed |
 |------|-------------|
+| 2026-04-11 | TBS NaN correctness table added: P16/P17/P18 independently verified by Oracle against IEEE 754; all three fixed; Gt/Lt NaN propagation also fixed (same root cause as P18 but not in original adversarial report). |
 | 2026-04-11 | Variance row updated: BUG(tambear) confirmed — one-pass formula gives 0.0 on near-1e9 data. See variance-numerical-analysis.md for full quantitative evidence and two-pass design. |
 | 2026-04-11 | Table created; all entries pending (harness skeleton landed) |

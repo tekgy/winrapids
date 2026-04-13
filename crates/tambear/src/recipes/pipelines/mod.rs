@@ -72,9 +72,14 @@
 //!   is materialized into whichever of the above four types the default
 //!   resolves to, so the saved pipeline is explicit about every choice.
 
+pub mod schema;
 pub mod types;
 
+pub use schema::{
+    effective_binding, schema_for, step_from_schema, DefaultBinding, DefaultValue,
+    DimensionSourceSpec, OutputShapeSpec, OutputSpec, ParameterSpec, RecipeSchema, ValueDomain,
+};
 pub use types::{
-    Binding, ChoiceKey, Combiner, DataProbeRef, Dtype, OutputColumn, OutputShape, Pipeline,
-    PipelineStep, RecipeRef, SuperpositionSpec, SweepSpec, Value,
+    Binding, ChoiceKey, Combiner, DataProbeRef, DimensionSource, Dtype, OutputColumn, OutputShape,
+    Pipeline, PipelineStep, RecipeRef, SuperpositionSpec, SweepSpec, Value,
 };

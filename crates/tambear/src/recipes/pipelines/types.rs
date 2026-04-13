@@ -356,6 +356,78 @@ impl Pipeline {
     pub fn step_index(&self, key: &str) -> Option<usize> {
         self.steps.iter().position(|s| s.key == key)
     }
+
+    // ── Pipeline-level force overrides ──────────────────────────────────
+    //
+    // These walk every step and turn off one of the three exploratory
+    // hooks across the entire pipeline. They MUTATE the pipeline in
+    // place — the intended workflow is:
+    //
+    //   1. User edits a pipeline in the IDE with per-step bindings.
+    //   2. User clicks "disable all sweeps for reproducibility" at the
+    //      pipeline toolbar (or similar).
+    //   3. Pipeline::disable_all_sweeps() walks every step and clears
+    //      the sweep dimension of every binding.
+    //   4. Pipeline is re-saved with the new resolved state.
+    //
+    // The saved form is always fully explicit — no runtime resolution
+    // is needed to know what each step will do.
+
+    /// Turn off the `sweep` dimension on every binding in every step.
+    /// Existing sweep values are discarded; the binding falls back to
+    /// whatever is specified by the other dimensions (typically the
+    /// recipe-default `using` value).
+    pub fn disable_all_sweeps(&mut self) {
+        for step in &mut self.steps {
+            for (_, binding) in step.choices.iter_mut() {
+                binding.sweep = None;
+            }
+        }
+    }
+
+    /// Turn off the `superposition` dimension on every binding in every
+    /// step.
+    pub fn disable_all_superpositions(&mut self) {
+        for step in &mut self.steps {
+            for (_, binding) in step.choices.iter_mut() {
+                binding.superposition = None;
+            }
+        }
+    }
+
+    /// Turn off the `autodiscover` dimension on every binding in every
+    /// step. This silences the Layer 1 auto-dispatch / advice probes
+    /// everywhere — useful when the user wants fully deterministic
+    /// behavior for a reproducibility run.
+    pub fn disable_all_autodiscover(&mut self) {
+        for step in &mut self.steps {
+            for (_, binding) in step.choices.iter_mut() {
+                binding.autodiscover = None;
+            }
+        }
+    }
+
+    /// Turn off sweep, superposition, AND autodiscover across every
+    /// step in one call. The pipeline reduces to explicit
+    /// `using` values plus recipe defaults — the "reproducibility
+    /// lockdown" mode.
+    pub fn force_deterministic(&mut self) {
+        self.disable_all_sweeps();
+        self.disable_all_superpositions();
+        self.disable_all_autodiscover();
+    }
+
+    /// Reset every step's bindings to full recipe defaults. After this
+    /// call, every step's `choices` map is cleared — when the step is
+    /// saved or resolved, the recipe-declared defaults take effect for
+    /// every parameter.
+    ///
+    /// This is the "erase all my custom choices and start fresh" button.
+    pub fn reset_to_defaults(&mut self) {
+        for step in &mut self.steps {
+            step.choices.clear();
+        }
+    }
 }
 
 impl PipelineStep {
@@ -593,6 +665,110 @@ mod tests {
                 | RecipeRef::Expr(_)
                 | RecipeRef::Recipe(_) => {}
             }
+        }
+    }
+
+    // ── Pipeline-level force overrides ────────────────────────────────
+
+    fn make_test_pipeline() -> Pipeline {
+        let step1 = PipelineStep::new("a", "A", RecipeRef::Recipe("foo".into())).with_choice(
+            "method",
+            Binding::inherit_defaults()
+                .with_using(Value::Method("m1".into()))
+                .with_sweep(vec![
+                    Value::Method("m1".into()),
+                    Value::Method("m2".into()),
+                ])
+                .with_superposition(
+                    vec![
+                        Value::Method("m1".into()),
+                        Value::Method("m2".into()),
+                    ],
+                    Combiner::KeepAll,
+                )
+                .with_autodiscover(DataProbeRef("probe_a".into())),
+        );
+        let step2 = PipelineStep::new("b", "B", RecipeRef::Recipe("bar".into())).with_choice(
+            "alpha",
+            Binding::inherit_defaults()
+                .with_using(Value::Float(0.05))
+                .with_sweep(vec![Value::Float(0.01), Value::Float(0.05)]),
+        );
+        Pipeline::new("test").with_step(step1).with_step(step2)
+    }
+
+    #[test]
+    fn disable_all_sweeps_clears_sweep_everywhere() {
+        let mut pipeline = make_test_pipeline();
+        pipeline.disable_all_sweeps();
+        for step in &pipeline.steps {
+            for (_, binding) in &step.choices {
+                assert!(binding.sweep.is_none(), "sweep not cleared in step {}", step.key);
+            }
+        }
+    }
+
+    #[test]
+    fn disable_all_sweeps_preserves_using() {
+        // The sweep goes away; the user's forced using value stays.
+        let mut pipeline = make_test_pipeline();
+        pipeline.disable_all_sweeps();
+        let step_a = pipeline.find_step("a").unwrap();
+        let method = &step_a.choices["method"];
+        assert_eq!(method.using, Some(Value::Method("m1".into())));
+    }
+
+    #[test]
+    fn disable_all_superpositions_clears_only_that_dimension() {
+        let mut pipeline = make_test_pipeline();
+        pipeline.disable_all_superpositions();
+        let step_a = pipeline.find_step("a").unwrap();
+        let method = &step_a.choices["method"];
+        assert!(method.superposition.is_none());
+        // Other dimensions unchanged:
+        assert!(method.using.is_some());
+        assert!(method.sweep.is_some());
+        assert!(method.autodiscover.is_some());
+    }
+
+    #[test]
+    fn disable_all_autodiscover_clears_only_that_dimension() {
+        let mut pipeline = make_test_pipeline();
+        pipeline.disable_all_autodiscover();
+        let step_a = pipeline.find_step("a").unwrap();
+        let method = &step_a.choices["method"];
+        assert!(method.autodiscover.is_none());
+        assert!(method.using.is_some());
+        assert!(method.sweep.is_some());
+        assert!(method.superposition.is_some());
+    }
+
+    #[test]
+    fn force_deterministic_clears_three_dimensions() {
+        let mut pipeline = make_test_pipeline();
+        pipeline.force_deterministic();
+        for step in &pipeline.steps {
+            for (_, binding) in &step.choices {
+                assert!(binding.sweep.is_none());
+                assert!(binding.superposition.is_none());
+                assert!(binding.autodiscover.is_none());
+                // `using` dimension survives.
+                assert!(binding.using.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn reset_to_defaults_clears_all_choices() {
+        let mut pipeline = make_test_pipeline();
+        pipeline.reset_to_defaults();
+        for step in &pipeline.steps {
+            assert!(
+                step.choices.is_empty(),
+                "step {} still has {} choices after reset",
+                step.key,
+                step.choices.len()
+            );
         }
     }
 }

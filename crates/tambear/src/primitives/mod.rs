@@ -38,3 +38,4 @@
 pub mod compensated;
 pub mod double_double;
 pub mod hardware;
+pub mod specialist;

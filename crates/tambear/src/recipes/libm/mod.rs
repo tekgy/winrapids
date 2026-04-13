@@ -31,3 +31,4 @@
 //! same template.
 
 pub mod exp;
+pub mod log;

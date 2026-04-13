@@ -38,8 +38,10 @@
 //! stepping stone but may also reach into `primitives/double_double/` and
 //! `primitives/specialist/kulisch_accumulator/` for the last few bits.
 
+pub mod dot;
 pub mod eft;
 pub mod sums;
 
-pub use eft::{fast_two_sum, two_diff, two_product_fma, two_square, two_sum};
-pub use sums::{kahan_sum, neumaier_sum, pairwise_sum};
+pub use dot::{compensated_horner, dot_2, horner};
+pub use eft::{fast_two_sum, fma_residual, two_diff, two_product_fma, two_square, two_sum};
+pub use sums::{kahan_sum, neumaier_sum, pairwise_sum, two_sum_accumulation};

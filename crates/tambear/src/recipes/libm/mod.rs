@@ -32,5 +32,6 @@
 
 pub mod erf;
 pub mod exp;
+pub mod gamma;
 pub mod log;
 pub mod sin;

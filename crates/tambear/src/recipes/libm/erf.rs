@@ -117,7 +117,7 @@ pub fn erf_strict(x: f64) -> f64 {
     if ax >= 6.0 {
         return if x > 0.0 { 1.0 } else { -1.0 };
     }
-    let result = if ax <= 2.0 {
+    let result = if ax <= 1.5 {
         erf_taylor(ax)
     } else if ax < 6.0 {
         1.0 - erfc_cf(ax)
@@ -138,10 +138,10 @@ pub fn erfc_strict(x: f64) -> f64 {
     if ax >= 28.0 {
         return if x > 0.0 { 0.0 } else { 2.0 };
     }
-    let result = if ax <= 1.0 {
-        1.0 - erf_taylor(ax)
+    let result = if ax <= 0.5 {
+        1.0 - erf_taylor(ax)  // safe: erf(0.5) ≈ 0.52, no cancellation
     } else if ax < 28.0 {
-        erfc_cf(ax)
+        erfc_cf(ax)  // CF computes erfc directly, never subtracts from 1
     } else {
         0.0
     };
@@ -331,11 +331,12 @@ mod tests {
         for &x in xs {
             let sum = erf_strict(x) + erfc_strict(x);
             let dist = ulps_between(sum, 1.0);
-            // First-pass: Taylor for erf at x ≤ 2, CF for erfc at x > 1,
-            // so at x ≈ 2 they use different approaches and the identity
-            // has up to ~25K ulps error. Tightening pass will bring to < 10.
+            // CF converges slowly near x=1; identity has ~8500 ulps there.
+            // Improved from 30K by adjusting region boundaries.
+            // Next: proper fdlibm rational approximation for the x ∈ [0.84, 1.25]
+            // region will close this to < 10 ulps.
             assert!(
-                dist <= 30000,
+                dist <= 9000,
                 "erf({x}) + erfc({x}) = {sum}, {dist} ulps from 1.0"
             );
         }

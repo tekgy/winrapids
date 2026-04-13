@@ -36,6 +36,7 @@
 //!    Whole-recipe error bounds are derivable from the tree.
 
 pub mod compensated;
+pub mod constants;
 pub mod double_double;
 pub mod hardware;
 pub mod specialist;

@@ -26,5 +26,7 @@
 //! oracle to verify the final answer is correctly rounded.
 
 pub mod kulisch_accumulator;
+pub mod sum_k;
 
 pub use kulisch_accumulator::KulischAccumulator;
+pub use sum_k::{sum_2, sum_3, sum_4, sum_k};

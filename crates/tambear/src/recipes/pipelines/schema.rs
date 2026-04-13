@@ -263,6 +263,10 @@ pub fn schema_for(recipe: &RecipeRef) -> Option<&'static RecipeSchema> {
     match recipe {
         RecipeRef::Expr(name) => match name.as_str() {
             "correlation_matrix" => Some(&CORRELATION_MATRIX_SCHEMA),
+            "kmo" => Some(&KMO_SCHEMA),
+            "bartlett_sphericity" => Some(&BARTLETT_SPHERICITY_SCHEMA),
+            "factor_scores" => Some(&FACTOR_SCORES_SCHEMA),
+            "model_fit_diagnostics" => Some(&MODEL_FIT_DIAGNOSTICS_SCHEMA),
             _ => None,
         },
         RecipeRef::Recipe(name) => match name.as_str() {
@@ -375,18 +379,19 @@ pub static FACTOR_ANALYSIS_SCHEMA: RecipeSchema = RecipeSchema {
             key: "extraction",
             display_name: "Extraction method",
             description:
-                "pa: principal axis factoring. ml: maximum likelihood. minres: minimum residual. \
+                "minres: minimum residual (IDE default — balances speed and robustness). \
+                 ml: maximum likelihood. pa: principal axis factoring. \
                  Default auto-selects based on factorability diagnostics (KMO, Bartlett).",
             default: DefaultBinding {
-                using: Some(DefaultValue::Method("pa")),
+                using: Some(DefaultValue::Method("minres")),
                 autodiscover: Some("factorability_probe"),
                 sweep: None,
                 superposition: None,
             },
             domain: Some(ValueDomain::Enum(&[
-                DefaultValue::Method("pa"),
-                DefaultValue::Method("ml"),
                 DefaultValue::Method("minres"),
+                DefaultValue::Method("ml"),
+                DefaultValue::Method("pa"),
             ])),
         },
         ParameterSpec {
@@ -407,6 +412,38 @@ pub static FACTOR_ANALYSIS_SCHEMA: RecipeSchema = RecipeSchema {
                 DefaultValue::Method("promax"),
                 DefaultValue::Method("oblimin"),
             ])),
+        },
+        ParameterSpec {
+            key: "missing",
+            display_name: "Missing data handling",
+            description:
+                "listwise: drop any row with NaN (the IDE default — conservative). \
+                 pairwise: use all available pairs per covariance entry (larger effective N but \
+                 can produce non-positive-definite correlation matrices).",
+            default: DefaultBinding {
+                using: Some(DefaultValue::Method("listwise")),
+                autodiscover: None,
+                sweep: None,
+                superposition: None,
+            },
+            domain: Some(ValueDomain::Enum(&[
+                DefaultValue::Method("listwise"),
+                DefaultValue::Method("pairwise"),
+            ])),
+        },
+        ParameterSpec {
+            key: "fm_se",
+            display_name: "Compute standard errors",
+            description:
+                "If true, compute asymptotic standard errors for factor loadings. Adds cost but \
+                 lets the IDE overlay uncertainty on the loadings table.",
+            default: DefaultBinding {
+                using: Some(DefaultValue::Bool(false)),
+                autodiscover: None,
+                sweep: None,
+                superposition: None,
+            },
+            domain: None,
         },
     ],
     outputs: &[
@@ -494,6 +531,201 @@ pub static VARIMAX_ROTATION_SCHEMA: RecipeSchema = RecipeSchema {
     }],
 };
 
+// ── Diagnostic schemas used by the EFA pipeline ───────────────────────────
+
+/// Schema for `kmo` — Kaiser-Meyer-Olkin measure of sampling adequacy.
+///
+/// KMO is a purely diagnostic recipe with no tunable parameters in its
+/// canonical form. It takes a correlation matrix and produces an overall
+/// scalar plus a per-variable MSA vector. The output is consumed by
+/// downstream steps as an advisory signal on whether the data is
+/// "factorable" at all.
+pub static KMO_SCHEMA: RecipeSchema = RecipeSchema {
+    name: "kmo",
+    description:
+        "Kaiser-Meyer-Olkin measure of sampling adequacy. Overall score and per-variable MSA. \
+         Rule of thumb: > 0.9 marvellous, 0.8 meritorious, 0.7 middling, 0.6 mediocre, \
+         < 0.5 unacceptable for factor analysis.",
+    parameters: &[],
+    outputs: &[
+        OutputSpec {
+            semantic_name: "kmo_overall",
+            description: "Overall KMO sampling adequacy score in [0, 1].",
+            shape: OutputShapeSpec::Scalar,
+            dtype: Dtype::F64,
+            has_v_column: false,
+        },
+        OutputSpec {
+            semantic_name: "kmo_per_variable",
+            description: "Per-variable measure of sampling adequacy (MSA).",
+            shape: OutputShapeSpec::Vector {
+                length: DimensionSourceSpec::InputCols,
+            },
+            dtype: Dtype::F64,
+            has_v_column: false,
+        },
+    ],
+};
+
+/// Schema for `bartlett_sphericity` — Bartlett's test of sphericity.
+///
+/// The canonical form has one tunable: the significance level `alpha` used
+/// to flag the test as rejecting or not rejecting the identity-correlation
+/// null hypothesis. The chi-squared statistic and p-value are emitted
+/// regardless; `alpha` is advisory.
+pub static BARTLETT_SPHERICITY_SCHEMA: RecipeSchema = RecipeSchema {
+    name: "bartlett_sphericity",
+    description:
+        "Bartlett's test of sphericity: H0 = correlation matrix is identity. Emits chi-squared \
+         statistic, degrees of freedom, and p-value. Rejecting H0 (low p-value) is a necessary \
+         condition for factor analysis to be meaningful.",
+    parameters: &[ParameterSpec {
+        key: "alpha",
+        display_name: "Significance level",
+        description:
+            "Threshold for advisory 'rejects H0' flag. The underlying chi-squared statistic and \
+             p-value are always returned; alpha only drives the rendered 'reject/fail to reject' \
+             label in the IDE.",
+        default: DefaultBinding {
+            using: Some(DefaultValue::Float(0.05)),
+            autodiscover: None,
+            sweep: None,
+            superposition: None,
+        },
+        domain: Some(ValueDomain::Range {
+            min: 1e-6,
+            max: 0.25,
+        }),
+    }],
+    outputs: &[
+        OutputSpec {
+            semantic_name: "chi_squared",
+            description: "Bartlett chi-squared test statistic.",
+            shape: OutputShapeSpec::Scalar,
+            dtype: Dtype::F64,
+            has_v_column: false,
+        },
+        OutputSpec {
+            semantic_name: "degrees_of_freedom",
+            description: "Degrees of freedom = p(p-1)/2 where p = number of variables.",
+            shape: OutputShapeSpec::Scalar,
+            dtype: Dtype::I64,
+            has_v_column: false,
+        },
+        OutputSpec {
+            semantic_name: "p_value",
+            description: "Right-tail p-value under the chi-squared null.",
+            shape: OutputShapeSpec::Scalar,
+            dtype: Dtype::F64,
+            has_v_column: false,
+        },
+    ],
+};
+
+/// Schema for `factor_scores` — per-observation factor scores.
+///
+/// Turns the loadings matrix from a `factor_analysis` step back into
+/// per-observation quantities: one score per observation per extracted
+/// factor. Two common methods are offered — regression (Thurstone) and
+/// Bartlett — plus Anderson-Rubin for a decorrelated variant.
+pub static FACTOR_SCORES_SCHEMA: RecipeSchema = RecipeSchema {
+    name: "factor_scores",
+    description:
+        "Per-observation factor scores computed from a fitted loadings matrix. Regression \
+         (Thurstone) is the standard default; Bartlett gives unbiased estimates at the cost of \
+         higher variance; Anderson-Rubin produces orthogonal standardized scores.",
+    parameters: &[ParameterSpec {
+        key: "method",
+        display_name: "Scoring method",
+        description:
+            "regression: Thurstone's weighted-least-squares estimator, correlated with true \
+             scores but biased. bartlett: maximum-likelihood unbiased estimator. \
+             anderson_rubin: orthogonal, unit-variance standardized scores.",
+        default: DefaultBinding {
+            using: Some(DefaultValue::Method("regression")),
+            autodiscover: None,
+            sweep: None,
+            superposition: None,
+        },
+        domain: Some(ValueDomain::Enum(&[
+            DefaultValue::Method("regression"),
+            DefaultValue::Method("bartlett"),
+            DefaultValue::Method("anderson_rubin"),
+        ])),
+    }],
+    outputs: &[OutputSpec {
+        semantic_name: "scores",
+        description: "Factor scores: (n_observations × n_factors) matrix.",
+        shape: OutputShapeSpec::Matrix {
+            rows: DimensionSourceSpec::InputRows,
+            cols: DimensionSourceSpec::FromChoice("n_factors"),
+        },
+        dtype: Dtype::F64,
+        has_v_column: true,
+    }],
+};
+
+/// Schema for `model_fit_diagnostics` — RMSEA/TLI/CFI plus residual norm.
+///
+/// Takes the fitted loadings and the original correlation matrix, computes
+/// the implied correlation matrix, and reports standard structural-equation
+/// fit indices. This is the final sanity-check step in the EFA pipeline.
+pub static MODEL_FIT_DIAGNOSTICS_SCHEMA: RecipeSchema = RecipeSchema {
+    name: "model_fit_diagnostics",
+    description:
+        "Standard fit indices for an extracted factor model: RMSEA (root mean square error of \
+         approximation), TLI (Tucker-Lewis index), CFI (comparative fit index), and the Frobenius \
+         norm of the residual correlation matrix.",
+    parameters: &[ParameterSpec {
+        key: "rmsea_threshold",
+        display_name: "RMSEA acceptance threshold",
+        description:
+            "Advisory cutoff for rendering 'acceptable fit' in the IDE. The underlying RMSEA \
+             value is always returned.",
+        default: DefaultBinding {
+            using: Some(DefaultValue::Float(0.06)),
+            autodiscover: None,
+            sweep: None,
+            superposition: None,
+        },
+        domain: Some(ValueDomain::Range {
+            min: 0.01,
+            max: 0.20,
+        }),
+    }],
+    outputs: &[
+        OutputSpec {
+            semantic_name: "rmsea",
+            description: "Root mean square error of approximation. Lower is better; < 0.06 is conventionally good.",
+            shape: OutputShapeSpec::Scalar,
+            dtype: Dtype::F64,
+            has_v_column: false,
+        },
+        OutputSpec {
+            semantic_name: "tli",
+            description: "Tucker-Lewis non-normed fit index. Higher is better; > 0.95 is good.",
+            shape: OutputShapeSpec::Scalar,
+            dtype: Dtype::F64,
+            has_v_column: false,
+        },
+        OutputSpec {
+            semantic_name: "cfi",
+            description: "Comparative fit index. Higher is better; > 0.95 is good.",
+            shape: OutputShapeSpec::Scalar,
+            dtype: Dtype::F64,
+            has_v_column: false,
+        },
+        OutputSpec {
+            semantic_name: "residual_norm",
+            description:
+                "Frobenius norm of (observed - implied) correlation matrix. Zero = perfect fit.",
+            shape: OutputShapeSpec::Scalar,
+            dtype: Dtype::F64,
+            has_v_column: false,
+        },
+    ],
+};
+
 // ── Pipeline-level prepopulation helper ───────────────────────────────────
 
 /// Build a fresh [`PipelineStep`] from a recipe's schema, with all
@@ -568,11 +800,13 @@ mod tests {
         let schema = schema_for(&RecipeRef::Recipe("factor_analysis".into()));
         assert!(schema.is_some());
         let schema = schema.unwrap();
-        assert_eq!(schema.parameters.len(), 3);
+        assert_eq!(schema.parameters.len(), 5);
         let keys: Vec<&str> = schema.parameters.iter().map(|p| p.key).collect();
         assert!(keys.contains(&"n_factors"));
         assert!(keys.contains(&"extraction"));
         assert!(keys.contains(&"rotation"));
+        assert!(keys.contains(&"missing"));
+        assert!(keys.contains(&"fm_se"));
     }
 
     #[test]
@@ -586,10 +820,12 @@ mod tests {
         let step = step_from_schema("fa", RecipeRef::Recipe("factor_analysis".into()))
             .expect("factor_analysis schema should exist");
         assert_eq!(step.key, "fa");
-        assert_eq!(step.choices.len(), 3);
+        assert_eq!(step.choices.len(), 5);
         assert!(step.choices.contains_key("n_factors"));
         assert!(step.choices.contains_key("extraction"));
         assert!(step.choices.contains_key("rotation"));
+        assert!(step.choices.contains_key("missing"));
+        assert!(step.choices.contains_key("fm_se"));
         // Every choice starts as inherit_defaults.
         for (_, binding) in &step.choices {
             assert!(binding.is_fully_default());
@@ -615,8 +851,8 @@ mod tests {
 
         let effective = effective_binding(&recipe, &step, "extraction")
             .expect("extraction should resolve");
-        // The default for extraction is using=Method("pa"), autodiscover=factorability_probe.
-        assert_eq!(effective.using, Some(Value::Method("pa".into())));
+        // The default for extraction is using=Method("minres"), autodiscover=factorability_probe.
+        assert_eq!(effective.using, Some(Value::Method("minres".into())));
         assert!(effective.autodiscover.is_some());
         assert_eq!(
             effective.autodiscover.as_ref().unwrap().0,
@@ -661,7 +897,7 @@ mod tests {
             "custom_probe"
         );
         // But using still comes from recipe default.
-        assert_eq!(effective.using, Some(Value::Method("pa".into())));
+        assert_eq!(effective.using, Some(Value::Method("minres".into())));
     }
 
     #[test]

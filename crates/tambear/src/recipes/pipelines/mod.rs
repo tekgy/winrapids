@@ -72,6 +72,7 @@
 //!   is materialized into whichever of the above four types the default
 //!   resolves to, so the saved pipeline is explicit about every choice.
 
+pub mod efa;
 pub mod schema;
 pub mod types;
 

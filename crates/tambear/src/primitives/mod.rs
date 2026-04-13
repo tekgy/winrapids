@@ -35,4 +35,5 @@
 //! 5. **Numerical error analysis.** Per-primitive ULP bounds compose predictably.
 //!    Whole-recipe error bounds are derivable from the tree.
 
+pub mod compensated;
 pub mod hardware;

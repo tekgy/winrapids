@@ -272,7 +272,8 @@ mod tests {
             |&x| x,
             |a, b| a + b,
         );
-        assert_eq!(total, (1..=1000u64).sum());
+        let expected: u64 = (1..=1000u64).sum();
+        assert_eq!(total, expected);
     }
 
     #[test]

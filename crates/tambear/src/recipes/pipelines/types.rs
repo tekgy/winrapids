@@ -44,10 +44,11 @@
 //! execution/orchestration crate reads them and runs them; this crate
 //! only describes what to run.
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// An ordered pipeline of steps.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Pipeline {
     /// Human-readable name (e.g. `"exploratory_factor_analysis"`).
     pub name: String,
@@ -59,7 +60,7 @@ pub struct Pipeline {
 
 /// One step of a pipeline: a recipe invocation plus parameter bindings
 /// plus output column spec.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PipelineStep {
     /// Short stable identifier, unique within the pipeline. The IDE uses
     /// this as the invariant key when reordering steps; the A####/B####
@@ -85,7 +86,7 @@ pub struct PipelineStep {
 /// recipes. That's how the "force anything anywhere" invariant is
 /// preserved: a pipeline step can target a primitive-level choice, not
 /// only a recipe-level one.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RecipeRef {
     Atom(String),
     Primitive(String),
@@ -112,7 +113,7 @@ pub type ChoiceKey = String;
 ///
 /// When a dimension is `None`, the recipe's declared default for that
 /// dimension takes effect.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Binding {
     /// User-forced value, or `None` to use the recipe default.
     pub using: Option<Value>,
@@ -197,14 +198,14 @@ impl Binding {
 }
 
 /// Sweep grid: run the step once per value and return a result-per-value.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SweepSpec {
     pub values: Vec<Value>,
 }
 
 /// Superposition: hold multiple values in parallel and combine without
 /// collapsing.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuperpositionSpec {
     pub values: Vec<Value>,
     pub combiner: Combiner,
@@ -212,7 +213,7 @@ pub struct SuperpositionSpec {
 
 /// A parameter value. Pipelines carry these opaquely and pass them to
 /// recipes; recipes know how to interpret each key.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     Bool(bool),
     Int(i64),
@@ -236,14 +237,14 @@ pub enum Value {
 /// Maps into [`primitives::oracle::algorithm_properties::DataProbe`] and
 /// recipe-specific probe registries. The string is the probe name; the
 /// execution layer resolves it at runtime.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DataProbeRef(pub String);
 
 /// How to combine multiple results in a superposition without collapsing.
 ///
 /// The set is open — recipes can register their own via the `Custom`
 /// variant. Standard ones cover the `.discover()` patterns in CLAUDE.md.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Combiner {
     /// Keep every result, report them all separately. The "superposition
     /// fingerprint" from the garden entries.
@@ -264,7 +265,7 @@ pub enum Combiner {
 /// The IDE reads these to render the chain graph and to let the user
 /// pick downstream references without running anything. Every field is
 /// pre-execution metadata — the data doesn't exist yet.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutputColumn {
     /// Semantic name in the recipe's own vocabulary ("loadings",
     /// "eigenvalues", "scores", "residuals"). The IDE combines this
@@ -282,7 +283,7 @@ pub struct OutputColumn {
 }
 
 /// Dimensionality and dynamism of an output.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OutputShape {
     Scalar,
     Vector {
@@ -304,7 +305,7 @@ pub enum OutputShape {
 /// is attached (rows/cols of the input), or derived from a parameter
 /// value (`FromChoice`). This lets the IDE reason about chain shapes
 /// before any data is loaded.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DimensionSource {
     /// Known at pipeline spec time.
     Fixed(usize),
@@ -317,7 +318,7 @@ pub enum DimensionSource {
 }
 
 /// Numeric/logical dtype of a stored value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Dtype {
     F32,
     F64,

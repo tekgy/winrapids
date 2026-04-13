@@ -74,11 +74,21 @@
 
 pub mod efa;
 pub mod schema;
+pub mod serialize;
+pub mod shape;
 pub mod types;
 
 pub use schema::{
     effective_binding, schema_for, step_from_schema, DefaultBinding, DefaultValue,
     DimensionSourceSpec, OutputShapeSpec, OutputSpec, ParameterSpec, RecipeSchema, ValueDomain,
+};
+pub use serialize::{
+    is_fully_materialized, load, materialize, save, save_raw, SavedPipeline, SerializeError,
+    SAVE_FORMAT_VERSION,
+};
+pub use shape::{
+    infer, ChainShape, ResolvedColumn, ResolvedDimension, ResolvedShape, ResolvedStep,
+    ShapeWarning, UnresolvedDimension,
 };
 pub use types::{
     Binding, ChoiceKey, Combiner, DataProbeRef, DimensionSource, Dtype, OutputColumn, OutputShape,

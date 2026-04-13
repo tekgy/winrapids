@@ -37,3 +37,4 @@
 //! that auto-generates the three entry points from a single source.
 
 pub mod libm;
+pub mod pipelines;

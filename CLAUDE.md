@@ -251,6 +251,8 @@ If all pass, ship. If any fail, fix first.
 
 ## Methods Are Compositions — Primitives Are the Atoms
 
+> **Concrete architecture**: see `docs/architecture/atoms-primitives-recipes.md` for the three-layer decomposition (atoms → primitives → recipes), the primitive catalog (~20 IEEE 754 hardware ops + ~13 compensated arithmetic foundations), lowering strategies (strict / compensated / correctly_rounded), and filesystem organization. The conceptual principle below and the concrete architecture document together define how every piece of mathematics in tambear gets built.
+
 Every method in tambear decomposes into global primitives + a formula. The method doesn't *own* its sub-algorithms — it *composes* them. The formula is the only thing the method uniquely contributes. Everything else is a call to a primitive that exists independently in the global catalog.
 
 | Method | Primitives it composes | What the method uniquely owns |

@@ -46,6 +46,7 @@
 //! ```
 
 pub mod accumulate;
+pub mod primitives;
 pub mod clustering;
 pub mod codegen;
 pub mod compute_engine;

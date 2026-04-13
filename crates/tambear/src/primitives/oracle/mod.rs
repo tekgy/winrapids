@@ -36,6 +36,12 @@
 //! inputs: large-plus-small, perfect cancellation, alternating signs,
 //! near-overflow, subnormal sums, and the Rump example.
 
+pub mod algorithm_properties;
+pub use algorithm_properties::{
+    format_advice, skip_list_for, weakness_for_data, weaknesses_of, AlgorithmWeakness, DataProbe,
+    ALGORITHM_WEAKNESSES,
+};
+
 use crate::primitives::compensated::eft::two_product_fma;
 use crate::primitives::specialist::KulischAccumulator;
 
@@ -364,42 +370,22 @@ mod tests {
     }
 
     #[test]
-    fn kahan_sum_passes_hard_sums_except_big_cancellation() {
-        // Kahan genuinely loses small values that are trapped between large
-        // cancelling pairs — both `perfect_cancellation` and
-        // `rump_example_small` lose bits because Kahan's compensation term
-        // itself gets rounded away when the running sum returns near zero.
-        // Neumaier handles these cases because it compares magnitudes before
-        // selecting the compensation formula. This is documented algorithmic
-        // weakness, not an implementation bug.
-        assert_sum_matches_oracle(
-            kahan_sum,
-            4,
-            "kahan_sum",
-            &[
-                "perfect_cancellation",
-                "rump_example_small",
-                "near_overflow_with_tiny",
-            ],
-        );
+    fn kahan_sum_passes_hard_sums_except_documented_weakness() {
+        // Skip list is read from algorithm_properties, the single source of
+        // truth for known algorithmic weakness. Documented weaknesses are
+        // visible in the catalog docstring and surfaced to users by
+        // tbs_lint / Layer 1 dispatch — see format_advice for the full
+        // user-facing explanation.
+        let skip = skip_list_for("kahan_sum");
+        assert_sum_matches_oracle(kahan_sum, 4, "kahan_sum", &skip);
     }
 
     #[test]
-    fn pairwise_sum_tolerance_is_log_n() {
-        // Pairwise is O(log n · ε · Σ|xᵢ|) with no compensation at all, so it
-        // loses small trailing values on any big-cancellation input. This is
-        // the whole reason compensated summation exists — we skip the cases
-        // that require it.
-        assert_sum_matches_oracle(
-            pairwise_sum,
-            32,
-            "pairwise_sum",
-            &[
-                "perfect_cancellation",
-                "rump_example_small",
-                "near_overflow_with_tiny",
-            ],
-        );
+    fn pairwise_sum_passes_hard_sums_except_documented_weakness() {
+        // Pairwise is O(log n · ε · Σ|xᵢ|) with no compensation at all.
+        // Skip list comes from algorithm_properties.
+        let skip = skip_list_for("pairwise_sum");
+        assert_sum_matches_oracle(pairwise_sum, 32, "pairwise_sum", &skip);
     }
 
     #[test]

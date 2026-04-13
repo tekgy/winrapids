@@ -39,4 +39,5 @@ pub mod compensated;
 pub mod constants;
 pub mod double_double;
 pub mod hardware;
+pub mod oracle;
 pub mod specialist;

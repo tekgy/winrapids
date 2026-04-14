@@ -35,6 +35,7 @@ pi-scaled.
 | Hyperbolic inverse | 6 | `asinh`, `acosh`, `atanh`, `acoth`, `asech`, `acsch` |
 | Pi-scaled | 3 | `sinpi`, `cospi`, `tanpi` + inverses `asinpi`, `acospi`, `atanpi`, `atan2pi` |
 | Fused hyperbolic | 2 | `sinhcosh`, `expm1_coshm1` (exp(x)-1 + cosh(x)-1 sharing) |
+| Circular↔hyperbolic bridge | 2 | `gd` (gudermannian), `gd⁻¹` (inverse gudermannian) |
 
 Per-unit multiplication by {rad, deg, grad, turn, pi-scaled} brings the surface
 to roughly ~150 callable entries. Pathmaker produces one `.spec.toml` per
@@ -235,14 +236,80 @@ base entry with the angle unit as a `using()` parameter per TRIG-3.
 
 ### asinpi(x), acospi(x), atanpi(x), atan2pi(y, x)
 
-1. **Source.** IEEE 754-2019 §9.2; C23 Annex F.
-2. **Domain/codomain.** Same shapes as `asin`/`acos`/`atan`/`atan2`, scaled
-   by `1/π` on the output. `atan2pi(y, x) ∈ (-1, 1]` instead of `(-π, π]`.
-3. **Edge cases.** `asinpi(1) = 1/2` **exactly**; `acospi(-1) = 1` exactly;
-   `atan2pi(0, -1) = 1` exactly — the whole point of pi-scaled inverses
-   is that rational-π answers come out rational.
-4. **State of the art.** CORE-MATH ships `asinpi` and `acospi` since 2024.
-   CUDA `atan2pi` since 11.0. R does not ship inverse pi-scaled.
+1. **Source.** IEEE 754-2019 §9.2 (recommended operations, optional to
+   implement but specified); C23 Annex F.10.1.* (adopted as part of the
+   revised math library, still rolling out). Muller *Handbook* 2nd ed.
+   ch. 11 discusses pi-scaled inverse design.
+2. **Domain/codomain.** Same input domains as `asin`/`acos`/`atan`/`atan2`;
+   outputs scaled by `1/π` relative to the radian counterparts.
+   `asinpi: [-1, 1] → [-1/2, 1/2]`. `acospi: [-1, 1] → [0, 1]`.
+   `atanpi: ℝ → (-1/2, 1/2)`. `atan2pi: ℝ² ∖ {(0,0)} → (-1, 1]`.
+3. **IEEE 754-2019 stance.** All four are in §9.2's recommended table
+   alongside `sinpi`/`cospi`/`tanpi`. They are **optional** for a
+   conforming implementation — a libm may ship them or not — but if
+   shipped, they must obey the §9.2 semantics. C23 adopts them into
+   the standard math library. **Practical meaning for tambear**:
+   producing them is a differentiator; none of glibc, fdlibm, Boost.Math,
+   or MATLAB's baseline ships the inverse pi-scaled set.
+4. **Edge cases.** Rational-π answers come out rational.
+   - `asinpi(0) = 0`, `asinpi(±1) = ±1/2` **exactly**.
+   - `asinpi(1/2) = 1/6` **exactly** (corresponds to `asin(1/2) = π/6`).
+   - `acospi(1) = 0`, `acospi(-1) = 1`, `acospi(0) = 1/2` exactly.
+   - `atanpi(0) = 0`, `atanpi(±∞) = ±1/2` exactly, `atanpi(1) = 1/4` exact.
+   - `atan2pi(0, -1) = 1`, `atan2pi(1, 0) = 1/2` exactly.
+5. **Implementation — CRITICAL design point.**
+   **Do NOT implement as `radian_result / π`.** The post-multiply by
+   `1/π` converts a radian result (which is a transcendental mixed with
+   accumulated rounding error) into a half-turn result via a final
+   division by an irrational constant. For inputs where the true answer
+   is close to `0` or `±1/2` — which is most of the interesting
+   domain — the final `/π` divides a small-or-near-boundary value and
+   eats up to 3 ULPs of precision that the original radian computation
+   had.
+
+   The correct implementation **fits a polynomial directly for the
+   half-turn output**:
+   - `asinpi(x)`: Remez fit of `asin(x)/π` on `[-1, 1]` with the same
+     region-splitting as `asin` (small / medium / near-unity half-angle).
+     Coefficients are different from the radian polynomial — they bake
+     the `1/π` into the constants.
+   - `acospi(x)`: fit `acos(x)/π` directly, or use the identity
+     `acospi(x) = 1/2 − asinpi(x)` where `1/2` is f64-exact. Both paths
+     preserve the exactness of `acospi(0) = 1/2`.
+   - `atanpi(x)`: fit `atan(x)/π` directly with the same fdlibm-style
+     table partition, with `1/π` in the table constants.
+   - `atan2pi(y, x)`: reuse `atanpi` for the interior; the quadrant-offset
+     constants are exact rationals in half-turns (`0, 1/2, -1/2, 1, -1`).
+
+   This is the same pattern as `sinpi(x)`: naive `sin(π·x)` loses bits
+   because `π·x` introduces a transcendental multiply; direct
+   polynomial fit in the turn domain keeps everything in exact
+   arithmetic until the polynomial evaluation itself.
+
+   **Consequence for tambear**: `asinpi`, `acospi`, `atanpi`, `atan2pi`
+   get their own first-class recipes with their own coefficient tables.
+   They are NOT wrappers that call their radian counterparts and divide.
+6. **Flavors.**
+   - **Standard**: direct polynomial fit per above.
+   - **Correctly rounded**: DD polynomial fit with the same direct
+     approach. CORE-MATH's 2024 `asinpi` uses this.
+7. **Relatives.** Inverse of `sinpi`/`cospi`/`tanpi`; pi-scaled analog
+   of `asin`/`acos`/`atan`/`atan2`. Shares region-splitting pattern
+   with radian inverses but not coefficients or `AtanCore` / `AsinCore`
+   intermediates — those are radian-specific.
+8. **State of the art.**
+   - **Julia**: ships `asinpi`, `acospi`, `atanpi` since 1.0 (2018) in
+     `Base.Math`. Confirmed via julia/base/special/trig.jl.
+     `atan2pi` via `atand / 180` idiom, not first-class.
+   - **CORE-MATH**: `asinpi` and `acospi` since 2024 at correctly-rounded
+     f64 via direct DD polynomial fit.
+   - **CUDA libdevice**: `atan2pi`, `atan2pif`, `asinpi`, `acospi`,
+     `atanpi` documented in CUDA Math API; 2-ULP intrinsics / 1-ULP
+     software.
+   - **R, glibc, fdlibm, MATLAB, Boost.Math**: none ship the inverse
+     pi-scaled set. Users work around with `asin(x)/pi` — which has
+     exactly the precision loss described above.
+   - **IEEE 754-2019** recommends; C23 standardizes.
 
 ---
 
@@ -546,6 +613,80 @@ base entry with the angle unit as a `using()` parameter per TRIG-3.
    and its accurate evaluation is **exactly** the `sin²(x/2)` trick that
    tambear's shared-pass primitive supports natively. Anti-YAGNI: add now.
 4. **State of the art.** Boost.Math ships them; no major libm.
+
+### gudermannian `gd(x)` and inverse `gd⁻¹(x)` — the circular↔hyperbolic bridge
+
+1. **Source.** Named for Christoph Gudermann (1798–1852) who studied
+   it as a special function relating hyperbolic and circular trig
+   without needing complex numbers. First tabulated by Lambert 1768.
+2. **Definitions** (multiple equivalent forms — all exact identities):
+   - `gd(x) = 2·atan(tanh(x/2))`
+   - `gd(x) = atan(sinh(x))`
+   - `gd(x) = 2·atan(e^x) − π/2`
+   - `gd(x) = ∫₀ˣ sech(t) dt` — the integral of sech from 0.
+   - Inverse: `gd⁻¹(y) = ln(tan(π/4 + y/2)) = atanh(sin(y)) = 2·atanh(tan(y/2))`.
+3. **Domain/codomain.**
+   - `gd`: `ℝ → (-π/2, π/2)`. Monotonically increasing. Odd.
+   - `gd⁻¹`: `(-π/2, π/2) → ℝ`.
+4. **Violations.**
+   - `gd(NaN) = NaN`; `gd(±∞) = ±π/2` exactly.
+   - `gd⁻¹(NaN) = NaN`; `gd⁻¹(±π/2) = ±∞` + `FE_DIVBYZERO`.
+   - `gd⁻¹(|y| > π/2)` → NaN + `FE_INVALID`.
+5. **Edge cases.**
+   - `gd(0) = 0`, `gd⁻¹(0) = 0` exactly.
+   - Small `x`: `gd(x) ≈ x − x³/6 + x⁵/24 − ...` — must preserve input
+     at tiny scales; naive `2·atan(tanh(x/2))` loses bits for `|x| <
+     2⁻²⁷` because the chained near-identity functions each add
+     rounding error.
+   - Large `|x|`: saturates toward `±π/2`. For `|x| > ln(2/ε) ≈ 37.4`
+     in f64, `gd(x) = ±π/2` within half a ULP; short-circuit return
+     `copysign(π/2, x)`.
+6. **Rationale for including.**
+   - **Real applied use**: Mercator map projection. The `y`-coordinate
+     of a Mercator projection at latitude `φ` is `gd⁻¹(φ)`; inverse
+     Mercator recovers latitude from `y` via `gd(y)`. This is the
+     defining integral of the projection, not just a convenience.
+   - **Real applied use**: hyperbolic geometry. The gudermannian
+     relates the "hyperbolic angle" (arc length along a unit hyperbola)
+     to a circular angle without complexification. Appears in special
+     relativity's rapidity-to-velocity conversion: `v/c = tanh(rapidity)
+     = sin(gd(rapidity))`.
+   - **Real applied use**: pendulum motion. The nonlinear pendulum's
+     exact period involves elliptic integrals that reduce to
+     gudermannian terms in the small-amplitude limit.
+   - **Structural reason**: it's the single named function that
+     witnesses the circular↔hyperbolic isomorphism in the real domain.
+     Having it in the catalog makes the symmetry between families
+     explicit rather than implicit.
+7. **Flavors.**
+   - **Standard**: `gd(x) = atan(sinh(x))` form — reuses the `sinh`
+     and `atan` primitives with their own precision strategies. Error
+     budget compounds (~2-3 ULPs worst).
+   - **Direct**: for correctly-rounded, fit a polynomial to `gd(x)` on
+     `[-ε, ε]` for small `|x|`, use the `2·atan(e^x) − π/2` form for
+     medium `|x|` (single exp, single atan, one subtraction), and
+     short-circuit to `±π/2` for large `|x|`. This is the CORE-MATH-
+     style approach for transcendentals composed of simpler parts.
+   - **Inverse**: `gd⁻¹(y)` via `atanh(sin(y))` form. Near `|y| =
+     π/2` reduces to the `atanh` near-unity cancellation case — falls
+     naturally into the `complementary_arg_transform` meta-primitive.
+8. **State of the art.**
+   - **Boost.Math**: ships `gudermannian` and `inverse_gudermannian`
+     in the `<boost/math/special_functions/gudermannian.hpp>` header.
+     The only C++ math library that does.
+   - **Julia**: not in Base; exists in `SpecialFunctions.jl` as
+     `gd(x)` / via `gd = atan(sinh(x))` idiom.
+   - **Mathematica / Maple / MATLAB**: `Gudermannian[x]` in
+     Mathematica; MATLAB lacks it (users compute via the identity).
+   - **Python**: scipy does not ship it; mpmath does at arbitrary
+     precision via `mp.gudermannian(x)`.
+   - **fdlibm, glibc, CORE-MATH, Intel SVML**: none ship it.
+
+   **Practical meaning for tambear**: shipping `gd` and `gd⁻¹` as
+   first-class first-principles recipes makes tambear one of 2-3 math
+   libraries in existence with full gudermannian coverage, and makes
+   us categorically ahead for Mercator projection and relativity
+   workloads.
 
 ---
 

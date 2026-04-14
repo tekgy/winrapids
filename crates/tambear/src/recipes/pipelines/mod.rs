@@ -73,6 +73,7 @@
 //!   resolves to, so the saved pipeline is explicit about every choice.
 
 pub mod efa;
+pub mod invoke;
 pub mod schema;
 pub mod serialize;
 pub mod shape;

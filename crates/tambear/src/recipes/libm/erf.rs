@@ -9,98 +9,110 @@
 //! `erf(1.386) ≈ 0.9537` rounds to ~16 digits, and the subtraction
 //! `1 - 0.9537...` keeps only ~2 digits of the result.
 //!
-//! The structural fix: **never compute `erfc` as `1 - erf`**. Instead,
-//! use separate approximations for three regions:
+//! The structural fix: **never compute `erfc` as `1 - erf`** in the regime
+//! where `erf ≈ 1`. Instead, use four regions with dedicated rational
+//! approximations from Sun Microsystems' `fdlibm`:
 //!
-//! - `|x| < 0.84375`: compute `erf(x)` directly via polynomial.
-//!   `erfc(x) = 1 - erf(x)` is safe here because `|erf(x)| < 0.75`.
-//! - `0.84375 ≤ |x| < 1.25`: compute `erfc(x)` via a dedicated
-//!   polynomial in `(|x| - 1)`. No cancellation because we never
-//!   subtract from 1.
-//! - `1.25 ≤ |x| < 28`: compute `erfc(x)` directly via the asymptotic
-//!   expansion `erfc(x) ≈ exp(-x²) / (x·√π) · P(1/x²)`.
+//! - `|x| < 0.84375`: compute `erf(x) = x + x·R(x²)/S(x²)` directly.
+//!   `erfc(x) = 1 - erf(x)` is safe here because `|erf(x)| < 0.77` and the
+//!   subtraction keeps all significant digits.
+//! - `0.84375 ≤ |x| < 1.25`: compute `erfc(x) = 1 - erx - P(s)/Q(s)` with
+//!   `s = |x| - 1` and `erx = erf(1)` stored as a correctly-rounded f64
+//!   constant. No cancellation because we never subtract from 1.
+//! - `1.25 ≤ |x| < 1/0.35 ≈ 2.857`: asymptotic expansion
+//!   `erfc(x) = exp(-x² - 0.5625) · exp(R(1/x²)/S(1/x²)) / x`, with the
+//!   `exp(-x²)` evaluated via precision splitting to recover the low bits
+//!   that `x²` loses.
+//! - `1/0.35 ≤ |x| < 28`: same asymptotic form with a second set of
+//!   rational coefficients (`rb`/`sb`).
 //! - `|x| ≥ 28`: `erfc(x) = 0` (below f64 precision), `erf(x) = ±1`.
 //!
-//! This is the standard fdlibm/Sun approach from `s_erf.c`. The key
-//! insight is that each region has its OWN polynomial, and the polynomials
-//! are chosen so that the quantity being computed is always O(1) — no
-//! cancellation can occur.
+//! # Coefficients
+//!
+//! Every coefficient below is transcribed verbatim from the canonical
+//! Sun Microsystems fdlibm `s_erf.c` (also mirrored in musl's `src/math/erf.c`).
+//! The hex bit patterns in the original source agree with these decimal
+//! literals to full 17-digit precision. Do NOT re-round these by hand —
+//! a single wrong digit cascades into catastrophic ulp error at the region
+//! seams.
 //!
 //! # References
 //!
-//! - Sun fdlibm `s_erf.c` — the canonical implementation
+//! - Sun fdlibm `s_erf.c` (1993) — <https://www.netlib.org/fdlibm/s_erf.c>
+//! - musl `src/math/erf.c` — <https://git.musl-libc.org/cgit/musl/plain/src/math/erf.c>
 //! - Abramowitz & Stegun 7.1 — the handbook reference
 //! - Cody, "Rational Chebyshev Approximations for the Error Function" (1969)
 
-use crate::primitives::constants::INV_PI_F64;
+// ── fdlibm s_erf.c coefficients (verbatim) ──────────────────────────────────
 
-// ── Polynomial coefficients from fdlibm s_erf.c ────────────────────────────
-//
-// Region 1: |x| < 0.84375. erf(x) = x + x·R(x²) where R is degree-4
-// rational. Coefficients from fdlibm s_erf.c (Sun Microsystems).
-// The approximation: erf(x) = x·(1 + pp0·x² + pp1·x⁴ + ... ) / (1 + qq1·x² + ...)
-// Rewritten as erf(x)/x - 1 = P(x²)/Q(x²), then erf(x) = x·(1 + P/Q).
+const ERX: f64 = 8.45062911510467529297e-01;
+const EFX8: f64 = 1.02703333676410069053e+00;
 
-const PP0: f64 =  1.283_791_670_955_125_6e-01;
-const PP1: f64 = -3.250_421_072_470_015_0e-01;
-const PP2: f64 = -2.848_174_957_559_851_0e-02;
-const PP3: f64 = -5.770_270_296_489_442_5e-03;
-const PP4: f64 = -2.376_301_667_999_914_0e-05;
+// Region 1: |x| < 0.84375.  erf(x) = x + x·R(x²)/S(x²).
+const PP0: f64 = 1.28379167095512558561e-01;
+const PP1: f64 = -3.25042107247001499370e-01;
+const PP2: f64 = -2.84817495755985104766e-02;
+const PP3: f64 = -5.77027029648944159157e-03;
+const PP4: f64 = -2.37630166566501626084e-05;
 
-const QQ1: f64 =  3.971_838_336_005_715_8e-01;
-const QQ2: f64 =  6.502_225_057_049_312_6e-02;
-const QQ3: f64 =  5.081_306_281_875_766_0e-03;
-const QQ4: f64 =  1.325_474_356_004_935_6e-04;
-const QQ5: f64 =  -3.960_228_278_775_368_0e-06;
+const QQ1: f64 = 3.97917223959155352819e-01;
+const QQ2: f64 = 6.50222499887672944485e-02;
+const QQ3: f64 = 5.08130628187576562776e-03;
+const QQ4: f64 = 1.32494738004321644526e-04;
+const QQ5: f64 = -3.96022827877536812320e-06;
 
-// Region 2: 0.84375 ≤ |x| < 1.25. erfc(x) ≈ erfc(1) + P(x-1)/Q(x-1)
-const ERFC_1: f64 = 1.571_086_137_826_055_5e-01; // erfc(1) ≈ 0.1571
+// Region 2: 0.84375 ≤ |x| < 1.25.  erfc(x) = 1 - erx - P(s)/Q(s),  s = |x|-1.
+const PA0: f64 = -2.36211856075265944077e-03;
+const PA1: f64 = 4.14856118683748331666e-01;
+const PA2: f64 = -3.72207876035701323847e-01;
+const PA3: f64 = 3.18346619901161753674e-01;
+const PA4: f64 = -1.10894694282396677476e-01;
+const PA5: f64 = 3.54783043256182359371e-02;
+const PA6: f64 = -2.16637559486879084300e-03;
 
-const PA: [f64; 7] = [
-    -2.362_118_560_752_659_5e-03,
-     4.148_561_186_837_485_3e-01,
-    -3.722_078_760_357_013_8e-01,
-     3.183_466_199_011_617_6e-01,
-    -1.108_946_942_823_966_7e-01,
-     3.547_830_432_561_823_6e-02,
-    -2.166_375_594_868_791_0e-03,
-];
+const QA1: f64 = 1.06420880400844228286e-01;
+const QA2: f64 = 5.40397917702171048937e-01;
+const QA3: f64 = 7.18286544141962662868e-02;
+const QA4: f64 = 1.26171219808761642112e-01;
+const QA5: f64 = 1.36370839120290507362e-02;
+const QA6: f64 = 1.19844998467991074170e-02;
 
-const QA: [f64; 6] = [
-    1.0,
-    1.064_208_804_008_442_3e-01,
-    5.403_979_177_021_710_1e-01,
-    7.182_865_441_419_627_4e-02,
-    1.261_712_198_087_616_7e-01,
-    1.363_708_391_202_905_3e-02,
-];
+// Region 3a: 1.25 ≤ |x| < 1/0.35 ≈ 2.857.
+// erfc(x) = exp(-x²-0.5625) · exp(R(1/x²)/S(1/x²)) / x.
+const RA0: f64 = -9.86494403484714822705e-03;
+const RA1: f64 = -6.93858572707181764372e-01;
+const RA2: f64 = -1.05586262253232909814e+01;
+const RA3: f64 = -6.23753324503260060396e+01;
+const RA4: f64 = -1.62396669462573470355e+02;
+const RA5: f64 = -1.84605092906711035994e+02;
+const RA6: f64 = -8.12874355063065934246e+01;
+const RA7: f64 = -9.81432934416914548592e+00;
 
-// Region 3: 1.25 ≤ |x| < 28. erfc(x) ≈ exp(-x²)·(1/√π + P(1/x²)/Q(1/x²)) / x
-// We use separate coefficient sets for [1.25, 2.857) and [2.857, 6) and [6, 28).
-// For simplicity in this first pass, we use a single rational approximation
-// that covers [1.25, 28) with moderate accuracy.
+const SA1: f64 = 1.96512716674392571292e+01;
+const SA2: f64 = 1.37657754143519042600e+02;
+const SA3: f64 = 4.34565877475229228821e+02;
+const SA4: f64 = 6.45387271733267880336e+02;
+const SA5: f64 = 4.29008140027567833386e+02;
+const SA6: f64 = 1.08635005541779435134e+02;
+const SA7: f64 = 6.57024977031928170135e+00;
+const SA8: f64 = -6.04244152148580987438e-02;
 
-const RA: [f64; 8] = [
-    -9.864_944_034_847_148_5e-03,
-    -6.938_585_727_071_818_0e-01,
-    -1.055_862_618_160_986_8e+01,
-    -6.237_531_540_792_793_8e+01,
-    -1.623_967_783_312_386_8e+02,
-    -1.846_050_929_042_490_2e+02,
-    -8.128_903_049_698_642_3e+01,
-    -9.814_329_344_169_145_9e+00,
-];
+// Region 3b: 1/0.35 ≤ |x| < 28.
+const RB0: f64 = -9.86494292470009928597e-03;
+const RB1: f64 = -7.99283237680523006574e-01;
+const RB2: f64 = -1.77579549177547519889e+01;
+const RB3: f64 = -1.60636384855821916062e+02;
+const RB4: f64 = -6.37566443368389627722e+02;
+const RB5: f64 = -1.02509513161107724954e+03;
+const RB6: f64 = -4.83519191608651397019e+02;
 
-const SA: [f64; 8] = [
-    1.0,
-    1.965_127_549_261_862_8e+01,
-    1.374_997_551_466_784_8e+02,
-    4.345_656_536_369_280_1e+02,
-    6.454_532_929_183_351_0e+02,
-    4.290_081_407_054_702_8e+02,
-    1.086_350_827_508_107_9e+02,
-    6.570_249_770_319_282_3e+00,
-];
+const SB1: f64 = 3.03380607434824582924e+01;
+const SB2: f64 = 3.25792512996573918826e+02;
+const SB3: f64 = 1.53672958608443695994e+03;
+const SB4: f64 = 3.19985821950859553908e+03;
+const SB5: f64 = 2.55305040643316442583e+03;
+const SB6: f64 = 4.74528541206955367215e+02;
+const SB7: f64 = -2.24409524465858183362e+01;
 
 // ── Entry points ────────────────────────────────────────────────────────────
 
@@ -110,42 +122,76 @@ pub fn erf_strict(x: f64) -> f64 {
     if x.is_nan() {
         return f64::NAN;
     }
-    if x == 0.0 {
-        return x; // preserves sign of zero
-    }
-    let ax = x.abs();
-    if ax >= 6.0 {
+    if x.is_infinite() {
         return if x > 0.0 { 1.0 } else { -1.0 };
     }
-    let result = if ax <= 1.5 {
-        erf_taylor(ax)
-    } else if ax < 6.0 {
-        1.0 - erfc_cf(ax)
-    } else {
+    let ax = x.abs();
+    if ax < 0.84375 {
+        // Region 1: direct polynomial evaluation with the small-x tail
+        // preserving sign of zero.
+        if ax < 2.0_f64.powi(-28) {
+            // Tiny-x path: 0.125*(8*x + efx8*x) ≡ x + x·efx8/8 to full precision
+            // and preserves signed zero semantics.
+            return 0.125 * (8.0 * x + EFX8 * x);
+        }
+        let y = erf_small_ratio(ax);
+        let pos = ax + ax * y;
+        return if x < 0.0 { -pos } else { pos };
+    }
+    if ax < 6.0 {
+        // erf(x) = 1 - erfc(x), evaluated in the regime where erfc is O(1)
+        // or larger in magnitude so there is no cancellation in the 1 - erfc
+        // subtraction here.
+        let ec = erfc2(ax);
+        let y = 1.0 - ec;
+        return if x < 0.0 { -y } else { y };
+    }
+    // |x| ≥ 6: saturate. Returning exactly ±1 matches the historical contract
+    // of this module's tests.
+    if x > 0.0 {
         1.0
-    };
-    if x < 0.0 { -result } else { result }
+    } else {
+        -1.0
+    }
 }
 
-/// `erfc(x)` — strict lowering. **Never computes `1 - erf(x)`** for
-/// x > 0.84375.
+/// `erfc(x)` — strict lowering. **Never computes `1 - erf(x)`** for `|x| > 0.84375`.
 #[inline]
 pub fn erfc_strict(x: f64) -> f64 {
     if x.is_nan() {
         return f64::NAN;
     }
-    let ax = x.abs();
-    if ax >= 28.0 {
+    if x.is_infinite() {
         return if x > 0.0 { 0.0 } else { 2.0 };
     }
-    let result = if ax <= 0.5 {
-        1.0 - erf_taylor(ax)  // safe: erf(0.5) ≈ 0.52, no cancellation
-    } else if ax < 28.0 {
-        erfc_cf(ax)  // CF computes erfc directly, never subtracts from 1
-    } else {
+    let ax = x.abs();
+    if ax < 0.84375 {
+        // Region 1: compute erf(x) and subtract from 1 — safe because |erf|<0.77.
+        if ax < 2.0_f64.powi(-56) {
+            // Tiny-x path: erfc(x) ≈ 1 - x to full precision.
+            return 1.0 - x;
+        }
+        let y = erf_small_ratio(ax);
+        if x < 0.25 {
+            // Covers x ≤ 0 and 0 ≤ x < 0.25. The subtraction 1 - (x + x*y) is
+            // accurate because x + x*y < 0.28.
+            return 1.0 - (x + x * y);
+        }
+        // 0.25 ≤ x < 0.84375: split 1 = 0.5 + 0.5 to recover bits lost to
+        // cancellation. Formula: erfc(x) = 0.5 - (x - 0.5 + x*y).
+        return 0.5 - (x - 0.5 + x * y);
+    }
+    if ax < 28.0 {
+        // Regions 2-4 via dedicated erfc rational approximation.
+        let ec = erfc2(ax);
+        return if x < 0.0 { 2.0 - ec } else { ec };
+    }
+    // |x| ≥ 28: erfc underflows to 0 for positive x, saturates to 2 for negative.
+    if x > 0.0 {
         0.0
-    };
-    if x < 0.0 { 2.0 - result } else { result }
+    } else {
+        2.0
+    }
 }
 
 /// `erf(x)` — compensated lowering (same polynomial, better reconstruction).
@@ -174,78 +220,59 @@ pub fn erfc_correctly_rounded(x: f64) -> f64 {
 
 // ── Region implementations ──────────────────────────────────────────────────
 
-/// Taylor series for erf(x), accurate for |x| ≤ 2.
-///
-/// For |x| > 2, use `1 - erfc_cf(x)` instead.
+/// Evaluate `R(z)/S(z)` where `z = x²` for `|x| < 0.84375`.
+/// The result `y` satisfies `erf(x) = x + x·y`.
 #[inline]
-fn erf_taylor(ax: f64) -> f64 {
-    let x2 = ax * ax;
-    let two_over_sqrt_pi = 1.128_379_167_095_512_6;
-    let mut term = 1.0_f64;
-    let mut sum = 1.0_f64;
-    for n in 1..25_u32 {
-        term *= -x2 / (n as f64);
-        let contrib = term / (2 * n + 1) as f64;
-        sum += contrib;
-        if contrib.abs() < 1e-17 {
-            break;
-        }
-    }
-    two_over_sqrt_pi * ax * sum
+fn erf_small_ratio(ax: f64) -> f64 {
+    let z = ax * ax;
+    let r = PP0 + z * (PP1 + z * (PP2 + z * (PP3 + z * PP4)));
+    let s = 1.0 + z * (QQ1 + z * (QQ2 + z * (QQ3 + z * (QQ4 + z * QQ5))));
+    r / s
 }
 
-/// Compute erfc(x) via continued fraction for x ≥ 1.
-///
-/// Uses the Lentz-Thompson-Barnett algorithm to evaluate:
-/// `erfc(x) = exp(-x²) / √π · CF` where the continued fraction is
-/// `CF = 1/(x + 1/(2x + 2/(x + 3/(2x + ...))))`
-///
-/// This converges rapidly for x ≥ 1 and avoids all cancellation issues.
+/// Region 2: `0.84375 ≤ |x| < 1.25`.
+/// Returns `erfc(x) = 1 - erx - P(s)/Q(s)` with `s = |x| - 1`.
 #[inline]
-fn erfc_cf(ax: f64) -> f64 {
-    let x2 = ax * ax;
-    let inv_sqrt_pi = 0.564_189_583_547_756_3;
-
-    // Evaluate CF via backward recurrence (more stable for this CF).
-    // The CF can be written as: erfc(x) = exp(-x²)/√π · 1/(x + K)
-    // where K is a continued fraction with partial numerators a_n and
-    // partial denominators b_n = x for odd n, 2x for even n.
-    // We use a modified Lentz method for the CF value.
-    let mut f = ax;
-    let mut c = ax;
-    let mut d = 0.0_f64;
-    let tiny = 1e-300;
-
-    for n in 1..100_u32 {
-        let a_n = (n as f64) * 0.5;
-        let b_n = ax;
-        d = b_n + a_n * d;
-        if d.abs() < tiny {
-            d = tiny;
-        }
-        c = b_n + a_n / c;
-        if c.abs() < tiny {
-            c = tiny;
-        }
-        d = 1.0 / d;
-        let delta = c * d;
-        f *= delta;
-        if (delta - 1.0).abs() < 1e-15 {
-            break;
-        }
-    }
-
-    // erfc(x) = exp(-x²) / (√π · f)
-    // Split exp(-x²) for accuracy.
-    let ax_hi = f64::from_bits(ax.to_bits() & 0xFFFF_FFFF_F800_0000);
-    let ax_lo = ax - ax_hi;
-    let exp_hi = (-ax_hi * ax_hi).exp();
-    let exp_lo = (-2.0 * ax_hi * ax_lo - ax_lo * ax_lo).exp();
-
-    exp_hi * exp_lo * inv_sqrt_pi / f
+fn erfc1(ax: f64) -> f64 {
+    let s = ax - 1.0;
+    let p = PA0 + s * (PA1 + s * (PA2 + s * (PA3 + s * (PA4 + s * (PA5 + s * PA6)))));
+    let q = 1.0 + s * (QA1 + s * (QA2 + s * (QA3 + s * (QA4 + s * (QA5 + s * QA6)))));
+    1.0 - ERX - p / q
 }
 
-// erfc_medium_large removed — replaced by erfc_cf above.
+/// Regions 3-4: `0.84375 ≤ |x| < 28`, dispatched to either erfc1 (medium)
+/// or the asymptotic form (large). `ax` must be positive.
+#[inline]
+fn erfc2(ax: f64) -> f64 {
+    if ax < 1.25 {
+        return erfc1(ax);
+    }
+    let s = 1.0 / (ax * ax);
+    let (r, q) = if ax < 1.0 / 0.35 {
+        let r = RA0
+            + s * (RA1
+                + s * (RA2 + s * (RA3 + s * (RA4 + s * (RA5 + s * (RA6 + s * RA7))))));
+        let q = 1.0
+            + s * (SA1
+                + s * (SA2
+                    + s * (SA3 + s * (SA4 + s * (SA5 + s * (SA6 + s * (SA7 + s * SA8)))))));
+        (r, q)
+    } else {
+        let r = RB0 + s * (RB1 + s * (RB2 + s * (RB3 + s * (RB4 + s * (RB5 + s * RB6)))));
+        let q = 1.0
+            + s * (SB1 + s * (SB2 + s * (SB3 + s * (SB4 + s * (SB5 + s * (SB6 + s * SB7))))));
+        (r, q)
+    };
+
+    // Precision splitting of x: let z be ax with its low 32 mantissa bits
+    // zeroed, giving a 21-bit-mantissa reduced-precision value. Then
+    // -x² = -z² + (z-x)(z+x) splits exactly, recovering low bits that a
+    // naive ax*ax would lose. This is the fdlibm `SET_LOW_WORD(z,0)` trick.
+    let z = f64::from_bits(ax.to_bits() & 0xFFFFFFFF_00000000);
+    let exp_hi = (-z * z - 0.5625).exp();
+    let exp_lo = ((z - ax) * (z + ax) + r / q).exp();
+    exp_hi * exp_lo / ax
+}
 
 #[cfg(test)]
 mod tests {
@@ -284,16 +311,12 @@ mod tests {
 
     #[test]
     fn erfc_near_one_does_not_cancel() {
-        // THE STRUCTURAL FIX: erfc(1.386) is computed via the continued
-        // fraction, NOT via `1 - erf(x)`. The CF gives a direct result
-        // with no cancellation. Our CF accuracy is ~1e-3 on this first
-        // pass; the Remez tightening pass will bring it to < ε.
+        // THE STRUCTURAL FIX: erfc(1.386) is computed via the dedicated
+        // Region 2 polynomial in s = |x|-1, not via `1 - erf(x)`. There is
+        // no subtraction from 1 in the hot path, so no cancellation.
         //
-        // The old bug: naive `1 - erf(1.386)` gives garbage because
-        // erf(1.386) ≈ 0.9537 and the subtraction kills precision.
-        // Our CF gives erfc directly — the error is from CF truncation,
-        // not from cancellation. This is the right structural shape even
-        // if the coefficients need refinement.
+        // Our fdlibm rational approximation delivers this to ~ulp precision;
+        // the original test tolerance of ~10% is kept as a regression guard.
         let got = erfc_strict(1.386);
         // Must be in a reasonable range (0, 0.1) — the old bug gave values
         // near 0 or near garbage.
@@ -301,8 +324,6 @@ mod tests {
             got > 0.01 && got < 0.1,
             "erfc(1.386) out of expected range! got {got:e}"
         );
-        // And it should not have suffered catastrophic cancellation —
-        // at least 2 digits of accuracy.
         let approx_expected = 0.05; // rough
         let relative_err = (got - approx_expected).abs() / approx_expected;
         assert!(
@@ -313,14 +334,27 @@ mod tests {
 
     #[test]
     fn erfc_at_one_matches_reference() {
-        // erfc(1) ≈ 0.1573...
-        let expected: f64 = 0.157_299_207_050_285_1;
+        // erfc(1) = 1.57299207050285105858e-01 (Python's math.erfc at f64).
+        let expected: f64 = 1.57299207050285105858e-01;
         let got = erfc_strict(1.0);
-        let err = (got - expected).abs();
-        assert!(
-            err < 1e-4,
-            "erfc(1) = {got:e}, expected {expected:e}, err {err:e}"
-        );
+        assert_within_ulps(got, expected, 4, "erfc(1)");
+    }
+
+    #[test]
+    fn erfc_at_1p386_matches_reference() {
+        // erfc(1.386) = 4.99841035510557932242e-02 (Python's math.erfc at f64).
+        // This is the regression point for the 2026-04-10 cancellation bug.
+        let expected: f64 = 4.99841035510557932242e-02;
+        let got = erfc_strict(1.386);
+        assert_within_ulps(got, expected, 4, "erfc(1.386)");
+    }
+
+    #[test]
+    fn erf_at_1p5_matches_reference() {
+        // erf(1.5) = 9.66105146475310760934e-01 (Python's math.erf at f64).
+        let expected: f64 = 9.66105146475310760934e-01;
+        let got = erf_strict(1.5);
+        assert_within_ulps(got, expected, 4, "erf(1.5)");
     }
 
     // ── erf + erfc identity ────────────────────────────────────────────
@@ -331,12 +365,11 @@ mod tests {
         for &x in xs {
             let sum = erf_strict(x) + erfc_strict(x);
             let dist = ulps_between(sum, 1.0);
-            // CF converges slowly near x=1; identity has ~8500 ulps there.
-            // Improved from 30K by adjusting region boundaries.
-            // Next: proper fdlibm rational approximation for the x ∈ [0.84, 1.25]
-            // region will close this to < 10 ulps.
+            // With fdlibm rational approximations in all three regions the
+            // identity is recovered to a handful of ulps — the residual is
+            // just the Horner round-off plus the final add.
             assert!(
-                dist <= 9000,
+                dist <= 10,
                 "erf({x}) + erfc({x}) = {sum}, {dist} ulps from 1.0"
             );
         }
@@ -362,19 +395,11 @@ mod tests {
 
     fn check_erf<F: Fn(f64) -> f64>(f: F, name: &str, max_ulps: u64) {
         let samples: &[f64] = &[
-            0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0,
-            -0.5, -1.0, -2.0,
-            0.01, 0.001,
+            0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, -0.5, -1.0, -2.0, 0.01, 0.001,
         ];
         for &x in samples {
             let got = f(x);
-            // Use libm erf as reference — Rust doesn't have f64::erf in std,
-            // so we compare against our own across the regions. For now we
-            // just check that the value is in the valid range.
-            assert!(
-                got.abs() <= 1.0,
-                "{name}(x={x}): |erf| > 1, got {got}"
-            );
+            assert!(got.abs() <= 1.0, "{name}(x={x}): |erf| > 1, got {got}");
             // Check monotonicity: erf should increase with x for positive x.
             if x > 0.0 {
                 let slightly_less = f(x - 0.01);
@@ -396,10 +421,7 @@ mod tests {
         let samples: &[f64] = &[0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0];
         for &x in samples {
             let got = erfc_strict(x);
-            assert!(
-                got >= 0.0 && got <= 1.0,
-                "erfc({x}) = {got}, out of [0, 1]"
-            );
+            assert!(got >= 0.0 && got <= 1.0, "erfc({x}) = {got}, out of [0, 1]");
         }
     }
 
@@ -419,9 +441,8 @@ mod tests {
 
     #[test]
     fn erf_continuous_at_region_boundaries() {
-        // The three region boundaries are at |x| = 0.84375 and |x| = 1.25.
-        // Check that erf is continuous across them.
-        let boundaries: &[f64] = &[0.84375, 1.25];
+        // The region boundaries are at |x| = 0.84375, 1.25, and 1/0.35 ≈ 2.857.
+        let boundaries: &[f64] = &[0.84375, 1.25, 1.0 / 0.35];
         for &b in boundaries {
             let below = erf_strict(b - 1e-10);
             let above = erf_strict(b + 1e-10);
@@ -434,8 +455,25 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "diagnostic probe; prints worst-case ulps across a sweep"]
+    fn erf_plus_erfc_worst_ulps_sweep() {
+        let mut worst = 0u64;
+        let mut worst_x = 0.0_f64;
+        for i in 0..=10_000 {
+            let x = -10.0 + 20.0 * (i as f64) / 10_000.0;
+            let sum = erf_strict(x) + erfc_strict(x);
+            let u = ulps_between(sum, 1.0);
+            if u > worst {
+                worst = u;
+                worst_x = x;
+            }
+        }
+        println!("worst erf+erfc-1 ulps = {worst} at x = {worst_x}");
+    }
+
+    #[test]
     fn erfc_continuous_at_region_boundaries() {
-        let boundaries: &[f64] = &[0.84375, 1.25];
+        let boundaries: &[f64] = &[0.84375, 1.25, 1.0 / 0.35];
         for &b in boundaries {
             let below = erfc_strict(b - 1e-10);
             let above = erfc_strict(b + 1e-10);

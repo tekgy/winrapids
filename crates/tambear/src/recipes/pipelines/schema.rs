@@ -30,10 +30,12 @@
 //! New recipes are responsible for registering their own schema in this
 //! file until the macro lands. That is a one-line addition.
 
+use super::toml_schema::{self, OwnedRecipeSchema};
 use super::types::{
     Binding, Combiner, DataProbeRef, DimensionSource, Dtype, OutputColumn, OutputShape,
     RecipeRef, SuperpositionSpec, SweepSpec, Value,
 };
+use std::sync::OnceLock;
 
 /// Schema for one recipe: what parameters it takes, with per-parameter
 /// defaults spanning all four hook dimensions, plus the output column
@@ -272,10 +274,183 @@ pub fn schema_for(recipe: &RecipeRef) -> Option<&'static RecipeSchema> {
         RecipeRef::Recipe(name) => match name.as_str() {
             "factor_analysis" => Some(&FACTOR_ANALYSIS_SCHEMA),
             "varimax_rotation" => Some(&VARIMAX_ROTATION_SCHEMA),
-            "exp" => Some(&EXP_SCHEMA),
+            // First recipe to be migrated to .spec.toml. The toml file
+            // at `src/recipes/libm/exp.spec.toml` is the single source
+            // of truth; both the Rust tests and the tambear-ide read it.
+            "exp" => Some(exp_schema_from_toml()),
             _ => None,
         },
         _ => None,
+    }
+}
+
+// ── TOML-loaded schemas ───────────────────────────────────────────────────
+//
+// Schemas declared in `.spec.toml` files next to their recipe's `.rs`
+// implementation. These are loaded on first access, parsed once, and
+// cached via `OnceLock`. The parsed `OwnedRecipeSchema` is converted
+// to a static `RecipeSchema` by leaking its strings, which is fine
+// because each schema loads exactly once per process lifetime.
+//
+// New recipes should follow this pattern rather than adding hardcoded
+// consts below.
+
+static EXP_SCHEMA_CELL: OnceLock<&'static RecipeSchema> = OnceLock::new();
+
+fn exp_schema_from_toml() -> &'static RecipeSchema {
+    EXP_SCHEMA_CELL.get_or_init(|| {
+        let toml_str = include_str!("../libm/exp.spec.toml");
+        let owned = toml_schema::parse_spec_toml(toml_str)
+            .expect("exp.spec.toml must parse — this is a build-time invariant");
+        Box::leak(Box::new(leak_into_static(&owned)))
+    })
+}
+
+/// Convert an [`OwnedRecipeSchema`] to a [`RecipeSchema`] by leaking
+/// every owned String/Vec as `&'static`. The caller is responsible for
+/// ensuring this happens at most once per schema (via `OnceLock`).
+fn leak_into_static(owned: &OwnedRecipeSchema) -> RecipeSchema {
+    RecipeSchema {
+        name: Box::leak(owned.name.clone().into_boxed_str()),
+        description: Box::leak(owned.description.clone().into_boxed_str()),
+        parameters: Box::leak(
+            owned
+                .parameters
+                .iter()
+                .map(leak_parameter)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ),
+        outputs: Box::leak(
+            owned
+                .outputs
+                .iter()
+                .map(leak_output)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ),
+    }
+}
+
+fn leak_parameter(p: &toml_schema::OwnedParameterSpec) -> ParameterSpec {
+    ParameterSpec {
+        key: Box::leak(p.key.clone().into_boxed_str()),
+        display_name: Box::leak(p.display_name.clone().into_boxed_str()),
+        description: Box::leak(p.description.clone().into_boxed_str()),
+        default: leak_default_binding(&p.default),
+        domain: p.domain.as_ref().map(leak_domain),
+    }
+}
+
+fn leak_default_binding(b: &toml_schema::OwnedDefaultBinding) -> DefaultBinding {
+    DefaultBinding {
+        using: b.using.as_ref().map(leak_default_value),
+        autodiscover: b
+            .autodiscover
+            .as_ref()
+            .map(|s| &*Box::leak(s.clone().into_boxed_str())),
+        sweep: b.sweep.as_ref().map(|vs| {
+            let leaked: Vec<DefaultValue> = vs.iter().map(leak_default_value).collect();
+            &*Box::leak(leaked.into_boxed_slice())
+        }),
+        superposition: b.superposition.as_ref().map(|sp| DefaultSuperposition {
+            values: {
+                let leaked: Vec<DefaultValue> =
+                    sp.values.iter().map(leak_default_value).collect();
+                Box::leak(leaked.into_boxed_slice())
+            },
+            combiner: leak_combiner(&sp.combiner),
+        }),
+    }
+}
+
+fn leak_default_value(v: &toml_schema::OwnedDefaultValue) -> DefaultValue {
+    match v {
+        toml_schema::OwnedDefaultValue::Bool(b) => DefaultValue::Bool(*b),
+        toml_schema::OwnedDefaultValue::Int(i) => DefaultValue::Int(*i),
+        toml_schema::OwnedDefaultValue::Float(f) => DefaultValue::Float(*f),
+        toml_schema::OwnedDefaultValue::String(s) => {
+            DefaultValue::String(Box::leak(s.clone().into_boxed_str()))
+        }
+        toml_schema::OwnedDefaultValue::Method(m) => {
+            DefaultValue::Method(Box::leak(m.clone().into_boxed_str()))
+        }
+    }
+}
+
+fn leak_combiner(c: &toml_schema::OwnedDefaultCombiner) -> DefaultCombiner {
+    match c {
+        toml_schema::OwnedDefaultCombiner::KeepAll => DefaultCombiner::KeepAll,
+        toml_schema::OwnedDefaultCombiner::WeightedSum => DefaultCombiner::WeightedSum,
+        toml_schema::OwnedDefaultCombiner::AgreementPartition {
+            threshold_basis_points,
+        } => DefaultCombiner::AgreementPartition {
+            threshold_basis_points: *threshold_basis_points,
+        },
+        toml_schema::OwnedDefaultCombiner::Custom(tag) => {
+            DefaultCombiner::Custom(Box::leak(tag.clone().into_boxed_str()))
+        }
+    }
+}
+
+fn leak_domain(d: &toml_schema::OwnedValueDomain) -> ValueDomain {
+    match d {
+        toml_schema::OwnedValueDomain::Enum(vs) => ValueDomain::Enum({
+            let leaked: Vec<DefaultValue> = vs.iter().map(leak_default_value).collect();
+            Box::leak(leaked.into_boxed_slice())
+        }),
+        toml_schema::OwnedValueDomain::Range { min, max } => ValueDomain::Range {
+            min: *min,
+            max: *max,
+        },
+        toml_schema::OwnedValueDomain::IntRange { min, max } => ValueDomain::IntRange {
+            min: *min,
+            max: *max,
+        },
+        toml_schema::OwnedValueDomain::FreeString => ValueDomain::FreeString,
+    }
+}
+
+fn leak_output(o: &toml_schema::OwnedOutputSpec) -> OutputSpec {
+    OutputSpec {
+        semantic_name: Box::leak(o.semantic_name.clone().into_boxed_str()),
+        description: Box::leak(o.description.clone().into_boxed_str()),
+        shape: leak_output_shape(&o.shape),
+        dtype: o.dtype,
+        has_v_column: o.has_v_column,
+    }
+}
+
+fn leak_output_shape(s: &toml_schema::OwnedOutputShape) -> OutputShapeSpec {
+    match s {
+        toml_schema::OwnedOutputShape::Scalar => OutputShapeSpec::Scalar,
+        toml_schema::OwnedOutputShape::Vector { length } => OutputShapeSpec::Vector {
+            length: leak_dimension(length),
+        },
+        toml_schema::OwnedOutputShape::Matrix { rows, cols } => OutputShapeSpec::Matrix {
+            rows: leak_dimension(rows),
+            cols: leak_dimension(cols),
+        },
+        toml_schema::OwnedOutputShape::Table { columns } => OutputShapeSpec::Table {
+            columns: {
+                let leaked: Vec<(&'static str, Dtype)> = columns
+                    .iter()
+                    .map(|(name, dt)| (&*Box::leak(name.clone().into_boxed_str()), *dt))
+                    .collect();
+                Box::leak(leaked.into_boxed_slice())
+            },
+        },
+    }
+}
+
+fn leak_dimension(d: &toml_schema::OwnedDimensionSource) -> DimensionSourceSpec {
+    match d {
+        toml_schema::OwnedDimensionSource::Fixed(n) => DimensionSourceSpec::Fixed(*n),
+        toml_schema::OwnedDimensionSource::InputRows => DimensionSourceSpec::InputRows,
+        toml_schema::OwnedDimensionSource::InputCols => DimensionSourceSpec::InputCols,
+        toml_schema::OwnedDimensionSource::FromChoice(k) => {
+            DimensionSourceSpec::FromChoice(Box::leak(k.clone().into_boxed_str()))
+        }
     }
 }
 
@@ -285,39 +460,10 @@ pub fn schema_for(recipe: &RecipeRef) -> Option<&'static RecipeSchema> {
 // own schemas inline, each const below will move to its recipe's source
 // file and be re-exported from here.
 
-/// Placeholder schema for `exp` — single-parameter recipe for the
-/// three-strategy lowering pattern. Used to validate that the pipeline
-/// layer can read schemas end-to-end.
-pub static EXP_SCHEMA: RecipeSchema = RecipeSchema {
-    name: "exp",
-    description: "Natural exponential e^x with three lowering strategies.",
-    parameters: &[ParameterSpec {
-        key: "precision",
-        display_name: "Precision strategy",
-        description:
-            "strict: fast single-FMA path (<= 4 ulps). compensated: DD range reduction + compensated Horner (<= 2 ulps). correctly_rounded: full DD working precision (<= 1 ulp).",
-        default: DefaultBinding {
-            using: Some(DefaultValue::Method("compensated")),
-            autodiscover: None,
-            sweep: None,
-            superposition: None,
-        },
-        domain: Some(ValueDomain::Enum(&[
-            DefaultValue::Method("strict"),
-            DefaultValue::Method("compensated"),
-            DefaultValue::Method("correctly_rounded"),
-        ])),
-    }],
-    outputs: &[OutputSpec {
-        semantic_name: "result",
-        description: "exp(x) evaluated element-wise across the input column.",
-        shape: OutputShapeSpec::Vector {
-            length: DimensionSourceSpec::InputRows,
-        },
-        dtype: Dtype::F64,
-        has_v_column: false,
-    }],
-};
+// EXP_SCHEMA migrated to src/recipes/libm/exp.spec.toml.
+// Access via `schema_for(&RecipeRef::Recipe("exp".to_string()))` which
+// routes through `exp_schema_from_toml()` above. First recipe piloted
+// on the .spec.toml pattern; all future recipes should follow suit.
 
 /// Placeholder schema for `correlation_matrix`. Will be filled in with
 /// real defaults once the correlation recipe is wired to this module.

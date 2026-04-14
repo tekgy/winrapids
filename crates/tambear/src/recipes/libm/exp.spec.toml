@@ -1,0 +1,122 @@
+# Tambear recipe spec for exp (natural exponential).
+#
+# This file is the single source of truth for exp's parameters, outputs,
+# and metadata. Both the Rust schema layer and the tambear-ide read it.
+# Changes here propagate automatically to both the Rust tests and the
+# IDE's step card rendering — no manual sync required.
+#
+# Format conventions:
+#   - Each parameter declares its `kind` (bool / int / float / string / method).
+#     Default values and enum domain values are parsed as bare toml values
+#     and coerced according to the parameter's kind. So for a `kind = "method"`
+#     parameter, `using = "compensated"` means Method("compensated"), not
+#     String("compensated") — inferred from context.
+#   - Numeric ranges use `kind = "range"` or `kind = "int_range"` with
+#     `min` and `max` as bare toml numbers.
+
+[recipe]
+name = "exp"
+# Layer in the atoms/primitives/exprs/recipes hierarchy.
+layer = "recipe"
+# Family tags — metadata for IDE browsing and catalog search. A recipe
+# can belong to multiple families. Flat namespace, not hierarchical.
+family = ["libm", "transcendental", "elementary"]
+description = "Natural exponential e^x with three lowering strategies."
+
+long_description = """
+Evaluates e^x via range reduction (x = k·ln(2) + r with |r| ≤ ln(2)/2),
+polynomial approximation of exp(r) over the reduced range, and
+reconstruction via 2^k · exp(r). The three precision strategies share
+the same mathematical recipe but lower to different primitive sets.
+
+Implementation overview:
+- strict: Cody-Waite range reduction via short-mantissa ln(2) split,
+  degree-13 Taylor polynomial via single-FMA Horner, ldexp reconstruction.
+- compensated: DD range reduction with full LN_2_DD precision, compensated
+  Horner for polynomial error compensation.
+- correctly_rounded: DD working precision throughout, degree-16 Taylor.
+
+Special cases: exp(NaN) = NaN, exp(+∞) = +∞, exp(-∞) = 0, exp(0) = 1 exactly,
+exp(x) = +∞ for x > 709.78, exp(x) = 0 for x < -745.13.
+"""
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 12"
+
+[[recipe.references]]
+citation = "Cody & Waite 1980"
+kind = "book"
+note = "Software Manual for the Elementary Functions"
+
+[[recipe.references]]
+citation = "Sun fdlibm s_exp.c"
+kind = "implementation"
+note = "Canonical libm reference implementation"
+
+# ── Decomposition: how this recipe composes primitives ──────────────────────
+
+[decomposition]
+primitives_used = [
+    "fmadd",
+    "ffloor",
+    "ldexp",
+    "compensated_horner",
+    "dd_add",
+    "dd_mul",
+]
+kingdom = "A"  # Pure function, no sequential dependency; trivially parallelizable.
+
+# ── Sharing contract: what this recipe reads/writes in TamSession ──────────
+
+[sharing]
+reads = []
+writes = []
+
+# ── Parameters ──────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = """
+Selects the accuracy/speed tradeoff.
+• strict: fast single-FMA path, ≤ 4 ulps worst case.
+• compensated: DD range reduction + compensated Horner, ≤ 2 ulps worst case.
+• correctly_rounded: full DD working precision, ≤ 1 ulp worst case (essentially publication grade).
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ── Outputs ─────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "exp(x) evaluated element-wise across the input column."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+# ── Writeup metadata for manuscript generation ──────────────────────────────
+
+[writeup]
+methods_template = """
+We evaluated the natural exponential function exp(x) using tambear's
+native implementation, which decomposes the computation into range
+reduction, polynomial approximation, and reconstruction phases. The
+{precision} precision strategy was selected, with a worst-case error
+budget of {target_ulps} ULPs. Reference comparisons across the tambear
+adversarial input sweep (region boundaries, powers of two, subnormals,
+and hard cases from the Table Maker's Dilemma literature) confirmed
+the measured accuracy.
+"""

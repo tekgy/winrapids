@@ -76,6 +76,7 @@ pub mod efa;
 pub mod schema;
 pub mod serialize;
 pub mod shape;
+pub mod toml_schema;
 pub mod types;
 
 pub use schema::{

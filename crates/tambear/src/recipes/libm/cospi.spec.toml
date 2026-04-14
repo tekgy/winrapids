@@ -1,0 +1,78 @@
+# Tambear recipe spec for cospi — cos(π·x).
+
+[recipe]
+name = "cospi"
+layer = "recipe"
+family = ["libm", "trigonometric", "pi_scaled", "elementary"]
+description = "cospi(x) = cos(π·x) with exact ±1 at half-integers and exact ±1 at integers."
+
+long_description = """
+cospi(x) = cos(π·x).
+
+For integers: cospi(n) = (−1)^n exactly. For half-integers: cospi(n + 0.5) = 0 exactly.
+This exactness is not achievable via cos(M_PI * x).
+
+Algorithm:
+1. x = n + f where n = floor(x), f ∈ [0, 1).
+2. cos(π·(n + f)) = cos(πn)·cos(πf) − sin(πn)·sin(πf).
+   sin(πn) = 0 exactly → cospi(x) = (−1)^n · cos(πf).
+3. f ∈ [0, 0.5]: cos(πf) via the cos kernel on [0, π/2].
+   f ∈ (0.5, 1): cos(πf) = −cos(π(1−f)) = −sin(π(f−0.5)) (reflect to sin domain).
+
+Special cases:
+• cospi(NaN) = NaN
+• cospi(±∞) = NaN
+• cospi(integer n) = (−1)^n exactly
+• cospi(n + 0.5) = 0 exactly (signed: +0 for even n, −0 for odd n by convention)
+"""
+
+[[recipe.references]]
+citation = "IEEE 754-2019 §9.2"
+kind = "standard"
+note = "cosPi recommended operation"
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["ffloor", "fmadd", "compensated_horner", "pi_extended"]
+kingdom = "A"
+
+[sharing]
+reads  = ["trig_reduce"]
+writes = ["trig_reduce"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "cos(π·x) with exact values at integers and half-integers."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "cospi via parity-reduction + cos kernel. Precision: {precision}."

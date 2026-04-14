@@ -1,0 +1,86 @@
+# Tambear recipe spec for sincospi — fused sinpi+cospi pair.
+#
+# sincospi is to sinpi/cospi what sincos is to sin/cos: one parity-reduction
+# feeds both kernels. Essential for anything that needs both sin(πx) and cos(πx),
+# e.g. DFT twiddle factors, Lomb-Scargle periodograms.
+
+[recipe]
+name = "sincospi"
+layer = "recipe"
+family = ["libm", "trigonometric", "pi_scaled", "elementary", "fused"]
+description = "Fused sinpi(x) + cospi(x) pair — one reduction, exact zeros/ones at integers and half-integers."
+
+long_description = """
+sincospi(x) = (sin(π·x), cos(π·x)) computed with one shared parity reduction.
+
+Primary use case: computing DFT twiddle factors ω_k = e^{−2πik/N} = cos(2πk/N) − i·sin(2πk/N).
+For k/N exactly representable as a f64, sincospi(2k/N) gives exact twiddle factors
+at k=0, k=N/4, k=N/2, k=3N/4 — these can't be obtained from sin(2πk/N).
+
+Algorithm: one call to the parity-reduction kernel (floor + integer-parity) extracts
+n and f, then both kernels share z = (πf)² and evaluate sin_k, cos_k simultaneously.
+About 70% of the cost of two separate sinpi/cospi calls.
+
+Special cases: same as sinpi and cospi independently.
+"""
+
+[[recipe.references]]
+citation = "IEEE 754-2019 §9.2"
+kind = "standard"
+note = "sinPi and cosPi as recommended operations; their combination is natural"
+
+[[recipe.references]]
+citation = "Frigo & Johnson 2005"
+kind = "paper"
+note = "FFTW — twiddle factor computation motivation"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["ffloor", "fmadd", "compensated_horner", "pi_extended"]
+kingdom = "A"
+
+[sharing]
+reads  = ["trig_reduce"]
+writes = ["trig_reduce", "sincos_kernel"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "sinpi_result"
+description = "sin(π·x) component."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[[outputs]]
+semantic_name = "cospi_result"
+description = "cos(π·x) component."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "Fused sinpi+cospi pair via shared parity reduction. Precision: {precision}."

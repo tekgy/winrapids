@@ -1,0 +1,127 @@
+# Tambear recipe spec for cot (cotangent).
+#
+# cot(x) = cos(x)/sin(x) = 1/tan(x).
+# Pole structure is complementary to tan: poles at kπ, smooth at π/2 + kπ.
+# The kernel ratio is safe because the denominator (sin_k) is never zero on
+# the reduced interval when the input is near a tan-pole.
+
+[recipe]
+name = "cot"
+layer = "recipe"
+family = ["libm", "trigonometric", "elementary", "periodic"]
+description = "Cotangent function cot(x) = cos(x)/sin(x) with three precision strategies."
+
+long_description = """
+cot(x) = cos(x)/sin(x). Poles at x = kπ, k ∈ ℤ.
+
+Algorithm:
+1. Range reduction: same as tan.
+2. Kernel: compute sin_k, cos_k on [−π/4, π/4].
+3. Quadrant fixup for cot: the role of sin_k and cos_k is swapped relative to tan.
+   If q is odd, cot(x) = −tan_k (not 1/tan_k); if q is even, cot(x) = cos_k/sin_k.
+4. Near-zero guard: for |x| < ε (subnormal threshold), cot(x) ≈ 1/x dominates.
+
+Special cases:
+• cot(NaN) = NaN, cot(±∞) = NaN.
+• cot(kπ) for integer k: +∞ for k > 0 approach from positive, etc.
+  In f64 the nearest representable value to kπ gives a large finite result
+  (same caveat as tan at π/2).
+• cot(0) = +∞, cot(-0) = -∞ (matches limit behavior).
+"""
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 11"
+
+[[recipe.references]]
+citation = "DLMF 4.14"
+kind = "reference"
+note = "Digital Library of Mathematical Functions — trigonometric functions"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = [
+    "frint",
+    "fmadd",
+    "compensated_horner",
+    "payne_hanek_rem_pio2",
+    "cody_waite_rem_pio2",
+    "fdiv",
+]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+reads  = ["trig_reduce", "sincos_kernel"]
+writes = ["trig_reduce", "sincos_kernel"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded. Same semantics as tan."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Angle unit"
+description = "radians / degrees / gradians / turns / pi_scaled."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "range_reduction"
+display_name = "Range reduction algorithm"
+description = "auto / cody_waite / payne_hanek."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "auto"
+
+[parameters.domain]
+kind = "enum"
+values = ["auto", "cody_waite", "payne_hanek"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "cot(x) evaluated element-wise."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+# ── Writeup metadata ─────────────────────────────────────────────────────────
+
+[writeup]
+methods_template = """
+The cotangent was evaluated using tambear's native implementation.
+Range reduction: {range_reduction}. Precision strategy: {precision}. Angle unit: {angle_unit}.
+"""

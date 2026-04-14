@@ -1,0 +1,130 @@
+# Tambear recipe spec for acot (arccotangent).
+#
+# acot(x) = π/2 − atan(x) = atan(1/x) with care for sign near 0.
+# Range: (0, π). Not in C99 libm; common in Mathematica, MATLAB, Julia.
+
+[recipe]
+name = "acot"
+layer = "recipe"
+family = ["libm", "trigonometric", "inverse", "elementary"]
+description = "Arccotangent acot(x) ∈ (0, π) for x ∈ ℝ, with branch cut convention acot(0)=π/2."
+
+long_description = """
+acot(x) = atan(1/x) for x ≠ 0, with acot(0) = π/2 by convention.
+
+This is well-defined everywhere on ℝ — no poles. The range (0, π) is the
+principal value branch. Two implementation strategies:
+
+• Via atan(1/x): compute 1/x then call atan. This is exact but requires a
+  division, and the division 1/x can be inaccurate for tiny or huge |x|
+  without compensated division.
+
+• Via π/2 − atan(x): avoids division but loses precision near x = 0 where
+  atan(x) ≈ x and the subtraction from π/2 destroys low-order bits of x.
+
+Recommended: π/2 − atan(x) for large |x| (atan(x) ≈ π/2, result ≈ 0 needs
+atan to be accurate near π/2); atan(1/x) for |x| ≥ 1 (no cancellation there).
+
+Sign convention for acot(0): +π/2 (limit from both sides is π/2).
+Sign convention for acot(+∞) = 0, acot(−∞) = π.
+
+Special cases:
+• acot(NaN) = NaN
+• acot(+∞) = 0, acot(−∞) = π
+• acot(0) = π/2
+• acot(−0) = π/2 (same as acot(0))
+"""
+
+[[recipe.references]]
+citation = "DLMF 4.23"
+kind = "reference"
+note = "Digital Library of Mathematical Functions — inverse trigonometric"
+
+[[recipe.references]]
+citation = "Wolfram MathWorld: Arccotangent"
+kind = "reference"
+note = "Branch cut and range conventions"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fmadd", "fdiv", "compensated_horner", "dd_sub"]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+reads  = ["atan_result"]
+writes = []
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Output angle unit"
+description = "radians / degrees / gradians / turns / pi_scaled."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "zero_convention"
+display_name = "Convention for acot(0)"
+description = """
+• pi_over_2: acot(0) = π/2 (mathematical principal value, default).
+• signed_pi_over_2: acot(+0) = +π/2, acot(−0) = +π/2 (same, both positive).
+  This matches Mathematica's ArcCot behavior.
+"""
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "pi_over_2"
+
+[parameters.domain]
+kind = "enum"
+values = ["pi_over_2", "signed_pi_over_2"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "acot(x) ∈ (0, π)."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+# ── Writeup metadata ─────────────────────────────────────────────────────────
+
+[writeup]
+methods_template = """
+Arccotangent evaluated using tambear's native implementation.
+Precision: {precision}. Output unit: {angle_unit}. Zero convention: {zero_convention}.
+"""

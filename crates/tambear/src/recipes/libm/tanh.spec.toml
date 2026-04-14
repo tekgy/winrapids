@@ -1,0 +1,82 @@
+# Tambear recipe spec for tanh (hyperbolic tangent).
+
+[recipe]
+name = "tanh"
+layer = "recipe"
+family = ["libm", "hyperbolic", "elementary", "bounded"]
+description = "Hyperbolic tangent tanh(x) = sinh(x)/cosh(x) ∈ (−1, 1)."
+
+long_description = """
+tanh(x) = (e^x − e^−x)/(e^x + e^−x) = 1 − 2/(e^2x + 1).
+
+Range: (−1, 1). Saturates rapidly: for |x| > 19, tanh(x) rounds to ±1 in f64.
+
+Sub-interval algorithm:
+1. Tiny |x| ≤ 2^−55: tanh(x) ≈ x.
+2. Small |x| ≤ 0.5: tanh(x) = expm1(2x) / (expm1(2x) + 2).
+   Uses one expm1 call; avoids the e^x/e^−x cancellation.
+3. Medium 0.5 < |x| ≤ 1: tanh(x) = 1 − 2/(expm1(2|x|) + 2). Same formula,
+   numerically stable because expm1(2|x|) ≥ e−1 > 0.
+4. Saturated |x| > 19 (or more precisely, the threshold at which
+   2/(e^2|x|+1) < ½ ulp(1.0)): tanh(x) = ±1.
+
+tanh is odd: tanh(−x) = −tanh(x).
+
+Special cases:
+• tanh(NaN) = NaN
+• tanh(±∞) = ±1
+• tanh(0) = 0, tanh(-0) = -0
+"""
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 11"
+
+[[recipe.references]]
+citation = "Sun fdlibm s_tanh.c"
+kind = "implementation"
+note = "Four-case expm1-based strategy"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fmadd", "expm1", "fdiv"]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+reads  = ["coshsinh_kernel"]
+writes = []
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "tanh(x) ∈ (−1, 1) evaluated element-wise."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "Hyperbolic tangent via expm1-based formula. Precision: {precision}."

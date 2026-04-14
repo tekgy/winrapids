@@ -1,0 +1,79 @@
+# Tambear recipe spec for asinh (inverse hyperbolic sine).
+
+[recipe]
+name = "asinh"
+layer = "recipe"
+family = ["libm", "hyperbolic", "inverse", "elementary"]
+description = "Inverse hyperbolic sine asinh(x) = ln(x + √(x²+1)) for x ∈ ℝ."
+
+long_description = """
+asinh(x) = ln(x + √(x²+1)). Domain: all reals. Range: all reals.
+
+The naive formula fails for large |x| (overflow in x²) and for small |x|
+(cancellation in x + √(x²+1) − 1 ≈ x). Sub-interval strategy:
+
+1. Tiny |x| ≤ 2^−28: asinh(x) ≈ x.
+2. Small |x| ≤ 2: asinh(x) = log1p(x + x²/(1 + √(x²+1))).
+   The argument to log1p is t = x + x²/(1 + √(1+x²)), which is O(x)
+   for small x but avoids catastrophic cancellation.
+3. Large |x| > 2: asinh(x) = ln(2|x|) + ln(1 + 1/(2x²)).
+   For very large |x|: asinh(x) ≈ ln(2|x|) (the second term is negligible).
+
+asinh is odd: asinh(-x) = -asinh(x).
+
+Special cases:
+• asinh(NaN) = NaN
+• asinh(±∞) = ±∞
+• asinh(0) = 0, asinh(-0) = -0
+"""
+
+[[recipe.references]]
+citation = "Sun fdlibm s_asinh.c"
+kind = "implementation"
+note = "Three-sub-interval strategy"
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 11"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fsqrt", "fmadd", "log1p", "ln", "dd_sqrt"]
+kingdom = "A"
+
+[sharing]
+reads  = []
+writes = []
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "asinh(x) ∈ ℝ evaluated element-wise."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "Inverse hyperbolic sine via log1p-based formula. Precision: {precision}."

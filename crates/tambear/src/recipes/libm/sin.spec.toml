@@ -1,0 +1,156 @@
+# Tambear recipe spec for sin (sine).
+#
+# sin and cos share the same reduction + kernel machinery; their spec.tomls
+# mirror each other structurally. Both are part of the "sincos" shared-pass
+# pair — see sincos.spec.toml for the fused variant.
+
+[recipe]
+name = "sin"
+layer = "recipe"
+family = ["libm", "trigonometric", "elementary", "periodic"]
+description = "Sine function sin(x) with three precision strategies and configurable angle units."
+
+long_description = """
+Evaluates sin(x) via:
+1. Range reduction: x modulo π/2 → residual (r_hi, r_lo) ∈ [-π/4, π/4], quadrant q ∈ {0,1,2,3}.
+   • |x| < π/4: trivial (no reduction).
+   • |x| < 2^20·π/2: Cody-Waite three-part π/2 (33+33+33 bits) — exact for |k| < 2^20.
+   • |x| ≥ 2^20·π/2: Payne-Hanek via 1200-bit 2/π table — exact for all finite double.
+2. Kernel evaluation: sin(r) ≈ r + r³·P(r²), cos(r) ≈ 1 - r²/2 + r⁴·Q(r²).
+   Coefficients refit in mpmath at 80-digit precision via Remez exchange.
+   Polynomial error < 2.2e-17 (sin), < 1.4e-18 (cos) — below ½ ulp of f64 output.
+3. Residual folding: r_lo term preserved through kernel via fdlibm identity.
+4. Quadrant fixup: sign and sin↔cos dispatch on q.
+
+Special cases: sin(NaN)=NaN, sin(±∞)=NaN, sin(0)=0, sin(-0)=-0.
+
+Angle-unit conversion (non-radians): applied as a pre-multiply BEFORE range reduction,
+so the reduction step sees radians regardless of which angle_unit is selected.
+"""
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 11"
+
+[[recipe.references]]
+citation = "Payne & Hanek 1983"
+kind = "paper"
+note = "Radian reduction for trigonometric functions"
+
+[[recipe.references]]
+citation = "Sun fdlibm __kernel_sin, __ieee754_rem_pio2"
+kind = "implementation"
+note = "Canonical libm reference — structure but not code"
+
+[[recipe.references]]
+citation = "Cody & Waite 1980"
+kind = "book"
+note = "Software Manual for the Elementary Functions"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = [
+    "frint",
+    "fmadd",
+    "compensated_horner",
+    "payne_hanek_rem_pio2",
+    "cody_waite_rem_pio2",
+]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+# The range-reduction result (q, r_hi, r_lo) is written so the sincos fused
+# pair can consume it without recomputing. Tag: "trig_reduce::<x_bits>".
+reads  = ["trig_reduce"]
+writes = ["trig_reduce"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = """
+• strict: single-FMA Horner path, ≤ 2 ulps worst case.
+• compensated: compensated Horner for polynomial phase, ≤ 1–2 ulps.
+• correctly_rounded: DD working precision throughout, ≤ 1 ulp on tested samples.
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Angle unit"
+description = """
+Input angle unit. The value is pre-multiplied to radians before reduction.
+• radians: no conversion (default).
+• degrees: multiplied by π/180.
+• gradians: multiplied by π/200.
+• turns: multiplied by 2π.
+• pi_scaled: multiplied by π (input is in units of π, i.e. sinpi path).
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "range_reduction"
+display_name = "Range reduction algorithm"
+description = """
+Override the automatic selection of range reduction algorithm.
+• auto: choose based on |x| (default — Cody-Waite up to 2^20·π/2, Payne-Hanek beyond).
+• cody_waite: force Cody-Waite three-part π/2 (valid only for |x| < 2^20·π/2).
+• payne_hanek: force Payne-Hanek (valid for all finite |x|, slower).
+"""
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "auto"
+
+[parameters.domain]
+kind = "enum"
+values = ["auto", "cody_waite", "payne_hanek"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "sin(x) evaluated element-wise."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+# ── Writeup metadata ─────────────────────────────────────────────────────────
+
+[writeup]
+methods_template = """
+The sine function was evaluated using tambear's native implementation.
+Range reduction used the {range_reduction} strategy (Payne-Hanek for |x| ≥ 2^20·π/2,
+Cody-Waite otherwise), with the {precision} precision strategy for the polynomial kernel.
+Input angles were provided in {angle_unit}. Worst-case error budget: ≤ 2 ulps (strict/compensated)
+or ≤ 1 ulp (correctly_rounded) against the IEEE 754 rounded result.
+"""

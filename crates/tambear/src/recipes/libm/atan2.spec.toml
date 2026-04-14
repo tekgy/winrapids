@@ -1,0 +1,160 @@
+# Tambear recipe spec for atan2 (two-argument arctangent).
+#
+# atan2 is the workhorse of polar-coordinate conversion. Its IEEE 754
+# specification is more elaborate than atan: 17 special-case pairs.
+# This spec documents every special case and the angle_unit variants.
+
+[recipe]
+name = "atan2"
+layer = "recipe"
+family = ["libm", "trigonometric", "inverse", "elementary", "two_argument"]
+description = "Two-argument arctangent atan2(y, x) — angle of vector (x, y) in (−π, π]."
+
+long_description = """
+atan2(y, x) computes the angle θ ∈ (−π, π] of the vector from the origin
+to (x, y) in the Euclidean plane, with the branch cut on the negative x-axis.
+
+Algorithm:
+1. Handle the 17 IEEE 754 special-case pairs (NaN, ±0, ±∞, signs).
+2. For finite nonzero (y, x): compute r = y/x (or x/y for |x| < |y| to
+   avoid catastrophic cancellation), then atan(r) + quadrant correction.
+   The quadrant correction adds 0, ±π, or ±π/2 depending on the signs
+   of x and y and which sub-interval r lands in.
+3. The atan inner call uses the same polynomial as atan.
+4. For nearly equal |y| ≈ |x| (diagonal arguments), an extra DD-precision
+   pass can be applied to avoid the ~1-ulp loss at the diagonal.
+
+Angle convention: atan2(1, 0) = +π/2; atan2(0, -1) = π; atan2(-1, 0) = -π/2;
+atan2(0, 0) = 0 (IEEE); atan2(-0.0, -1.0) = -π.
+
+Inputs: two columns (y_col, x_col) or (y, x) scalar pair.
+
+Special cases (IEEE 754 compliant):
+• atan2(NaN, x) = NaN for any x
+• atan2(y, NaN) = NaN for any y
+• atan2(+0, +x≥0) = +0
+• atan2(−0, +x≥0) = −0
+• atan2(+0, −x≤0) = +π
+• atan2(−0, −x≤0) = −π
+• atan2(+y>0, 0) = +π/2
+• atan2(−y<0, 0) = −π/2
+• atan2(+∞, +∞) = +π/4
+• atan2(−∞, +∞) = −π/4
+• atan2(+∞, −∞) = +3π/4
+• atan2(−∞, −∞) = −3π/4
+• atan2(+∞, x finite) = +π/2
+• atan2(−∞, x finite) = −π/2
+• atan2(y finite, +∞) = +0 or −0
+• atan2(y finite, −∞) = +π or −π (by sign of y)
+"""
+
+[[recipe.references]]
+citation = "IEEE 754-2019"
+kind = "standard"
+note = "Section 9.2 — atan2 special cases"
+
+[[recipe.references]]
+citation = "Sun fdlibm e_atan2.c"
+kind = "implementation"
+note = "Reference structure for special-case handling"
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 11"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = [
+    "fmadd", "fdiv", "compensated_horner", "dd_add",
+]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+reads  = ["atan_result"]
+writes = []
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Output angle unit"
+description = """
+• radians: output ∈ (−π, π].
+• degrees: output ∈ (−180, 180].
+• gradians: output ∈ (−200, 200].
+• turns: output ∈ (−0.5, 0.5].
+• pi_scaled: output ∈ (−1, 1].
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "y_col"
+display_name = "y column index"
+description = "Column index for the y (numerator) argument."
+kind = "int"
+advanced = false
+
+[parameters.default]
+using = 0
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "x_col"
+display_name = "x column index"
+description = "Column index for the x (denominator) argument."
+kind = "int"
+advanced = false
+
+[parameters.default]
+using = 1
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "atan2(y, x) ∈ (−π, π]."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+# ── Writeup metadata ─────────────────────────────────────────────────────────
+
+[writeup]
+methods_template = """
+Two-argument arctangent (atan2) evaluated from columns {y_col} (y) and {x_col} (x).
+All 17 IEEE 754 special-case pairs handled. Precision: {precision}. Output unit: {angle_unit}.
+"""

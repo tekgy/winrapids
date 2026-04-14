@@ -1,0 +1,74 @@
+# Tambear recipe spec for atanpi — atan(x)/π.
+
+[recipe]
+name = "atanpi"
+layer = "recipe"
+family = ["libm", "trigonometric", "inverse", "pi_scaled"]
+description = "atanpi(x) = atan(x)/π ∈ (−0.5, 0.5). IEEE 754-2019 recommended operation."
+
+long_description = """
+atanpi(x) = atan(x)/π.
+
+Range: (−0.5, 0.5). Asymptotes: atanpi(±∞) = ±0.5.
+
+Like asinpi, the division by π is absorbed into the minimax polynomial coefficients
+rather than applied post-hoc, to avoid a 1-ulp loss at the division step.
+
+For the four-sub-interval range reduction (same as atan):
+• Sub-interval 0 [direct]: coefficients P/π pre-scaled.
+• Sub-intervals 1–3: constant addends C_k/π pre-scaled in DD.
+
+atanpi2 (two-argument): atanpi2(y, x) = atan2(y, x)/π ∈ (−1, 1].
+Special values: atanpi2(1, 1) = 0.25, atanpi2(0, −1) = 1 (not −1! different sign convention).
+
+Special cases:
+• atanpi(NaN) = NaN
+• atanpi(+∞) = +0.5, atanpi(−∞) = −0.5 (exact)
+• atanpi(0) = 0
+"""
+
+[[recipe.references]]
+citation = "IEEE 754-2019 §9.2"
+kind = "standard"
+note = "atanPi and atan2Pi as recommended operations"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fmadd", "compensated_horner", "dd_add", "dd_div"]
+kingdom = "A"
+
+[sharing]
+reads  = []
+writes = ["atanpi_result"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "atan(x)/π ∈ (−0.5, 0.5)."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "atanpi via pre-scaled polynomial coefficients. Precision: {precision}."

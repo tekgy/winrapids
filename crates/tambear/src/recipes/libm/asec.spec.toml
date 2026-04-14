@@ -1,0 +1,105 @@
+# Tambear recipe spec for asec (arcsecant).
+#
+# asec(x) = acos(1/x). Domain: |x| ≥ 1. Range: [0, π] excluding π/2.
+
+[recipe]
+name = "asec"
+layer = "recipe"
+family = ["libm", "trigonometric", "inverse", "elementary"]
+description = "Arcsecant asec(x) = acos(1/x) for |x| ≥ 1, range [0, π] \\ {π/2}."
+
+long_description = """
+asec(x) = acos(1/x). Domain: (−∞, −1] ∪ [1, +∞).
+
+Algorithm:
+1. Compute 1/x (compensated division for |x| near 1 to preserve relative error).
+2. Apply the acos kernel to 1/x. Since 1/x ∈ [−1, 1], this is always valid.
+3. The precision near |x| = 1 (where 1/x ≈ ±1 and acos → 0 or π) is critical;
+   use the DD sqrt path from acos for this sub-region.
+
+Special cases:
+• asec(NaN) = NaN
+• asec(x) = NaN for |x| < 1
+• asec(1) = 0, asec(−1) = π
+• asec(+∞) = π/2, asec(−∞) = π/2
+"""
+
+[[recipe.references]]
+citation = "DLMF 4.23"
+kind = "reference"
+note = "Digital Library of Mathematical Functions — inverse trig"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fdiv", "fmadd", "fsqrt", "compensated_horner", "dd_sqrt"]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+reads  = ["asincos_sqrt"]
+writes = []
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Output angle unit"
+description = "radians / degrees / gradians / turns / pi_scaled."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "out_of_range"
+display_name = "Out-of-range behavior"
+description = "nan / clamp / error for |x| < 1."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "nan"
+
+[parameters.domain]
+kind = "enum"
+values = ["nan", "clamp", "error"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "asec(x) ∈ [0, π] \\ {π/2}."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "Arcsecant via acos(1/x). Precision: {precision}. Output unit: {angle_unit}."

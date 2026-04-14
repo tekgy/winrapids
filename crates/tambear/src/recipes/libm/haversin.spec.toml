@@ -1,0 +1,101 @@
+# Tambear recipe spec for haversin (haversine).
+#
+# haversin(x) = sin²(x/2) = versin(x)/2 = (1 − cos(x))/2.
+#
+# The Haversine formula for great-circle distance between two points
+# (φ₁,λ₁) and (φ₂,λ₂) on a sphere of radius R:
+#   d = 2R·arcsin(√(haversin(Δφ) + cos(φ₁)·cos(φ₂)·haversin(Δλ)))
+# This form is numerically stable for both small and large angular separations.
+
+[recipe]
+name = "haversin"
+layer = "recipe"
+family = ["libm", "trigonometric", "non_standard", "navigation", "geospatial", "elementary"]
+description = "Haversine haversin(x) = sin²(x/2) = (1−cos(x))/2. Geospatial great-circle distance primitive."
+
+long_description = """
+haversin(x) = sin²(x/2) = (1 − cos(x))/2.
+
+Range: [0, 1]. The haversin formula for great-circle distance is numerically
+superior to the law of cosines for small distances (where d·(2πR)^−1 ≪ 1),
+because the cancellation-prone cos(d) terms never appear.
+
+Algorithm: sin²(x/2) avoids all cancellation.
+• Tiny |x| < 2^-26: haversin(x) ≈ x²/4.
+• Small |x| ≤ π/2: haversin(x) = sin(x/2)^2 directly.
+• Larger |x|: range-reduce x, compute sin(reduced/2)^2.
+
+Note: haversin is the fundamental building block for geospatial distance on
+the unit sphere. The full haversine formula uses haversin twice (for Δφ and Δλ)
+plus a cos product — all expressible as a TBS pipeline.
+
+Special cases:
+• haversin(NaN) = NaN, haversin(±∞) = NaN.
+• haversin(0) = 0.
+• haversin(2kπ) = 0, haversin(π) = 1, haversin((2k+1)π) = 1.
+"""
+
+[[recipe.references]]
+citation = "Sinnott 1984"
+kind = "paper"
+note = "Virtues of the haversine — Sky and Telescope, vol 68 no 2"
+
+[[recipe.references]]
+citation = "Vincenty 1975"
+kind = "paper"
+note = "Direct and inverse solutions of geodesics on the ellipsoid"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fmadd", "compensated_horner", "cody_waite_rem_pio2", "payne_hanek_rem_pio2"]
+kingdom = "A"
+
+[sharing]
+reads  = ["trig_reduce"]
+writes = ["trig_reduce"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Angle unit"
+description = "radians / degrees / gradians / turns / pi_scaled."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "haversin(x) = sin²(x/2) ∈ [0, 1]."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "Haversine via sin²(x/2). Precision: {precision}. Angle unit: {angle_unit}."

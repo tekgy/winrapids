@@ -1,0 +1,89 @@
+# Tambear recipe spec for asinpi — asin(x)/π.
+#
+# asinpi(x) = asin(x)/π. Result is in [−0.5, 0.5].
+# IEEE 754-2019 §9.2 lists asinPi as a recommended operation.
+
+[recipe]
+name = "asinpi"
+layer = "recipe"
+family = ["libm", "trigonometric", "inverse", "pi_scaled"]
+description = "asinpi(x) = asin(x)/π ∈ [−0.5, 0.5]. IEEE 754-2019 recommended operation."
+
+long_description = """
+asinpi(x) = asin(x)/π.
+
+This is NOT the same as asin(x) with output in "pi_scaled" units from the asin recipe.
+The difference is precision: dividing a correctly-rounded asin(x) by π loses up to 1 ulp.
+asinpi computes the quotient via a combined algorithm that maintains accuracy.
+
+Algorithm:
+• For |x| ≤ 0.5: asin(x)/π = x/π + x·P(x²)/π. The polynomial coefficients are
+  divided by π at high precision, so the division is absorbed into the minimax fit.
+• For |x| > 0.5: use asin(x) = π/2 − 2·asin(√((1−x)/2)), then:
+  asinpi(x) = 0.5 − 2·asinpi(√((1−x)/2)).
+  This avoids dividing a nearly-π/2 result by π (which would lose 1 bit).
+
+Special cases: same as asin, with output halved.
+• asinpi(1) = 0.5, asinpi(-1) = -0.5 (exact).
+• asinpi(0) = 0.
+"""
+
+[[recipe.references]]
+citation = "IEEE 754-2019 §9.2"
+kind = "standard"
+note = "asinPi as recommended operation"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fmadd", "fsqrt", "compensated_horner", "dd_sqrt", "dd_div"]
+kingdom = "A"
+
+[sharing]
+reads  = ["asincos_sqrt"]
+writes = ["asincos_sqrt"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+[[parameters]]
+key = "out_of_range"
+display_name = "Out-of-range behavior"
+description = "nan / clamp / error for |x| > 1."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "nan"
+
+[parameters.domain]
+kind = "enum"
+values = ["nan", "clamp", "error"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "asin(x)/π ∈ [−0.5, 0.5]."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "asinpi via combined polynomial + recursion. Precision: {precision}."

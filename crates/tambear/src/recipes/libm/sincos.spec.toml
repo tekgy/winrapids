@@ -1,0 +1,140 @@
+# Tambear recipe spec for sincos — fused sin+cos pair.
+#
+# sincos is the "MomentStats of trigonometry": one range reduction feeds both
+# sin and cos, cutting the total cost of computing the pair in half compared
+# to two separate calls. All downstream consumers (tan, cot, sec, csc) that
+# need both values should pull from the TamSession sincos intermediate rather
+# than recomputing.
+
+[recipe]
+name = "sincos"
+layer = "recipe"
+family = ["libm", "trigonometric", "elementary", "periodic", "fused"]
+description = "Fused sin(x) + cos(x) pair — one range reduction, two kernel evaluations."
+
+long_description = """
+sincos(x) = (sin(x), cos(x)) computed with one shared range reduction.
+
+This is strictly cheaper than calling sin(x) + cos(x) separately:
+• Range reduction (the Payne-Hanek table multiply) runs once, not twice.
+• Both kernels share the same r_hi, r_lo, and r² = r_hi².
+• The total flop count is ~80% of two independent calls.
+
+Algorithm:
+1. Range reduction → (q, r_hi, r_lo). Single shared call.
+2. Kernel: z = r_hi², sin_k = r_hi + r_hi³·P(z), cos_k = 1 − z/2 + z²·Q(z).
+   r_lo folding applied to both via the fdlibm identity.
+3. Quadrant fixup: apply sign+swap table to (sin_k, cos_k) → (s, c).
+4. Output: two columns (sin_result, cos_result).
+
+TamSession sharing:
+• Writes "trig_reduce" so any subsequent sin/cos/tan/cot/sec/csc on the same
+  x can skip their own reduction.
+• Writes "sincos_kernel" = (sin_k, cos_k) so tan can form sin_k/cos_k directly.
+
+Special cases: same as sin and cos independently.
+"""
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 11"
+
+[[recipe.references]]
+citation = "Sun fdlibm __kernel_sin, __kernel_cos"
+kind = "implementation"
+note = "Kernel structure for the shared evaluation"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = [
+    "frint", "fmadd", "compensated_horner",
+    "payne_hanek_rem_pio2", "cody_waite_rem_pio2",
+]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+reads  = ["trig_reduce"]
+writes = ["trig_reduce", "sincos_kernel", "sincos_result"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded. Applied to both kernels."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Angle unit"
+description = "radians / degrees / gradians / turns / pi_scaled."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "range_reduction"
+display_name = "Range reduction algorithm"
+description = "auto / cody_waite / payne_hanek."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "auto"
+
+[parameters.domain]
+kind = "enum"
+values = ["auto", "cody_waite", "payne_hanek"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "sin_result"
+description = "sin(x) component."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[[outputs]]
+semantic_name = "cos_result"
+description = "cos(x) component."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+# ── Writeup metadata ─────────────────────────────────────────────────────────
+
+[writeup]
+methods_template = """
+sin and cos were evaluated jointly using tambear's fused sincos recipe,
+which performs one range reduction shared between both kernels.
+Precision strategy: {precision}. Range reduction: {range_reduction}. Angle unit: {angle_unit}.
+"""

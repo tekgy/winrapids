@@ -1,0 +1,92 @@
+# Tambear recipe spec for acosh (inverse hyperbolic cosine).
+
+[recipe]
+name = "acosh"
+layer = "recipe"
+family = ["libm", "hyperbolic", "inverse", "elementary"]
+description = "Inverse hyperbolic cosine acosh(x) = ln(x + √(x²−1)) for x ≥ 1."
+
+long_description = """
+acosh(x) = ln(x + √(x²−1)). Domain: [1, +∞). Range: [0, +∞).
+
+Sub-interval strategy:
+1. x < 1: NaN (domain error).
+2. x = 1: 0 exactly.
+3. 1 < x ≤ 1 + 2^−28: acosh(x) ≈ √(2(x−1)). Near x=1, the leading term is
+   √(2·(x−1)), which avoids catastrophic cancellation in ln(x + √(x²−1)).
+4. 1 + 2^−28 < x ≤ 2: acosh(x) = log1p((x−1) + √((x−1)·(x+1))).
+   The argument to log1p avoids overflow and keeps precision near x=1.
+5. x > 2: acosh(x) = ln(2x − 1/(x + √(x²−1))) for moderate x.
+6. Very large x: acosh(x) ≈ ln(2x) = ln(2) + ln(x).
+
+Special cases:
+• acosh(NaN) = NaN
+• acosh(x) = NaN for x < 1
+• acosh(+∞) = +∞
+• acosh(1) = 0
+"""
+
+[[recipe.references]]
+citation = "Sun fdlibm e_acosh.c"
+kind = "implementation"
+note = "Four-sub-interval strategy"
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 11"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fsqrt", "fmadd", "log1p", "ln"]
+kingdom = "A"
+
+[sharing]
+reads  = []
+writes = []
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+[[parameters]]
+key = "out_of_range"
+display_name = "Out-of-range behavior"
+description = "nan / error for x < 1."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "nan"
+
+[parameters.domain]
+kind = "enum"
+values = ["nan", "error"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "acosh(x) ≥ 0 evaluated element-wise."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "Inverse hyperbolic cosine. Precision: {precision}. Out-of-range: {out_of_range}."

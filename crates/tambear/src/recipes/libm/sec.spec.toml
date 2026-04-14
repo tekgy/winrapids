@@ -1,0 +1,113 @@
+# Tambear recipe spec for sec (secant).
+#
+# sec(x) = 1/cos(x). Poles at x = π/2 + kπ.
+# Computed as reciprocal of cos kernel — safe because cos_k ≠ 0 on [−π/4, π/4]
+# when the input is away from the pole.
+
+[recipe]
+name = "sec"
+layer = "recipe"
+family = ["libm", "trigonometric", "elementary", "periodic"]
+description = "Secant function sec(x) = 1/cos(x) with three precision strategies."
+
+long_description = """
+sec(x) = 1/cos(x). Poles at x = π/2 + kπ.
+
+Algorithm: same range reduction as sin/cos. On the reduced interval, cos_k ≥ 1/√2
+so the reciprocal is numerically safe. Near poles (cos_k ≈ 0), sec diverges;
+the IEEE result is ±∞ in the limit, but f64 arguments cannot represent exact poles
+so the output is always a large finite value.
+
+Special cases:
+• sec(NaN) = NaN, sec(±∞) = NaN.
+• sec(0) = 1.
+• Near poles: large finite values (no true ±∞ for representable f64 arguments).
+"""
+
+[[recipe.references]]
+citation = "DLMF 4.14"
+kind = "reference"
+note = "Digital Library of Mathematical Functions — trigonometric functions"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = [
+    "frint", "fmadd", "compensated_horner",
+    "payne_hanek_rem_pio2", "cody_waite_rem_pio2",
+    "fdiv",
+]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+reads  = ["trig_reduce", "sincos_kernel"]
+writes = ["trig_reduce", "sincos_kernel"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Angle unit"
+description = "radians / degrees / gradians / turns / pi_scaled."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "range_reduction"
+display_name = "Range reduction algorithm"
+description = "auto / cody_waite / payne_hanek."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "auto"
+
+[parameters.domain]
+kind = "enum"
+values = ["auto", "cody_waite", "payne_hanek"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "sec(x) evaluated element-wise."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+# ── Writeup metadata ─────────────────────────────────────────────────────────
+
+[writeup]
+methods_template = """
+Secant evaluated via reciprocal cosine kernel. Precision: {precision}. Reduction: {range_reduction}. Angle unit: {angle_unit}.
+"""

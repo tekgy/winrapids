@@ -1,0 +1,144 @@
+# Tambear recipe spec for atan (arctangent, one-argument).
+
+[recipe]
+name = "atan"
+layer = "recipe"
+family = ["libm", "trigonometric", "inverse", "elementary"]
+description = "Arctangent function atan(x) ∈ (−π/2, π/2) for x ∈ ℝ."
+
+long_description = """
+atan(x) — principal value of the inverse tangent, range (−π/2, π/2).
+
+Algorithm (Cody-Waite / fdlibm lineage):
+1. Symmetry: use atan(−x) = −atan(x), work on x ≥ 0.
+2. Range reduction to [0, tan(π/12)]:
+   • |x| ≤ tan(π/12) = 0.2679…: no reduction. Direct polynomial.
+   • tan(π/12) < |x| ≤ 1: atan(x) = π/6 + atan((x·√3 − 1)/(x + √3)).
+   • 1 < |x| ≤ tan(5π/12): atan(x) = π/4 + atan((x − 1)/(x + 1)).
+   • |x| > tan(5π/12): atan(x) = π/2 − atan(1/x).
+   The four sub-intervals map to four additive constants + one small-argument polynomial.
+3. Polynomial kernel on [0, tan(π/12)]:
+   atan(u) ≈ u + u³·Q(u²), Q is a Remez-fit degree-10 polynomial in z = u²,
+   fit in mpmath at 80-digit precision.
+4. Reconstruction: add the precomputed constant for the sub-interval.
+
+Special cases:
+• atan(NaN) = NaN
+• atan(+∞) = π/2, atan(−∞) = −π/2
+• atan(0) = 0, atan(−0) = −0
+"""
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 11"
+
+[[recipe.references]]
+citation = "Sun fdlibm s_atan.c"
+kind = "implementation"
+note = "Reference structure — four sub-interval strategy"
+
+[[recipe.references]]
+citation = "Hart et al. 1968"
+kind = "book"
+note = "Computer Approximations — table of atan minimax coefficients"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = [
+    "fmadd",
+    "fsqrt",
+    "compensated_horner",
+    "dd_add",
+]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+# atan2 reads the atan intermediate for the ratio y/x when safe.
+reads  = []
+writes = ["atan_result"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = """
+• strict: four-constant reconstruction + single-FMA Horner. ≤ 2 ulps.
+• compensated: DD-precision constants + compensated Horner. ≤ 1 ulp.
+• correctly_rounded: DD throughout. ≤ 1 ulp on tested samples.
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Output angle unit"
+description = """
+• radians: output ∈ (−π/2, π/2).
+• degrees: output ∈ (−90, 90).
+• gradians: output ∈ (−100, 100).
+• turns: output ∈ (−0.25, 0.25).
+• pi_scaled: output ∈ (−0.5, 0.5).
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "reduction_strategy"
+display_name = "Range reduction strategy"
+description = """
+• four_interval: Cody-Waite four-sub-interval strategy (default, recommended).
+• pade: Padé approximant on the full range — higher degree but no case split.
+  Research-grade; may not match libm to bit-exact in all quadrants.
+"""
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "four_interval"
+
+[parameters.domain]
+kind = "enum"
+values = ["four_interval", "pade"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "atan(x) ∈ (−π/2, π/2)."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+# ── Writeup metadata ─────────────────────────────────────────────────────────
+
+[writeup]
+methods_template = """
+Arctangent evaluated via {reduction_strategy} range reduction + Remez polynomial kernel.
+Precision: {precision}. Output unit: {angle_unit}.
+"""

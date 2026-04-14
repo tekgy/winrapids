@@ -1,0 +1,82 @@
+# Tambear recipe spec for tanpi — tan(π·x).
+
+[recipe]
+name = "tanpi"
+layer = "recipe"
+family = ["libm", "trigonometric", "pi_scaled", "elementary"]
+description = "tanpi(x) = tan(π·x) with exact zeros at integers and exact poles at half-integers."
+
+long_description = """
+tanpi(x) = tan(π·x).
+
+Key property: tanpi(n) = 0 exactly for integer n.
+Poles: tanpi(n + 0.5) = ±∞ exactly (sign depends on direction).
+In f64, half-integers are exactly representable, so the pole IS hit and tanpi
+returns ±∞, unlike tan(π/2) which returns a large finite value.
+
+Algorithm:
+1. x = n + f, f ∈ [0, 1).
+2. tanpi(n + f) = (−1)^n · tanpi(f) because tan(π(n+f)) = tan(πn + πf) = tan(πf).
+   (tan has period π, so tan(πn) = 0 and the (−1)^n disappears from sinpi/cospi.)
+   More precisely: tanpi(x) = tan(πf) with sign flip if n is odd (via parity of tan).
+3. f ∈ [0, 0.5): tanpi(f) = sinpi(f)/cospi(f) via the shared kernels.
+4. f = 0.5: return ±∞ (exact pole in f64 since 0.5 is exactly representable).
+5. f ∈ (0.5, 1): tanpi(f) = −tanpi(1−f) by symmetry.
+
+Special cases:
+• tanpi(NaN) = NaN
+• tanpi(±∞) = NaN
+• tanpi(integer) = +0 (always +0, not −0: tan is odd but period π, so tanpi(−n) = tanpi(0) = 0)
+• tanpi(n + 0.5) = ±∞ (sign from limit direction)
+"""
+
+[[recipe.references]]
+citation = "IEEE 754-2019 §9.2"
+kind = "standard"
+note = "tanPi recommended operation"
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["ffloor", "fmadd", "compensated_horner", "fdiv", "pi_extended"]
+kingdom = "A"
+
+[sharing]
+reads  = ["trig_reduce"]
+writes = ["trig_reduce"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "tan(π·x) with exact zeros and exact poles at half-integers."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "tanpi via parity-reduction + tan kernel. Precision: {precision}."

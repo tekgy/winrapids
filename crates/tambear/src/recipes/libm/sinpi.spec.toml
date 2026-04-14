@@ -1,0 +1,99 @@
+# Tambear recipe spec for sinpi — sin(π·x).
+#
+# sinpi(x) = sin(π·x). The key insight: for integer x, sinpi is EXACTLY 0.
+# This is not achievable by sin(π·x) with floating-point π because π is
+# irrational and the rounding of x·π introduces error. sinpi uses a smarter
+# reduction that exploits the periodicity directly.
+
+[recipe]
+name = "sinpi"
+layer = "recipe"
+family = ["libm", "trigonometric", "pi_scaled", "elementary"]
+description = "sinpi(x) = sin(π·x) with exact zeros at integers. More accurate than sin(π·x) for near-integer x."
+
+long_description = """
+sinpi(x) = sin(π·x).
+
+For integer n: sinpi(n) = 0 exactly (not ≈ 0). This is the primary advantage
+over computing sin(M_PI * x): the floating-point constant M_PI is not exactly π,
+so sin(M_PI * n) ≈ 1e-16 rather than exactly 0.
+
+Algorithm:
+1. Extract integer part: x = n + f where n = floor(x) and f ∈ [0, 1).
+2. Exploit sin(π·(n + f)) = sin(πn)·cos(πf) + cos(πn)·sin(πf).
+   Since sin(πn) = 0 and cos(πn) = (−1)^n exactly, this reduces to:
+   sinpi(x) = (−1)^n · sin(πf).
+3. Now f ∈ [0, 1): reflect to [0, 0.5] via sin(πf) = sin(π(1−f)) for f > 0.5.
+4. For f ∈ [0, 0.5]: sin(πf) via the standard sin kernel on [0, π/2].
+   The argument πf is computed with extended precision to avoid rounding π.
+
+For half-integers (f = 0.5): sinpi(n + 0.5) = (−1)^n.
+
+Special cases:
+• sinpi(NaN) = NaN
+• sinpi(±∞) = NaN
+• sinpi(integer) = ±0 (exact; sign matches (−1)^n convention → +0 for even n, −0 for... see note)
+• sinpi(n + 0.5) = ±1 exactly.
+
+Note on signed zero: sinpi(0) = +0, sinpi(−0) = −0, sinpi(n) = +0 for even n > 0.
+"""
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic — sinpi motivation"
+
+[[recipe.references]]
+citation = "IEEE 754-2019 §9.2"
+kind = "standard"
+note = "sinPi recommended operation"
+
+[[recipe.references]]
+citation = "Boldo et al. 2009"
+kind = "paper"
+note = "Correct Rounding of Mathematical Functions — sinpi analysis"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["ffloor", "fmadd", "compensated_horner", "pi_extended"]
+kingdom = "A"
+
+[sharing]
+reads  = ["trig_reduce"]
+writes = ["trig_reduce"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = """
+• strict: direct πf in double, standard sin kernel. ≤ 2 ulps.
+• compensated: extended-precision πf via DD, compensated sin kernel. ≤ 1 ulp.
+• correctly_rounded: DD throughout. ≤ 1 ulp; integer zeros exact.
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "sin(π·x) with exact zeros at integers."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "sinpi via parity-reduction + sin kernel. Precision: {precision}."

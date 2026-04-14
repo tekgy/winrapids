@@ -1,0 +1,100 @@
+# Tambear recipe spec for versin (versine).
+#
+# versin(x) = 1 − cos(x). Historically important in navigation; still the
+# right primitive for computing small angular differences on a sphere without
+# cancellation. The haversine formula for great-circle distances uses haversin.
+
+[recipe]
+name = "versin"
+layer = "recipe"
+family = ["libm", "trigonometric", "non_standard", "navigation", "elementary"]
+description = "Versine versin(x) = 1 − cos(x). Avoids cancellation for small angles; used in great-circle distance formulas."
+
+long_description = """
+versin(x) = 1 − cos(x) = 2·sin²(x/2).
+
+The second form (2·sin²(x/2)) avoids catastrophic cancellation when |x| is small:
+• Naive: 1 − cos(x) ≈ 1 − (1 − x²/2) = x²/2. The subtraction loses all but
+  the last few bits of x² when cos(x) ≈ 1.
+• Better: 2·sin²(x/2). For small |x/2|, sin(x/2) ≈ x/2, so the result is
+  ≈ x²/2 computed without cancellation.
+
+Algorithm:
+• For |x| < ε (threshold ~2^-26): versin(x) ≈ x²/2 − x⁴/24.
+• General: 2·sin²(x/2) = 2·(sin kernel at x/2)^2.
+  The sin kernel at x/2 is always in [−π/4, π/4] when |x| ≤ π/2,
+  so no reduction is needed for the common case.
+• Large |x|: range-reduce x first, then use 2·sin²(reduced/2).
+
+Range: [0, 2] (versin is always non-negative).
+
+Special cases:
+• versin(NaN) = NaN, versin(±∞) = NaN.
+• versin(0) = 0.
+• versin(kπ) = 0 for even k, = 2 for odd k.
+"""
+
+[[recipe.references]]
+citation = "Todhunter & Leathem 1901"
+kind = "book"
+note = "Spherical Trigonometry — historical versine tables"
+
+[[recipe.references]]
+citation = "Sinnott 1984"
+kind = "paper"
+note = "Virtues of the haversine — great-circle distance motivation"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fmadd", "compensated_horner", "cody_waite_rem_pio2", "payne_hanek_rem_pio2"]
+kingdom = "A"
+
+[sharing]
+reads  = ["trig_reduce"]
+writes = ["trig_reduce"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Angle unit"
+description = "radians / degrees / gradians / turns / pi_scaled."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "versin(x) = 1 − cos(x) ∈ [0, 2]."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "Versine via 2·sin²(x/2) formula. Precision: {precision}. Angle unit: {angle_unit}."

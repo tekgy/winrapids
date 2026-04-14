@@ -1,0 +1,102 @@
+# Tambear recipe spec for atanh (inverse hyperbolic tangent).
+#
+# atanh is the "logit" of (x+1)/2 up to a constant — heavily used in statistics
+# as the Fisher z-transformation and in link function design.
+
+[recipe]
+name = "atanh"
+layer = "recipe"
+family = ["libm", "hyperbolic", "inverse", "elementary", "statistics"]
+description = "Inverse hyperbolic tangent atanh(x) = ½·ln((1+x)/(1−x)) for |x| < 1. Also known as Fisher z-transform."
+
+long_description = """
+atanh(x) = ½·ln((1+x)/(1−x)). Domain: (−1, 1). Range: (−∞, +∞).
+
+The naive formula suffers cancellation near x = ±1 (both ln arguments → 0 or ∞)
+and near x = 0 (ln(1) = 0 is computed exactly, but the ratio isn't).
+
+Algorithm:
+1. Tiny |x| ≤ 2^−28: atanh(x) ≈ x.
+2. General |x| < 1: atanh(x) = ½·log1p(2x/(1−x)).
+   Since 2x/(1−x) ∈ (−2, 0) for x ∈ (−1, 0) and ∈ (0, +∞) for x ∈ (0, 1),
+   log1p avoids the ln(0) blowup and the argument is always well-conditioned.
+3. |x| = 1: ±∞ (pole).
+4. |x| > 1: NaN.
+
+Statistics note: atanh is the Fisher z-transformation applied to a Pearson r.
+The TBS discover() layer can detect Pearson r inputs and suggest atanh automatically.
+
+Special cases:
+• atanh(NaN) = NaN
+• atanh(±1) = ±∞
+• atanh(x) = NaN for |x| > 1
+• atanh(0) = 0, atanh(-0) = -0
+"""
+
+[[recipe.references]]
+citation = "Sun fdlibm e_atanh.c"
+kind = "implementation"
+note = "log1p-based formula"
+
+[[recipe.references]]
+citation = "Fisher 1915"
+kind = "paper"
+note = "Frequency distribution of the values of the correlation coefficient — z-transformation"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fmadd", "log1p", "fdiv"]
+kingdom = "A"
+
+[sharing]
+reads  = []
+writes = []
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+[[parameters]]
+key = "out_of_range"
+display_name = "Out-of-range behavior"
+description = "nan / inf / error for |x| ≥ 1."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "nan"
+
+[parameters.domain]
+kind = "enum"
+values = ["nan", "inf", "error"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "atanh(x) ∈ ℝ evaluated element-wise."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = """
+Inverse hyperbolic tangent (Fisher z-transformation) via log1p-based formula.
+Precision: {precision}. Out-of-range: {out_of_range}.
+"""

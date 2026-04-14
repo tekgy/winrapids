@@ -1,0 +1,154 @@
+# Tambear recipe spec for tan (tangent).
+#
+# tan = sin/cos but the naive ratio destroys precision near the poles (π/2 + kπ).
+# The proper approach: compute sin and cos via a shared reduction, then form
+# tan = sin_k / cos_k using the *kernel* values (before quadrant fixup) so that
+# near-zero denominators are handled cleanly.
+
+[recipe]
+name = "tan"
+layer = "recipe"
+family = ["libm", "trigonometric", "elementary", "periodic"]
+description = "Tangent function tan(x) with three precision strategies and configurable angle units."
+
+long_description = """
+tan(x) = sin(x)/cos(x), but computed without catastrophic cancellation near poles.
+
+Algorithm:
+1. Range reduction: x modulo π/2 → (q, r_hi, r_lo) via the same three-tier
+   strategy as sin/cos (trivial / Cody-Waite / Payne-Hanek).
+2. Kernel evaluation: compute sin_k = sin(r) and cos_k = cos(r) on [−π/4, π/4]
+   using the shared sin/cos kernel polynomials. The kernel cos never vanishes on
+   this interval (minimum value > 1/√2 ≈ 0.707).
+3. Ratio formation: tan_k = sin_k / cos_k (safe on the reduced interval).
+4. Quadrant fixup: if q is odd (quadrant 1 or 3), tan(x) = −1/tan_k (the input
+   was near a pole; the kernel's sin/cos are near ±1 and ±0 respectively, so
+   the reciprocal is well-conditioned).
+
+Special cases:
+• tan(NaN) = NaN
+• tan(±∞) = NaN
+• tan(kπ/2) for odd k: returns ±∞ with the sign determined by direction of approach.
+  In IEEE 754 f64, the nearest representable argument to π/2 is not exactly π/2,
+  so tan returns a large finite value rather than ±∞ (matches C99 libm behavior).
+• tan(0) = 0, tan(-0) = -0.
+
+Poles: tan has poles at x = π/2 + kπ. For f64 inputs the range-reduced argument
+is never exactly zero, so the output is always finite.
+"""
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 11"
+
+[[recipe.references]]
+citation = "Sun fdlibm __kernel_tan"
+kind = "implementation"
+note = "Reference implementation of the tan kernel"
+
+[[recipe.references]]
+citation = "Payne & Hanek 1983"
+kind = "paper"
+note = "Range reduction for large arguments"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = [
+    "frint",
+    "fmadd",
+    "compensated_horner",
+    "payne_hanek_rem_pio2",
+    "cody_waite_rem_pio2",
+    "fdiv",
+]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+# tan consumes the shared range-reduction result if sin or cos already ran on the
+# same x. It writes its own intermediate kernel values (sin_k, cos_k) which are
+# also consumed by cot via the reciprocal path.
+reads  = ["trig_reduce", "sincos_kernel"]
+writes = ["trig_reduce", "sincos_kernel", "tanker_result"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = """
+• strict: single-FMA polynomial evaluation, ≤ 2 ulps.
+• compensated: compensated Horner for kernel, DD-corrected division, ≤ 1–2 ulps.
+• correctly_rounded: DD working precision for kernel + division, ≤ 1 ulp on tested samples.
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Angle unit"
+description = """
+• radians: no conversion.
+• degrees: ×π/180.
+• gradians: ×π/200.
+• turns: ×2π.
+• pi_scaled: ×π (tanpi path).
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "range_reduction"
+display_name = "Range reduction algorithm"
+description = "auto / cody_waite / payne_hanek."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "auto"
+
+[parameters.domain]
+kind = "enum"
+values = ["auto", "cody_waite", "payne_hanek"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "tan(x) evaluated element-wise."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+# ── Writeup metadata ─────────────────────────────────────────────────────────
+
+[writeup]
+methods_template = """
+The tangent function was evaluated using tambear's native implementation.
+Range reduction used {range_reduction}; the {precision} precision strategy
+governed the polynomial kernel. Input angles in {angle_unit}.
+"""

@@ -179,7 +179,7 @@ fn special_case_trig(x: f64) -> Option<f64> {
 /// `r_hi + r_lo ∈ [-π/4, π/4]` to ~106 bits for medium `|x|` or to ~120
 /// bits for large `|x|` via Payne-Hanek.
 #[inline]
-fn reduce_trig(x: f64) -> (i32, f64, f64) {
+pub(super) fn reduce_trig(x: f64) -> (i32, f64, f64) {
     let ax = x.abs();
     if ax < PI_OVER_4_F64 {
         return (0, x, 0.0);
@@ -579,7 +579,7 @@ const IPIO2: [i32; 66] = [
 
 // ── Kernel evaluators ──────────────────────────────────────────────────────
 
-/// `kernel_sin(r_hi, r_lo)` with residual folding.
+/// `kernel_sin(r_hi, r_lo)` with residual folding. `pub(super)` for sincos sharing.
 ///
 /// Given the two-part reduced argument `r = r_hi + r_lo`, we compute
 /// ```text
@@ -590,7 +590,7 @@ const IPIO2: [i32; 66] = [
 /// where `cos(r_hi) ≈ 1 - r_hi²/2` to leading order. This folds `r_lo`
 /// into the result without losing bits to cancellation.
 #[inline]
-fn kernel_sin(r_hi: f64, r_lo: f64) -> f64 {
+pub(super) fn kernel_sin(r_hi: f64, r_lo: f64) -> f64 {
     let z = r_hi * r_hi;
     let v = z * r_hi; // r_hi³
     let p = SIN_COEFFS[1]
@@ -616,7 +616,7 @@ fn kernel_sin(r_hi: f64, r_lo: f64) -> f64 {
 /// is near π/4. Recover via `w = 1 - 0.5·z; correction = (1 - w) - 0.5·z`
 /// (exact error-free transform). Then `result = w + (correction + poly - r_hi·r_lo)`.
 #[inline]
-fn kernel_cos(r_hi: f64, r_lo: f64) -> f64 {
+pub(super) fn kernel_cos(r_hi: f64, r_lo: f64) -> f64 {
     let z = r_hi * r_hi;
     let q = COS_COEFFS[0]
         + z * (COS_COEFFS[1]
@@ -641,7 +641,7 @@ fn kernel_cos(r_hi: f64, r_lo: f64) -> f64 {
 /// 3 | -kernel_cos(r)   |  kernel_sin(r)
 /// ```
 #[inline]
-fn eval_sincos(q: i32, r_hi: f64, r_lo: f64, is_cos: bool) -> f64 {
+pub(super) fn eval_sincos(q: i32, r_hi: f64, r_lo: f64, is_cos: bool) -> f64 {
     let qq = if is_cos { q + 1 } else { q };
     let val = if (qq & 1) == 0 {
         kernel_sin(r_hi, r_lo)

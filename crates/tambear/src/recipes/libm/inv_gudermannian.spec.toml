@@ -1,0 +1,128 @@
+# Tambear recipe spec for inverse Gudermannian.
+#
+# gd^−1(y) = asinh(tan(y)) = ln(tan(y/2 + π/4)) = ln(sec(y) + tan(y)).
+# This is the Mercator projection's defining map from latitude → y-coordinate.
+
+[recipe]
+name = "inv_gudermannian"
+layer = "recipe"
+family = ["libm", "trigonometric", "hyperbolic", "non_standard", "geospatial", "conformal_geometry"]
+description = "Inverse Gudermannian gd^−1(y) = asinh(tan(y)) — Mercator projection map. Domain: (−π/2, π/2)."
+
+long_description = """
+gd^−1(y) = asinh(tan(y)) = ln(tan(y/2 + π/4)).
+
+Domain: (−π/2, π/2). Range: (−∞, +∞). The inverse of the Gudermannian.
+
+Algorithm:
+• Preferred form: ln(tan(y/2 + π/4)).
+  For |y| small: tan(y/2 + π/4) ≈ 1 + y, so ln gives ≈ y (correct).
+  For |y| near π/2: tan → +∞, ln → +∞ (unbounded, matching asinh(+∞) = +∞).
+  Numerically stable with DD-precision for the argument of ln near π/4.
+
+• Alternative: atanh(sin(y)).
+  Since sin(y) ∈ (−1, 1) for y ∈ (−π/2, π/2), atanh is in its natural domain.
+  Simple and accurate.
+
+Special cases:
+• gd^−1(NaN) = NaN
+• gd^−1(±π/2) = ±∞ (poles of tan)
+• gd^−1(0) = 0
+"""
+
+[[recipe.references]]
+citation = "Adams 1921"
+kind = "paper"
+note = "Latitude developments — Gudermannian inverse in conformal mapping"
+
+[[recipe.references]]
+citation = "DLMF 4.23.39"
+kind = "reference"
+note = "Digital Library of Mathematical Functions"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["tan", "ln", "atanh", "fmadd"]
+kingdom = "A"
+
+[sharing]
+reads  = []
+writes = []
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+[[parameters]]
+key = "formula"
+display_name = "Evaluation formula"
+description = """
+• log_tan: ln(tan(y/2 + π/4)) — classical Mercator formula.
+• atanh_sin: atanh(sin(y)) — simple and accurate, preferred for small |y|.
+• asinh_tan: asinh(tan(y)) — direct inverse definition, overflows near poles.
+"""
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "atanh_sin"
+
+[parameters.domain]
+kind = "enum"
+values = ["log_tan", "atanh_sin", "asinh_tan"]
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Input angle unit"
+description = "radians / degrees / gradians / turns / pi_scaled."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+[[parameters]]
+key = "out_of_range"
+display_name = "Out-of-range behavior"
+description = "nan / inf / error for |y| ≥ π/2."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "inf"
+
+[parameters.domain]
+kind = "enum"
+values = ["nan", "inf", "error"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "gd^−1(y) ∈ ℝ evaluated element-wise."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "Inverse Gudermannian via {formula}. Precision: {precision}. Angle unit: {angle_unit}."

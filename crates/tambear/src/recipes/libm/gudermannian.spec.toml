@@ -1,0 +1,139 @@
+# Tambear recipe spec for gudermannian.
+#
+# The Gudermannian gd(x) relates the circular and hyperbolic trig functions
+# without using complex numbers. It's the angle whose tangent equals sinh(x).
+# Crucial in Mercator projection theory: the Mercator y-coordinate is
+# proportional to the inverse Gudermannian of latitude.
+
+[recipe]
+name = "gudermannian"
+layer = "recipe"
+family = ["libm", "trigonometric", "hyperbolic", "non_standard", "geospatial", "conformal_geometry"]
+description = "Gudermannian gd(x) = atan(sinh(x)) = 2·atan(tanh(x/2)) − π/4·... Range: (−π/2, π/2)."
+
+long_description = """
+The Gudermannian function: gd(x) = atan(sinh(x)).
+
+Equivalent forms:
+• gd(x) = atan(sinh(x))
+• gd(x) = asin(tanh(x))
+• gd(x) = 2·atan(tanh(x/2))
+• gd(x) = 2·atan(e^x) − π/2
+
+The third form (2·atan(tanh(x/2))) is the most numerically stable because
+tanh(x/2) ∈ (−1, 1) for all real x, so atan is applied to a bounded argument
+with no overflow risk. The first form (atan(sinh(x))) overflows for |x| > 709
+because sinh(x) → ±∞.
+
+Properties:
+• gd is odd: gd(−x) = −gd(x)
+• gd(0) = 0
+• lim_{x→+∞} gd(x) = +π/2
+• lim_{x→-∞} gd(x) = −π/2
+• d/dx gd(x) = sech(x) = 1/cosh(x)
+
+Inverse Gudermannian: gd^−1(y) = asinh(tan(y)) = ln(tan(y/2 + π/4)).
+Crucial for Mercator projection: y_Mercator = R · gd^−1(φ) where φ is geodetic latitude.
+
+Application in market data: the Gudermannian maps the real line (hyperbolic domain,
+representing log returns, z-scores, unbounded quantities) to a bounded interval
+(−π/2, π/2) via a conformal-geometry-respecting transform. It's the "right" sigmoid
+for quantities that come from hyperbolic geometry.
+
+Special cases:
+• gd(NaN) = NaN
+• gd(+∞) = π/2, gd(−∞) = −π/2
+• gd(0) = 0
+"""
+
+[[recipe.references]]
+citation = "Gudermann 1833"
+kind = "paper"
+note = "Theorie der Modular-Functionen und der Modular-Integrale — original definition"
+
+[[recipe.references]]
+citation = "Osborne 2013"
+kind = "book"
+note = "Mercator's Projection — Gudermannian and Mercator connection"
+
+[[recipe.references]]
+citation = "DLMF 4.23.39"
+kind = "reference"
+note = "Gudermannian in the Digital Library of Mathematical Functions"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+# Preferred: 2·atan(tanh(x/2)) — composes the tanh and atan primitives.
+primitives_used = ["tanh", "atan", "fmadd"]
+kingdom = "A"
+
+[sharing]
+reads  = []
+writes = []
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+[[parameters]]
+key = "formula"
+display_name = "Evaluation formula"
+description = """
+• tanh_atan: 2·atan(tanh(x/2)) — recommended, bounded argument, no overflow.
+• atan_sinh: atan(sinh(x)) — classical definition, overflows for |x| > 709.
+• exp_atan: 2·atan(e^x) − π/2 — equivalent but requires full-range exp.
+"""
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "tanh_atan"
+
+[parameters.domain]
+kind = "enum"
+values = ["tanh_atan", "atan_sinh", "exp_atan"]
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Output angle unit"
+description = "radians / degrees / gradians / turns / pi_scaled. Output range scales accordingly."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "gd(x) ∈ (−π/2, π/2) evaluated element-wise."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = """
+Gudermannian function evaluated via the {formula} formula.
+Precision: {precision}. Output unit: {angle_unit}.
+"""

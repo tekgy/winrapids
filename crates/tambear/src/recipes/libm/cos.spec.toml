@@ -1,0 +1,137 @@
+# Tambear recipe spec for cos (cosine).
+#
+# Structurally mirrors sin.spec.toml — same reduction machinery, same kernel,
+# different quadrant mapping. See sincos.spec.toml for the fused sin+cos pair.
+
+[recipe]
+name = "cos"
+layer = "recipe"
+family = ["libm", "trigonometric", "elementary", "periodic"]
+description = "Cosine function cos(x) with three precision strategies and configurable angle units."
+
+long_description = """
+Evaluates cos(x) via the same range reduction + kernel as sin, with a quadrant
+fixup that maps cos(x) to the sin kernel on [−π/4, π/4].
+
+1. Range reduction: x modulo π/2 → (q, r_hi, r_lo). Same three-tier strategy
+   as sin (trivial / Cody-Waite / Payne-Hanek).
+2. Kernel: cos(r) ≈ 1 − r²/2 + r⁴·Q(r²). Q coefficients from Remez exchange
+   in mpmath at 80-digit precision; polynomial error < 1.4e-18 < ½ ulp(1.0).
+3. Quadrant fixup: cos(x) = ±sin(π/2 − x_reduced) depending on q, implemented
+   as a sin↔cos swap + optional sign change on the kernel result.
+4. Residual folding: r_lo preserved via identity cos(r_hi + r_lo) ≈ ... − r_hi·r_lo.
+
+Special cases: cos(NaN)=NaN, cos(±∞)=NaN, cos(0)=1, cos(-0)=1.
+"""
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 11"
+
+[[recipe.references]]
+citation = "Payne & Hanek 1983"
+kind = "paper"
+note = "Radian reduction for trigonometric functions"
+
+[[recipe.references]]
+citation = "Sun fdlibm __kernel_cos, __ieee754_rem_pio2"
+kind = "implementation"
+note = "Canonical libm reference — structure but not code"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = [
+    "frint",
+    "fmadd",
+    "compensated_horner",
+    "payne_hanek_rem_pio2",
+    "cody_waite_rem_pio2",
+]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+reads  = ["trig_reduce"]
+writes = ["trig_reduce"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = """
+• strict: single-FMA Horner path, ≤ 2 ulps worst case.
+• compensated: compensated Horner, ≤ 1–2 ulps.
+• correctly_rounded: DD working precision, ≤ 1 ulp on tested samples.
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Angle unit"
+description = """
+• radians: no conversion.
+• degrees: ×π/180.
+• gradians: ×π/200.
+• turns: ×2π.
+• pi_scaled: ×π (cospi path).
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "range_reduction"
+display_name = "Range reduction algorithm"
+description = "auto / cody_waite / payne_hanek. See sin.spec.toml for details."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "auto"
+
+[parameters.domain]
+kind = "enum"
+values = ["auto", "cody_waite", "payne_hanek"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "cos(x) evaluated element-wise."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+# ── Writeup metadata ─────────────────────────────────────────────────────────
+
+[writeup]
+methods_template = """
+The cosine function was evaluated using tambear's native implementation with the
+{precision} precision strategy and {range_reduction} range reduction.
+Input angles in {angle_unit}. Error budget: ≤ 2 ulps (strict/compensated) or ≤ 1 ulp (correctly_rounded).
+"""

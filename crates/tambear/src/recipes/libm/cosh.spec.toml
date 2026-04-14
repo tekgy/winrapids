@@ -1,0 +1,97 @@
+# Tambear recipe spec for cosh (hyperbolic cosine).
+
+[recipe]
+name = "cosh"
+layer = "recipe"
+family = ["libm", "hyperbolic", "elementary"]
+description = "Hyperbolic cosine cosh(x) = (e^x + e^−x)/2 with three precision strategies."
+
+long_description = """
+cosh(x) = (e^x + e^−x)/2. Always ≥ 1; minimum at x = 0 where cosh(0) = 1.
+
+No cancellation problem (the sum, not the difference), but two sub-intervals
+for efficiency:
+
+1. Tiny |x| ≤ 2^−28: cosh(x) ≈ 1 (error < ½ ulp).
+2. Small |x| ≤ 0.5: cosh(x) = 1 + t²/2 where t = expm1(|x|),
+   i.e. cosh = 1 + (expm1 result)·(expm1 result + 2) / 2. Avoids computing
+   e^x and e^−x separately; one expm1 call suffices.
+3. Medium 0.5 < |x| ≤ 22: cosh(x) = (e^x + e^−x)/2.
+   Both exps computed via the shared exp primitive (same TamSession tag as sinh).
+4. Large |x| > 22: cosh(x) ≈ e^|x|/2 (the e^−|x| term is negligible).
+5. Overflow: |x| > 710.47… → +∞.
+
+cosh is always even: cosh(-x) = cosh(x).
+
+Special cases:
+• cosh(NaN) = NaN
+• cosh(±∞) = +∞
+• cosh(0) = 1
+"""
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 11"
+
+[[recipe.references]]
+citation = "Sun fdlibm e_cosh.c"
+kind = "implementation"
+note = "Four-sub-interval strategy"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fmadd", "exp_strict", "exp_compensated", "expm1", "fdiv"]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+reads  = ["exp_result"]
+writes = ["exp_result", "coshsinh_kernel"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+[[parameters]]
+key = "overflow"
+display_name = "Overflow behavior"
+description = "inf / saturate for |x| > 710.47."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "inf"
+
+[parameters.domain]
+kind = "enum"
+values = ["inf", "saturate"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "cosh(x) ≥ 1 evaluated element-wise."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "Hyperbolic cosine. Precision: {precision}. Overflow: {overflow}."

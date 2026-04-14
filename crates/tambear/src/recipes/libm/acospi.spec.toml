@@ -1,0 +1,85 @@
+# Tambear recipe spec for acospi — acos(x)/π.
+
+[recipe]
+name = "acospi"
+layer = "recipe"
+family = ["libm", "trigonometric", "inverse", "pi_scaled"]
+description = "acospi(x) = acos(x)/π ∈ [0, 1]. IEEE 754-2019 recommended operation."
+
+long_description = """
+acospi(x) = acos(x)/π.
+
+acospi(x) = 0.5 − asinpi(x) by the identity acos(x) = π/2 − asin(x).
+Unlike naive division, this form preserves a full ulp of precision near x = 0
+where acos(x) ≈ π/2 and dividing by π is well-conditioned.
+
+Near x = 1: acospi → 0. The subtraction 0.5 − asinpi(x) has cancellation here,
+but asinpi(x) ≈ 0.5 and the cancellation is clean: 0.5 − asinpi(1) = 0 exactly.
+The derivative is 0.5/√((1−x)·π²/4) which grows as x → 1 — precision of asinpi
+matters here. Use the DD sqrt path.
+
+Special cases:
+• acospi(1) = 0, acospi(-1) = 1 (exact).
+• acospi(0) = 0.5 (exact).
+• acospi(NaN) = NaN, acospi(|x| > 1) = NaN.
+"""
+
+[[recipe.references]]
+citation = "IEEE 754-2019 §9.2"
+kind = "standard"
+note = "acosPi as recommended operation"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fmadd", "fsqrt", "compensated_horner", "dd_sqrt", "dd_sub"]
+kingdom = "A"
+
+[sharing]
+reads  = ["asincos_sqrt"]
+writes = ["asincos_sqrt"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+[[parameters]]
+key = "out_of_range"
+display_name = "Out-of-range behavior"
+description = "nan / clamp / error for |x| > 1."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "nan"
+
+[parameters.domain]
+kind = "enum"
+values = ["nan", "clamp", "error"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "acos(x)/π ∈ [0, 1]."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+[writeup]
+methods_template = "acospi = 0.5 − asinpi. Precision: {precision}."

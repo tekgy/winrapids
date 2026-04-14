@@ -333,3 +333,147 @@ separately), 3-tier for inverse trig and hyperbolics.
 This unlocks TRIG-11 — the compilation-differences-per-strategy doc is
 effectively the per-function column of this matrix, formatted for the
 recipe spec generator.
+
+---
+
+## TRIG-11 — Functions that need *radically different* algorithms per strategy
+
+Most functions in the family use "the same algorithm with more precision
+applied." A few require an actual **algorithm change** between strategies
+because the strict-precision formula breaks down numerically. These are
+the high-risk entries for pathmaker and the ones the math researcher
+will audit most carefully.
+
+### `atan2(y, x)` at axis singularities
+
+**Strict**: branch on sign of `y`, `x`, `y/x`. The IEEE 754-2019 Table
+9.1 gives 20+ edge cases; `strict` enumerates them via integer-status
+inspection on `y` and `x` (`signbit`, `is_inf`). The return values are
+constants (`±0, ±π/2, ±π, ±π/4, ±3π/4`) — no arithmetic required at
+edges.
+
+**Compensated**: identical to strict at edges (the edge outputs are
+exact). The interior uses `atan_core` on `compensated_horner`.
+
+**Correctly rounded**: *different at the interior*. The `y/x` division
+must be DD-precision before calling `atan_core_dd`; naive f64 division
+introduces up to 1 ULP that the CR `atan` then propagates. Uses
+Ziv-style adaptive precision: evaluate at DD, check if result is near a
+half-ULP boundary, if so re-evaluate at quad-double.
+
+**Different algorithm?** Yes: the DD division in CR changes the
+data-flow, and Ziv's adaptive technique is entirely absent from strict.
+
+### `asin(x)` / `acos(x)` near `|x| = 1`
+
+**Strict**: fdlibm's three-region split. For `|x| ≥ 0.975`, use
+`asin(x) = π/2 − 2·asin(√((1-x)/2))`. The `sqrt` and the `1-x` are both
+done in f64; for `x = 1 − 2⁻⁵²`, `1-x = 2⁻⁵²` is exact and
+`√(2⁻⁵²/2) = √(2⁻⁵³) = 2⁻²⁶·√(1/2)` is also near-exact.
+
+**Compensated**: same formula but the `1-x` uses `two_diff` to capture
+the low-order bits; `asin_core_half` uses `compensated_horner`. This is
+meaningful when `|x|` is *very* close to 1 — `two_diff(1, 0.999999...)`
+preserves the tail that `fsub(1, 0.999999...)` would lose.
+
+**Correctly rounded**: *different formula*. CORE-MATH's `asin` near
+`|x| = 1` switches from the half-angle trick to a Hermite-Padé
+approximant on `(1-x)·(1+x)` directly, because the sqrt-then-asin
+composition is not correctly rounded at CR granularity. Requires a
+separate polynomial table and a different reduction.
+
+**Different algorithm?** Yes: CR uses Hermite-Padé, strict/compensated
+use Chebyshev-Remez on the half-angle substitution.
+
+### `tan(x)` near poles (`π/2 + kπ`)
+
+**Strict**: `tan_core(r)` via dual-branch (polynomial for even quadrant,
+`-1/poly` for odd). For `r` very close to `π/2`, the reciprocal branch
+has a small denominator and explodes — but that's mathematically
+correct, the output is legitimately huge.
+
+**Compensated**: compensated poly on both branches; `two_product_fma`
+on the reciprocal-then-divide step. Worst-case error stays ~2 ULPs even
+at quadrant boundary.
+
+**Correctly rounded**: CORE-MATH's approach is to compute `sin` and
+`cos` at DD precision and divide at DD — avoids the tan-specific
+polynomial entirely for the near-pole region. **Different data flow**:
+strict/compensated invoke `tan_core`; CR invokes `sincos_dd` and divides.
+
+**Different algorithm?** Yes: CR abandons `tan_core` near poles.
+
+### `atanh(x)` near `|x| = 1`
+
+**Strict**: `atanh(x) = (1/2)·log1p(2x/(1−x))`. For `x = 1 − 2⁻⁵²`, the
+`1-x` is exact; the divide `2x/(1-x)` is huge but finite; `log1p` of a
+huge number collapses to `log` of the argument. Output accuracy
+degrades to ~3 ULPs.
+
+**Compensated**: `two_diff` for `1-x`; compensated `log1p`.
+
+**Correctly rounded**: CR uses a direct table-based `atanh` near the
+boundary — avoids `log1p` of huge arguments, which is numerically
+awkward even in DD.
+
+**Different algorithm?** CR yes; strict/compensated share formula.
+
+### `acosh(x)` near `x = 1`
+
+**Strict**: `acosh(1 + t) = log1p(t + √(2t + t²))` with `t = x − 1`.
+
+**Compensated**: `two_diff` for `t = x - 1`; compensated log1p.
+
+**Correctly rounded**: direct CR polynomial on the half-angle substitute,
+same family as the CR `asin`. Algorithm changes at CR tier.
+
+### Summary: which functions change algorithm at CR
+
+| Function | Strict ≈ Compensated algorithm | CR algorithm change? |
+|---|---|---|
+| sin / cos / sincos | same (Chebyshev-Remez) | no (DD poly, same shape) |
+| tan | same (dual-branch kernel) | **yes** (sincos_dd + div) |
+| cot / sec / csc | same | derived from above |
+| atan | same | no (DD poly) |
+| atan2 | same | **partial** (DD div + Ziv) |
+| asin / acos | same | **yes** (Hermite-Padé near 1) |
+| asec / acsc | same | derived from asin/acos |
+| sinh / cosh / tanh | same (expm1-based) | no (DD expm1) |
+| coth / sech / csch | same | derived |
+| asinh | same (log1p form) | no |
+| acosh | same | **yes** (direct table near 1) |
+| atanh | same | **yes** (direct table near 1) |
+| sinpi / cospi / tanpi | same (exact reduce) | no |
+| asinpi / ... | same as asin etc. | inherits from base |
+| haversin etc. | same (sin²(x/2)) | no |
+
+**Five functions have a genuine algorithm change at the CR tier**:
+`tan`, `atan2` (partial), `asin`, `acos`, `acosh`, `atanh`. Pathmaker
+must ship these as **three separate implementations** (strict,
+compensated, correctly_rounded) rather than a single parameterized
+implementation. Math researcher will verify the CR implementations
+against CORE-MATH and Muller Handbook directly.
+
+---
+
+## Cross-family rhyme (convergence check)
+
+All five CR-algorithm-change cases are **boundary-layer** functions:
+asymptotes (tan's poles), cusps (asin/acos/acosh endpoints), or
+boundary singularities (atanh near ±1). In every case, the default
+minimax-polynomial-on-the-reduced-core strategy fails at the boundary
+because the core expands toward the singularity slower than it should.
+
+**Structural observation**: this is the **same phenomenon** as the
+near-unity cancellation rhyme from catalog.md. Both are "the core
+formula is well-conditioned away from the boundary but pathological at
+it." The complementary-argument transform is the solution in both
+cases — what changes at CR is only whether the transform is applied
+aggressively enough.
+
+**Implication**: the `complementary_arg_transform` primitive (proposed
+in compilation §Gaps) should be the single implementation detail
+responsible for all boundary handling. If we get that primitive right,
+all six boundary-sensitive functions inherit correct behavior across
+all three strategies.
+

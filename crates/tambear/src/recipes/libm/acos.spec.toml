@@ -1,0 +1,130 @@
+# Tambear recipe spec for acos (arccosine).
+
+[recipe]
+name = "acos"
+layer = "recipe"
+family = ["libm", "trigonometric", "inverse", "elementary"]
+description = "Arccosine function acos(x) ∈ [0, π] for x ∈ [−1, 1]."
+
+long_description = """
+acos(x) — the principal value of the inverse cosine, with range [0, π].
+
+acos(x) = π/2 − asin(x), but this identity loses precision near x = 1
+(where acos → 0). The precise algorithm handles two sub-cases:
+
+1. |x| ≤ 0.5: acos(x) = π/2 − asin(x) using the asin polynomial.
+   Both are well-conditioned on this domain.
+2. x > 0.5: acos(x) = 2·asin(√((1−x)/2)).
+   The √((1−x)/2) maps [0.5, 1] → [0, 1/√2]; asin is then applied to
+   this contracted argument, which is always ≤ π/4 in output.
+3. x < −0.5: acos(x) = π − 2·asin(√((1+x)/2)).
+
+In all cases the hard computation reduces to asin on [0, 1/√2] or the
+polynomial kernel on [0, 0.5], so no separate acos polynomial is needed.
+The π constant is held to double-double precision to prevent cancellation.
+
+Special cases:
+• acos(NaN) = NaN
+• acos(x) = NaN for |x| > 1
+• acos(1) = 0, acos(-1) = π
+• acos(0) = π/2
+"""
+
+[[recipe.references]]
+citation = "Muller et al. 2018"
+kind = "textbook"
+note = "Handbook of Floating-Point Arithmetic, ch. 11"
+
+[[recipe.references]]
+citation = "Sun fdlibm e_acos.c"
+kind = "implementation"
+note = "Reference structure"
+
+# ── Decomposition ────────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = [
+    "fmadd", "fsqrt", "compensated_horner", "dd_sqrt", "dd_sub",
+]
+kingdom = "A"
+
+# ── Sharing contract ─────────────────────────────────────────────────────────
+
+[sharing]
+reads  = ["asincos_sqrt"]
+writes = ["asincos_sqrt"]
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "precision"
+display_name = "Precision strategy"
+description = "strict / compensated / correctly_rounded."
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "compensated"
+
+[parameters.domain]
+kind = "enum"
+values = ["strict", "compensated", "correctly_rounded"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "angle_unit"
+display_name = "Output angle unit"
+description = """
+Unit of the output angle.
+• radians: output in [0, π].
+• degrees: output in [0, 180].
+• gradians: output in [0, 200].
+• turns: output in [0, 0.5].
+• pi_scaled: output in [0, 1].
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "radians"
+
+[parameters.domain]
+kind = "enum"
+values = ["radians", "degrees", "gradians", "turns", "pi_scaled"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "out_of_range"
+display_name = "Out-of-range behavior"
+description = "nan / clamp / error. Same semantics as asin."
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "nan"
+
+[parameters.domain]
+kind = "enum"
+values = ["nan", "clamp", "error"]
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "result"
+description = "acos(x) ∈ [0, π] (or converted to selected angle unit)."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_rows"
+
+# ── Writeup metadata ─────────────────────────────────────────────────────────
+
+[writeup]
+methods_template = """
+Arccosine evaluated using tambear's native implementation.
+Precision: {precision}. Output unit: {angle_unit}. Out-of-range: {out_of_range}.
+"""

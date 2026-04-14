@@ -30,6 +30,7 @@
 //! Subsequent recipes (`log`, `sin`, `cos`, `erf`, `gamma`) follow the
 //! same template.
 
+pub mod adversarial;
 pub mod erf;
 pub mod exp;
 pub mod gamma;

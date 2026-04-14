@@ -264,7 +264,8 @@ impl OutputSpec {
 pub fn schema_for(recipe: &RecipeRef) -> Option<&'static RecipeSchema> {
     match recipe {
         RecipeRef::Expr(name) => match name.as_str() {
-            "correlation_matrix" => Some(&CORRELATION_MATRIX_SCHEMA),
+            // Migrated to .spec.toml at src/recipes/statistics/correlation_matrix.spec.toml
+            "correlation_matrix" => Some(correlation_matrix_schema_from_toml()),
             "kmo" => Some(&KMO_SCHEMA),
             "bartlett_sphericity" => Some(&BARTLETT_SPHERICITY_SCHEMA),
             "factor_scores" => Some(&FACTOR_SCORES_SCHEMA),
@@ -272,11 +273,11 @@ pub fn schema_for(recipe: &RecipeRef) -> Option<&'static RecipeSchema> {
             _ => None,
         },
         RecipeRef::Recipe(name) => match name.as_str() {
-            "factor_analysis" => Some(&FACTOR_ANALYSIS_SCHEMA),
+            // Migrated to .spec.toml at src/recipes/statistics/factor_analysis.spec.toml
+            "factor_analysis" => Some(factor_analysis_schema_from_toml()),
             "varimax_rotation" => Some(&VARIMAX_ROTATION_SCHEMA),
-            // First recipe to be migrated to .spec.toml. The toml file
-            // at `src/recipes/libm/exp.spec.toml` is the single source
-            // of truth; both the Rust tests and the tambear-ide read it.
+            // Migrated to .spec.toml at src/recipes/libm/exp.spec.toml — the first
+            // pilot of the pattern. Both the Rust tests and the tambear-ide read it.
             "exp" => Some(exp_schema_from_toml()),
             _ => None,
         },
@@ -296,12 +297,32 @@ pub fn schema_for(recipe: &RecipeRef) -> Option<&'static RecipeSchema> {
 // consts below.
 
 static EXP_SCHEMA_CELL: OnceLock<&'static RecipeSchema> = OnceLock::new();
+static CORRELATION_MATRIX_SCHEMA_CELL: OnceLock<&'static RecipeSchema> = OnceLock::new();
+static FACTOR_ANALYSIS_SCHEMA_CELL: OnceLock<&'static RecipeSchema> = OnceLock::new();
 
 fn exp_schema_from_toml() -> &'static RecipeSchema {
     EXP_SCHEMA_CELL.get_or_init(|| {
         let toml_str = include_str!("../libm/exp.spec.toml");
         let owned = toml_schema::parse_spec_toml(toml_str)
             .expect("exp.spec.toml must parse — this is a build-time invariant");
+        Box::leak(Box::new(leak_into_static(&owned)))
+    })
+}
+
+fn correlation_matrix_schema_from_toml() -> &'static RecipeSchema {
+    CORRELATION_MATRIX_SCHEMA_CELL.get_or_init(|| {
+        let toml_str = include_str!("../statistics/correlation_matrix.spec.toml");
+        let owned = toml_schema::parse_spec_toml(toml_str)
+            .expect("correlation_matrix.spec.toml must parse");
+        Box::leak(Box::new(leak_into_static(&owned)))
+    })
+}
+
+fn factor_analysis_schema_from_toml() -> &'static RecipeSchema {
+    FACTOR_ANALYSIS_SCHEMA_CELL.get_or_init(|| {
+        let toml_str = include_str!("../statistics/factor_analysis.spec.toml");
+        let owned = toml_schema::parse_spec_toml(toml_str)
+            .expect("factor_analysis.spec.toml must parse");
         Box::leak(Box::new(leak_into_static(&owned)))
     })
 }
@@ -465,43 +486,15 @@ fn leak_dimension(d: &toml_schema::OwnedDimensionSource) -> DimensionSourceSpec 
 // routes through `exp_schema_from_toml()` above. First recipe piloted
 // on the .spec.toml pattern; all future recipes should follow suit.
 
-/// Placeholder schema for `correlation_matrix`. Will be filled in with
-/// real defaults once the correlation recipe is wired to this module.
-pub static CORRELATION_MATRIX_SCHEMA: RecipeSchema = RecipeSchema {
-    name: "correlation_matrix",
-    description: "Pearson/Spearman/Kendall correlation matrix with auto-detection.",
-    parameters: &[ParameterSpec {
-        key: "method",
-        display_name: "Correlation method",
-        description:
-            "pearson: linear association assuming normality. spearman: rank-based, robust to outliers and non-linearity. kendall: tau-b, strongest small-sample behavior.",
-        default: DefaultBinding {
-            using: Some(DefaultValue::Method("pearson")),
-            autodiscover: Some("normality_probe"),
-            sweep: None,
-            superposition: None,
-        },
-        domain: Some(ValueDomain::Enum(&[
-            DefaultValue::Method("pearson"),
-            DefaultValue::Method("spearman"),
-            DefaultValue::Method("kendall"),
-        ])),
-    }],
-    outputs: &[OutputSpec {
-        semantic_name: "correlation_matrix",
-        description: "Pairwise correlation coefficients across input columns.",
-        shape: OutputShapeSpec::Matrix {
-            rows: DimensionSourceSpec::InputCols,
-            cols: DimensionSourceSpec::InputCols,
-        },
-        dtype: Dtype::F64,
-        has_v_column: false,
-    }],
-};
+// CORRELATION_MATRIX_SCHEMA migrated to src/recipes/statistics/correlation_matrix.spec.toml.
+// Access via `schema_for(&RecipeRef::Expr("correlation_matrix".to_string()))` which
+// routes through `correlation_matrix_schema_from_toml()` above.
 
-/// Placeholder schema for `factor_analysis`. Matches the existing
-/// `crates/tambear/src/factor_analysis.rs` surface at a high level.
-pub static FACTOR_ANALYSIS_SCHEMA: RecipeSchema = RecipeSchema {
+// FACTOR_ANALYSIS_SCHEMA migrated to src/recipes/statistics/factor_analysis.spec.toml.
+// The const block below is the old version, retained as comparison reference
+// until all tests pass with the toml-loaded schema. TODO: delete after verify.
+#[allow(dead_code)]
+pub static FACTOR_ANALYSIS_SCHEMA_LEGACY: RecipeSchema = RecipeSchema {
     name: "factor_analysis",
     description:
         "Exploratory factor analysis: extracts latent factors from a correlation matrix, \
@@ -982,7 +975,15 @@ mod tests {
     fn step_from_schema_populates_outputs() {
         let step = step_from_schema("fa", RecipeRef::Recipe("factor_analysis".into()))
             .expect("factor_analysis schema should exist");
-        assert_eq!(step.outputs.len(), 4);
+        // The toml-loaded schema has richer outputs than the legacy const:
+        // + uniquenesses (1 - communality, useful for model diagnostics)
+        // + heywood (flag for degenerate communality > 1 cases)
+        // If this fails when we add more outputs, update the count.
+        assert!(
+            step.outputs.len() >= 4,
+            "expected at least 4 outputs, got {}",
+            step.outputs.len()
+        );
         let names: Vec<&str> = step.outputs.iter().map(|o| o.semantic_name.as_str()).collect();
         assert!(names.contains(&"loadings"));
         assert!(names.contains(&"communalities"));

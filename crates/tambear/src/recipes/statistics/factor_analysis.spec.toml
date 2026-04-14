@@ -1,0 +1,249 @@
+# Tambear recipe spec for factor_analysis.
+#
+# Exploratory factor analysis. Demonstrates the autodiscover-only default
+# pattern: `n_factors` has no default `using` value — tambear doesn't
+# hardcode a number, it runs parallel analysis or the Kaiser criterion
+# at execution time to pick.
+#
+# This is different from correlation_matrix where using and autodiscover
+# BOTH have defaults (compose). Here, only autodiscover has a default,
+# which means the effective binding at runtime is "whatever the probe
+# decides" unless the user explicitly overrides with `.using(n_factors=N)`.
+
+[recipe]
+name = "factor_analysis"
+layer = "recipe"
+family = ["statistics", "multivariate", "latent-variable", "psychometrics"]
+description = "Exploratory factor analysis: extracts latent factors from correlations, optionally rotated for interpretability."
+
+long_description = """
+Decomposes the correlation matrix Σ = Λ·Φ·Λᵀ + Ψ where:
+- Σ is the observed correlation matrix (n_vars × n_vars)
+- Λ is the loadings matrix (n_vars × n_factors)
+- Φ is the factor correlation matrix (identity for orthogonal rotation)
+- Ψ is the diagonal uniqueness matrix (n_vars × n_vars)
+
+Pipeline:
+1. Estimate initial communalities (via squared multiple correlation or
+   iterated principal axis estimates)
+2. Extract factors via the chosen method (minres / ml / pa)
+3. Rotate to improve interpretability (varimax / promax / oblimin / none)
+4. Compute variance explained per factor, residual correlation norm
+
+When n_factors is not user-specified, tambear runs parallel analysis
+(Horn 1965) and/or the Kaiser ≥ 1 criterion to pick, depending on n and
+the factorability probe (KMO + Bartlett). The choice is reported in the
+output advice so users see what was selected and why.
+"""
+
+[[recipe.references]]
+citation = "Spearman 1904"
+kind = "paper"
+note = "The original two-factor theory of intelligence"
+
+[[recipe.references]]
+citation = "Thurstone 1947"
+kind = "book"
+note = "Multiple Factor Analysis"
+
+[[recipe.references]]
+citation = "Horn 1965"
+kind = "paper"
+note = "A rationale and test for the number of factors in factor analysis — parallel analysis"
+
+[[recipe.references]]
+citation = "Kaiser 1958"
+kind = "paper"
+note = "The varimax criterion for analytic rotation in factor analysis"
+
+# ── Decomposition ──────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["mat_mul", "mat_scale", "cholesky", "cholesky_solve", "fadd", "fmul", "fdiv", "fsqrt"]
+# Minres and ML are iterative fixed-point — Kingdom C.
+# PA is iterative with eigendecomposition — Kingdom C.
+# The choice of extraction method determines the kingdom.
+kingdom = "C"
+
+[sharing]
+reads = ["correlation_matrix", "moment_stats"]
+writes = ["factor_loadings", "factor_scores_basis"]
+
+# ── Parameters ──────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "n_factors"
+display_name = "Number of factors"
+description = """
+Number of latent factors to extract. If omitted, tambear auto-selects
+via parallel analysis (Horn's method) when n is large enough, or the
+Kaiser ≥ 1 eigenvalue criterion for smaller samples. The selection
+rationale is reported in the step output.
+"""
+kind = "int"
+advanced = false
+
+[parameters.default]
+# No `using` value — this is the autodiscover-only default pattern.
+# Tambear picks n_factors at runtime via this probe.
+autodiscover = "parallel_analysis_or_kaiser"
+
+[parameters.domain]
+kind = "int_range"
+min = 1
+max = 50
+
+[[parameters]]
+key = "extraction"
+display_name = "Extraction method"
+description = """
+minres: minimum residual — balances speed and robustness (the IDE default).
+ml: maximum likelihood — gives publication-quality fit statistics, requires
+    multivariate normality.
+pa: principal axis factoring — classic method, robust, slightly less
+    efficient than minres.
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "minres"
+autodiscover = "factorability_probe"
+
+[parameters.domain]
+kind = "enum"
+values = ["minres", "ml", "pa"]
+
+[[parameters]]
+key = "rotation"
+display_name = "Rotation method"
+description = """
+Applied after extraction to improve interpretability.
+
+varimax (orthogonal): maximizes squared-loading variance — default for
+    personality/intelligence research where factors are assumed independent.
+promax (oblique): allows factors to correlate; better for constructs that
+    theoretically overlap (anxiety/depression, cognitive/emotional).
+oblimin (oblique): similar to promax with a slightly different criterion.
+none: no rotation, gives the raw extraction output (useful for replicating
+    classical analyses).
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "varimax"
+
+[parameters.domain]
+kind = "enum"
+values = ["none", "varimax", "promax", "oblimin"]
+
+[[parameters]]
+key = "missing"
+display_name = "Missing data handling"
+description = """
+Listwise: drop any row with NaN (the IDE default — conservative, smaller
+effective N).
+Pairwise: use all available pairs per covariance entry (larger effective
+N but can produce non-positive-definite correlation matrices, which
+will fail the Cholesky step in extraction).
+"""
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "listwise"
+
+[parameters.domain]
+kind = "enum"
+values = ["listwise", "pairwise"]
+
+[[parameters]]
+key = "fm_se"
+display_name = "Compute standard errors for loadings"
+description = """
+Whether to compute per-loading standard errors via the information matrix.
+Adds ~20-40% to execution time. Required for publication-quality
+confidence intervals on loadings. Parameter name follows the R `psych::fa`
+convention (fm = factor model, se = standard errors).
+"""
+kind = "bool"
+advanced = true
+
+[parameters.default]
+using = false
+
+# ── Outputs ─────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "loadings"
+description = "Factor loadings matrix (n_variables × n_factors). Entry [i,j] is how strongly variable i loads onto factor j."
+dtype = "f64"
+has_v_column = true
+
+[outputs.shape]
+kind = "matrix"
+rows = "input_cols"
+cols = "choice:n_factors"
+
+[[outputs]]
+semantic_name = "communalities"
+description = "Communality per variable — proportion of variance explained by the extracted factors. Range [0, 1]."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_cols"
+
+[[outputs]]
+semantic_name = "uniquenesses"
+description = "Uniqueness per variable (= 1 - communality)."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_cols"
+
+[[outputs]]
+semantic_name = "eigenvalues"
+description = "Eigenvalues of the reduced correlation matrix, one per extracted factor."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "choice:n_factors"
+
+[[outputs]]
+semantic_name = "variance_explained"
+description = "Proportion of total variance explained by each factor. Sums to the communality of the model."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "choice:n_factors"
+
+[[outputs]]
+semantic_name = "heywood"
+description = "Heywood-case flag (communality > 1). If true, the extraction is degenerate — consider fewer factors or different method."
+dtype = "bool"
+has_v_column = false
+
+[outputs.shape]
+kind = "scalar"
+
+# ── Writeup ─────────────────────────────────────────────────────────────────
+
+[writeup]
+methods_template = """
+We conducted an exploratory factor analysis on {n_variables} variables
+with {n_observations} observations. The number of factors was
+{n_factors_source}; tambear's factorability diagnostics reported
+KMO = {kmo} ({kmo_interpretation}) and Bartlett's sphericity
+χ²({bartlett_df}) = {bartlett_chi2}, p = {bartlett_p}. Factors were
+extracted using {extraction} and rotated with {rotation}. The extracted
+solution explained {total_variance_pct}% of the total variance.
+"""

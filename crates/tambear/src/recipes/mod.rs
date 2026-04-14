@@ -38,3 +38,4 @@
 
 pub mod libm;
 pub mod pipelines;
+pub mod statistics;

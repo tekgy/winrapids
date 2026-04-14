@@ -1,0 +1,162 @@
+# Tambear recipe spec for correlation_matrix.
+#
+# Computes pairwise correlation across a set of input columns. The default
+# binding demonstrates the compose-not-pick pattern: the recipe defaults
+# `using = "pearson"` AND `autodiscover = "normality_probe"` are BOTH active
+# by default. If the user forces `using = "spearman"` in a pipeline step,
+# the normality probe still runs and surfaces advice ("your data is non-
+# normal, Spearman is the safer choice") — but since the user already
+# selected Spearman, the advice is just confirmation. If they force
+# `using = "pearson"` on non-normal data, the same probe fires and the
+# advice becomes a warning.
+
+[recipe]
+name = "correlation_matrix"
+layer = "expr"
+family = ["statistics", "descriptive", "bivariate", "matrix"]
+description = "Pairwise correlation matrix with auto-detection of the appropriate method."
+
+long_description = """
+Computes the n_cols × n_cols correlation matrix across input data columns.
+Supports three methods:
+
+- pearson: linear association, assumes bivariate normality
+- spearman: rank-based, robust to outliers and monotonic non-linearity
+- kendall: tau-b, strongest small-sample behavior (slow — O(n²) per pair)
+
+The default runs the Shapiro-Wilk / D'Agostino-Pearson normality probe
+and reports it alongside the selected method. If the user doesn't override,
+Pearson is used. If they do override, the probe result is still reported
+so they can see whether their override matches what tambear would have
+recommended — the Layer 2 override-transparency pattern.
+
+Output is a symmetric n_cols × n_cols matrix with 1.0 on the diagonal.
+"""
+
+[[recipe.references]]
+citation = "Pearson 1895"
+kind = "paper"
+note = "Notes on regression and inheritance in the case of two parents"
+
+[[recipe.references]]
+citation = "Spearman 1904"
+kind = "paper"
+note = "The proof and measurement of association between two things"
+
+[[recipe.references]]
+citation = "Kendall 1938"
+kind = "paper"
+note = "A new measure of rank correlation"
+
+# ── Decomposition ──────────────────────────────────────────────────────────
+
+[decomposition]
+primitives_used = ["fadd", "fsub", "fmul", "fdiv", "fsqrt", "kahan_sum"]
+kingdom = "A"
+
+# Intermediates: this recipe both reads and writes to TamSession — it consumes
+# MomentStats if they've already been computed and registers its own
+# intermediate for downstream consumers (e.g. PCA, factor analysis).
+[sharing]
+reads = ["moment_stats", "rank_order"]
+writes = ["correlation_matrix"]
+
+# ── Parameters ──────────────────────────────────────────────────────────────
+
+[[parameters]]
+key = "method"
+display_name = "Correlation method"
+description = """
+Choice of correlation coefficient. Pearson measures linear association and
+assumes bivariate normality. Spearman is rank-based and robust to outliers
+and monotonic non-linearity. Kendall (tau-b) has stronger small-sample
+behavior but is O(n²) per pair so it scales worse.
+
+The normality probe runs in advisory mode regardless of this choice.
+"""
+kind = "method"
+advanced = false
+
+[parameters.default]
+using = "pearson"
+autodiscover = "normality_probe"
+
+[parameters.domain]
+kind = "enum"
+values = ["pearson", "spearman", "kendall"]
+
+[[parameters]]
+key = "missing"
+display_name = "Missing data handling"
+description = """
+Listwise: drop any row with NaN in any input column (conservative, smaller N).
+Pairwise: use all available non-NaN pairs per cell (larger effective N per
+cell but can produce non-positive-definite matrices, which downstream
+recipes like factor analysis may reject).
+"""
+kind = "method"
+advanced = true
+
+[parameters.default]
+using = "listwise"
+
+[parameters.domain]
+kind = "enum"
+values = ["listwise", "pairwise"]
+
+[[parameters]]
+key = "bias_correction"
+display_name = "Apply sample-bias correction"
+description = """
+When true, use n/(n-1) correction in the denominator to produce the unbiased
+sample correlation estimator. When false, use the population formula.
+Most commonly: true for inferential statistics, false for purely descriptive.
+"""
+kind = "bool"
+advanced = true
+
+[parameters.default]
+using = true
+
+# ── Outputs ─────────────────────────────────────────────────────────────────
+
+[[outputs]]
+semantic_name = "correlation_matrix"
+description = "Pairwise correlation coefficients. Symmetric with 1.0 on diagonal, off-diagonals in [-1, 1]."
+dtype = "f64"
+has_v_column = true
+
+[outputs.shape]
+kind = "matrix"
+rows = "input_cols"
+cols = "input_cols"
+
+[[outputs]]
+semantic_name = "method_used"
+description = "The correlation method that was actually applied (echoes the effective using, for audit)."
+dtype = "string"
+has_v_column = false
+
+[outputs.shape]
+kind = "scalar"
+
+[[outputs]]
+semantic_name = "normality_p_value"
+description = "Shapiro-Wilk / D'Agostino-Pearson p-value per input column. Low values suggest non-normality, which weakens the Pearson interpretation."
+dtype = "f64"
+has_v_column = false
+
+[outputs.shape]
+kind = "vector"
+length_from = "input_cols"
+
+# ── Writeup ─────────────────────────────────────────────────────────────────
+
+[writeup]
+methods_template = """
+We computed the correlation matrix across {n_cols} variables using the
+{method} coefficient. Missing values were handled by {missing} deletion.
+The normality probe reported p-values in the range [{p_min}, {p_max}]
+across input columns; {method_suitable_for_data}. Bias correction was
+{bias_correction_applied}.
+"""

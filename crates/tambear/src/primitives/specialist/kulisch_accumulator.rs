@@ -195,6 +195,30 @@ impl KulischAccumulator {
         }
     }
 
+    /// Add another accumulator into this one, in place.
+    ///
+    /// Exact word-wise signed addition with carry propagation. This makes
+    /// `merge` the associative combine operation for `KulischAccumulator`,
+    /// which is what lets parallel reduction — tree-merge across rayon
+    /// chunks, Blelloch scan, per-group scatter — produce bit-identical
+    /// results regardless of partition order or thread count.
+    ///
+    /// The final carry out of the MSB word is discarded. This is safe
+    /// because the accumulator's 4352-bit width has ~1000 bits of headroom
+    /// above the f64 finite range; the sum of any two accumulators built
+    /// from finite f64 inputs cannot overflow into that final carry.
+    pub fn merge(&mut self, other: &Self) {
+        let mut carry: u128 = 0;
+        for i in 0..NUM_WORDS {
+            let a = self.words[i] as u128;
+            let b = other.words[i] as u128;
+            let (s1, c1) = a.overflowing_add(b);
+            let (s2, c2) = s1.overflowing_add(carry);
+            self.words[i] = s2 as i128;
+            carry = (c1 as u128) | (c2 as u128);
+        }
+    }
+
     /// Return the current accumulator value as the closest f64, rounded
     /// to nearest even. For values in the f64 normal range this is the
     /// correctly-rounded result.
@@ -564,5 +588,198 @@ mod tests {
             err < 1e-12,
             "Kahan {kahan} vs Kulisch {kulisch}, diff {err:e}"
         );
+    }
+
+    // ── merge tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn merge_with_zero_is_noop() {
+        let mut a = KulischAccumulator::new();
+        a.add_slice(&[1.0, 2.0, 3.0]);
+        let before = a.words;
+        let zero = KulischAccumulator::new();
+        a.merge(&zero);
+        assert_eq!(a.words, before);
+        assert_eq!(a.to_f64(), 6.0);
+    }
+
+    #[test]
+    fn merge_of_zero_plus_accumulator_matches_original_words() {
+        let mut src = KulischAccumulator::new();
+        src.add_slice(&[1e50, -1.0, 1e-50, -1e50, 1.0]);
+        let mut dst = KulischAccumulator::new();
+        dst.merge(&src);
+        // Merging an accumulator into a fresh one should produce the
+        // identical word pattern, not just the same rounded f64.
+        assert_eq!(dst.words, src.words);
+    }
+
+    #[test]
+    fn merge_equals_concat_single_pass() {
+        // Build one accumulator from the full slice; build two accumulators
+        // from disjoint halves and merge. Word patterns must match exactly.
+        let xs: Vec<f64> = (0..1000).map(|i| (i as f64).sin() * 1e7).collect();
+        let (left, right) = xs.split_at(500);
+
+        let mut single = KulischAccumulator::new();
+        single.add_slice(&xs);
+
+        let mut merged = KulischAccumulator::new();
+        merged.add_slice(left);
+        let mut right_acc = KulischAccumulator::new();
+        right_acc.add_slice(right);
+        merged.merge(&right_acc);
+
+        assert_eq!(
+            merged.words, single.words,
+            "merge must match single-pass bit-for-bit"
+        );
+        assert_eq!(merged.to_f64(), single.to_f64());
+    }
+
+    #[test]
+    fn merge_is_associative_bit_exact() {
+        // Build three accumulators from disjoint slices, combine in both
+        // parenthesizations. Word patterns must match bit-for-bit —
+        // the core invariant that makes parallel tree-merge safe.
+        let xs: Vec<f64> = (0..300)
+            .map(|i| {
+                // Mix of scales to stress the accumulator.
+                match i % 3 {
+                    0 => (i as f64) * 1e50,
+                    1 => -(i as f64),
+                    _ => (i as f64) * 1e-50,
+                }
+            })
+            .collect();
+        let (a_slice, rest) = xs.split_at(100);
+        let (b_slice, c_slice) = rest.split_at(100);
+
+        let mut a = KulischAccumulator::new();
+        a.add_slice(a_slice);
+        let mut b = KulischAccumulator::new();
+        b.add_slice(b_slice);
+        let mut c = KulischAccumulator::new();
+        c.add_slice(c_slice);
+
+        // (a ⊕ b) ⊕ c
+        let mut left = a.clone();
+        left.merge(&b);
+        left.merge(&c);
+
+        // a ⊕ (b ⊕ c)
+        let mut bc = b.clone();
+        bc.merge(&c);
+        let mut right = a.clone();
+        right.merge(&bc);
+
+        assert_eq!(
+            left.words, right.words,
+            "merge associativity violated at word level"
+        );
+    }
+
+    #[test]
+    fn merge_is_commutative_bit_exact() {
+        let mut a = KulischAccumulator::new();
+        a.add_slice(&[3.7, -0.25, 1e100, 1.0]);
+        let mut b = KulischAccumulator::new();
+        b.add_slice(&[-1e100, 42.0, 1e-200]);
+
+        let mut ab = a.clone();
+        ab.merge(&b);
+        let mut ba = b.clone();
+        ba.merge(&a);
+
+        assert_eq!(ab.words, ba.words, "merge commutativity violated");
+    }
+
+    #[test]
+    fn merge_cancellation_across_accumulators() {
+        // Cancellation across the merge boundary: values in one acc are
+        // killed by values in another. Tests carry propagation through
+        // high words during subtraction.
+        let mut pos = KulischAccumulator::new();
+        pos.add_f64(1e100);
+        pos.add_f64(1.0);
+
+        let mut neg = KulischAccumulator::new();
+        neg.add_f64(-1e100);
+
+        pos.merge(&neg);
+        assert_eq!(pos.to_f64(), 1.0);
+    }
+
+    #[test]
+    fn merge_preserves_negatives() {
+        let mut a = KulischAccumulator::new();
+        a.add_f64(-5.0);
+        let mut b = KulischAccumulator::new();
+        b.add_f64(-3.0);
+        a.merge(&b);
+        assert_eq!(a.to_f64(), -8.0);
+    }
+
+    #[test]
+    fn merge_preserves_subnormals() {
+        let tiny = f64::from_bits(1);
+        let mut a = KulischAccumulator::new();
+        let mut b = KulischAccumulator::new();
+        for _ in 0..500 {
+            a.add_f64(tiny);
+            b.add_f64(tiny);
+        }
+        a.merge(&b);
+        assert_eq!(a.to_f64(), 1000.0 * tiny);
+    }
+
+    #[test]
+    fn merge_chain_equals_sequential_add() {
+        // The parallel-reduction use case: N chunks each accumulate
+        // independently, then we fold them via merge in a binary tree.
+        // Final word pattern must match a sequential one-pass add_slice.
+        let xs: Vec<f64> = (0..4096).map(|i| ((i as f64).cos() + 0.5) * 1e20).collect();
+
+        let mut sequential = KulischAccumulator::new();
+        sequential.add_slice(&xs);
+
+        // 16 chunks of 256.
+        let mut chunks: Vec<KulischAccumulator> = xs
+            .chunks(256)
+            .map(|c| {
+                let mut a = KulischAccumulator::new();
+                a.add_slice(c);
+                a
+            })
+            .collect();
+
+        // Fold via a binary tree. Any fold order should give the same
+        // bit pattern because merge is associative.
+        while chunks.len() > 1 {
+            let mut next = Vec::with_capacity(chunks.len() / 2 + 1);
+            let mut iter = chunks.into_iter();
+            while let Some(mut a) = iter.next() {
+                if let Some(b) = iter.next() {
+                    a.merge(&b);
+                }
+                next.push(a);
+            }
+            chunks = next;
+        }
+        let parallel = chunks.into_iter().next().unwrap();
+
+        assert_eq!(
+            parallel.words, sequential.words,
+            "tree-merge parallel reduction must match sequential bit-for-bit"
+        );
+    }
+
+    #[test]
+    fn merge_empty_into_empty_stays_zero() {
+        let mut a = KulischAccumulator::new();
+        let b = KulischAccumulator::new();
+        a.merge(&b);
+        assert_eq!(a.to_f64(), 0.0);
+        assert_eq!(a.words, [0_i128; NUM_WORDS]);
     }
 }

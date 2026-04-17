@@ -115,6 +115,61 @@ impl Expr<'_> {
 
 /// HOW to combine accumulators.
 ///
+/// # Determinism contract (locked 2026-04-16, refined 2026-04-17)
+///
+/// Every variant is **cross-platform bit-exact deterministic by default**.
+/// Same input → identical bit pattern regardless of thread count, execution
+/// order, backend (CPU / CUDA / wgpu), or CPU architecture. Non-determinism
+/// is opt-in only via `using(sum_strategy: "nondet")`. Strategy selection
+/// lives in `using()` keys, never as new Op enum variants — growing the
+/// enum fragments the semantic surface.
+///
+/// See `R:/winrapids/campsites/industrialization/architecture/2026-04-11-op-default-deterministic-plan.md`
+/// for the full rationale.
+///
+/// # NaN / Inf policy
+///
+/// Two independent knobs, both defaulting to `"propagate"` (IEEE 754-aligned
+/// behavior, what general scientific consumers expect):
+///
+/// ```text
+/// using(nan_policy: "propagate" | "skip" | "error")   // default: propagate
+/// using(inf_policy: "propagate" | "skip" | "error")   // default: propagate
+/// ```
+///
+/// Consumers opt into skip at each call site. TERNYX-SIP, for example,
+/// writes `using(nan_policy: "skip", inf_policy: "skip")` on every signal
+/// computation.
+///
+/// **Propagate-mode** (default): any non-finite input poisons the group.
+/// For `Add` this means an explicit poison flag (Kulisch's silent
+/// `!is_finite()` skip would otherwise give wrong propagate answers). For
+/// `Max`/`Min` this means IEEE 754-2019 maxNum/minNum propagation.
+///
+/// **Skip-mode** (consumer opt-in): `is_finite(v)` gate at phi step. Finite
+/// inputs accumulate normally; invalid inputs contribute nothing. No count
+/// sidecar — the register state itself tells the story:
+///
+/// - `Add` / `DotProduct` / `Distance`: all-invalid emits `0.0` (additive
+///   identity; preserves the **prefix-sum flatline property** — a gap
+///   contributes +0 to every running sum, so `pfx[i] == pfx[i-1]`, and
+///   range queries across gaps give the right answer with no special case).
+///
+/// - `Max` / `Min` / `ArgMax` / `ArgMin` / `LogSumExp`: all-invalid emits
+///   NaN. The register initialises to NaN rather than the ±∞ identity;
+///   any finite input replaces it via IEEE 754 fmax/fmin semantics;
+///   all-invalid leaves NaN in place. Intentional: ±∞ would propagate
+///   into downstream consumer code as if it were a real observation.
+///
+/// **Error-mode**: kernel returns an error on first non-finite input.
+/// For defensive pipelines.
+///
+/// **Count tracking is the consumer's job**, not tambear's. Downstream
+/// ratio/mean computations divide by their own count of valid observations
+/// (SIP derives this from `n_events − n_invalid` already in its headers).
+///
+/// # Semiring view
+///
 /// Each variant specifies a semiring over which the accumulation runs:
 /// - `Add`/`Max`/`Min` inhabit the real-number semirings.
 /// - `DotProduct`/`Distance` inhabit the matrix (bilinear) semiring.
@@ -124,19 +179,106 @@ impl Expr<'_> {
 ///   Gap noted 2026-04-10 from tropical semiring analysis of PELT/Viterbi structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
-    /// Additive monoid (ℝ, +). Maps to atomicAdd. The default.
+    /// Additive monoid `(ℝ, +)`.
+    ///
+    /// **Default strategy:** Kulisch-backed exact accumulation. Each group
+    /// owns a `KulischAccumulator` (34 × i128 words). Parallel reduction
+    /// combines group registers via `KulischAccumulator::merge`, which is
+    /// associative by construction (word-wise signed add with carry), so
+    /// tree-merge across threads/blocks/backends produces bit-identical
+    /// results. Final `to_f64()` is correctly rounded to nearest-even.
+    ///
+    /// **NaN/Inf handling** (controlled by `using(nan_policy: ...)` and
+    /// `using(inf_policy: ...)`, both default `"propagate"`):
+    /// - **propagate** (default): non-finite input poisons the group; emit NaN
+    /// - **skip**: filter via `is_finite(v)` at phi step; all-invalid emits
+    ///   `0.0` (preserves prefix-sum flatline through gaps)
+    /// - **error**: return error on first non-finite input
+    ///
+    /// **Alternative strategies** (all `using()`-addressable, none auto-selected
+    /// — never silently downgrades for performance):
+    /// - `using(sum_strategy: "tree")` — deterministic pairwise/Blelloch tree
+    ///   reduction. Same wrong answer everywhere; cheaper than Kulisch.
+    /// - `using(sum_strategy: "kahan")` — compensated summation, ~1 ULP error,
+    ///   cross-platform bit-exact when iteration order is pinned.
+    /// - `using(sum_strategy: "pairwise")` — moderate compensation, tree-shaped.
+    /// - `using(sum_strategy: "nondet")` — atomicAdd / thread-order-dependent.
+    ///   The ONLY non-deterministic path; explicit opt-out for benchmarks,
+    ///   Monte Carlo where noise is the point, or research mode.
     Add,
-    /// Per-group maximum. CAS-loop f64 atomic. Initialises to -∞.
+
+    /// Per-group maximum over `(ℝ, max, −∞)`.
+    ///
+    /// **Default strategy:** IEEE 754-2019 `fmax` semantics. Max is
+    /// idempotent and commutative — any atomic insertion order gives the
+    /// same result — so CAS-loop atomic max on GPU and tree-reduction on
+    /// CPU both produce bit-identical bit patterns. No Kulisch needed;
+    /// the Op was already cross-platform deterministic before this plan.
+    ///
+    /// **NaN/Inf handling:**
+    /// - **propagate** (default): IEEE 754-2019 maxNum/minNum propagation
+    /// - **skip**: register initialises to NaN (not `−∞`); finite input
+    ///   replaces it via `fmax`; all-invalid leaves NaN in place. Intentional:
+    ///   ±∞ would propagate into downstream consumer code as if it were a
+    ///   real observation.
+    /// - **error**: return error on first non-finite input
     Max,
-    /// Per-group minimum. CAS-loop f64 atomic. Initialises to +∞.
+
+    /// Per-group minimum over `(ℝ, min, +∞)`.
+    ///
+    /// **Default strategy:** IEEE 754-2019 `fmin`. Same reasoning as `Max` —
+    /// min is idempotent and commutative; CAS and tree both deterministic.
+    ///
+    /// **NaN/Inf handling:** same propagate/skip/error structure as `Max`.
+    /// Skip-mode initialises register to NaN; all-invalid emits NaN.
     Min,
-    /// Select minimum: (value, index) pair-reduction.
+
+    /// Select minimum: `(value, index)` pair-reduction.
+    ///
+    /// **Default strategy:** IEEE 754-2019 `fmin` on the value component with
+    /// **lowest-index tiebreak** on equal values. Both rules together are
+    /// associative and order-invariant, so tree-reduction gives the same
+    /// `(value, idx)` bit pattern regardless of partition order.
+    ///
+    /// **NaN/Inf handling:** same as `Min`. Skip-mode initialises to
+    /// `(NaN, sentinel_idx)`; finite input replaces it; all-invalid emits
+    /// `(NaN, sentinel_idx)`. Consumers check the value's NaN flag.
     ArgMin,
-    /// Select maximum: (value, index) pair-reduction.
+
+    /// Select maximum: `(value, index)` pair-reduction.
+    ///
+    /// **Default strategy:** IEEE 754-2019 `fmax` with **lowest-index
+    /// tiebreak** on equal values. Associative and order-invariant.
+    ///
+    /// **NaN/Inf handling:** same as `Max`. Skip-mode initialises to
+    /// `(NaN, sentinel_idx)`; all-invalid emits `(NaN, sentinel_idx)`.
     ArgMax,
-    /// Tiled dot product: C[i,j] = Σ_k A[i,k] * B[k,j]. For `Grouping::Tiled` only.
+
+    /// Tiled dot product: `C[i,j] = Σ_k A[i,k] * B[k,j]`. For `Grouping::Tiled` only.
+    ///
+    /// **Default strategy:** Kulisch over `two_product_fma`. For each
+    /// pair `(a, b)`, compute `(hi, lo) = two_product_fma(a, b)` and add
+    /// both components into the group's Kulisch register. This is exact:
+    /// no rounding error in the pair product, none in the accumulation.
+    /// Tree-merge on partial groups is associative.
+    ///
+    /// **NaN/Inf handling:** same propagate/skip/error structure as `Add`.
+    /// Skip-mode: if either `a` or `b` is non-finite, the pair is skipped
+    /// entirely. All-invalid emits `0.0`.
     DotProduct,
-    /// Tiled L2Sq distance: C[i,j] = Σ_k (A[i,k] - B[k,j])². For `Grouping::Tiled` only.
+
+    /// Tiled squared-L2 distance: `C[i,j] = Σ_k (A[i,k] − B[k,j])²`.
+    /// For `Grouping::Tiled` only.
+    ///
+    /// **Default strategy:** Kulisch over centered squared differences.
+    /// Compute `d = a − b` (possibly compensated), then
+    /// `(hi, lo) = two_product_fma(d, d)`, add both components to the
+    /// group's Kulisch register. Exact.
+    ///
+    /// **NaN/Inf handling:** same propagate/skip/error structure as `Add`.
+    /// Skip-mode: if either `a` or `b` is non-finite, the pair is skipped
+    /// entirely (finite-minus-finite can never produce non-finite `d`, so
+    /// the input gate suffices). All-invalid emits `0.0`.
     Distance,
 }
 
@@ -145,7 +287,12 @@ impl Op {
     ///
     /// `identity ⊕ x = x ⊕ identity = x` for all x.
     ///
-    /// Used to pad non-power-of-2 scans in Blelloch prefix trees.
+    /// Used in two places:
+    /// 1. **Internal seed for accumulator registers.** Every group's register
+    ///    is initialised to this value before any input is accumulated.
+    /// 2. **Blelloch prefix scan padding.** Non-power-of-2 scans pad with the
+    ///    identity so the tree topology stays fixed.
+    ///
     /// MUST NOT be confused with `degenerate()` — padding with a degenerate
     /// value (e.g. NaN for Max) corrupts every element it touches.
     ///
@@ -158,6 +305,17 @@ impl Op {
     /// | ArgMax  | (-∞, MAX_IDX) | never beats a real maximum       |
     /// | DotProduct | 0.0        | additive identity of inner product |
     /// | Distance   | 0.0        | additive identity of L2Sq sum    |
+    ///
+    /// **Relationship to skip-mode initialization:** under `nan_policy: "skip"`,
+    /// the register's initial state is what determines the all-invalid emit.
+    /// For `Add`/`DotProduct`/`Distance`, the identity `0.0` is safe to
+    /// emit directly — it preserves the prefix-sum flatline property
+    /// (an all-invalid bucket contributes +0 to running sums). For
+    /// `Max`/`Min`/`ArgMax`/`ArgMin`, skip-mode initialises the register
+    /// to NaN rather than ±∞, so an all-invalid group emits NaN naturally
+    /// via `fmax(NaN, nothing) = NaN`. Downstream consumers that read
+    /// the max/min get an honest "no observation" signal, not a sentinel
+    /// ±∞ they might treat as a real value.
     pub fn identity(&self) -> f64 {
         match self {
             Op::Add         => 0.0,
@@ -172,12 +330,30 @@ impl Op {
 
     /// The degenerate (invalid/empty) value for this Op.
     ///
-    /// Returned when the input is empty, all-NaN, or otherwise uncomputable.
-    /// Signals a computation failure — NOT a valid element of the monoid.
+    /// Always `NaN`. Used in two places:
+    /// 1. As the **skip-mode initial register state** for `Max`/`Min`/`ArgMax`/`ArgMin`
+    ///    (so all-invalid groups naturally emit NaN via `fmax(NaN, nothing) = NaN`).
+    /// 2. As the **propagate-mode emit** when a group received any non-finite input.
+    ///
+    /// The honest "no observation" signal. Consumers' idiomatic NaN guards
+    /// kick in at the ratio/mean step, and ratio-free reads like `max_price`
+    /// don't risk treating a sentinel `±∞` as a real observation.
     ///
     /// MUST NOT be used for scan padding (use `identity()` instead).
     /// Consumers check for degenerate by testing `is_nan()` (scalar ops)
     /// or `value.is_nan()` (indexed ops).
+    ///
+    /// Per-Op skip-mode emit behaviour when all inputs are non-finite:
+    ///
+    /// | Op         | Emit | Reasoning |
+    /// |------------|------|-----------|
+    /// | Add        | 0.0  | additive identity preserves prefix-sum flatline |
+    /// | Max        | NaN  | register seeded to NaN; no finite input ever replaced it |
+    /// | Min        | NaN  | same |
+    /// | ArgMin     | (NaN, sentinel) | same on value, sentinel on index |
+    /// | ArgMax     | (NaN, sentinel) | same |
+    /// | DotProduct | 0.0  | additive identity of inner product |
+    /// | Distance   | 0.0  | additive identity of L2Sq sum |
     pub fn degenerate(&self) -> f64 {
         f64::NAN
     }

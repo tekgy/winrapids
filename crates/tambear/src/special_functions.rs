@@ -694,7 +694,7 @@ pub fn studentized_range_cdf(q: f64, k: usize, df_error: f64) -> f64 {
     // Map [-1,1] → [0, 1): u = (1 + t) / 2
     let log_norm = (nu / 2.0) * 2.0_f64.ln() + log_gamma(nu / 2.0);
 
-    let integral: f64 = gl_nodes.iter().zip(gl_weights.iter()).map(|(&t, &w)| {
+    let terms: Vec<f64> = gl_nodes.iter().zip(gl_weights.iter()).map(|(&t, &w)| {
         let u = (1.0 + t) / 2.0;
         let jac = 0.5; // d(u)/d(t)
         if u <= 0.0 || u >= 1.0 { return 0.0; }
@@ -710,7 +710,8 @@ pub fn studentized_range_cdf(q: f64, k: usize, df_error: f64) -> f64 {
         let q_eff = q * chi_val / nu.sqrt();
         let inner = studentized_range_cdf_inf(q_eff, k);
         w * jac * chi2_pdf * ds_du * inner
-    }).sum();
+    }).collect();
+    let integral: f64 = crate::math::sum(&terms);
 
     integral.clamp(0.0, 1.0)
 }
@@ -726,14 +727,15 @@ fn studentized_range_cdf_inf(q: f64, k: usize) -> f64 {
     let mid = (a + b) / 2.0;
     let half = (b - a) / 2.0;
 
-    let integral: f64 = gl_nodes.iter().zip(gl_weights.iter()).map(|(&t, &w)| {
+    let terms: Vec<f64> = gl_nodes.iter().zip(gl_weights.iter()).map(|(&t, &w)| {
         let z = mid + half * t;
         let phi_z = (-z * z / 2.0).exp() / (2.0 * std::f64::consts::PI).sqrt();
         let big_phi_z = normal_cdf(z);
         let big_phi_zmq = normal_cdf(z - q);
         let diff = (big_phi_z - big_phi_zmq).clamp(0.0, 1.0);
         w * half * phi_z * diff.powf(kf - 1.0)
-    }).sum();
+    }).collect();
+    let integral: f64 = crate::math::sum(&terms);
 
     (kf * integral).clamp(0.0, 1.0)
 }
@@ -2000,7 +2002,7 @@ pub fn softmax(x: &[f64]) -> Vec<f64> {
     if x.is_empty() { return Vec::new(); }
     let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     let exps: Vec<f64> = x.iter().map(|&xi| (xi - max_x).exp()).collect();
-    let sum: f64 = exps.iter().sum();
+    let sum: f64 = crate::math::sum(&exps);
     if sum < 1e-300 {
         // Degenerate: return uniform
         let n = x.len() as f64;
@@ -2017,7 +2019,7 @@ pub fn log_softmax(x: &[f64]) -> Vec<f64> {
     if x.is_empty() { return Vec::new(); }
     let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     let exps: Vec<f64> = x.iter().map(|&xi| (xi - max_x).exp()).collect();
-    let log_sum = exps.iter().sum::<f64>().ln();
+    let log_sum = crate::math::sum(&exps).ln();
     x.iter().map(|&xi| xi - max_x - log_sum).collect()
 }
 

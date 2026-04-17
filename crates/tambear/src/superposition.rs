@@ -501,10 +501,10 @@ fn variance_ratio_agreement(var_ratios: &[Vec<f64>]) -> f64 {
 
     if first_ratios.len() < 2 { return 1.0; }
 
-    let mean = first_ratios.iter().sum::<f64>() / first_ratios.len() as f64;
+    let mean = crate::math::sum(&first_ratios) / first_ratios.len() as f64;
     if mean.abs() < 1e-15 { return 1.0; }
 
-    let cv = (first_ratios.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+    let cv = (crate::math::centered_sum_sq(&first_ratios, mean)
         / first_ratios.len() as f64).sqrt() / mean.abs();
 
     // CV near 0 → high agreement, CV near 1 → low agreement
@@ -532,20 +532,21 @@ fn elbow_nc(var_ratios: &[Vec<f64>]) -> usize {
 fn series_agreement(results: &[Vec<f64>]) -> f64 {
     if results.len() < 2 { return 1.0; }
 
-    let mut sum = 0.0;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut sum_acc = KulischAccumulator::new();
     let mut count = 0usize;
 
     for i in 0..results.len() {
         for j in (i + 1)..results.len() {
             let corr = pearson_corr(&results[i], &results[j]);
             if corr.is_finite() {
-                sum += corr;
+                sum_acc.add_f64(corr);
                 count += 1;
             }
         }
     }
 
-    if count == 0 { 1.0 } else { (sum / count as f64).max(0.0) }
+    if count == 0 { 1.0 } else { (sum_acc.to_f64() / count as f64).max(0.0) }
 }
 
 /// Pearson correlation between two series (may have different lengths — use overlap).
@@ -553,20 +554,12 @@ fn pearson_corr(a: &[f64], b: &[f64]) -> f64 {
     let n = a.len().min(b.len());
     if n < 2 { return 1.0; }
 
-    let mean_a = a[..n].iter().sum::<f64>() / n as f64;
-    let mean_b = b[..n].iter().sum::<f64>() / n as f64;
+    let mean_a = crate::math::sum(&a[..n]) / n as f64;
+    let mean_b = crate::math::sum(&b[..n]) / n as f64;
 
-    let mut cov = 0.0;
-    let mut var_a = 0.0;
-    let mut var_b = 0.0;
-
-    for i in 0..n {
-        let da = a[i] - mean_a;
-        let db = b[i] - mean_b;
-        cov += da * db;
-        var_a += da * da;
-        var_b += db * db;
-    }
+    let cov = crate::math::centered_dot(&a[..n], mean_a, &b[..n], mean_b);
+    let var_a = crate::math::centered_sum_sq(&a[..n], mean_a);
+    let var_b = crate::math::centered_sum_sq(&b[..n], mean_b);
 
     let denom = (var_a * var_b).sqrt();
     if denom < 1e-15 { 1.0 } else { cov / denom }
@@ -578,7 +571,7 @@ fn scalar_agreement(values: &[f64]) -> f64 {
     if values.len() < 2 { return 1.0; }
     let finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
     if finite.len() < 2 { return 0.0; }
-    let mean = finite.iter().sum::<f64>() / finite.len() as f64;
+    let mean = crate::math::sum(&finite) / finite.len() as f64;
     let abs_mean = mean.abs();
     if abs_mean < 1e-15 {
         // All near zero → high agreement

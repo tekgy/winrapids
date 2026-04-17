@@ -301,16 +301,17 @@ pub fn gini_coefficient(x: &[f64]) -> f64 {
         return f64::NAN;
     }
     abs_vals.sort_by(|a, b| a.total_cmp(b));
-    let sum: f64 = abs_vals.iter().sum();
+    let sum: f64 = crate::math::sum(&abs_vals);
     if sum < 1e-300 {
         return 0.0;
     }
-    let mut cum = 0.0;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut cum_acc = KulischAccumulator::new();
     for (i, &v) in abs_vals.iter().enumerate() {
         let weight = (2 * i + 1) as i64 - n as i64;
-        cum += weight as f64 * v;
+        cum_acc.add_f64(weight as f64 * v);
     }
-    cum / (n as f64 * sum)
+    cum_acc.to_f64() / (n as f64 * sum)
 }
 
 /// Quartile coefficient of dispersion: `(Q3 − Q1) / (Q3 + Q1)`.
@@ -391,7 +392,7 @@ pub fn skewness_pearson(x: &[f64]) -> f64 {
     if n < 3 {
         return f64::NAN;
     }
-    let mean = clean.iter().sum::<f64>() / n as f64;
+    let mean = crate::math::sum(&clean) / n as f64;
     let std = sample_std(&clean);
     let mut sorted = clean.clone();
     sorted.sort_by(|a, b| a.total_cmp(b));

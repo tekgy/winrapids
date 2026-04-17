@@ -834,7 +834,7 @@ pub fn execute(
                 let ci = f64_arg(step, "ci", 2, 0.95);
                 let seed = step.get_arg("seed", 3).and_then(|v| v.as_usize()).unwrap_or(42) as u64;
                 let col = extract_col(&pipeline.frame().data, pn, pd, c);
-                fn stat_mean(x: &[f64]) -> f64 { x.iter().sum::<f64>() / x.len() as f64 }
+                fn stat_mean(x: &[f64]) -> f64 { crate::math::sum(x) / x.len() as f64 }
                 TbsStepOutput::Bootstrap(crate::nonparametric::bootstrap_percentile(&col, stat_mean, n_boot, ci, seed))
             }
 
@@ -2813,10 +2813,11 @@ pub fn execute(
                 let mut dist = vec![0.0_f64; pn * pn];
                 for i in 0..pn {
                     for j in 0..pn {
-                        let d2: f64 = (0..pd).map(|k| {
+                        let terms: Vec<f64> = (0..pd).map(|k| {
                             let diff = data[i * pd + k] - data[j * pd + k];
                             diff * diff
-                        }).sum();
+                        }).collect();
+                        let d2: f64 = crate::math::sum(&terms);
                         dist[i * pn + j] = d2.sqrt();
                     }
                 }
@@ -2830,10 +2831,11 @@ pub fn execute(
                 let mut dist = vec![0.0_f64; pn * pn];
                 for i in 0..pn {
                     for j in 0..pn {
-                        let d2: f64 = (0..pd).map(|k| {
+                        let terms: Vec<f64> = (0..pd).map(|k| {
                             let diff = data[i * pd + k] - data[j * pd + k];
                             diff * diff
-                        }).sum();
+                        }).collect();
+                        let d2: f64 = crate::math::sum(&terms);
                         dist[i * pn + j] = d2.sqrt();
                     }
                 }
@@ -2848,10 +2850,11 @@ pub fn execute(
                 let mut dist = vec![0.0_f64; pn * pn];
                 for i in 0..pn {
                     for j in 0..pn {
-                        let d2: f64 = (0..pd).map(|k| {
+                        let terms: Vec<f64> = (0..pd).map(|k| {
                             let diff = data[i * pd + k] - data[j * pd + k];
                             diff * diff
-                        }).sum();
+                        }).collect();
+                        let d2: f64 = crate::math::sum(&terms);
                         dist[i * pn + j] = d2.sqrt();
                     }
                 }
@@ -2866,10 +2869,11 @@ pub fn execute(
                 let mut dist = vec![0.0_f64; pn * pn];
                 for i in 0..pn {
                     for j in 0..pn {
-                        let d2: f64 = (0..pd).map(|k| {
+                        let terms: Vec<f64> = (0..pd).map(|k| {
                             let diff = data[i * pd + k] - data[j * pd + k];
                             diff * diff
-                        }).sum();
+                        }).collect();
+                        let d2: f64 = crate::math::sum(&terms);
                         dist[i * pn + j] = d2.sqrt();
                     }
                 }
@@ -2894,10 +2898,11 @@ pub fn execute(
                 let mut dist = vec![0.0_f64; pn * pn];
                 for i in 0..pn {
                     for j in 0..pn {
-                        let d2: f64 = (0..pd).map(|k| {
+                        let terms: Vec<f64> = (0..pd).map(|k| {
                             let diff = data[i * pd + k] - data[j * pd + k];
                             diff * diff
-                        }).sum();
+                        }).collect();
+                        let d2: f64 = crate::math::sum(&terms);
                         dist[i * pn + j] = d2.sqrt();
                     }
                 }
@@ -2921,10 +2926,11 @@ pub fn execute(
                     let mut d = vec![0.0_f64; nr * nr];
                     for (ii, i) in rows.clone().enumerate() {
                         for (jj, j) in rows.clone().enumerate() {
-                            let v: f64 = (0..pd).map(|k| {
+                            let terms: Vec<f64> = (0..pd).map(|k| {
                                 let dx = data[i * pd + k] - data[j * pd + k];
                                 dx * dx
-                            }).sum::<f64>().sqrt();
+                            }).collect();
+                            let v: f64 = crate::math::sum(&terms).sqrt();
                             d[ii * nr + jj] = v;
                         }
                     }
@@ -2949,10 +2955,11 @@ pub fn execute(
                     for ii in 0..nr {
                         for jj in 0..nr {
                             let i = from + ii; let j = from + jj;
-                            let v: f64 = (0..pd).map(|k| {
+                            let terms: Vec<f64> = (0..pd).map(|k| {
                                 let dx = data[i * pd + k] - data[j * pd + k];
                                 dx * dx
-                            }).sum::<f64>().sqrt();
+                            }).collect();
+                            let v: f64 = crate::math::sum(&terms).sqrt();
                             d[ii * nr + jj] = v;
                         }
                     }

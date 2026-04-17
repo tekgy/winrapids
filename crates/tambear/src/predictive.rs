@@ -17,8 +17,8 @@ pub fn predictive_gaussian(x: f64, data: &[f64], _using: &UsingBag) -> f64 {
     }
 
     let n = data.len() as f64;
-    let mu = data.iter().sum::<f64>() / n;
-    let var = (data.iter().map(|&val| (val - mu).powi(2)).sum::<f64>() / n)
+    let mu = crate::math::sum(data) / n;
+    let var = (crate::math::centered_sum_sq(data, mu) / n)
         .abs()
         .max(1e-10);
 
@@ -43,8 +43,8 @@ pub fn predictive_student_t(x: f64, data: &[f64], using: &UsingBag) -> f64 {
     }
 
     let n = data.len() as f64;
-    let mu = data.iter().sum::<f64>() / n;
-    let var = (data.iter().map(|&val| (val - mu).powi(2)).sum::<f64>() / n)
+    let mu = crate::math::sum(data) / n;
+    let var = (crate::math::centered_sum_sq(data, mu) / n)
         .abs()
         .max(1e-10);
 

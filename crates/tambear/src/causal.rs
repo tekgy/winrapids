@@ -47,7 +47,8 @@ pub fn propensity_scores(x: &Mat, treatment: &[f64]) -> Vec<f64> {
 
         for i in 0..n {
             let w = (mu[i] * (1.0 - mu[i])).max(1e-12);
-            let eta = beta[0] + (1..p).map(|j| beta[j] * x.get(i, j - 1)).sum::<f64>();
+            let eta_terms: Vec<f64> = (1..p).map(|j| beta[j] * x.get(i, j - 1)).collect();
+            let eta = beta[0] + crate::math::sum(&eta_terms);
             let z_i = eta + (treatment[i] - mu[i]) / w;
 
             // X̃[i] = [1, x_i1, ..., x_id]
@@ -73,7 +74,8 @@ pub fn propensity_scores(x: &Mat, treatment: &[f64]) -> Vec<f64> {
 
     // Compute final probabilities
     (0..n).map(|i| {
-        let z = beta[0] + (0..d).map(|j| beta[j + 1] * x.get(i, j)).sum::<f64>();
+        let z_terms: Vec<f64> = (0..d).map(|j| beta[j + 1] * x.get(i, j)).collect();
+        let z = beta[0] + crate::math::sum(&z_terms);
         sigmoid(z)
     }).collect()
 }
@@ -136,9 +138,9 @@ pub fn psm_match(
     }
 
     let m = diffs.len() as f64;
-    let att = if m > 0.0 { diffs.iter().sum::<f64>() / m } else { f64::NAN };
+    let att = if m > 0.0 { crate::math::sum(&diffs) / m } else { f64::NAN };
     let se = if m > 1.0 {
-        let var: f64 = diffs.iter().map(|d| (d - att).powi(2)).sum::<f64>() / (m - 1.0);
+        let var: f64 = crate::math::centered_sum_sq(&diffs, att) / (m - 1.0);
         (var / m).sqrt()
     } else { f64::NAN };
 
@@ -168,44 +170,52 @@ pub fn ipw(
     trim_hi: f64,
 ) -> IpwResult {
     let n = propensity.len();
-    let p_treat: f64 = treatment.iter().sum::<f64>() / n as f64;
+    let p_treat: f64 = crate::math::sum(treatment) / n as f64;
 
-    let mut sum_t = 0.0;
-    let mut w_t = 0.0;
-    let mut sum_c = 0.0;
-    let mut w_c = 0.0;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut sum_t_acc = KulischAccumulator::new();
+    let mut w_t_acc = KulischAccumulator::new();
+    let mut sum_c_acc = KulischAccumulator::new();
+    let mut w_c_acc = KulischAccumulator::new();
 
     for i in 0..n {
         let e = propensity[i].clamp(trim_lo, trim_hi);
         if treatment[i] > 0.5 {
             let w = p_treat / e;
-            sum_t += w * outcome[i];
-            w_t += w;
+            sum_t_acc.add_f64(w * outcome[i]);
+            w_t_acc.add_f64(w);
         } else {
             let w = (1.0 - p_treat) / (1.0 - e);
-            sum_c += w * outcome[i];
-            w_c += w;
+            sum_c_acc.add_f64(w * outcome[i]);
+            w_c_acc.add_f64(w);
         }
     }
+    let sum_t = sum_t_acc.to_f64();
+    let w_t = w_t_acc.to_f64();
+    let sum_c = sum_c_acc.to_f64();
+    let w_c = w_c_acc.to_f64();
 
     let ate = if w_t > 0.0 && w_c > 0.0 { sum_t / w_t - sum_c / w_c } else { f64::NAN };
 
     // ATT: weight only control group
-    let mut att_sum_c = 0.0;
-    let mut att_w_c = 0.0;
-    let mut att_sum_t = 0.0;
-    let mut att_n_t = 0.0;
+    let mut att_sum_c_acc = KulischAccumulator::new();
+    let mut att_w_c_acc = KulischAccumulator::new();
+    let mut att_sum_t_acc = KulischAccumulator::new();
+    let mut att_n_t = 0.0_f64;
     for i in 0..n {
         let e = propensity[i].clamp(trim_lo, trim_hi);
         if treatment[i] > 0.5 {
-            att_sum_t += outcome[i];
+            att_sum_t_acc.add_f64(outcome[i]);
             att_n_t += 1.0;
         } else {
             let w = e / (1.0 - e);
-            att_sum_c += w * outcome[i];
-            att_w_c += w;
+            att_sum_c_acc.add_f64(w * outcome[i]);
+            att_w_c_acc.add_f64(w);
         }
     }
+    let att_sum_c = att_sum_c_acc.to_f64();
+    let att_w_c = att_w_c_acc.to_f64();
+    let att_sum_t = att_sum_t_acc.to_f64();
     let att = if att_n_t > 0.0 && att_w_c > 0.0 {
         att_sum_t / att_n_t - att_sum_c / att_w_c
     } else { f64::NAN };

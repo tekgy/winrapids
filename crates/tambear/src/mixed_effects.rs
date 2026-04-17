@@ -134,32 +134,37 @@ pub fn lme_random_intercept(
         // M-step: update variance components
         // σ²_new = (||y - Xβ - Zû||² + tr(Z'Z · Var(u|y))) / n
         // tr(Z'Z · Var(u|y)) = Σ_g n_g · τ_g², τ_g² = σ²·σ²_u/(n_g·σ²_u+σ²)
-        let mut ss_resid = 0.0;
+        use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+        let mut ss_resid_acc = KulischAccumulator::new();
         for i in 0..n {
             let g = groups[i];
-            let mut fitted = beta[0];
-            for j in 0..d { fitted += beta[j + 1] * x[i * d + j]; }
-            fitted += u[g];
-            let r = y[i] - fitted;
-            ss_resid += r * r;
+            let mut fitted_acc = KulischAccumulator::new();
+            fitted_acc.add_f64(beta[0]);
+            for j in 0..d { fitted_acc.add_f64(beta[j + 1] * x[i * d + j]); }
+            fitted_acc.add_f64(u[g]);
+            let r = y[i] - fitted_acc.to_f64();
+            ss_resid_acc.add_f64(r * r);
         }
+        let ss_resid = ss_resid_acc.to_f64();
 
         // Trace correction: tr(Z'Z · Var(u|y)) = Σ_g n_g · τ_g²
         // where τ_g² = σ²·σ²_u / (n_g·σ²_u + σ²) and Z'Z = diag(n_1,...,n_k).
-        let trace_sum: f64 = (0..k).map(|g| {
+        let trace_terms: Vec<f64> = (0..k).map(|g| {
             let ng = n_g[g] as f64;
             let tau2_g = sigma2 * sigma2_u / (ng * sigma2_u + sigma2);
             ng * tau2_g
-        }).sum();
+        }).collect();
+        let trace_sum: f64 = crate::math::sum(&trace_terms);
 
         let sigma2_new = (ss_resid + trace_sum) / n as f64;
 
         // σ²_u = (u'u + Σ_g Var(u_g|y)) / k
-        let uu: f64 = u.iter().map(|v| v * v).sum();
-        let var_correction: f64 = (0..k).map(|g| {
+        let uu: f64 = crate::math::sum_sq(&u);
+        let var_terms: Vec<f64> = (0..k).map(|g| {
             let ng = n_g[g] as f64;
             sigma2 / (ng * sigma2_u + sigma2) * sigma2_u
-        }).sum();
+        }).collect();
+        let var_correction: f64 = crate::math::sum(&var_terms);
         let sigma2_u_new = ((uu + var_correction) / k as f64).max(0.0);
 
         let change = (sigma2_new - sigma2).abs() + (sigma2_u_new - sigma2_u).abs();
@@ -173,11 +178,12 @@ pub fn lme_random_intercept(
 
     // Approximate REML log-likelihood
     let nf = n as f64;
+    let log_terms: Vec<f64> = (0..k).map(|g| {
+        let ng = n_g[g] as f64;
+        (1.0 + ng * sigma2_u / sigma2).ln()
+    }).collect();
     let log_lik = -0.5 * nf * (2.0 * std::f64::consts::PI * sigma2).ln()
-        - 0.5 * (0..k).map(|g| {
-            let ng = n_g[g] as f64;
-            (1.0 + ng * sigma2_u / sigma2).ln()
-        }).sum::<f64>();
+        - 0.5 * crate::math::sum(&log_terms);
 
     LmeResult { beta, u, sigma2, sigma2_u, icc, iterations, log_likelihood: log_lik }
 }
@@ -197,28 +203,32 @@ pub fn icc_oneway(values: &[f64], groups: &[usize]) -> f64 {
 
     let grand_mean = crate::descriptive::moments_ungrouped(values).mean();
 
-    let mut g_sums = vec![0.0; k];
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut g_sum_accs: Vec<KulischAccumulator> = (0..k).map(|_| KulischAccumulator::new()).collect();
     let mut g_counts = vec![0usize; k];
     for i in 0..n {
-        g_sums[groups[i]] += values[i];
+        g_sum_accs[groups[i]].add_f64(values[i]);
         g_counts[groups[i]] += 1;
     }
     let g_means: Vec<f64> = (0..k).map(|g| {
-        if g_counts[g] > 0 { g_sums[g] / g_counts[g] as f64 } else { 0.0 }
+        if g_counts[g] > 0 { g_sum_accs[g].to_f64() / g_counts[g] as f64 } else { 0.0 }
     }).collect();
 
-    let ms_between: f64 = (0..k).map(|g| {
+    let between_terms: Vec<f64> = (0..k).map(|g| {
         let ng = g_counts[g] as f64;
         ng * (g_means[g] - grand_mean).powi(2)
-    }).sum::<f64>() / (k - 1) as f64;
+    }).collect();
+    let ms_between: f64 = crate::math::sum(&between_terms) / (k - 1) as f64;
 
-    let ms_within: f64 = (0..n).map(|i| {
+    let within_terms: Vec<f64> = (0..n).map(|i| {
         (values[i] - g_means[groups[i]]).powi(2)
-    }).sum::<f64>() / (n - k) as f64;
+    }).collect();
+    let ms_within: f64 = crate::math::sum(&within_terms) / (n - k) as f64;
 
     let n0 = {
-        let sum_nk: f64 = g_counts.iter().map(|&c| c as f64).sum();
-        let sum_nk2: f64 = g_counts.iter().map(|&c| (c as f64).powi(2)).sum();
+        let counts_f: Vec<f64> = g_counts.iter().map(|&c| c as f64).collect();
+        let sum_nk: f64 = crate::math::sum(&counts_f);
+        let sum_nk2: f64 = crate::math::sum_sq(&counts_f);
         (sum_nk - sum_nk2 / sum_nk) / (k - 1) as f64
     };
 
@@ -273,26 +283,25 @@ pub fn twoway_anova_ms(data: &[f64], n_subjects: usize, n_raters: usize) -> (f64
     let k = n_raters;
     let nk = (n * k) as f64;
 
-    let grand_mean = data.iter().sum::<f64>() / nk;
+    let grand_mean = crate::math::sum(data) / nk;
 
     // Row means (subjects)
     let row_means: Vec<f64> = (0..n).map(|i| {
-        data[i * k..(i + 1) * k].iter().sum::<f64>() / k as f64
+        crate::math::sum(&data[i * k..(i + 1) * k]) / k as f64
     }).collect();
 
     // Column means (raters)
     let col_means: Vec<f64> = (0..k).map(|j| {
-        (0..n).map(|i| data[i * k + j]).sum::<f64>() / n as f64
+        let col: Vec<f64> = (0..n).map(|i| data[i * k + j]).collect();
+        crate::math::sum(&col) / n as f64
     }).collect();
 
     // SS subjects = k * Σ (row_mean_i - grand_mean)²
-    let ss_subjects: f64 = row_means.iter()
-        .map(|&m| (m - grand_mean).powi(2)).sum::<f64>() * k as f64;
+    let ss_subjects: f64 = crate::math::centered_sum_sq(&row_means, grand_mean) * k as f64;
     // SS raters = n * Σ (col_mean_j - grand_mean)²
-    let ss_raters: f64 = col_means.iter()
-        .map(|&m| (m - grand_mean).powi(2)).sum::<f64>() * n as f64;
+    let ss_raters: f64 = crate::math::centered_sum_sq(&col_means, grand_mean) * n as f64;
     // SS total = ΣΣ (x_ij - grand_mean)²
-    let ss_total: f64 = data.iter().map(|&x| (x - grand_mean).powi(2)).sum();
+    let ss_total: f64 = crate::math::centered_sum_sq(data, grand_mean);
     // SS error = SS_total - SS_subjects - SS_raters
     let ss_error = (ss_total - ss_subjects - ss_raters).max(0.0);
 

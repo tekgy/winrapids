@@ -310,8 +310,10 @@ pub fn manova(x: &Mat, groups: &[usize]) -> ManovaResult {
     let s = p.min(k - 1);
 
     let wilks_lambda: f64 = eigenvalues.iter().take(s).map(|&e| 1.0 / (1.0 + e)).product();
-    let pillai_trace: f64 = eigenvalues.iter().take(s).map(|&e| e / (1.0 + e)).sum();
-    let hotelling_lawley: f64 = eigenvalues.iter().take(s).sum();
+    let pillai_terms: Vec<f64> = eigenvalues.iter().take(s).map(|&e| e / (1.0 + e)).collect();
+    let pillai_trace: f64 = crate::math::sum(&pillai_terms);
+    let hl_terms: Vec<f64> = eigenvalues.iter().take(s).copied().collect();
+    let hotelling_lawley: f64 = crate::math::sum(&hl_terms);
     let roy_largest_root = eigenvalues.first().copied().unwrap_or(0.0);
 
     // Approximate F from Pillai's trace (most robust)
@@ -375,10 +377,11 @@ impl LdaResult {
             let mut best_g = 0;
             let mut best_dist = f64::MAX;
             for g in 0..k {
-                let dist: f64 = (0..d).map(|j| {
+                let terms: Vec<f64> = (0..d).map(|j| {
                     let diff = projected.get(i, j) - proj_means[g][j];
                     diff * diff
-                }).sum();
+                }).collect();
+                let dist: f64 = crate::math::sum(&terms);
                 if dist < best_dist { best_dist = dist; best_g = g; }
             }
             best_g
@@ -573,21 +576,26 @@ pub fn mardia_normality(x: &Mat) -> MardiaNormalityResult {
 
     // Skewness: b₁,p = (1/n²) Σᵢ Σⱼ [d_ij]³ where d_ij = (x_i-x̄)'S⁻¹(x_j-x̄)
     // d_ij = z_i · (x_j - x̄) (since z_i = S⁻¹(x_i - x̄))
-    let mut b1 = 0.0;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut b1_acc = KulischAccumulator::new();
     for i in 0..n {
         for j in 0..n {
-            let dij: f64 = (0..p).map(|k| z[i][k] * (x.get(j, k) - means[k])).sum();
-            b1 += dij * dij * dij;
+            let terms: Vec<f64> = (0..p).map(|k| z[i][k] * (x.get(j, k) - means[k])).collect();
+            let dij: f64 = crate::math::sum(&terms);
+            b1_acc.add_f64(dij * dij * dij);
         }
     }
+    let mut b1 = b1_acc.to_f64();
     b1 /= nf * nf;
 
     // Kurtosis: b₂,p = (1/n) Σᵢ [d_ii]² where d_ii = (x_i-x̄)'S⁻¹(x_i-x̄)
-    let mut b2 = 0.0;
+    let mut b2_acc = KulischAccumulator::new();
     for i in 0..n {
-        let dii: f64 = (0..p).map(|k| z[i][k] * (x.get(i, k) - means[k])).sum();
-        b2 += dii * dii;
+        let terms: Vec<f64> = (0..p).map(|k| z[i][k] * (x.get(i, k) - means[k])).collect();
+        let dii: f64 = crate::math::sum(&terms);
+        b2_acc.add_f64(dii * dii);
     }
+    let mut b2 = b2_acc.to_f64();
     b2 /= nf;
 
     // Skewness test: n·b₁/6 ~ χ²(p(p+1)(p+2)/6)
@@ -649,8 +657,8 @@ pub fn vif(x: &Mat) -> Vec<f64> {
         let beta = qr_solve(&x_other, &y);
 
         // Fitted values and SS_res
-        let y_mean = y.iter().sum::<f64>() / n as f64;
-        let ss_tot: f64 = y.iter().map(|yi| (yi - y_mean).powi(2)).sum();
+        let y_mean = crate::math::sum(&y) / n as f64;
+        let ss_tot: f64 = crate::math::centered_sum_sq(&y, y_mean);
 
         if ss_tot < 1e-300 {
             // Constant column: VIF undefined, return Inf
@@ -658,11 +666,15 @@ pub fn vif(x: &Mat) -> Vec<f64> {
             continue;
         }
 
-        let mut ss_res = 0.0;
+        use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+        let mut ss_res_acc = KulischAccumulator::new();
         for i in 0..n {
-            let fitted: f64 = (0..p-1).map(|k| x_other.data[i * (p-1) + k] * beta[k]).sum();
-            ss_res += (y[i] - fitted).powi(2);
+            let fit_terms: Vec<f64> = (0..p-1).map(|k| x_other.data[i * (p-1) + k] * beta[k]).collect();
+            let fitted: f64 = crate::math::sum(&fit_terms);
+            let resid = y[i] - fitted;
+            ss_res_acc.add_f64(resid * resid);
         }
+        let ss_res = ss_res_acc.to_f64();
 
         let r2 = 1.0 - ss_res / ss_tot;
         let r2 = r2.clamp(0.0, 1.0 - 1e-15); // guard against perfect collinearity
@@ -694,12 +706,13 @@ pub fn mahalanobis_distances(x: &Mat) -> Option<(Vec<f64>, Vec<f64>)> {
     let p = x.cols;
     if n <= p { return None; }
 
-    // Sample mean
-    let mut mean = vec![0.0_f64; p];
+    // Sample mean — per-column Kulisch accumulators.
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut mean_acc: Vec<KulischAccumulator> = (0..p).map(|_| KulischAccumulator::new()).collect();
     for i in 0..n {
-        for j in 0..p { mean[j] += x.data[i * p + j]; }
+        for j in 0..p { mean_acc[j].add_f64(x.data[i * p + j]); }
     }
-    for j in 0..p { mean[j] /= n as f64; }
+    let mean: Vec<f64> = mean_acc.iter().map(|a| a.to_f64() / n as f64).collect();
 
     // Sample covariance S = (1/(n-1)) Σ (xᵢ-x̄)(xᵢ-x̄)ᵀ
     let mut s_data = vec![0.0_f64; p * p];
@@ -728,7 +741,7 @@ pub fn mahalanobis_distances(x: &Mat) -> Option<(Vec<f64>, Vec<f64>)> {
         // D²(xᵢ) = diffᵀ S⁻¹ diff.
         // cholesky_solve returns S⁻¹·diff. Taking the dot product with diff gives D².
         let s_inv_diff = cholesky_solve(&l, &diff);
-        let di2: f64 = diff.iter().zip(s_inv_diff.iter()).map(|(a, b)| a * b).sum();
+        let di2: f64 = crate::math::dot(&diff, &s_inv_diff);
         d2.push(di2);
         // chi2 right-tail p-value
         let pv = crate::special_functions::chi2_right_tail_p(di2, pf);
@@ -776,9 +789,10 @@ pub fn ridge(x: &Mat, y: &[f64], lambda: f64) -> RegularizedResult {
 
     // Center X and y
     let mut x_means = vec![0.0; p];
-    let y_mean = y.iter().sum::<f64>() / n as f64;
+    let y_mean = crate::math::sum(&y) / n as f64;
     for j in 0..p {
-        x_means[j] = (0..n).map(|i| x.data[i * p + j]).sum::<f64>() / n as f64;
+        let col: Vec<f64> = (0..n).map(|i| x.data[i * p + j]).collect();
+        x_means[j] = crate::math::sum(&col) / n as f64;
     }
 
     // Build X'X + λI and X'y (centered)
@@ -811,15 +825,19 @@ pub fn ridge(x: &Mat, y: &[f64], lambda: f64) -> RegularizedResult {
     };
 
     // Intercept: β₀ = ȳ - Σ β_j · x̄_j
-    let intercept = y_mean - beta.iter().zip(x_means.iter()).map(|(b, m)| b * m).sum::<f64>();
+    let intercept = y_mean - crate::math::dot(&beta, &x_means);
 
     // RSS and R²
-    let ss_tot: f64 = y.iter().map(|yi| (yi - y_mean).powi(2)).sum();
-    let mut rss = 0.0;
+    let ss_tot: f64 = crate::math::centered_sum_sq(&y, y_mean);
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut rss_acc = KulischAccumulator::new();
     for i in 0..n {
-        let predicted = intercept + (0..p).map(|j| beta[j] * x.data[i * p + j]).sum::<f64>();
-        rss += (y[i] - predicted).powi(2);
+        let fit_terms: Vec<f64> = (0..p).map(|j| beta[j] * x.data[i * p + j]).collect();
+        let predicted = intercept + crate::math::sum(&fit_terms);
+        let resid = y[i] - predicted;
+        rss_acc.add_f64(resid * resid);
     }
+    let rss = rss_acc.to_f64();
     let r2 = if ss_tot < 1e-300 { 0.0 } else { 1.0 - rss / ss_tot };
 
     RegularizedResult {
@@ -860,9 +878,10 @@ pub fn elastic_net(x: &Mat, y: &[f64], lambda: f64, alpha: f64, max_iter: usize,
 
     // Center X and y
     let mut x_means = vec![0.0; p];
-    let y_mean = y.iter().sum::<f64>() / nf;
+    let y_mean = crate::math::sum(&y) / nf;
     for j in 0..p {
-        x_means[j] = (0..n).map(|i| x.data[i * p + j]).sum::<f64>() / nf;
+        let col: Vec<f64> = (0..n).map(|i| x.data[i * p + j]).collect();
+        x_means[j] = crate::math::sum(&col) / nf;
     }
     let y_centered: Vec<f64> = y.iter().map(|yi| yi - y_mean).collect();
 
@@ -929,15 +948,19 @@ pub fn elastic_net(x: &Mat, y: &[f64], lambda: f64, alpha: f64, max_iter: usize,
     }
 
     // Intercept
-    let intercept = y_mean - beta.iter().zip(x_means.iter()).map(|(b, m)| b * m).sum::<f64>();
+    let intercept = y_mean - crate::math::dot(&beta, &x_means);
 
     // RSS and R²
-    let ss_tot: f64 = y.iter().map(|yi| (yi - y_mean).powi(2)).sum();
-    let mut rss = 0.0;
+    let ss_tot: f64 = crate::math::centered_sum_sq(&y, y_mean);
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut rss_acc = KulischAccumulator::new();
     for i in 0..n {
-        let predicted = intercept + (0..p).map(|j| beta[j] * x.data[i * p + j]).sum::<f64>();
-        rss += (y[i] - predicted).powi(2);
+        let fit_terms: Vec<f64> = (0..p).map(|j| beta[j] * x.data[i * p + j]).collect();
+        let predicted = intercept + crate::math::sum(&fit_terms);
+        let resid = y[i] - predicted;
+        rss_acc.add_f64(resid * resid);
     }
+    let rss = rss_acc.to_f64();
     let r2 = if ss_tot < 1e-300 { 0.0 } else { 1.0 - rss / ss_tot };
 
     RegularizedResult {
@@ -997,21 +1020,30 @@ pub fn wls(x: &Mat, y: &[f64], weights: &[f64]) -> WlsResult {
     };
 
     // Weighted RSS and R²
-    let mut wrss = 0.0;
-    let mut w_total = 0.0;
-    let mut wy_sum = 0.0;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut wrss_acc = KulischAccumulator::new();
+    let mut w_total_acc = KulischAccumulator::new();
+    let mut wy_sum_acc = KulischAccumulator::new();
     for i in 0..n {
         let w = weights[i].max(0.0);
-        let fitted: f64 = (0..p).map(|j| beta[j] * x.data[i * p + j]).sum();
-        wrss += w * (y[i] - fitted).powi(2);
-        w_total += w;
-        wy_sum += w * y[i];
+        let fit_terms: Vec<f64> = (0..p).map(|j| beta[j] * x.data[i * p + j]).collect();
+        let fitted: f64 = crate::math::sum(&fit_terms);
+        let resid = y[i] - fitted;
+        wrss_acc.add_f64(w * resid * resid);
+        w_total_acc.add_f64(w);
+        wy_sum_acc.add_f64(w * y[i]);
     }
+    let wrss = wrss_acc.to_f64();
+    let w_total = w_total_acc.to_f64();
+    let wy_sum = wy_sum_acc.to_f64();
     let wy_mean = if w_total > 1e-300 { wy_sum / w_total } else { 0.0 };
-    let ss_tot: f64 = (0..n).map(|i| {
+    let mut ss_tot_acc = KulischAccumulator::new();
+    for i in 0..n {
         let w = weights[i].max(0.0);
-        w * (y[i] - wy_mean).powi(2)
-    }).sum();
+        let d = y[i] - wy_mean;
+        ss_tot_acc.add_f64(w * d * d);
+    }
+    let ss_tot: f64 = ss_tot_acc.to_f64();
     let r2 = if ss_tot < 1e-300 { 0.0 } else { (1.0 - wrss / ss_tot).clamp(0.0, 1.0) };
 
     WlsResult { beta, wrss, r2 }

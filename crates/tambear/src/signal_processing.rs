@@ -1868,14 +1868,8 @@ mod tests {
         }).collect();
         let smoothed = savitzky_golay(&data, 11, 2, 0);
 
-        let var_orig = {
-            let mean: f64 = data.iter().sum::<f64>() / data.len() as f64;
-            data.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / data.len() as f64
-        };
-        let var_smooth = {
-            let mean: f64 = smoothed.iter().sum::<f64>() / smoothed.len() as f64;
-            smoothed.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / smoothed.len() as f64
-        };
+        let var_orig = crate::math::variance_population(&data);
+        let var_smooth = crate::math::variance_population(&smoothed);
         assert!(var_smooth < var_orig * 0.6,
             "SG should reduce variance: orig={}, smooth={}", var_orig, var_smooth);
     }
@@ -2155,7 +2149,7 @@ pub fn wvd_features(x: &[f64], max_pts: usize) -> WvdResult {
 
     // Instantaneous frequency variance
     let instantaneous_freq_var = if inst_freqs.len() >= 2 {
-        let mean = inst_freqs.iter().sum::<f64>() / inst_freqs.len() as f64;
+        let mean = crate::math::mean(&inst_freqs);
         inst_freqs.iter().map(|&f| (f - mean).powi(2)).sum::<f64>() / inst_freqs.len() as f64
     } else {
         f64::NAN
@@ -2318,7 +2312,7 @@ pub fn fast_ica(x: &[f64], dim: usize, max_iter: usize) -> IcaResult {
     if negentropies.is_empty() { return IcaResult::nan(); }
 
     let max_negentropy = negentropies.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
-    let mean_negentropy = negentropies.iter().sum::<f64>() / negentropies.len() as f64;
+    let mean_negentropy = crate::math::mean(&negentropies);
     let kurt_max = kurtoses.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     let kurt_min = kurtoses.iter().cloned().fold(f64::INFINITY, crate::numerical::nan_min);
     let kurtosis_range = kurt_max - kurt_min;
@@ -2413,15 +2407,8 @@ fn mean_adjacent_correlation(imfs: &[Vec<f64>]) -> f64 {
     let mut sum = 0.0_f64;
     let mut count = 0_usize;
     for i in 0..imfs.len() - 1 {
-        let a = &imfs[i];
-        let b = &imfs[i + 1];
-        let ma: f64 = a.iter().sum::<f64>() / n;
-        let mb: f64 = b.iter().sum::<f64>() / n;
-        let num: f64 = a.iter().zip(b.iter()).map(|(&ai, &bi)| (ai - ma) * (bi - mb)).sum();
-        let da: f64 = a.iter().map(|&ai| (ai - ma).powi(2)).sum::<f64>();
-        let db: f64 = b.iter().map(|&bi| (bi - mb).powi(2)).sum::<f64>();
-        let denom = (da * db).sqrt();
-        if denom > 1e-30 { sum += (num / denom).abs(); count += 1; }
+        let r = crate::math::correlation(&imfs[i], &imfs[i + 1]);
+        if r.is_finite() { sum += r.abs(); count += 1; }
     }
     if count == 0 { 0.0 } else { sum / count as f64 }
 }
@@ -2434,15 +2421,8 @@ fn mean_pairwise_correlation(imfs: &[Vec<f64>]) -> f64 {
     let mut count = 0_usize;
     for i in 0..imfs.len() {
         for j in i + 1..imfs.len() {
-            let a = &imfs[i];
-            let b = &imfs[j];
-            let ma: f64 = a.iter().sum::<f64>() / n;
-            let mb: f64 = b.iter().sum::<f64>() / n;
-            let num: f64 = a.iter().zip(b.iter()).map(|(&ai, &bi)| (ai - ma) * (bi - mb)).sum();
-            let da: f64 = a.iter().map(|&ai| (ai - ma).powi(2)).sum::<f64>();
-            let db: f64 = b.iter().map(|&bi| (bi - mb).powi(2)).sum::<f64>();
-            let denom = (da * db).sqrt();
-            if denom > 1e-30 { sum += (num / denom).abs(); count += 1; }
+            let r = crate::math::correlation(&imfs[i], &imfs[j]);
+            if r.is_finite() { sum += r.abs(); count += 1; }
         }
     }
     if count == 0 { 0.0 } else { sum / count as f64 }
@@ -2503,11 +2483,11 @@ pub fn emd(x: &[f64], max_imfs: usize, max_sift_iter: usize, sift_threshold: f64
 
             // Check stopping: SD(mean) / SD(proto) < threshold
             let proto_sd: f64 = {
-                let m = proto.iter().sum::<f64>() / n as f64;
+                let m = crate::math::mean(&proto);
                 (proto.iter().map(|&v| (v - m).powi(2)).sum::<f64>() / n as f64).sqrt()
             };
             let env_sd: f64 = {
-                let m = mean_env.iter().sum::<f64>() / n as f64;
+                let m = crate::math::mean(&mean_env);
                 (mean_env.iter().map(|&v| (v - m).powi(2)).sum::<f64>() / n as f64).sqrt()
             };
 
@@ -2538,7 +2518,7 @@ pub fn emd(x: &[f64], max_imfs: usize, max_sift_iter: usize, sift_threshold: f64
     let imf_orthogonality = mean_pairwise_correlation(&imfs);
 
     let periods: Vec<f64> = imfs.iter().map(|v| dominant_period(v)).filter(|p| p.is_finite()).collect();
-    let mean_period = if periods.is_empty() { f64::NAN } else { periods.iter().sum::<f64>() / periods.len() as f64 };
+    let mean_period = if periods.is_empty() { f64::NAN } else { crate::math::mean(&periods) };
 
     EmdResult {
         n_imfs, imf1_energy, imf2_energy, imf3_energy, residual_energy,

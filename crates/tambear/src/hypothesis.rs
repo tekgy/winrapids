@@ -404,7 +404,7 @@ pub fn levene_test(groups: &[&[f64]], center: LeveneCenter) -> LeveneResult {
     // Compute absolute deviations from group center
     let z_groups: Vec<Vec<f64>> = groups.iter().map(|g| {
         let center_val = match center {
-            LeveneCenter::Mean => g.iter().sum::<f64>() / g.len() as f64,
+            LeveneCenter::Mean => crate::math::mean(g),
             LeveneCenter::Median => {
                 let mut sorted = g.to_vec();
                 sorted.sort_by(|a, b| a.total_cmp(b));
@@ -506,7 +506,7 @@ pub fn welch_anova(groups: &[&[f64]]) -> WelchAnovaResult {
         return WelchAnovaResult { f_statistic: f64::NAN, p_value: f64::NAN, df_between: 0.0, df_within: 0.0 };
     }
 
-    let means: Vec<f64> = groups.iter().map(|g| g.iter().sum::<f64>() / g.len() as f64).collect();
+    let means: Vec<f64> = groups.iter().map(|g| crate::math::mean(g)).collect();
     let vars: Vec<f64> = groups.iter().zip(&means).map(|(g, &m)| {
         g.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (g.len() - 1) as f64
     }).collect();
@@ -970,7 +970,7 @@ pub fn breusch_pagan(x_with_intercept: &crate::linear_algebra::Mat, residuals: &
 
     // Squared residuals and their mean
     let e2: Vec<f64> = residuals.iter().map(|e| e * e).collect();
-    let e2_mean = e2.iter().sum::<f64>() / n as f64;
+    let e2_mean = crate::math::mean(&e2);
 
     // Studentized squared residuals (Koenker form)
     let w: Vec<f64> = if e2_mean < 1e-300 {
@@ -988,7 +988,7 @@ pub fn breusch_pagan(x_with_intercept: &crate::linear_algebra::Mat, residuals: &
         .map(|i| (0..cols).map(|k| x_with_intercept.data[i * cols + k] * beta_aux[k]).sum::<f64>())
         .collect();
 
-    let w_mean = w.iter().sum::<f64>() / n as f64;
+    let w_mean = crate::math::mean(&w);
     let ss_tot: f64 = w.iter().map(|wi| (wi - w_mean).powi(2)).sum();
     let ss_res: f64 = w.iter().zip(w_hat.iter()).map(|(wi, fi)| (wi - fi).powi(2)).sum();
 
@@ -1282,8 +1282,8 @@ pub struct MediationResult {
 pub fn ols_simple(x: &[f64], y: &[f64]) -> (f64, f64, Vec<f64>, f64) {
     let n = x.len();
     let nf = n as f64;
-    let mx: f64 = x.iter().sum::<f64>() / nf;
-    let my: f64 = y.iter().sum::<f64>() / nf;
+    let mx: f64 = crate::math::mean(x);
+    let my: f64 = crate::math::mean(y);
     let mut sxx = 0.0;
     let mut sxy = 0.0;
     for i in 0..n {
@@ -1509,7 +1509,7 @@ pub fn moderation(x: &[f64], z: &[f64], y: &[f64]) -> ModerationResult {
     let p_interaction = 2.0 * (1.0 - crate::special_functions::t_cdf(t_interaction.abs(), df));
 
     // Simple slopes at Z_mean ± SD
-    let z_mean: f64 = z.iter().sum::<f64>() / n as f64;
+    let z_mean: f64 = crate::math::mean(&z);
     let z_var: f64 = z.iter().map(|&v| (v - z_mean).powi(2)).sum::<f64>() / (n - 1).max(1) as f64;
     let z_sd = z_var.sqrt();
 
@@ -1710,7 +1710,7 @@ pub fn logistic_regression(
 
     // ── Deviances ────────────────────────────────────────────────────────────
     // Null deviance: intercept-only model, μ_null = ȳ
-    let y_mean = y.iter().sum::<f64>() / n as f64;
+    let y_mean = crate::math::mean(y);
     let y_null = y_mean.clamp(1e-15, 1.0 - 1e-15);
     let null_deviance = -2.0 * y.iter().map(|&yi| {
         yi * y_null.ln() + (1.0 - yi) * (1.0 - y_null).ln()
@@ -1798,7 +1798,7 @@ pub fn glm_fit(
 
     // Initialize: β = 0, μ = y_mean (or y + 0.5 for zeros)
     let mut beta = vec![0.0; q];
-    let y_mean = y.iter().sum::<f64>() / n as f64;
+    let y_mean = crate::math::mean(y);
     beta[p] = y_mean.max(0.1).ln(); // intercept = log(mean)
 
     let link_inv = |eta: f64| -> f64 { eta.exp().min(1e15) }; // exp for log link
@@ -3081,8 +3081,8 @@ mod tests {
             assert!(p >= 0.0 && p <= 1.0, "proba[{i}]={p} must be in [0,1]");
         }
         // Class 0 region (first half) should have lower mean probability than class 1 region
-        let mean_p_low: f64 = probs[..n/2].iter().sum::<f64>() / (n/2) as f64;
-        let mean_p_high: f64 = probs[n/2..].iter().sum::<f64>() / (n/2) as f64;
+        let mean_p_low: f64 = crate::math::mean(&probs[..n/2]);
+        let mean_p_high: f64 = crate::math::mean(&probs[n/2..]);
         assert!(mean_p_low < mean_p_high,
             "lower-x region mean P={:.3} should < higher-x region mean P={:.3}",
             mean_p_low, mean_p_high);

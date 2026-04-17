@@ -516,8 +516,8 @@ pub fn arma_fit(data: &[f64], p: usize, q: usize, max_iter: usize) -> ArmaResult
 
     // Degenerate case
     if n_eff < 3 || (p == 0 && q == 0) {
-        let mean = data.iter().sum::<f64>() / n.max(1) as f64;
-        let ss: f64 = data.iter().map(|x| (x - mean).powi(2)).sum();
+        let mean = crate::math::mean(data);
+        let ss: f64 = crate::math::centered_sum_sq(data, mean);
         let sigma2 = ss / n.max(1) as f64;
         let aic = n as f64 * sigma2.max(1e-300).ln() + 2.0;
         let bic = n as f64 * sigma2.max(1e-300).ln() + (n as f64).ln();
@@ -534,7 +534,7 @@ pub fn arma_fit(data: &[f64], p: usize, q: usize, max_iter: usize) -> ArmaResult
         };
     }
 
-    let mean = data.iter().sum::<f64>() / n as f64;
+    let mean = crate::math::mean(data);
     let centered: Vec<f64> = data.iter().map(|x| x - mean).collect();
 
     let n_params = p + q;
@@ -804,7 +804,7 @@ pub fn cusum_mean(data: &[f64]) -> CusumResult {
             cusum: vec![],
         };
     }
-    let mean = data.iter().sum::<f64>() / n as f64;
+    let mean = crate::math::mean(data);
     let mut cusum = Vec::with_capacity(n);
     let mut running = 0.0_f64;
     let mut max_abs = 0.0_f64;
@@ -1277,19 +1277,21 @@ pub fn kpss_test(data: &[f64], trend: bool, n_lags: Option<usize>) -> KpssResult
     let residuals: Vec<f64> = if trend {
         // Regress y on (1, t): y = a + b·t + e
         let t_mean = (nf - 1.0) / 2.0;
-        let y_mean = data.iter().sum::<f64>() / nf;
-        let mut stt = 0.0;
-        let mut sty = 0.0;
+        let y_mean = crate::math::mean(data);
+        let mut stt_acc = crate::primitives::specialist::kulisch_accumulator::KulischAccumulator::new();
+        let mut sty_acc = crate::primitives::specialist::kulisch_accumulator::KulischAccumulator::new();
         for i in 0..n {
             let ti = i as f64 - t_mean;
-            stt += ti * ti;
-            sty += ti * (data[i] - y_mean);
+            stt_acc.add_f64(ti * ti);
+            sty_acc.add_f64(ti * (data[i] - y_mean));
         }
+        let stt = stt_acc.to_f64();
+        let sty = sty_acc.to_f64();
         let b = sty / stt;
         let a = y_mean - b * t_mean;
         (0..n).map(|i| data[i] - a - b * i as f64).collect()
     } else {
-        let mean = data.iter().sum::<f64>() / nf;
+        let mean = crate::math::mean(data);
         data.iter().map(|x| x - mean).collect()
     };
 
@@ -1496,10 +1498,10 @@ pub fn variance_ratio_test(data: &[f64], q: Option<usize>) -> VarianceRatioResul
     // 1-period returns
     let returns: Vec<f64> = data.windows(2).map(|w| w[1] - w[0]).collect();
     let nq = returns.len();
-    let mu = returns.iter().sum::<f64>() / nq as f64;
+    let mu = crate::math::mean(&returns);
 
     // σ_a² = variance of 1-period returns (biased MLE consistent estimator)
-    let sigma_a2 = returns.iter().map(|r| (r - mu) * (r - mu)).sum::<f64>() / nq as f64;
+    let sigma_a2 = crate::math::centered_sum_sq(&returns, mu) / nq as f64;
     if sigma_a2 < 1e-300 {
         return nan;
     }
@@ -1572,8 +1574,8 @@ pub fn von_neumann_ratio(data: &[f64]) -> f64 {
         return f64::NAN;
     }
     let nf = n as f64;
-    let mean = clean.iter().sum::<f64>() / nf;
-    let s2 = clean.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (nf - 1.0);
+    let mean = crate::math::mean(&clean);
+    let s2 = crate::math::centered_sum_sq(&clean, mean) / (nf - 1.0);
     if s2 < 1e-300 {
         return f64::NAN;
     }
@@ -2363,7 +2365,7 @@ pub fn breusch_godfrey(
     }
 
     // OLS on auxiliary regression to get R²
-    let mean_y = y_aux.iter().sum::<f64>() / nobs as f64;
+    let mean_y = crate::math::mean(&y_aux);
     let ss_tot: f64 = y_aux.iter().map(|y| (y - mean_y).powi(2)).sum();
     if ss_tot < 1e-30 {
         return (0.0, 1.0, p);
@@ -2457,7 +2459,7 @@ pub fn spectral_flatness(psd: &[f64]) -> f64 {
         .map(|v| v.ln())
         .sum::<f64>()
         / psd.iter().filter(|&&v| v > 0.0).count().max(1) as f64;
-    let arith_mean = psd.iter().sum::<f64>() / n as f64;
+    let arith_mean = crate::math::mean(psd);
     if arith_mean < 1e-300 {
         return f64::NAN;
     }
@@ -2579,7 +2581,7 @@ pub fn spectral_crest(psd: &[f64]) -> f64 {
         return f64::NAN;
     }
     let max_val = psd.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let mean_val = psd.iter().sum::<f64>() / psd.len() as f64;
+    let mean_val = crate::math::mean(psd);
     if mean_val < 1e-300 {
         return f64::NAN;
     }
@@ -2607,8 +2609,8 @@ pub fn spectral_slope(freqs: &[f64], psd: &[f64]) -> f64 {
         return f64::NAN;
     }
     let n = lf.len() as f64;
-    let mx = lf.iter().sum::<f64>() / n;
-    let my = lp.iter().sum::<f64>() / n;
+    let mx = crate::math::mean(&lf);
+    let my = crate::math::mean(&lp);
     let mut num = 0.0_f64;
     let mut den = 0.0_f64;
     for i in 0..lf.len() {
@@ -2891,7 +2893,7 @@ fn variance_of(v: &[f64]) -> f64 {
     if n < 2 {
         return 0.0;
     }
-    let mean = valid.iter().sum::<f64>() / n as f64;
+    let mean = crate::math::mean(&valid);
     valid.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (n - 1) as f64
 }
 
@@ -2952,7 +2954,7 @@ pub fn stl_decompose(data: &[f64], period: usize, robust: bool) -> Option<StlRes
         let center = if robust {
             median_val(&vals)
         } else {
-            vals.iter().sum::<f64>() / vals.len() as f64
+            crate::math::mean(&vals)
         };
         for i in (p..n).step_by(period) {
             seasonal[i] = center;

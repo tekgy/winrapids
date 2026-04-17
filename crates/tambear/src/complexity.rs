@@ -233,7 +233,7 @@ pub fn hurst_rs(data: &[f64]) -> f64 {
                 return f64::NAN;
             }
 
-            let mean: f64 = block.iter().sum::<f64>() / block_size as f64;
+            let mean: f64 = crate::math::mean(block);
 
             // Cumulative deviations from mean
             let mut cum_dev = vec![0.0; block_size];
@@ -352,7 +352,7 @@ pub fn dfa(data: &[f64], min_box: usize, max_box: usize) -> f64 {
 pub fn linear_fit_segment(segment: &[f64]) -> (f64, f64) {
     let n = segment.len() as f64;
     let mean_x = (n - 1.0) / 2.0;
-    let mean_y: f64 = segment.iter().sum::<f64>() / n;
+    let mean_y: f64 = crate::math::mean(segment);
     let mut sxy = 0.0;
     let mut sxx = 0.0;
     for (i, &y) in segment.iter().enumerate() {
@@ -764,7 +764,7 @@ pub fn largest_lyapunov_session(
 /// AMI-based embedding delay selection, and any period estimation task.
 /// Returns 1 if fewer than 2 zero-crossings are found.
 pub fn estimate_mean_period(data: &[f64]) -> usize {
-    let mean: f64 = data.iter().sum::<f64>() / data.len() as f64;
+    let mean: f64 = crate::math::mean(data);
     let mut crossings = 0;
     for i in 1..data.len() {
         if (data[i] - mean) * (data[i - 1] - mean) < 0.0 {
@@ -1606,7 +1606,7 @@ pub fn mfdfa(data: &[f64], q_values: &[f64], min_seg: usize, max_seg: usize) -> 
     if data.iter().any(|v| v.is_nan()) { return nan_result(q_values); }
 
     // Cumulative profile: Y[i] = Σ_{k<i} (x[k] - mean)
-    let mean_x = data.iter().sum::<f64>() / n as f64;
+    let mean_x = crate::math::mean(data);
     let mut profile = vec![0.0f64; n + 1];
     for i in 0..n { profile[i + 1] = profile[i] + (data[i] - mean_x); }
 
@@ -1635,7 +1635,7 @@ pub fn mfdfa(data: &[f64], q_values: &[f64], min_seg: usize, max_seg: usize) -> 
             let start = v * s;
             let seg = &profile[start..=start + s];
             let sf = seg.len() as f64;
-            let mean_y = seg.iter().sum::<f64>() / sf;
+            let mean_y = crate::math::mean(seg);
             let mean_t = (sf - 1.0) / 2.0;
             let stt: f64 = (0..seg.len()).map(|i| { let t = i as f64; (t - mean_t) * (t - mean_t) }).sum();
             let sty: f64 = (0..seg.len()).map(|i| { let t = i as f64; (t - mean_t) * (seg[i] - mean_y) }).sum();
@@ -1697,7 +1697,7 @@ pub fn mfdfa(data: &[f64], q_values: &[f64], min_seg: usize, max_seg: usize) -> 
         - valid_h.iter().cloned().fold(f64::INFINITY, f64::min)
     } else { f64::NAN };
     let mean_se = if se_vals.is_empty() { f64::NAN }
-        else { se_vals.iter().sum::<f64>() / se_vals.len() as f64 };
+        else { crate::math::mean(&se_vals) };
 
     MfdfaResult { q_values: q_values.to_vec(), h_q, tau_q, width, h2, mean_se }
 }
@@ -1710,8 +1710,8 @@ fn ccm_pearson(x: &[f64], y: &[f64]) -> f64 {
     let n = x.len().min(y.len());
     if n < 2 { return f64::NAN; }
     let nf = n as f64;
-    let mx = x[..n].iter().sum::<f64>() / nf;
-    let my = y[..n].iter().sum::<f64>() / nf;
+    let mx = crate::math::mean(&x[..n]);
+    let my = crate::math::mean(&y[..n]);
     let sxx: f64 = x[..n].iter().map(|&v| (v - mx) * (v - mx)).sum();
     let syy: f64 = y[..n].iter().map(|&v| (v - my) * (v - my)).sum();
     let sxy: f64 = x[..n].iter().zip(y[..n].iter()).map(|(&a, &b)| (a - mx) * (b - my)).sum();
@@ -1861,7 +1861,7 @@ pub fn phase_transition(
 
     let nw = n_windows as f64;
     let order_parameter = magnetizations.iter().map(|m| m.abs()).sum::<f64>() / nw;
-    let mean_m = magnetizations.iter().sum::<f64>() / nw;
+    let mean_m = crate::math::mean(&magnetizations);
     let mean_m2 = magnetizations.iter().map(|m| m * m).sum::<f64>() / nw;
     let mean_m4 = magnetizations.iter().map(|m| m * m * m * m).sum::<f64>() / nw;
     let var_m = magnetizations.iter().map(|m| (m - mean_m) * (m - mean_m)).sum::<f64>() / nw;
@@ -1890,8 +1890,8 @@ pub fn phase_transition(
         }
         if log_w.len() >= 2 {
             let m = log_w.len() as f64;
-            let mlw = log_w.iter().sum::<f64>() / m;
-            let mlm = log_m.iter().sum::<f64>() / m;
+            let mlw = crate::math::mean(&log_w);
+            let mlm = crate::math::mean(&log_m);
             let sxx: f64 = log_w.iter().map(|&x| (x - mlw) * (x - mlw)).sum();
             let sxy: f64 = log_w.iter().zip(log_m.iter()).map(|(&x, &y)| (x - mlw) * (y - mlm)).sum();
             if sxx > 1e-30 { sxy / sxx } else { f64::NAN }
@@ -1928,7 +1928,7 @@ pub fn harmonic_r_stat(levels: &[f64]) -> f64 {
         if mx < 1e-30 { None } else { Some(a.min(b) / mx) }
     }).collect();
     if r_vals.is_empty() { return f64::NAN; }
-    r_vals.iter().sum::<f64>() / r_vals.len() as f64
+    crate::math::mean(&r_vals)
 }
 
 /// Compute Hankel delay-embedding SVD and return the r-statistic on singular values.

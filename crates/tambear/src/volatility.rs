@@ -709,15 +709,18 @@ pub fn jump_test_bns(intraday_returns: &[f64]) -> f64 {
 /// Roll spread estimator: 2·√(-Cov(Δp_t, Δp_{t-1})).
 /// Returns 0 if covariance is non-negative (no spread signal).
 pub fn roll_spread(prices: &[f64]) -> f64 {
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     let n = prices.len();
     if n < 3 { return 0.0; }
     let dp: Vec<f64> = prices.windows(2).map(|w| w[1] - w[0]).collect();
     let m = dp.len();
-    // Covariance of consecutive price changes
-    let mean_dp: f64 = dp.iter().sum::<f64>() / m as f64;
-    let cov: f64 = dp[..m - 1].iter().zip(dp[1..].iter())
-        .map(|(a, b)| (a - mean_dp) * (b - mean_dp))
-        .sum::<f64>() / (m - 1) as f64;
+    // Covariance of consecutive price changes (both series use same mean).
+    let mean_dp: f64 = crate::math::mean(&dp);
+    let mut cov_acc = KulischAccumulator::new();
+    for (a, b) in dp[..m - 1].iter().zip(dp[1..].iter()) {
+        cov_acc.add_f64((a - mean_dp) * (b - mean_dp));
+    }
+    let cov = cov_acc.to_f64() / (m - 1) as f64;
     if cov >= 0.0 { return 0.0; }
     2.0 * (-cov).sqrt()
 }
@@ -726,22 +729,24 @@ pub fn roll_spread(prices: &[f64]) -> f64 {
 /// Simple regression ΔP = λ·(signed_volume) + ε.
 /// Returns λ (slope).
 pub fn kyle_lambda(price_changes: &[f64], signed_volumes: &[f64]) -> f64 {
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     let n = price_changes.len();
     assert_eq!(signed_volumes.len(), n);
     if n < 2 { return 0.0; }
 
-    let mean_v = signed_volumes.iter().sum::<f64>() / n as f64;
-    let mean_p = price_changes.iter().sum::<f64>() / n as f64;
+    let mean_v = crate::math::mean(signed_volumes);
+    let mean_p = crate::math::mean(price_changes);
 
-    let mut cov = 0.0;
-    let mut var_v = 0.0;
+    let mut cov_acc = KulischAccumulator::new();
+    let mut var_v_acc = KulischAccumulator::new();
     for i in 0..n {
         let dv = signed_volumes[i] - mean_v;
-        cov += dv * (price_changes[i] - mean_p);
-        var_v += dv * dv;
+        cov_acc.add_f64(dv * (price_changes[i] - mean_p));
+        var_v_acc.add_f64(dv * dv);
     }
+    let var_v = var_v_acc.to_f64();
     if var_v < 1e-15 { return 0.0; }
-    cov / var_v
+    cov_acc.to_f64() / var_v
 }
 
 /// Amihud illiquidity ratio: (1/n) Σ |r_t| / volume_t.
@@ -838,10 +843,10 @@ pub fn yang_zhang_variance(
         rs_sum += rogers_satchell_variance(opens[i], highs[i], lows[i], closes[i]);
     }
     let nf = n as f64;
-    let over_mean = over_returns.iter().sum::<f64>() / nf;
-    let cc_mean = cc_returns.iter().sum::<f64>() / nf;
-    let sigma2_o: f64 = over_returns.iter().map(|x| (x - over_mean).powi(2)).sum::<f64>() / (nf - 1.0);
-    let sigma2_c: f64 = cc_returns.iter().map(|x| (x - cc_mean).powi(2)).sum::<f64>() / (nf - 1.0);
+    let over_mean = crate::math::mean(&over_returns);
+    let cc_mean = crate::math::mean(&cc_returns);
+    let sigma2_o: f64 = crate::math::centered_sum_sq(&over_returns, over_mean) / (nf - 1.0);
+    let sigma2_c: f64 = crate::math::centered_sum_sq(&cc_returns, cc_mean) / (nf - 1.0);
     let sigma2_rs = rs_sum / nf;
 
     // Yang-Zhang k (optimal weighting): k = 0.34 / (1.34 + (n+1)/(n-1))
@@ -988,13 +993,10 @@ pub fn arch_lm_test(residuals: &[f64], n_lags: usize) -> Option<ArchLmResult> {
         })
         .collect();
 
-    let y_mean = y.iter().sum::<f64>() / n_eff as f64;
-    let ss_tot: f64 = y.iter().map(|yi| (yi - y_mean).powi(2)).sum();
-    let ss_res: f64 = y
-        .iter()
-        .zip(y_hat.iter())
-        .map(|(yi, fi)| (yi - fi).powi(2))
-        .sum();
+    let y_mean = crate::math::mean(&y);
+    let ss_tot: f64 = crate::math::centered_sum_sq(&y, y_mean);
+    let residuals: Vec<f64> = y.iter().zip(y_hat.iter()).map(|(yi, fi)| yi - fi).collect();
+    let ss_res: f64 = crate::math::sum_sq(&residuals);
 
     // R² — clamp to [0, 1] for numerical safety
     let r2 = if ss_tot < 1e-300 {
@@ -1051,8 +1053,8 @@ pub fn vpin_bvc(prices: &[f64], volumes: &[f64], bucket_volume: f64, n_avg: usiz
 
     // Price changes and their standard deviation
     let dp: Vec<f64> = prices.windows(2).map(|w| w[1] - w[0]).collect();
-    let mean_dp = dp.iter().sum::<f64>() / dp.len() as f64;
-    let var_dp = dp.iter().map(|d| (d - mean_dp).powi(2)).sum::<f64>() / dp.len().max(1) as f64;
+    let mean_dp = crate::math::mean(&dp);
+    let var_dp = crate::math::centered_sum_sq(&dp, mean_dp) / dp.len().max(1) as f64;
     let sigma = var_dp.sqrt().max(1e-15);
 
     // BVC: classify each trade (starting from index 1) as buy/sell fraction

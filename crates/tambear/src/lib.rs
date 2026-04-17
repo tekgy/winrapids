@@ -46,6 +46,7 @@
 //! ```
 
 pub mod accumulate;
+pub mod math;
 pub mod primitives;
 pub mod recipes;
 pub mod clustering;

@@ -476,45 +476,62 @@ impl DescriptiveEngine {
 
 // ── Ungrouped computation ─────────────────────────────────────────────────
 
-/// Compute moment stats for an ungrouped array. Direct CPU two-pass loop.
+/// Compute moment stats for an ungrouped array. Kulisch-exact two-pass.
 ///
 /// NaN values are excluded. Numerically stable via centering in pass 2.
+/// All four reductions (sum, m2, m3, m4) use Kulisch accumulators so the
+/// result is cross-platform bit-exact deterministic — same bits regardless
+/// of thread count, backend, or CPU architecture. The per-element
+/// arithmetic (d², d³, d⁴) stays plain f64 — centering keeps deviations
+/// small so each term is well-conditioned; only the summation needed
+/// hardening.
 pub fn moments_ungrouped(values: &[f64]) -> MomentStats {
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+
     if values.is_empty() { return MomentStats::empty(); }
 
     // Pass 1: sum, count, min, max
+    let mut sum_acc = KulischAccumulator::new();
     let mut count = 0.0f64;
-    let mut sum = 0.0f64;
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
 
     for &v in values {
         if v.is_nan() { continue; }
         count += 1.0;
-        sum += v;
+        sum_acc.add_f64(v);
         if v < min { min = v; }
         if v > max { max = v; }
     }
 
     if count == 0.0 { return MomentStats::empty(); }
 
+    let sum = sum_acc.to_f64();
     let mean = sum / count;
 
-    // Pass 2: centered moments (numerically stable — deviations from mean are small)
-    let mut m2 = 0.0f64;
-    let mut m3 = 0.0f64;
-    let mut m4 = 0.0f64;
+    // Pass 2: centered moments — sum terms via Kulisch.
+    let mut m2_acc = KulischAccumulator::new();
+    let mut m3_acc = KulischAccumulator::new();
+    let mut m4_acc = KulischAccumulator::new();
 
     for &v in values {
         if v.is_nan() { continue; }
         let d = v - mean;
         let d2 = d * d;
-        m2 += d2;
-        m3 += d2 * d;
-        m4 += d2 * d2;
+        m2_acc.add_f64(d2);
+        m3_acc.add_f64(d2 * d);
+        m4_acc.add_f64(d2 * d2);
     }
 
-    MomentStats { count, sum, min, max, m2, m3, m4 }
+    MomentStats {
+        count,
+        sum,
+        min,
+        max,
+        m2: m2_acc.to_f64(),
+        m3: m3_acc.to_f64(),
+        m4: m4_acc.to_f64(),
+    }
 }
 
 /// Session-aware variant of [`moments_ungrouped`].
@@ -1142,12 +1159,7 @@ pub fn mase(actual: &[f64], predicted: &[f64], seasonal_period: usize) -> f64 {
 /// `iter().sum::<f64>() / n as f64` scattered across the codebase.
 #[inline]
 pub fn mean_of(values: &[f64]) -> f64 {
-    let mut s = 0.0_f64;
-    let mut cnt = 0usize;
-    for &v in values {
-        if v.is_finite() { s += v; cnt += 1; }
-    }
-    if cnt == 0 { f64::NAN } else { s / cnt as f64 }
+    crate::math::mean(values)
 }
 
 /// Sample variance (ddof=1) of a slice, ignoring NaN values.
@@ -1159,15 +1171,7 @@ pub fn mean_of(values: &[f64]) -> f64 {
 /// computations across time_series.rs, complexity.rs, and data_quality.rs.
 #[inline]
 pub fn variance_of(values: &[f64]) -> f64 {
-    let mut s = 0.0_f64;
-    let mut s2 = 0.0_f64;
-    let mut cnt = 0usize;
-    for &v in values {
-        if v.is_finite() { s += v; s2 += v * v; cnt += 1; }
-    }
-    if cnt < 2 { return f64::NAN; }
-    let n = cnt as f64;
-    (s2 - s * s / n) / (n - 1.0)
+    crate::math::variance_sample(values)
 }
 
 // ── mode ──────────────────────────────────────────────────────────────────

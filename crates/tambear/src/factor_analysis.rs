@@ -8,7 +8,7 @@
 //! Rotation = orthogonal transformation (Kingdom A).
 //! CFA = iterative fitting (Kingdom C), but simplified here.
 
-use crate::linear_algebra::{Mat, mat_mul, mat_scale, cholesky, cholesky_solve};
+use crate::linear_algebra::{Mat, mat_mul, mat_scale, cholesky, cholesky_solve, inv, matrix_sqrt};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Correlation matrix
@@ -146,12 +146,133 @@ pub fn principal_axis_factoring(corr: &Mat, n_factors: usize, max_iter: usize) -
         }
     }
 
-    let total_var: f64 = (0..p).map(|j| corr.get(j, j)).sum();
+    let diag: Vec<f64> = (0..p).map(|j| corr.get(j, j)).collect();
+    let total_var: f64 = crate::math::sum(&diag);
     let variance_explained: Vec<f64> = eigenvalues.iter().map(|e| e / total_var).collect();
     let uniquenesses: Vec<f64> = communalities.iter().map(|c| (1.0 - c).max(0.0)).collect();
     let heywood = communalities.iter().any(|&c| c > 1.0);
 
     FaResult { loadings, eigenvalues, communalities, variance_explained, uniquenesses, heywood }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Factor scores
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Method for computing per-observation factor scores from a loadings matrix.
+///
+/// All three methods produce an n×k score matrix from an n×p standardized
+/// data matrix, a p×k loadings matrix Λ, and (for Bartlett/Anderson-Rubin) a
+/// length-p uniquenesses vector ψ.
+///
+/// * **Regression (Thurstone)** — `F = X · Λ · (ΛᵀΛ)⁻¹`. Simple, correlated
+///   with the true factors but biased; scores are not orthogonal.
+/// * **Bartlett (WLS)** — `F = X · Ψ⁻¹ · Λ · (Λᵀ · Ψ⁻¹ · Λ)⁻¹`. Unbiased
+///   weighted-least-squares estimator; higher variance than regression.
+/// * **Anderson-Rubin** — Bartlett scores rotated so the score covariance
+///   is exactly identity: `F_AR = F_B · (F_Bᵀ · F_B / n)⁻¹ᐟ²`. Orthonormal
+///   scores suitable for downstream use where decorrelation is required.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactorScoreMethod {
+    Regression,
+    Bartlett,
+    AndersonRubin,
+}
+
+/// Compute per-observation factor scores.
+///
+/// # Arguments
+///
+/// * `data` — n×p standardized data matrix (columns assumed to be z-scores).
+/// * `loadings` — p×k loadings matrix Λ (e.g. from `principal_axis_factoring`).
+/// * `uniquenesses` — length-p vector of variable uniquenesses ψ (1 − communality).
+///   Required for Bartlett and Anderson-Rubin methods; ignored by Regression.
+/// * `method` — one of the three [`FactorScoreMethod`] variants.
+///
+/// # Returns
+///
+/// An n×k matrix of factor scores, one row per observation.
+///
+/// # Panics
+///
+/// Panics if shapes don't match (data.cols ≠ loadings.rows, uniquenesses.len ≠ p),
+/// or if a required matrix inverse is singular. The caller is responsible for
+/// ensuring the loadings matrix has full column rank (k ≤ p, no collinear factors).
+pub fn factor_scores(
+    data: &Mat,
+    loadings: &Mat,
+    uniquenesses: &[f64],
+    method: FactorScoreMethod,
+) -> Mat {
+    let n = data.rows;
+    let p = data.cols;
+    let k = loadings.cols;
+    assert_eq!(loadings.rows, p, "loadings.rows must equal data.cols");
+
+    match method {
+        FactorScoreMethod::Regression => {
+            // F = X · Λ · (ΛᵀΛ)⁻¹
+            // Assumes orthogonal factors (Φ = I). For oblique rotations the
+            // caller can pre-multiply loadings by Φ before invoking this path,
+            // or switch to a dedicated oblique-scoring primitive.
+            let lt = loadings.t();
+            let lt_l = mat_mul(&lt, loadings); // k×k
+            let lt_l_inv = inv(&lt_l)
+                .expect("ΛᵀΛ singular — loadings have collinear columns");
+            let x_l = mat_mul(data, loadings); // n×k
+            mat_mul(&x_l, &lt_l_inv)
+        }
+        FactorScoreMethod::Bartlett => {
+            assert_eq!(uniquenesses.len(), p, "uniquenesses.len must equal data.cols");
+            bartlett_scores(data, loadings, uniquenesses)
+        }
+        FactorScoreMethod::AndersonRubin => {
+            assert_eq!(uniquenesses.len(), p, "uniquenesses.len must equal data.cols");
+            let f_b = bartlett_scores(data, loadings, uniquenesses);
+            // F_AR = F_B · (FᵀF / n)⁻¹ᐟ²
+            // Dividing by n gives a sample covariance; the resulting scores
+            // then have sample covariance = I (up to numerical precision).
+            let ftf = mat_mul(&f_b.t(), &f_b); // k×k
+            let cov = mat_scale(1.0 / n as f64, &ftf);
+            let cov_sqrt = matrix_sqrt(&cov);
+            let cov_sqrt_inv = inv(&cov_sqrt)
+                .expect("Bartlett score covariance singular — loadings under-determined");
+            mat_mul(&f_b, &cov_sqrt_inv)
+        }
+    }
+}
+
+/// Bartlett (weighted least squares) factor scores.
+/// F = X · Ψ⁻¹ · Λ · (Λᵀ · Ψ⁻¹ · Λ)⁻¹
+fn bartlett_scores(data: &Mat, loadings: &Mat, uniquenesses: &[f64]) -> Mat {
+    let p = data.cols;
+    let k = loadings.cols;
+
+    // Floor uniquenesses: ψ values at or near zero are a Heywood signal and
+    // would blow up the weighting. A tiny floor keeps the method honest
+    // (returns finite but large weights) rather than silently producing NaN.
+    let psi_inv: Vec<f64> = uniquenesses
+        .iter()
+        .map(|&u| 1.0 / u.max(1e-6))
+        .collect();
+
+    // Ψ⁻¹ · Λ (p×k): scale each row j of Λ by psi_inv[j].
+    let mut psi_inv_l = Mat::zeros(p, k);
+    for j in 0..p {
+        for f in 0..k {
+            psi_inv_l.set(j, f, psi_inv[j] * loadings.get(j, f));
+        }
+    }
+
+    // Λᵀ · Ψ⁻¹ · Λ (k×k)
+    let lt_psi_inv_l = mat_mul(&loadings.t(), &psi_inv_l);
+    let inner_inv = inv(&lt_psi_inv_l)
+        .expect("Λᵀ·Ψ⁻¹·Λ singular — loadings collinear under weighting");
+
+    // X · Ψ⁻¹ · Λ (n×k)
+    let x_psi_inv_l = mat_mul(data, &psi_inv_l);
+
+    mat_mul(&x_psi_inv_l, &inner_inv)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -217,29 +338,32 @@ pub fn cronbachs_alpha(data: &[f64], n: usize, p: usize) -> f64 {
     assert_eq!(data.len(), n * p);
     if p < 2 { return 0.0; }
 
-    // Item variances
-    let mut item_vars = vec![0.0; p];
-    let mut means = vec![0.0; p];
+    // Item variances — per-column Kulisch sums.
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut mean_accs: Vec<KulischAccumulator> = (0..p).map(|_| KulischAccumulator::new()).collect();
     for i in 0..n {
-        for j in 0..p { means[j] += data[i * p + j]; }
+        for j in 0..p { mean_accs[j].add_f64(data[i * p + j]); }
     }
-    for j in 0..p { means[j] /= n as f64; }
+    let means: Vec<f64> = mean_accs.iter().map(|a| a.to_f64() / n as f64).collect();
+    let mut var_accs: Vec<KulischAccumulator> = (0..p).map(|_| KulischAccumulator::new()).collect();
     for i in 0..n {
-        for j in 0..p { item_vars[j] += (data[i * p + j] - means[j]).powi(2); }
+        for j in 0..p {
+            let d = data[i * p + j] - means[j];
+            var_accs[j].add_f64(d * d);
+        }
     }
-    for j in 0..p { item_vars[j] /= (n - 1) as f64; }
+    let item_vars: Vec<f64> = var_accs.iter().map(|a| a.to_f64() / (n - 1) as f64).collect();
 
-    let sum_item_var: f64 = item_vars.iter().sum();
+    let sum_item_var: f64 = crate::math::sum(&item_vars);
 
     // Total score variance
     let mut total_scores = vec![0.0; n];
     for i in 0..n {
-        total_scores[i] = (0..p).map(|j| data[i * p + j]).sum();
+        let row: Vec<f64> = (0..p).map(|j| data[i * p + j]).collect();
+        total_scores[i] = crate::math::sum(&row);
     }
-    let total_mean: f64 = total_scores.iter().sum::<f64>() / n as f64;
-    let total_var: f64 = total_scores.iter()
-        .map(|s| (s - total_mean).powi(2))
-        .sum::<f64>() / (n - 1) as f64;
+    let total_mean: f64 = crate::math::sum(&total_scores) / n as f64;
+    let total_var: f64 = crate::math::centered_sum_sq(&total_scores, total_mean) / (n - 1) as f64;
 
     if total_var < 1e-15 { return 0.0; }
     (p as f64 / (p - 1) as f64) * (1.0 - sum_item_var / total_var)
@@ -270,14 +394,17 @@ pub fn mcdonalds_omega(loadings: &Mat) -> OmegaResult {
     // Without this, loadings [+0.8, +0.7, -0.8, -0.7] cancel to ω = 0
     // despite high communality (adversarial finding).
     let sum_l: f64 = if bipolar {
-        first_loadings.iter().map(|l| l.abs()).sum()
+        let absl: Vec<f64> = first_loadings.iter().map(|l| l.abs()).collect();
+        crate::math::sum(&absl)
     } else {
-        first_loadings.iter().sum()
+        crate::math::sum(&first_loadings)
     };
-    let sum_u: f64 = (0..p).map(|j| {
-        let comm: f64 = (0..loadings.cols).map(|f| loadings.get(j, f).powi(2)).sum();
+    let u_terms: Vec<f64> = (0..p).map(|j| {
+        let row: Vec<f64> = (0..loadings.cols).map(|f| loadings.get(j, f)).collect();
+        let comm: f64 = crate::math::sum_sq(&row);
         (1.0 - comm).max(0.0)
-    }).sum();
+    }).collect();
+    let sum_u: f64 = crate::math::sum(&u_terms);
     let omega = sum_l * sum_l / (sum_l * sum_l + sum_u);
     OmegaResult { omega, bipolar }
 }
@@ -601,5 +728,197 @@ mod tests {
         // p=3 → df = p(p-1)/2 = 3
         let r = kmo_bartlett(&make_corr_3x3(0.5, 0.4, 0.45), 50);
         assert_eq!(r.bartlett_df, 3);
+    }
+
+    // ── Factor scores ────────────────────────────────────────────────────
+
+    /// Generate a 2-factor synthetic dataset with known true factors.
+    ///
+    /// Returns (standardized_data n×p, true_factors n×2, loadings p×2, uniquenesses p).
+    /// The construction mirrors the paf_extracts_factors setup but keeps the
+    /// true latent factors accessible so recovered scores can be compared to them.
+    fn make_two_factor_dataset(n: usize) -> (Mat, Mat, Mat, Vec<f64>) {
+        let p = 6;
+        let mut rng = 42u64;
+        let mut raw = vec![0.0_f64; n * p];
+        let mut true_f = Mat::zeros(n, 2);
+
+        for i in 0..n {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let f1 = (rng as f64 / u64::MAX as f64 - 0.5) * 4.0;
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let f2 = (rng as f64 / u64::MAX as f64 - 0.5) * 4.0;
+            true_f.set(i, 0, f1);
+            true_f.set(i, 1, f2);
+            for j in 0..3 {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let noise = (rng as f64 / u64::MAX as f64 - 0.5) * 0.5;
+                raw[i * p + j] = f1 + noise;
+            }
+            for j in 3..6 {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let noise = (rng as f64 / u64::MAX as f64 - 0.5) * 0.5;
+                raw[i * p + j] = f2 + noise;
+            }
+        }
+
+        // Standardize columns (z-scores) so factor_scores sees a clean input.
+        let mut means = vec![0.0; p];
+        for i in 0..n {
+            for j in 0..p { means[j] += raw[i * p + j]; }
+        }
+        for j in 0..p { means[j] /= n as f64; }
+        let mut stds = vec![0.0; p];
+        for i in 0..n {
+            for j in 0..p { stds[j] += (raw[i * p + j] - means[j]).powi(2); }
+        }
+        for j in 0..p { stds[j] = (stds[j] / (n - 1) as f64).sqrt().max(1e-15); }
+        let mut z = vec![0.0_f64; n * p];
+        for i in 0..n {
+            for j in 0..p { z[i * p + j] = (raw[i * p + j] - means[j]) / stds[j]; }
+        }
+
+        let corr = correlation_matrix(&z, n, p);
+        let fa = principal_axis_factoring(&corr, 2, 100);
+        // Rotate loadings to simple structure so the recovered factors align
+        // with the block structure (items 0-2 ↔ f1, items 3-5 ↔ f2). Without
+        // rotation the PAF solution is a Procrustes rotation of the truth,
+        // which would force the comparison test to also solve an orthogonal
+        // Procrustes problem — varimax is the cleaner way to anchor it.
+        let rotated = varimax(&fa.loadings, 200);
+        let data = Mat { rows: n, cols: p, data: z };
+        (data, true_f, rotated, fa.uniquenesses)
+    }
+
+    /// Max absolute Pearson correlation between a column of A and any
+    /// column of B (either sign). Used as a permutation-invariant similarity
+    /// because factor extraction can flip or reorder factors.
+    fn best_abs_correlation(a_col: &[f64], b: &Mat) -> f64 {
+        let n = a_col.len();
+        assert_eq!(b.rows, n);
+        let mean_a: f64 = a_col.iter().sum::<f64>() / n as f64;
+        let var_a: f64 = a_col.iter().map(|v| (v - mean_a).powi(2)).sum::<f64>();
+        let mut best = 0.0_f64;
+        for c in 0..b.cols {
+            let col_b: Vec<f64> = (0..n).map(|i| b.get(i, c)).collect();
+            let mean_b = col_b.iter().sum::<f64>() / n as f64;
+            let var_b: f64 = col_b.iter().map(|v| (v - mean_b).powi(2)).sum::<f64>();
+            let cov: f64 = a_col.iter().zip(col_b.iter())
+                .map(|(x, y)| (x - mean_a) * (y - mean_b)).sum::<f64>();
+            let denom = (var_a * var_b).sqrt().max(1e-15);
+            best = best.max((cov / denom).abs());
+        }
+        best
+    }
+
+    #[test]
+    fn factor_scores_regression_recovers_true_factors() {
+        let (data, true_f, loadings, uniquenesses) = make_two_factor_dataset(200);
+        let scores = factor_scores(
+            &data, &loadings, &uniquenesses, FactorScoreMethod::Regression,
+        );
+        assert_eq!(scores.rows, 200);
+        assert_eq!(scores.cols, 2);
+
+        // Each true factor should correlate highly with one of the recovered
+        // score columns (sign and order are both free).
+        for f in 0..2 {
+            let col: Vec<f64> = (0..200).map(|i| true_f.get(i, f)).collect();
+            let r = best_abs_correlation(&col, &scores);
+            assert!(r > 0.95,
+                "Regression scores should recover true factor {f} with |r|>0.95 (got {r:.4})");
+        }
+    }
+
+    #[test]
+    fn factor_scores_bartlett_shape_and_correlation() {
+        let (data, true_f, loadings, uniquenesses) = make_two_factor_dataset(200);
+        let scores = factor_scores(
+            &data, &loadings, &uniquenesses, FactorScoreMethod::Bartlett,
+        );
+        assert_eq!(scores.rows, 200);
+        assert_eq!(scores.cols, 2);
+
+        // Bartlett is unbiased — it should still recover the true factors
+        // strongly, though with higher variance than regression.
+        for f in 0..2 {
+            let col: Vec<f64> = (0..200).map(|i| true_f.get(i, f)).collect();
+            let r = best_abs_correlation(&col, &scores);
+            assert!(r > 0.90,
+                "Bartlett scores should recover true factor {f} with |r|>0.90 (got {r:.4})");
+        }
+
+        // Off-diagonal covariance should be small relative to the diagonal
+        // (factors are near-orthogonal by construction; Bartlett preserves
+        // that property up to sampling noise).
+        let n = scores.rows as f64;
+        let mut m = [0.0_f64; 2];
+        for f in 0..2 {
+            m[f] = (0..scores.rows).map(|i| scores.get(i, f)).sum::<f64>() / n;
+        }
+        let mut cov = [[0.0_f64; 2]; 2];
+        for i in 0..scores.rows {
+            for a in 0..2 {
+                for b in 0..2 {
+                    cov[a][b] += (scores.get(i, a) - m[a]) * (scores.get(i, b) - m[b]);
+                }
+            }
+        }
+        for a in 0..2 { for b in 0..2 { cov[a][b] /= n - 1.0; } }
+        let ratio = cov[0][1].abs() / (cov[0][0].sqrt() * cov[1][1].sqrt()).max(1e-15);
+        assert!(ratio < 0.2,
+            "Bartlett off-diag correlation should be small (got {ratio:.4})");
+    }
+
+    #[test]
+    fn factor_scores_anderson_rubin_has_identity_covariance() {
+        let (data, _true_f, loadings, uniquenesses) = make_two_factor_dataset(200);
+        let scores = factor_scores(
+            &data, &loadings, &uniquenesses, FactorScoreMethod::AndersonRubin,
+        );
+        assert_eq!(scores.rows, 200);
+        assert_eq!(scores.cols, 2);
+
+        // Sample covariance of Anderson-Rubin scores must be exactly I (up to
+        // numerical tolerance from matrix_sqrt + inv). Using biased estimator
+        // (divide by n) because that's what the method enforces by construction.
+        let n = scores.rows as f64;
+        let mut m = [0.0_f64; 2];
+        for f in 0..2 {
+            m[f] = (0..scores.rows).map(|i| scores.get(i, f)).sum::<f64>() / n;
+        }
+        let mut cov = [[0.0_f64; 2]; 2];
+        for i in 0..scores.rows {
+            for a in 0..2 {
+                for b in 0..2 {
+                    cov[a][b] += (scores.get(i, a) - m[a]) * (scores.get(i, b) - m[b]);
+                }
+            }
+        }
+        for a in 0..2 { for b in 0..2 { cov[a][b] /= n; } }
+
+        // Diagonals close to 1, off-diagonals close to 0. Allow some slack
+        // because AR normalizes the uncentered second moment (FᵀF / n), and
+        // the Bartlett scores have a non-zero sample mean.
+        for i in 0..2 {
+            assert!((cov[i][i] - 1.0).abs() < 0.05,
+                "AR diagonal[{i}]={:.4} should be ≈1", cov[i][i]);
+        }
+        assert!(cov[0][1].abs() < 0.05,
+            "AR off-diagonal={:.4} should be ≈0", cov[0][1]);
+    }
+
+    #[test]
+    fn factor_scores_shape_is_consistent_across_methods() {
+        let (data, _, loadings, uniquenesses) = make_two_factor_dataset(50);
+        for method in [
+            FactorScoreMethod::Regression,
+            FactorScoreMethod::Bartlett,
+            FactorScoreMethod::AndersonRubin,
+        ] {
+            let s = factor_scores(&data, &loadings, &uniquenesses, method);
+            assert_eq!(s.rows, 50, "method {:?}: wrong n_samples", method);
+            assert_eq!(s.cols, 2, "method {:?}: wrong n_factors", method);
+        }
     }
 }

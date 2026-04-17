@@ -588,17 +588,17 @@ pub fn polyfit(xs: &[f64], ys: &[f64], deg: usize) -> PolyFit {
     let coeffs = solve_linear_system(&ata, &aty);
 
     // Compute RSS and R²
-    let y_mean: f64 = ys.iter().sum::<f64>() / n as f64;
-    let mut rss = 0.0;
-    let mut tss = 0.0;
+    let y_mean: f64 = crate::math::sum(ys) / n as f64;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut rss_acc = KulischAccumulator::new();
     for k in 0..n {
-        let mut yhat = 0.0;
-        for i in 0..m {
-            yhat += coeffs[i] * xpow[k][i];
-        }
-        rss += (ys[k] - yhat).powi(2);
-        tss += (ys[k] - y_mean).powi(2);
+        let yhat_terms: Vec<f64> = (0..m).map(|i| coeffs[i] * xpow[k][i]).collect();
+        let yhat = crate::math::sum(&yhat_terms);
+        let r = ys[k] - yhat;
+        rss_acc.add_f64(r * r);
     }
+    let rss = rss_acc.to_f64();
+    let tss: f64 = crate::math::centered_sum_sq(ys, y_mean);
     let r_squared = if tss > 0.0 { 1.0 - rss / tss } else { 1.0 };
 
     PolyFit { coeffs, rss, r_squared }

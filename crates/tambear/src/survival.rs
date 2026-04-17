@@ -467,8 +467,8 @@ pub fn grambsch_therneau_test(
 
     // For each covariate j, compute Pearson correlation between
     // schoenfeld_residuals[k][j] and ranks[k]
-    let rank_mean: f64 = ranks.iter().sum::<f64>() / n_events as f64;
-    let rank_var: f64 = ranks.iter().map(|&r| (r - rank_mean).powi(2)).sum::<f64>();
+    let rank_mean: f64 = crate::math::sum(&ranks) / n_events as f64;
+    let rank_var: f64 = crate::math::centered_sum_sq(&ranks, rank_mean);
 
     let mut per_covariate = Vec::with_capacity(d);
     let mut global_chi2 = 0.0;
@@ -476,12 +476,10 @@ pub fn grambsch_therneau_test(
     for j in 0..d {
         let resid_j: Vec<f64> = cox_result.schoenfeld_residuals.iter()
             .map(|r| r[j]).collect();
-        let resid_mean: f64 = resid_j.iter().sum::<f64>() / n_events as f64;
-        let resid_var: f64 = resid_j.iter().map(|&r| (r - resid_mean).powi(2)).sum::<f64>();
+        let resid_mean: f64 = crate::math::sum(&resid_j) / n_events as f64;
+        let resid_var: f64 = crate::math::centered_sum_sq(&resid_j, resid_mean);
 
-        let cov: f64 = resid_j.iter().zip(ranks.iter())
-            .map(|(&r, &rk)| (r - resid_mean) * (rk - rank_mean))
-            .sum();
+        let cov: f64 = crate::math::centered_dot(&resid_j, resid_mean, &ranks, rank_mean);
 
         let corr = if resid_var > 1e-300 && rank_var > 1e-300 {
             cov / (resid_var * rank_var).sqrt()

@@ -263,7 +263,8 @@ impl SpatialWeights {
     /// Row-standardize weights (each row sums to 1).
     pub fn row_standardize(&mut self) {
         for row in &mut self.neighbors {
-            let sum: f64 = row.iter().map(|(_, w)| w).sum();
+            let ws: Vec<f64> = row.iter().map(|(_, w)| *w).collect();
+            let sum: f64 = crate::math::sum(&ws);
             if sum > 0.0 {
                 for (_, w) in row.iter_mut() { *w /= sum; }
             }
@@ -283,17 +284,20 @@ pub fn morans_i(values: &[f64], weights: &SpatialWeights) -> f64 {
     if n < 2 || n != weights.n { return f64::NAN; }
     let mean = crate::descriptive::moments_ungrouped(values).mean();
     let dev: Vec<f64> = values.iter().map(|&v| v - mean).collect();
-    let ss: f64 = dev.iter().map(|d| d * d).sum();
+    let ss: f64 = crate::math::sum_sq(&dev);
     if ss < 1e-300 { return 0.0; }
 
-    let mut s0 = 0.0;
-    let mut numerator = 0.0;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut s0_acc = KulischAccumulator::new();
+    let mut num_acc = KulischAccumulator::new();
     for i in 0..n {
         for &(j, w) in &weights.neighbors[i] {
-            s0 += w;
-            numerator += w * dev[i] * dev[j];
+            s0_acc.add_f64(w);
+            num_acc.add_f64(w * dev[i] * dev[j]);
         }
     }
+    let s0 = s0_acc.to_f64();
+    let numerator = num_acc.to_f64();
     if s0 < 1e-300 { return 0.0; }
     (n as f64 / s0) * numerator / ss
 }
@@ -387,7 +391,7 @@ pub fn clark_evans_r(points: &[(f64, f64)], area: f64) -> f64 {
     let n = points.len();
     if n < 2 || area <= 0.0 { return f64::NAN; }
     let dists = nn_distances(points);
-    let mean_nn = dists.iter().sum::<f64>() / dists.len() as f64;
+    let mean_nn = crate::math::sum(&dists) / dists.len() as f64;
     let expected = 0.5 * (area / n as f64).sqrt(); // E[nn] for Poisson
     if expected < 1e-300 { return f64::NAN; }
     mean_nn / expected

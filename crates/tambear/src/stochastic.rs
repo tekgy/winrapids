@@ -51,7 +51,11 @@ pub fn brownian_bridge(t_end: f64, end_val: f64, n_steps: usize, seed: u64) -> V
 
 /// Quadratic variation of a path: Σ (W_{t+dt} - W_t)². Should converge to T.
 pub fn quadratic_variation(path: &[f64]) -> f64 {
-    path.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum()
+    let diffs: Vec<f64> = path.windows(2).map(|w| {
+        let d = w[1] - w[0];
+        d * d
+    }).collect();
+    crate::math::sum(&diffs)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -270,19 +274,22 @@ pub fn stationary_distribution(transition: &[f64], n_states: usize) -> Vec<f64> 
     // Start with uniform distribution
     let mut pi = vec![1.0 / n_states as f64; n_states];
 
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     for _ in 0..1000 {
-        let mut new_pi = vec![0.0; n_states];
         // Accumulate: π_{n+1}[j] = Σᵢ π_n[i] · P[i,j]
+        let mut new_pi_accs: Vec<KulischAccumulator> = (0..n_states).map(|_| KulischAccumulator::new()).collect();
         for i in 0..n_states {
             for j in 0..n_states {
-                new_pi[j] += pi[i] * transition[i * n_states + j];
+                new_pi_accs[j].add_f64(pi[i] * transition[i * n_states + j]);
             }
         }
+        let mut new_pi: Vec<f64> = new_pi_accs.iter().map(|a| a.to_f64()).collect();
         // Normalize
-        let sum: f64 = new_pi.iter().sum();
+        let sum: f64 = crate::math::sum(&new_pi);
         for p in new_pi.iter_mut() { *p /= sum; }
 
-        let diff: f64 = pi.iter().zip(new_pi.iter()).map(|(a, b)| (a - b).abs()).sum();
+        let abs_diffs: Vec<f64> = pi.iter().zip(new_pi.iter()).map(|(a, b)| (a - b).abs()).collect();
+        let diff: f64 = crate::math::sum(&abs_diffs);
         pi = new_pi;
         if diff < 1e-12 { break; }
     }
@@ -343,20 +350,22 @@ pub fn mixing_time(transition: &[f64], n_states: usize, epsilon: f64) -> usize {
     let mut dist = vec![0.0; n_states];
     dist[0] = 1.0;
 
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     for t in 1..1000 {
         // One step: dist → dist · P
-        let mut new_dist = vec![0.0; n_states];
+        let mut new_dist_accs: Vec<KulischAccumulator> = (0..n_states).map(|_| KulischAccumulator::new()).collect();
         for i in 0..n_states {
             for j in 0..n_states {
-                new_dist[j] += dist[i] * transition[i * n_states + j];
+                new_dist_accs[j].add_f64(dist[i] * transition[i * n_states + j]);
             }
         }
-        dist = new_dist;
+        dist = new_dist_accs.iter().map(|a| a.to_f64()).collect();
 
         // Total variation distance to stationary
-        let tv: f64 = dist.iter().zip(pi.iter())
+        let abs_diffs: Vec<f64> = dist.iter().zip(pi.iter())
             .map(|(d, p)| (d - p).abs())
-            .sum::<f64>() / 2.0;
+            .collect();
+        let tv: f64 = crate::math::sum(&abs_diffs) / 2.0;
         if tv < epsilon { return t; }
     }
     1000
@@ -455,7 +464,7 @@ pub fn birth_death_stationary(lambdas: &[f64], mus: &[f64]) -> Vec<f64> {
         prod *= lambdas[k - 1] / mus[k - 1];
         pi[k] = prod;
     }
-    let sum: f64 = pi.iter().sum();
+    let sum: f64 = crate::math::sum(&pi);
     pi.iter_mut().for_each(|p| *p /= sum);
     pi
 }
@@ -571,7 +580,7 @@ pub fn rw_expected_maximum(n: usize) -> f64 {
 pub fn ito_integral(f_values: &[f64], increments: &[f64]) -> f64 {
     assert_eq!(f_values.len(), increments.len());
     // Itô: evaluate f at LEFT endpoint
-    f_values.iter().zip(increments.iter()).map(|(f, dw)| f * dw).sum()
+    crate::math::dot(f_values, increments)
 }
 
 /// Stratonovich integral ∫₀ᵀ f(t) ∘ dW(t) (midpoint rule).
@@ -579,12 +588,14 @@ pub fn stratonovich_integral(f_values: &[f64], increments: &[f64]) -> f64 {
     assert_eq!(f_values.len(), increments.len());
     let n = f_values.len();
     if n == 0 { return 0.0; }
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     // Stratonovich: evaluate f at MID point (average of left and right)
-    let mut sum = f_values[0] * increments[0]; // first term uses f(t_0)
+    let mut sum_acc = KulischAccumulator::new();
+    sum_acc.add_f64(f_values[0] * increments[0]); // first term uses f(t_0)
     for i in 1..n {
-        sum += 0.5 * (f_values[i - 1] + f_values[i]) * increments[i];
+        sum_acc.add_f64(0.5 * (f_values[i - 1] + f_values[i]) * increments[i]);
     }
-    sum
+    sum_acc.to_f64()
 }
 
 /// Itô's lemma: df(W_t) = f'(W_t)dW_t + ½f''(W_t)dt.
@@ -599,8 +610,8 @@ pub fn ito_lemma_verification(path: &[f64], _dt: f64) -> f64 {
     let direct = path[n] * path[n] - path[0] * path[0];
     let dw: Vec<f64> = path.windows(2).map(|w| w[1] - w[0]).collect();
     // Itô formula with actual quadratic variation: algebraically exact
-    let ito_sum: f64 = path[..n].iter().zip(dw.iter()).map(|(w, dw)| w * dw).sum();
-    let actual_qv: f64 = dw.iter().map(|d| d * d).sum();
+    let ito_sum: f64 = crate::math::dot(&path[..n], &dw);
+    let actual_qv: f64 = crate::math::sum_sq(&dw);
     let ito = 2.0 * ito_sum + actual_qv;
     (direct - ito).abs()
 }

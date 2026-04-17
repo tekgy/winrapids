@@ -64,8 +64,8 @@ pub fn threshold_adaptive(drops: &[f64], using: &UsingBag) -> f64 {
     sorted.sort_by(|a, b| a.total_cmp(b));
 
     let median = sorted[sorted.len() / 2];
-    let mean = drops.iter().sum::<f64>() / drops.len() as f64;
-    let var = drops.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / drops.len() as f64;
+    let mean = crate::math::sum(drops) / drops.len() as f64;
+    let var = crate::math::centered_sum_sq(drops, mean) / drops.len() as f64;
 
     (median + k * var.sqrt()).max(min_threshold)
 }

@@ -506,7 +506,7 @@ pub fn mann_whitney_u(x: &[f64], y: &[f64]) -> NonparametricResult {
     let ranks = rank(&combined);
 
     // Step 2: U statistic from rank sum of group 1.
-    let r1: f64 = ranks[..n1].iter().sum();
+    let r1: f64 = crate::math::sum(&ranks[..n1]);
     let u1 = r1 - (n1 * (n1 + 1)) as f64 / 2.0;
     let u2 = (n1 * n2) as f64 - u1;
     let u = u1.min(u2); // Use smaller U for two-tailed test
@@ -563,10 +563,11 @@ pub fn wilcoxon_signed_rank(differences: &[f64]) -> NonparametricResult {
     let ranks = rank(&abs_vals);
 
     // W+ = sum of ranks where original difference was positive
-    let w_plus: f64 = nonzero.iter().zip(ranks.iter())
+    let positive_ranks: Vec<f64> = nonzero.iter().zip(ranks.iter())
         .filter(|(&d, _)| d > 0.0)
         .map(|(_, &r)| r)
-        .sum();
+        .collect();
+    let w_plus: f64 = crate::math::sum(&positive_ranks);
 
     // Tie correction: subtract Σ t_j(t_j-1)(t_j+1)/48 from variance.
     // Use tie_count primitive on sorted |differences|.
@@ -617,7 +618,7 @@ pub fn kruskal_wallis(data: &[f64], group_sizes: &[usize]) -> NonparametricResul
     let mut h = 0.0;
     for &gs in group_sizes {
         if gs > 0 {
-            let r_sum: f64 = ranks[offset..offset + gs].iter().sum();
+            let r_sum: f64 = crate::math::sum(&ranks[offset..offset + gs]);
             h += r_sum * r_sum / gs as f64;
         }
         offset += gs;
@@ -687,7 +688,7 @@ pub fn dunn_test(data: &[f64], group_sizes: &[usize]) -> Vec<DunnComparison> {
         if gs == 0 {
             mean_ranks.push(f64::NAN);
         } else {
-            let r_sum: f64 = ranks[offset..offset + gs].iter().sum();
+            let r_sum: f64 = crate::math::sum(&ranks[offset..offset + gs]);
             mean_ranks.push(r_sum / gs as f64);
         }
         offset += gs;
@@ -821,8 +822,8 @@ pub fn shapiro_wilk(data: &[f64]) -> NonparametricResult {
     }
 
     let nf = n as f64;
-    let mean = sorted.iter().sum::<f64>() / nf;
-    let ss: f64 = sorted.iter().map(|x| (x - mean) * (x - mean)).sum();
+    let mean = crate::math::sum(&sorted) / nf;
+    let ss: f64 = crate::math::centered_sum_sq(&sorted, mean);
 
     if ss < 1e-15 {
         // All values identical — degenerate
@@ -944,7 +945,7 @@ pub fn shapiro_wilk_coefficients(n: usize) -> Vec<f64> {
             let m: Vec<f64> = (1..=n).map(|i| {
                 normal_quantile((i as f64 - 0.375) / (nf + 0.25))
             }).collect();
-            let cn: f64 = m.iter().map(|x| x * x).sum();
+            let cn: f64 = crate::math::sum_sq(&m);
             let cn_sqrt = cn.sqrt();
             m.iter().map(|mi| mi / cn_sqrt).collect()
         }
@@ -1217,12 +1218,14 @@ pub fn kde(data: &[f64], eval_points: &[f64], kernel: KernelType, bandwidth: Opt
     if h <= 0.0 { return vec![0.0; eval_points.len()]; }
 
     let nf = n as f64;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     eval_points.iter().map(|&x| {
-        let sum: f64 = clean.iter().map(|&xi| {
+        let mut acc = KulischAccumulator::new();
+        for &xi in clean.iter() {
             let u = (x - xi) / h;
-            kernel_eval(kernel, u)
-        }).sum();
-        sum / (nf * h)
+            acc.add_f64(kernel_eval(kernel, u));
+        }
+        acc.to_f64() / (nf * h)
     }).collect()
 }
 
@@ -1685,15 +1688,16 @@ pub fn level_spacing_r_stat(sorted_values: &[f64]) -> f64 {
         return f64::NAN;
     }
     let gaps: Vec<f64> = sorted_values.windows(2).map(|w| w[1] - w[0]).collect();
-    let mean_gap = gaps.iter().sum::<f64>() / gaps.len() as f64;
+    let mean_gap = crate::math::sum(&gaps) / gaps.len() as f64;
     if mean_gap == 0.0 {
         return f64::NAN;
     }
     let norm_gaps: Vec<f64> = gaps.iter().map(|&g| g / mean_gap).collect();
-    let r_sum: f64 = norm_gaps
+    let ratios: Vec<f64> = norm_gaps
         .windows(2)
         .map(|w| w[0].min(w[1]) / w[0].max(w[1]))
-        .sum();
+        .collect();
+    let r_sum: f64 = crate::math::sum(&ratios);
     r_sum / (norm_gaps.len() - 1) as f64
 }
 
@@ -1706,22 +1710,7 @@ pub fn level_spacing_r_stat(sorted_values: &[f64]) -> f64 {
 /// r = Σ((x-x̄)(y-ȳ)) / √(Σ(x-x̄)² · Σ(y-ȳ)²)
 /// Returns NaN if either slice has zero variance.
 pub fn pearson_r(x: &[f64], y: &[f64]) -> f64 {
-    assert_eq!(x.len(), y.len());
-    let n = x.len() as f64;
-    let mx = x.iter().sum::<f64>() / n;
-    let my = y.iter().sum::<f64>() / n;
-    let mut num = 0.0;
-    let mut dx2 = 0.0;
-    let mut dy2 = 0.0;
-    for (xi, yi) in x.iter().zip(y.iter()) {
-        let dx = xi - mx;
-        let dy = yi - my;
-        num += dx * dy;
-        dx2 += dx * dx;
-        dy2 += dy * dy;
-    }
-    let denom = (dx2 * dy2).sqrt();
-    if denom < 1e-15 { f64::NAN } else { num / denom }
+    crate::math::correlation(x, y)
 }
 
 /// Phi coefficient: Pearson correlation for two binary (0/1) variables.
@@ -1853,7 +1842,7 @@ pub fn cramers_v(table: &[f64], n_rows: usize) -> f64 {
     let n_cols = if n_rows == 0 { 0 } else { table.len() / n_rows };
     if n_rows < 2 || n_cols < 2 { return f64::NAN; }
 
-    let n: f64 = table.iter().sum();
+    let n: f64 = crate::math::sum(table);
     if n < 1e-15 { return f64::NAN; }
 
     // Row and column totals
@@ -1899,26 +1888,29 @@ pub fn eta_squared(values: &[f64], groups: &[usize]) -> f64 {
     let n = values.len();
     if n < 2 { return f64::NAN; }
 
-    let grand_mean = values.iter().sum::<f64>() / n as f64;
-    let ss_total: f64 = values.iter().map(|v| (v - grand_mean).powi(2)).sum();
+    let grand_mean = crate::math::sum(values) / n as f64;
+    let ss_total: f64 = crate::math::centered_sum_sq(values, grand_mean);
     if ss_total < 1e-15 { return 0.0; } // constant data → no variance to explain
 
-    // Group means and sizes
+    // Group means and sizes — Kulisch-accumulate per-group sums.
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     let max_group = *groups.iter().max().unwrap_or(&0);
-    let mut group_sums = vec![0.0; max_group + 1];
+    let mut group_sums: Vec<KulischAccumulator> = (0..=max_group).map(|_| KulischAccumulator::new()).collect();
     let mut group_counts = vec![0usize; max_group + 1];
     for (i, &g) in groups.iter().enumerate() {
-        group_sums[g] += values[i];
+        group_sums[g].add_f64(values[i]);
         group_counts[g] += 1;
     }
 
-    let ss_between: f64 = (0..=max_group)
-        .filter(|&g| group_counts[g] > 0)
-        .map(|g| {
-            let group_mean = group_sums[g] / group_counts[g] as f64;
-            group_counts[g] as f64 * (group_mean - grand_mean).powi(2)
-        })
-        .sum();
+    let mut ss_acc = KulischAccumulator::new();
+    for g in 0..=max_group {
+        if group_counts[g] > 0 {
+            let group_mean = group_sums[g].to_f64() / group_counts[g] as f64;
+            let d = group_mean - grand_mean;
+            ss_acc.add_f64(group_counts[g] as f64 * d * d);
+        }
+    }
+    let ss_between: f64 = ss_acc.to_f64();
 
     (ss_between / ss_total).clamp(0.0, 1.0)
 }
@@ -1964,27 +1956,43 @@ pub fn distance_correlation(x: &[f64], y: &[f64]) -> f64 {
     }
 
     // Double-center: A_{ij} = a_{ij} - ā_{i.} - ā_{.j} + ā_{..}
-    let row_means_a: Vec<f64> = (0..n).map(|i| (0..n).map(|j| a[i*n+j]).sum::<f64>() / nf).collect();
-    let col_means_a: Vec<f64> = (0..n).map(|j| (0..n).map(|i| a[i*n+j]).sum::<f64>() / nf).collect();
-    let grand_mean_a: f64 = a.iter().sum::<f64>() / (nf * nf);
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let row_means_a: Vec<f64> = (0..n).map(|i| {
+        let row: Vec<f64> = (0..n).map(|j| a[i*n+j]).collect();
+        crate::math::sum(&row) / nf
+    }).collect();
+    let col_means_a: Vec<f64> = (0..n).map(|j| {
+        let col: Vec<f64> = (0..n).map(|i| a[i*n+j]).collect();
+        crate::math::sum(&col) / nf
+    }).collect();
+    let grand_mean_a: f64 = crate::math::sum(&a) / (nf * nf);
 
-    let row_means_b: Vec<f64> = (0..n).map(|i| (0..n).map(|j| b[i*n+j]).sum::<f64>() / nf).collect();
-    let col_means_b: Vec<f64> = (0..n).map(|j| (0..n).map(|i| b[i*n+j]).sum::<f64>() / nf).collect();
-    let grand_mean_b: f64 = b.iter().sum::<f64>() / (nf * nf);
+    let row_means_b: Vec<f64> = (0..n).map(|i| {
+        let row: Vec<f64> = (0..n).map(|j| b[i*n+j]).collect();
+        crate::math::sum(&row) / nf
+    }).collect();
+    let col_means_b: Vec<f64> = (0..n).map(|j| {
+        let col: Vec<f64> = (0..n).map(|i| b[i*n+j]).collect();
+        crate::math::sum(&col) / nf
+    }).collect();
+    let grand_mean_b: f64 = crate::math::sum(&b) / (nf * nf);
 
-    // dCov², dVar_X, dVar_Y
-    let mut dcov2 = 0.0;
-    let mut dvar_x = 0.0;
-    let mut dvar_y = 0.0;
+    // dCov², dVar_X, dVar_Y via Kulisch for exact accumulation.
+    let mut acc_dcov2 = KulischAccumulator::new();
+    let mut acc_dvar_x = KulischAccumulator::new();
+    let mut acc_dvar_y = KulischAccumulator::new();
     for i in 0..n {
         for j in 0..n {
             let a_centered = a[i*n+j] - row_means_a[i] - col_means_a[j] + grand_mean_a;
             let b_centered = b[i*n+j] - row_means_b[i] - col_means_b[j] + grand_mean_b;
-            dcov2 += a_centered * b_centered;
-            dvar_x += a_centered * a_centered;
-            dvar_y += b_centered * b_centered;
+            acc_dcov2.add_f64(a_centered * b_centered);
+            acc_dvar_x.add_f64(a_centered * a_centered);
+            acc_dvar_y.add_f64(b_centered * b_centered);
         }
     }
+    let mut dcov2 = acc_dcov2.to_f64();
+    let mut dvar_x = acc_dvar_x.to_f64();
+    let mut dvar_y = acc_dvar_y.to_f64();
     dcov2 /= nf * nf;
     dvar_x /= nf * nf;
     dvar_y /= nf * nf;
@@ -2019,8 +2027,8 @@ pub fn anderson_darling(data: &[f64]) -> NonparametricResult {
     }
 
     let nf = n as f64;
-    let mean = sorted.iter().sum::<f64>() / nf;
-    let var: f64 = sorted.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (nf - 1.0);
+    let mean = crate::math::sum(&sorted) / nf;
+    let var: f64 = crate::math::centered_sum_sq(&sorted, mean) / (nf - 1.0);
     let std = var.sqrt();
 
     if std < 1e-15 {
@@ -2034,14 +2042,16 @@ pub fn anderson_darling(data: &[f64]) -> NonparametricResult {
     let z: Vec<f64> = sorted.iter().map(|x| (x - mean) / std).collect();
 
     // Compute A²
-    let mut sum = 0.0;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut sum_acc = KulischAccumulator::new();
     for i in 0..n {
         let phi_z = crate::special_functions::normal_cdf(z[i]);
         let phi_rev = crate::special_functions::normal_cdf(z[n - 1 - i]);
         let ln_phi = phi_z.max(1e-300).ln();
         let ln_1_phi = (1.0 - phi_rev).max(1e-300).ln();
-        sum += (2.0 * (i as f64) + 1.0) * (ln_phi + ln_1_phi);
+        sum_acc.add_f64((2.0 * (i as f64) + 1.0) * (ln_phi + ln_1_phi));
     }
+    let sum = sum_acc.to_f64();
     let a2 = -nf - sum / nf;
 
     // Adjusted statistic: A²* = A² (1 + 0.75/n + 2.25/n²)
@@ -2105,7 +2115,7 @@ pub fn friedman_test(data: &[f64], n_subjects: usize, n_treatments: usize) -> No
     let kf = k as f64;
 
     // Friedman Q statistic
-    let sum_rj2: f64 = rank_sums.iter().map(|r| r * r).sum();
+    let sum_rj2: f64 = crate::math::sum_sq(&rank_sums);
     let q = (12.0 / (nf * kf * (kf + 1.0))) * sum_rj2 - 3.0 * nf * (kf + 1.0);
 
     let df = kf - 1.0;
@@ -2137,19 +2147,12 @@ pub fn concordance_correlation(x: &[f64], y: &[f64]) -> f64 {
     if n < 2 { return f64::NAN; }
     let nf = n as f64;
 
-    let mx = x.iter().sum::<f64>() / nf;
-    let my = y.iter().sum::<f64>() / nf;
+    let mx = crate::math::sum(x) / nf;
+    let my = crate::math::sum(y) / nf;
 
-    let mut sxx = 0.0;
-    let mut syy = 0.0;
-    let mut sxy = 0.0;
-    for i in 0..n {
-        let dx = x[i] - mx;
-        let dy = y[i] - my;
-        sxx += dx * dx;
-        syy += dy * dy;
-        sxy += dx * dy;
-    }
+    let sxx = crate::math::centered_sum_sq(x, mx);
+    let syy = crate::math::centered_sum_sq(y, my);
+    let sxy = crate::math::centered_dot(x, mx, y, my);
     // Use population variances (divide by n, not n-1) per Lin 1989
     let var_x = sxx / nf;
     let var_y = syy / nf;
@@ -3653,7 +3656,7 @@ pub fn blomqvist_beta(x: &[f64], y: &[f64]) -> f64 {
     // In Rust, 0.0f64.signum() = 1.0 (IEEE 754: signum preserves sign bit,
     // and +0.0 has positive sign), so `signum == 0.0` would never fire for
     // median-tied elements. The raw difference check is the correct test.
-    let concordant: f64 = (0..n).map(|i| {
+    let concordance_terms: Vec<f64> = (0..n).map(|i| {
         let dx = x[i] - mx;
         let dy = y[i] - my;
         if dx == 0.0 || dy == 0.0 {
@@ -3663,7 +3666,8 @@ pub fn blomqvist_beta(x: &[f64], y: &[f64]) -> f64 {
         } else {
             -1.0 // discordant: one above, one below
         }
-    }).sum();
+    }).collect();
+    let concordant: f64 = crate::math::sum(&concordance_terms);
 
     concordant / nf
 }
@@ -3713,7 +3717,8 @@ pub fn ranksums(x: &[f64], y: &[f64]) -> NonparametricResult {
     }
 
     // W = sum of ranks for group x
-    let w: f64 = (0..total).filter(|&k| pool[k].1 == 0).map(|k| ranks[k]).sum();
+    let group_x_ranks: Vec<f64> = (0..total).filter(|&k| pool[k].1 == 0).map(|k| ranks[k]).collect();
+    let w: f64 = crate::math::sum(&group_x_ranks);
 
     // Normal approximation
     let n1f = n1 as f64;

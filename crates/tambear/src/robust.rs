@@ -281,10 +281,13 @@ pub fn tau_scale_with_params(data: &[f64], mad_factor: f64, bisquare_k: f64) -> 
     let s = mad_val * mad_factor;
     let k = bisquare_k;
 
-    let rho_sum: f64 = clean.iter().map(|&x| {
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut rho_acc = KulischAccumulator::new();
+    for &x in clean.iter() {
         let u = (x - med) / s;
-        bisquare_rho(u, k)
-    }).sum();
+        rho_acc.add_f64(bisquare_rho(u, k));
+    }
+    let rho_sum: f64 = rho_acc.to_f64();
 
     (s * s * rho_sum / n as f64).sqrt()
 }
@@ -379,7 +382,7 @@ fn c_step(x: &[f64], y: &[f64], a: f64, b: f64, h: usize) -> (f64, f64, f64) {
         .map(|i| (y[i] - new_a - new_b * x[i]).powi(2))
         .collect();
     new_residuals.sort_by(|a, b| a.total_cmp(b));
-    let ss: f64 = new_residuals[..h].iter().sum();
+    let ss: f64 = crate::math::sum(&new_residuals[..h]);
 
     (new_a, new_b, ss)
 }
@@ -387,16 +390,21 @@ fn c_step(x: &[f64], y: &[f64], a: f64, b: f64, h: usize) -> (f64, f64, f64) {
 /// OLS on a subset of indices.
 /// Centered formulation avoids catastrophic cancellation.
 fn ols_subset(x: &[f64], y: &[f64], indices: &[usize]) -> (f64, f64) {
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     let n = indices.len() as f64;
-    let mean_x: f64 = indices.iter().map(|&i| x[i]).sum::<f64>() / n;
-    let mean_y: f64 = indices.iter().map(|&i| y[i]).sum::<f64>() / n;
-    let mut sxy = 0.0;
-    let mut sxx = 0.0;
+    let x_sub: Vec<f64> = indices.iter().map(|&i| x[i]).collect();
+    let y_sub: Vec<f64> = indices.iter().map(|&i| y[i]).collect();
+    let mean_x: f64 = crate::math::sum(&x_sub) / n;
+    let mean_y: f64 = crate::math::sum(&y_sub) / n;
+    let mut sxy_acc = KulischAccumulator::new();
+    let mut sxx_acc = KulischAccumulator::new();
     for &i in indices {
         let dx = x[i] - mean_x;
-        sxy += dx * (y[i] - mean_y);
-        sxx += dx * dx;
+        sxy_acc.add_f64(dx * (y[i] - mean_y));
+        sxx_acc.add_f64(dx * dx);
     }
+    let sxy = sxy_acc.to_f64();
+    let sxx = sxx_acc.to_f64();
     if sxx.abs() < 1e-15 {
         return (mean_y, 0.0);
     }
@@ -501,19 +509,25 @@ pub fn mcd_2d(x: &[f64], y: &[f64], n_trials: usize, seed: u64) -> McdResult2D {
 
 /// Compute mean and covariance from a subset of 2D points.
 fn subset_stats_2d(x: &[f64], y: &[f64], indices: &[usize]) -> (f64, f64, [f64; 4]) {
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     let n = indices.len() as f64;
-    let cx: f64 = indices.iter().map(|&i| x[i]).sum::<f64>() / n;
-    let cy: f64 = indices.iter().map(|&i| y[i]).sum::<f64>() / n;
-    let mut vxx = 0.0;
-    let mut vxy = 0.0;
-    let mut vyy = 0.0;
+    let x_sub: Vec<f64> = indices.iter().map(|&i| x[i]).collect();
+    let y_sub: Vec<f64> = indices.iter().map(|&i| y[i]).collect();
+    let cx: f64 = crate::math::sum(&x_sub) / n;
+    let cy: f64 = crate::math::sum(&y_sub) / n;
+    let mut vxx_acc = KulischAccumulator::new();
+    let mut vxy_acc = KulischAccumulator::new();
+    let mut vyy_acc = KulischAccumulator::new();
     for &i in indices {
         let dx = x[i] - cx;
         let dy = y[i] - cy;
-        vxx += dx * dx;
-        vxy += dx * dy;
-        vyy += dy * dy;
+        vxx_acc.add_f64(dx * dx);
+        vxy_acc.add_f64(dx * dy);
+        vyy_acc.add_f64(dy * dy);
     }
+    let vxx = vxx_acc.to_f64();
+    let vxy = vxy_acc.to_f64();
+    let vyy = vyy_acc.to_f64();
     let denom = n - 1.0;
     (cx, cy, [vxx / denom, vxy / denom, vxy / denom, vyy / denom])
 }

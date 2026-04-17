@@ -604,28 +604,35 @@ pub fn calinski_harabasz_score(
     let ClusterCentroids { k, n_dims, sizes, centroids, id_to_idx } = cc;
     let n = labels.len();
 
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     let sq_dist = |a: &[f64], b: &[f64]| -> f64 {
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum()
+        let diffs: Vec<f64> = a.iter().zip(b.iter()).map(|(x, y)| {
+            let d = x - y;
+            d * d
+        }).collect();
+        crate::math::sum(&diffs)
     };
 
     let n_clustered = sizes.iter().sum::<usize>() as f64;
-    let mut global_centroid = vec![0.0_f64; *n_dims];
+    let mut gc_accs: Vec<KulischAccumulator> = (0..*n_dims).map(|_| KulischAccumulator::new()).collect();
     for ci in 0..*k {
         for d in 0..*n_dims {
-            global_centroid[d] += sizes[ci] as f64 * centroids[ci * n_dims + d];
+            gc_accs[d].add_f64(sizes[ci] as f64 * centroids[ci * n_dims + d]);
         }
     }
-    for d in 0..*n_dims { global_centroid[d] /= n_clustered; }
+    let global_centroid: Vec<f64> = gc_accs.iter().map(|a| a.to_f64() / n_clustered).collect();
 
-    let ss_b: f64 = (0..*k)
+    let ss_b_terms: Vec<f64> = (0..*k)
         .map(|ci| sizes[ci] as f64 * sq_dist(&centroids[ci*n_dims..(ci+1)*n_dims], &global_centroid))
-        .sum();
-    let mut ss_w = 0.0_f64;
+        .collect();
+    let ss_b: f64 = crate::math::sum(&ss_b_terms);
+    let mut ss_w_acc = KulischAccumulator::new();
     for i in 0..n {
         if let Some(&ci) = id_to_idx.get(&labels[i]) {
-            ss_w += sq_dist(&data[i*n_dims..(i+1)*n_dims], &centroids[ci*n_dims..(ci+1)*n_dims]);
+            ss_w_acc.add_f64(sq_dist(&data[i*n_dims..(i+1)*n_dims], &centroids[ci*n_dims..(ci+1)*n_dims]));
         }
     }
+    let ss_w = ss_w_acc.to_f64();
     let n_k = n_clustered - *k as f64;
     if ss_w < 1e-300 || n_k <= 0.0 {
         f64::INFINITY
@@ -660,24 +667,31 @@ pub fn davies_bouldin_score(
     let ClusterCentroids { k, n_dims, sizes, centroids, id_to_idx } = cc;
     let n = labels.len();
 
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     let sq_dist = |a: &[f64], b: &[f64]| -> f64 {
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum()
+        let diffs: Vec<f64> = a.iter().zip(b.iter()).map(|(x, y)| {
+            let d = x - y;
+            d * d
+        }).collect();
+        crate::math::sum(&diffs)
     };
 
-    let mut s = vec![0.0_f64; *k]; // mean intra-cluster distance to centroid
+    let mut s_accs: Vec<KulischAccumulator> = (0..*k).map(|_| KulischAccumulator::new()).collect();
     for i in 0..n {
         if let Some(&ci) = id_to_idx.get(&labels[i]) {
-            s[ci] += sq_dist(&data[i*n_dims..(i+1)*n_dims], &centroids[ci*n_dims..(ci+1)*n_dims]).sqrt();
+            s_accs[ci].add_f64(sq_dist(&data[i*n_dims..(i+1)*n_dims], &centroids[ci*n_dims..(ci+1)*n_dims]).sqrt());
         }
     }
+    let mut s: Vec<f64> = s_accs.iter().map(|a| a.to_f64()).collect();
     for ci in 0..*k { if sizes[ci] > 0 { s[ci] /= sizes[ci] as f64; } }
 
-    let db_sum: f64 = (0..*k).map(|i| {
+    let db_terms: Vec<f64> = (0..*k).map(|i| {
         (0..*k).filter(|&j| j != i).map(|j| {
             let d_ij = sq_dist(&centroids[i*n_dims..(i+1)*n_dims], &centroids[j*n_dims..(j+1)*n_dims]).sqrt();
             if d_ij < 1e-300 { 0.0 } else { (s[i] + s[j]) / d_ij }
         }).fold(f64::NEG_INFINITY, crate::numerical::nan_max)
-    }).sum();
+    }).collect();
+    let db_sum: f64 = crate::math::sum(&db_terms);
     db_sum / *k as f64
 }
 
@@ -712,11 +726,16 @@ pub fn silhouette_score(data: &[f64], labels: &[i32], n_dims: usize) -> f64 {
     let mut sizes = vec![0usize; k];
     for &l in labels { if let Some(&ci) = id_to_idx.get(&l) { sizes[ci] += 1; } }
 
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     let sq_dist = |a: &[f64], b: &[f64]| -> f64 {
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum()
+        let diffs: Vec<f64> = a.iter().zip(b.iter()).map(|(x, y)| {
+            let d = x - y;
+            d * d
+        }).collect();
+        crate::math::sum(&diffs)
     };
 
-    let mut sil_sum = 0.0_f64;
+    let mut sil_sum_acc = KulischAccumulator::new();
     let mut sil_count = 0usize;
 
     for i in 0..n {
@@ -728,18 +747,18 @@ pub fn silhouette_score(data: &[f64], labels: &[i32], n_dims: usize) -> f64 {
 
         // a(i): mean distance to other points in the same cluster
         let a = {
-            let mut sum = 0.0;
+            let mut sum_acc = KulischAccumulator::new();
             let mut cnt = 0usize;
             for j in 0..n {
                 if j == i { continue; }
                 if let Some(&cj) = id_to_idx.get(&labels[j]) {
                     if cj == ci {
-                        sum += sq_dist(&data[i*n_dims..(i+1)*n_dims], &data[j*n_dims..(j+1)*n_dims]).sqrt();
+                        sum_acc.add_f64(sq_dist(&data[i*n_dims..(i+1)*n_dims], &data[j*n_dims..(j+1)*n_dims]).sqrt());
                         cnt += 1;
                     }
                 }
             }
-            if cnt == 0 { 0.0 } else { sum / cnt as f64 }
+            if cnt == 0 { 0.0 } else { sum_acc.to_f64() / cnt as f64 }
         };
 
         // b(i): min mean distance to points in any other cluster
@@ -747,28 +766,28 @@ pub fn silhouette_score(data: &[f64], labels: &[i32], n_dims: usize) -> f64 {
             let mut min_b = f64::INFINITY;
             for cj in 0..k {
                 if cj == ci { continue; }
-                let mut sum = 0.0;
+                let mut sum_acc = KulischAccumulator::new();
                 let mut cnt = 0usize;
                 for j in 0..n {
                     if let Some(&cjj) = id_to_idx.get(&labels[j]) {
                         if cjj == cj {
-                            sum += sq_dist(&data[i*n_dims..(i+1)*n_dims], &data[j*n_dims..(j+1)*n_dims]).sqrt();
+                            sum_acc.add_f64(sq_dist(&data[i*n_dims..(i+1)*n_dims], &data[j*n_dims..(j+1)*n_dims]).sqrt());
                             cnt += 1;
                         }
                     }
                 }
-                if cnt > 0 { min_b = min_b.min(sum / cnt as f64); }
+                if cnt > 0 { min_b = min_b.min(sum_acc.to_f64() / cnt as f64); }
             }
             min_b
         };
 
         let max_ab = a.max(b);
         let sil_i = if max_ab < 1e-300 { 0.0 } else { (b - a) / max_ab };
-        sil_sum += sil_i;
+        sil_sum_acc.add_f64(sil_i);
         sil_count += 1;
     }
 
-    if sil_count == 0 { 0.0 } else { sil_sum / sil_count as f64 }
+    if sil_count == 0 { 0.0 } else { sil_sum_acc.to_f64() / sil_count as f64 }
 }
 
 // ── Validation bundle ─────────────────────────────────────────────────────
@@ -858,9 +877,11 @@ pub fn hierarchical_clustering(
     for i in 0..n {
         dist[i * n + i] = 0.0;
         for j in (i + 1)..n {
-            let d: f64 = (0..n_dims).map(|dim| {
-                (data[i * n_dims + dim] - data[j * n_dims + dim]).powi(2)
-            }).sum();
+            let terms: Vec<f64> = (0..n_dims).map(|dim| {
+                let d = data[i * n_dims + dim] - data[j * n_dims + dim];
+                d * d
+            }).collect();
+            let d: f64 = crate::math::sum(&terms);
             // For Ward, store squared distance; for others, store Euclidean
             let d = match linkage { Linkage::Ward => d, _ => d.sqrt() };
             dist[i * n + j] = d;
@@ -977,7 +998,11 @@ pub fn hopkins_statistic(data: &[f64], n: usize, d: usize, m: usize, seed: u64) 
         }).collect();
         let mut min_dist = f64::INFINITY;
         for i in 0..n {
-            let dist: f64 = (0..d).map(|j| (pt[j] - data[i * d + j]).powi(2)).sum();
+            let terms: Vec<f64> = (0..d).map(|j| {
+                let dd = pt[j] - data[i * d + j];
+                dd * dd
+            }).collect();
+            let dist: f64 = crate::math::sum(&terms);
             if dist < min_dist { min_dist = dist; }
         }
         w_sum += min_dist;
@@ -990,9 +1015,11 @@ pub fn hopkins_statistic(data: &[f64], n: usize, d: usize, m: usize, seed: u64) 
         let mut min_dist = f64::INFINITY;
         for i in 0..n {
             if i == idx { continue; }
-            let dist: f64 = (0..d).map(|j| {
-                (data[idx * d + j] - data[i * d + j]).powi(2)
-            }).sum();
+            let terms: Vec<f64> = (0..d).map(|j| {
+                let dd = data[idx * d + j] - data[i * d + j];
+                dd * dd
+            }).collect();
+            let dist: f64 = crate::math::sum(&terms);
             if dist < min_dist { min_dist = dist; }
         }
         u_sum += min_dist;
@@ -1055,9 +1082,11 @@ pub fn kmeans_f64(data: &[f64], n: usize, d: usize, k: usize, max_iter: usize, s
             let mut best = 0usize;
             let mut best_d2 = f64::INFINITY;
             for ci in 0..k {
-                let d2: f64 = (0..d).map(|dim|
-                    (data[i * d + dim] - centroids[ci * d + dim]).powi(2)
-                ).sum();
+                let terms: Vec<f64> = (0..d).map(|dim| {
+                    let dd = data[i * d + dim] - centroids[ci * d + dim];
+                    dd * dd
+                }).collect();
+                let d2: f64 = crate::math::sum(&terms);
                 if d2 < best_d2 { best_d2 = d2; best = ci; }
             }
             if labels[i] != best as i32 { changed = true; }

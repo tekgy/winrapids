@@ -342,6 +342,113 @@ fn op_add_bykey_matches_kulisch_oracle() {
 // (Already covered in kulisch_accumulator.rs unit tests; re-asserted here
 // as the cross-file contract between the primitive and the engine harness.)
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Category 3b: CPU-forced path proves step 3 lands
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The engine auto-selects CUDA when available, so the high-level
+// `AccumulateEngine::new()` tests above can't prove the CPU Kulisch path
+// works until backend pinning (step 4) is wired. These tests bypass the
+// dispatch layer entirely — construct a `ComputeEngine` with a forced
+// `CpuBackend` and exercise `scatter_phi` / `scatter_phi_masked` directly.
+//
+// Unlike the engine-level `#[ignore]`d tests, these are GREEN as soon as
+// step 3 replaces `+=` with Kulisch registers — no step 4 dependency.
+
+use std::sync::Arc;
+use tam_gpu::CpuBackend;
+use tambear::compute_engine::ComputeEngine;
+
+fn cpu_compute_engine() -> ComputeEngine {
+    ComputeEngine::new(Arc::new(CpuBackend::new()))
+}
+
+#[test]
+fn cpu_scatter_phi_matches_kulisch_oracle() {
+    let mut ce = cpu_compute_engine();
+    for (name, xs) in all_corpora() {
+        let keys = vec![0i32; xs.len()];
+        let got = ce
+            .scatter_phi("v", &keys, &xs, None, 1)
+            .expect("scatter_phi");
+        let want = oracle_add_all(&xs);
+        assert_bits_eq(
+            got[0],
+            want,
+            &format!("CPU scatter_phi vs Kulisch oracle on '{name}'"),
+        );
+    }
+}
+
+#[test]
+fn cpu_scatter_phi_bykey_matches_kulisch_oracle() {
+    let mut ce = cpu_compute_engine();
+    let xs = corpus_mixed_scale();
+    let n_groups = 8;
+    let keys: Vec<i32> = (0..xs.len()).map(|i| (i % n_groups) as i32).collect();
+
+    let got = ce
+        .scatter_phi("v", &keys, &xs, None, n_groups)
+        .expect("scatter_phi");
+    let want = oracle_add_bykey(&xs, &keys, n_groups);
+    assert_eq!(got.len(), want.len());
+    for i in 0..got.len() {
+        assert_bits_eq(
+            got[i],
+            want[i],
+            &format!("CPU scatter_phi ByKey group {i} vs oracle"),
+        );
+    }
+}
+
+#[test]
+fn cpu_scatter_phi_run_to_run_bit_exact() {
+    let mut ce = cpu_compute_engine();
+    for (name, xs) in all_corpora() {
+        let keys = vec![0i32; xs.len()];
+        let a = ce
+            .scatter_phi("v", &keys, &xs, None, 1)
+            .expect("scatter_phi a");
+        let b = ce
+            .scatter_phi("v", &keys, &xs, None, 1)
+            .expect("scatter_phi b");
+        assert_bits_eq(a[0], b[0], &format!("CPU scatter_phi run-to-run on '{name}'"));
+    }
+}
+
+#[test]
+fn cpu_scatter_phi_masked_matches_kulisch_oracle() {
+    let mut ce = cpu_compute_engine();
+    let xs = corpus_mixed_scale();
+    let keys = vec![0i32; xs.len()];
+
+    // Mask: every third element included.
+    let n_mask_words = (xs.len() + 63) / 64;
+    let mut mask = vec![0u64; n_mask_words];
+    for i in 0..xs.len() {
+        if i % 3 == 0 {
+            mask[i / 64] |= 1u64 << (i % 64);
+        }
+    }
+
+    let got = ce
+        .scatter_phi_masked("v", &keys, &xs, None, &mask, 1)
+        .expect("scatter_phi_masked");
+
+    // Oracle: Kulisch over the masked subset.
+    let mut oracle = KulischAccumulator::new();
+    for (i, &v) in xs.iter().enumerate() {
+        if (mask[i / 64] >> (i % 64)) & 1 == 1 {
+            oracle.add_f64(v);
+        }
+    }
+    assert_bits_eq(got[0], oracle.to_f64(), "CPU scatter_phi_masked vs oracle");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Category 4: Kulisch associativity invariant (direct, no engine)
+// ═══════════════════════════════════════════════════════════════════════════
+
 #[test]
 fn kulisch_merge_is_associative_over_corpora() {
     for (name, xs) in all_corpora() {

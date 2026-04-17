@@ -26,6 +26,7 @@ use std::sync::Arc;
 use tam_gpu::{Backend, Buffer, Kernel, TamGpu};
 
 use crate::codegen::{CodegenTarget, Precision};
+use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
 
 const BLOCK_SIZE: u32 = 256;
 
@@ -212,6 +213,22 @@ impl ComputeEngine {
     // CPU path — direct Rust evaluation
     // =======================================================================
 
+    // CPU scatter paths — Kulisch-backed, cross-platform bit-exact deterministic.
+    //
+    // Each group owns a `KulischAccumulator`. Finite phi-results add into the
+    // group's register exactly (no rounding). Non-finite phi-results (NaN, ±∞)
+    // are silently skipped by Kulisch's own `is_finite()` gate in `add_f64`.
+    // Final `to_f64()` is correctly rounded to nearest-even.
+    //
+    // Under today's API this implements skip-mode for non-finite inputs by
+    // default. When `using(nan_policy: ...)` wiring lands (plan step 4), this
+    // path will branch on the requested policy — propagate will use a separate
+    // poison flag + early NaN emit, error will return Err on first non-finite,
+    // skip will continue to be Kulisch's native behavior.
+    //
+    // Single-threaded today. Parallel CPU tree-merge lands in plan step 5 via
+    // `KulischAccumulator::merge` (associative, bit-exact).
+
     fn scatter_phi_cpu(
         &self,
         phi_expr: &str,
@@ -223,12 +240,13 @@ impl ComputeEngine {
         let eval = phi_scatter_eval(phi_expr)?;
         let zero_refs = vec![0.0f64; n_groups];
         let refs = refs.unwrap_or(&zero_refs);
-        let mut output = vec![0.0f64; n_groups];
+        let mut accs: Vec<KulischAccumulator> =
+            (0..n_groups).map(|_| KulischAccumulator::new()).collect();
         for i in 0..keys.len() {
             let g = keys[i] as usize;
-            output[g] += eval(values[i], refs[g]);
+            accs[g].add_f64(eval(values[i], refs[g]));
         }
-        Ok(output)
+        Ok(accs.iter().map(|a| a.to_f64()).collect())
     }
 
     fn scatter_multi_phi_cpu(
@@ -244,16 +262,20 @@ impl ComputeEngine {
             .collect::<Result<_, _>>()?;
         let zero_refs = vec![0.0f64; n_groups];
         let refs = refs.unwrap_or(&zero_refs);
-        let mut outputs: Vec<Vec<f64>> = (0..evals.len()).map(|_| vec![0.0f64; n_groups]).collect();
+        let mut accs: Vec<Vec<KulischAccumulator>> = (0..evals.len())
+            .map(|_| (0..n_groups).map(|_| KulischAccumulator::new()).collect())
+            .collect();
         for i in 0..keys.len() {
             let g = keys[i] as usize;
             let v = values[i];
             let r = refs[g];
             for (j, eval) in evals.iter().enumerate() {
-                outputs[j][g] += eval(v, r);
+                accs[j][g].add_f64(eval(v, r));
             }
         }
-        Ok(outputs)
+        Ok(accs.iter()
+            .map(|per_group| per_group.iter().map(|a| a.to_f64()).collect())
+            .collect())
     }
 
     fn scatter_phi_masked_cpu(
@@ -268,14 +290,15 @@ impl ComputeEngine {
         let eval = phi_scatter_eval(phi_expr)?;
         let zero_refs = vec![0.0f64; n_groups];
         let refs = refs.unwrap_or(&zero_refs);
-        let mut output = vec![0.0f64; n_groups];
+        let mut accs: Vec<KulischAccumulator> =
+            (0..n_groups).map(|_| KulischAccumulator::new()).collect();
         for i in 0..keys.len() {
             let word = mask[i / 64];
             if (word >> (i % 64)) & 1 == 0 { continue; }
             let g = keys[i] as usize;
-            output[g] += eval(values[i], refs[g]);
+            accs[g].add_f64(eval(values[i], refs[g]));
         }
-        Ok(output)
+        Ok(accs.iter().map(|a| a.to_f64()).collect())
     }
 
     fn scatter_extremum_cpu(

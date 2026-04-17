@@ -242,7 +242,7 @@ pub fn softmax(x: &[f64]) -> Vec<f64> {
     if x.is_empty() { return vec![]; }
     let max_val = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
     let exps: Vec<f64> = x.iter().map(|&v| (v - max_val).exp()).collect();
-    let sum: f64 = exps.iter().sum();
+    let sum: f64 = crate::math::sum(&exps);
     exps.iter().map(|&e| e / sum).collect()
 }
 
@@ -251,14 +251,15 @@ pub fn softmax(x: &[f64]) -> Vec<f64> {
 pub fn log_softmax(x: &[f64]) -> Vec<f64> {
     if x.is_empty() { return vec![]; }
     let max_val = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
-    let lse = max_val + x.iter().map(|&v| (v - max_val).exp()).sum::<f64>().ln();
+    let exps: Vec<f64> = x.iter().map(|&v| (v - max_val).exp()).collect();
+    let lse = max_val + crate::math::sum(&exps).ln();
     x.iter().map(|&v| v - lse).collect()
 }
 
 /// Softmax backward: given softmax output s and grad_output g,
 /// returns grad_input = s * (g - sum(s * g)).
 pub fn softmax_backward(softmax_out: &[f64], grad_out: &[f64]) -> Vec<f64> {
-    let dot: f64 = softmax_out.iter().zip(grad_out).map(|(&s, &g)| s * g).sum();
+    let dot: f64 = crate::math::dot(softmax_out, grad_out);
     softmax_out.iter().zip(grad_out).map(|(&s, &g)| s * (g - dot)).collect()
 }
 
@@ -473,7 +474,7 @@ pub fn avg_pool1d(input: &[f64], kernel_size: usize, stride: usize) -> Vec<f64> 
     let mut output = Vec::with_capacity(out_len);
     for i in 0..out_len {
         let start = i * stride;
-        let sum: f64 = input[start..start + kernel_size].iter().sum();
+        let sum: f64 = crate::math::sum(&input[start..start + kernel_size]);
         output.push(sum / kernel_size as f64);
     }
     output
@@ -536,17 +537,18 @@ pub fn avg_pool2d(
     let area = (pool_h * pool_w) as f64;
     let mut output = Vec::with_capacity(channels * oh * ow);
 
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     for c in 0..channels {
         let base = c * h * w;
         for i in 0..oh {
             for j in 0..ow {
-                let mut sum = 0.0;
+                let mut sum_acc = KulischAccumulator::new();
                 for pr in 0..pool_h {
                     for pc in 0..pool_w {
-                        sum += input[base + (i * stride + pr) * w + (j * stride + pc)];
+                        sum_acc.add_f64(input[base + (i * stride + pr) * w + (j * stride + pc)]);
                     }
                 }
-                output.push(sum / area);
+                output.push(sum_acc.to_f64() / area);
             }
         }
     }
@@ -560,7 +562,7 @@ pub fn global_avg_pool2d(input: &[f64], channels: usize, h: usize, w: usize) -> 
     let inv = 1.0 / spatial as f64;
     (0..channels).map(|c| {
         let base = c * spatial;
-        input[base..base + spatial].iter().sum::<f64>() * inv
+        crate::math::sum(&input[base..base + spatial]) * inv
     }).collect()
 }
 
@@ -570,7 +572,7 @@ pub fn adaptive_avg_pool1d(input: &[f64], output_size: usize) -> Vec<f64> {
     (0..output_size).map(|i| {
         let start = (i * n) / output_size;
         let end = ((i + 1) * n) / output_size;
-        let sum: f64 = input[start..end].iter().sum();
+        let sum: f64 = crate::math::sum(&input[start..end]);
         sum / (end - start) as f64
     }).collect()
 }
@@ -597,30 +599,27 @@ pub fn batch_norm(
     beta: &[f64],
     eps: f64,
 ) -> BatchNormResult {
-    let mut mean = vec![0.0; features];
-    let mut var = vec![0.0; features];
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     let inv_n = 1.0 / batch_size as f64;
 
-    // Compute mean per feature
+    // Compute mean per feature via per-feature Kulisch accumulators.
+    let mut mean_accs: Vec<KulischAccumulator> = (0..features).map(|_| KulischAccumulator::new()).collect();
     for b in 0..batch_size {
         for f in 0..features {
-            mean[f] += input[b * features + f];
+            mean_accs[f].add_f64(input[b * features + f]);
         }
     }
-    for f in 0..features {
-        mean[f] *= inv_n;
-    }
+    let mean: Vec<f64> = mean_accs.iter().map(|a| a.to_f64() * inv_n).collect();
 
-    // Compute variance per feature
+    // Compute variance per feature via per-feature Kulisch accumulators.
+    let mut var_accs: Vec<KulischAccumulator> = (0..features).map(|_| KulischAccumulator::new()).collect();
     for b in 0..batch_size {
         for f in 0..features {
             let d = input[b * features + f] - mean[f];
-            var[f] += d * d;
+            var_accs[f].add_f64(d * d);
         }
     }
-    for f in 0..features {
-        var[f] *= inv_n;
-    }
+    let var: Vec<f64> = var_accs.iter().map(|a| a.to_f64() * inv_n).collect();
 
     // Normalize + scale + shift
     let eps = eps.max(f64::MIN_POSITIVE);
@@ -650,10 +649,9 @@ pub fn layer_norm(
 
     for b in 0..batch_size {
         let base = b * features;
-        let mean: f64 = input[base..base + features].iter().sum::<f64>() * inv_d;
-        let var: f64 = input[base..base + features].iter()
-            .map(|&x| (x - mean) * (x - mean))
-            .sum::<f64>() * inv_d;
+        let slice = &input[base..base + features];
+        let mean: f64 = crate::math::sum(slice) * inv_d;
+        let var: f64 = crate::math::centered_sum_sq(slice, mean) * inv_d;
         let inv_std = 1.0 / (var + eps).sqrt();
         for f in 0..features {
             output[base + f] = gamma[f] * (input[base + f] - mean) * inv_std + beta[f];
@@ -676,9 +674,7 @@ pub fn rms_norm(
 
     for b in 0..batch_size {
         let base = b * features;
-        let rms: f64 = (input[base..base + features].iter()
-            .map(|&x| x * x)
-            .sum::<f64>() * inv_d + eps).sqrt();
+        let rms: f64 = (crate::math::sum_sq(&input[base..base + features]) * inv_d + eps).sqrt();
         let inv_rms = 1.0 / rms;
         for f in 0..features {
             output[base + f] = gamma[f] * input[base + f] * inv_rms;
@@ -1056,7 +1052,8 @@ pub fn multi_head_attention(
 /// Mean squared error loss.
 pub fn mse_loss(predicted: &[f64], target: &[f64]) -> f64 {
     let n = predicted.len() as f64;
-    predicted.iter().zip(target).map(|(&p, &t)| (p - t) * (p - t)).sum::<f64>() / n
+    let terms: Vec<f64> = predicted.iter().zip(target).map(|(&p, &t)| (p - t) * (p - t)).collect();
+    crate::math::sum(&terms) / n
 }
 
 /// MSE gradient: 2(predicted - target) / n
@@ -1069,10 +1066,11 @@ pub fn mse_loss_backward(predicted: &[f64], target: &[f64]) -> Vec<f64> {
 pub fn bce_loss(predicted: &[f64], target: &[f64]) -> f64 {
     let n = predicted.len() as f64;
     let eps = 1e-12;
-    -predicted.iter().zip(target).map(|(&p, &t)| {
+    let terms: Vec<f64> = predicted.iter().zip(target).map(|(&p, &t)| {
         let p = p.clamp(eps, 1.0 - eps);
         t * p.ln() + (1.0 - t) * (1.0 - p).ln()
-    }).sum::<f64>() / n
+    }).collect();
+    -crate::math::sum(&terms) / n
 }
 
 /// BCE gradient.
@@ -1089,13 +1087,14 @@ pub fn bce_loss_backward(predicted: &[f64], target: &[f64]) -> Vec<f64> {
 /// Applies log-softmax internally for numerical stability.
 pub fn cross_entropy_loss(logits: &[f64], num_classes: usize, targets: &[usize]) -> f64 {
     let batch_size = targets.len();
-    let mut total = 0.0;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut total_acc = KulischAccumulator::new();
     for b in 0..batch_size {
         let row = &logits[b * num_classes..(b + 1) * num_classes];
         let lsm = log_softmax(row);
-        total -= lsm[targets[b]];
+        total_acc.add_f64(-lsm[targets[b]]);
     }
-    total / batch_size as f64
+    total_acc.to_f64() / batch_size as f64
 }
 
 /// Cross-entropy gradient w.r.t. logits.
@@ -1117,14 +1116,15 @@ pub fn cross_entropy_loss_backward(logits: &[f64], num_classes: usize, targets: 
 /// Huber loss (smooth L1). Delta controls the transition point.
 pub fn huber_loss(predicted: &[f64], target: &[f64], delta: f64) -> f64 {
     let n = predicted.len() as f64;
-    predicted.iter().zip(target).map(|(&p, &t)| {
+    let terms: Vec<f64> = predicted.iter().zip(target).map(|(&p, &t)| {
         let d = (p - t).abs();
         if d <= delta {
             0.5 * d * d
         } else {
             delta * (d - 0.5 * delta)
         }
-    }).sum::<f64>() / n
+    }).collect();
+    crate::math::sum(&terms) / n
 }
 
 /// Huber loss gradient.
@@ -1142,9 +1142,9 @@ pub fn huber_loss_backward(predicted: &[f64], target: &[f64], delta: f64) -> Vec
 
 /// Cosine similarity loss: 1 - cos_sim(a, b).
 pub fn cosine_similarity_loss(a: &[f64], b: &[f64]) -> f64 {
-    let dot: f64 = a.iter().zip(b).map(|(&x, &y)| x * y).sum();
-    let na: f64 = a.iter().map(|&x| x * x).sum::<f64>().sqrt();
-    let nb: f64 = b.iter().map(|&x| x * x).sum::<f64>().sqrt();
+    let dot: f64 = crate::math::dot(a, b);
+    let na: f64 = crate::math::sum_sq(a).sqrt();
+    let nb: f64 = crate::math::sum_sq(b).sqrt();
     let denom = na * nb;
     if denom < 1e-12 { return 1.0; }
     1.0 - dot / denom
@@ -1153,7 +1153,8 @@ pub fn cosine_similarity_loss(a: &[f64], b: &[f64]) -> f64 {
 /// Hinge loss: max(0, 1 - y * pred). y ∈ {-1, +1}.
 pub fn hinge_loss(predicted: &[f64], target: &[f64]) -> f64 {
     let n = predicted.len() as f64;
-    predicted.iter().zip(target).map(|(&p, &t)| (1.0 - t * p).max(0.0)).sum::<f64>() / n
+    let terms: Vec<f64> = predicted.iter().zip(target).map(|(&p, &t)| (1.0 - t * p).max(0.0)).collect();
+    crate::math::sum(&terms) / n
 }
 
 /// Focal loss: -alpha * (1-p)^gamma * log(p) for true class.
@@ -1161,11 +1162,12 @@ pub fn hinge_loss(predicted: &[f64], target: &[f64]) -> f64 {
 pub fn focal_loss(predicted: &[f64], target: &[f64], alpha: f64, gamma: f64) -> f64 {
     let n = predicted.len() as f64;
     let eps = 1e-12;
-    predicted.iter().zip(target).map(|(&p, &t)| {
+    let terms: Vec<f64> = predicted.iter().zip(target).map(|(&p, &t)| {
         let p = p.clamp(eps, 1.0 - eps);
         let pt = if t > 0.5 { p } else { 1.0 - p };
         -alpha * (1.0 - pt).powf(gamma) * pt.ln()
-    }).sum::<f64>() / n
+    }).collect();
+    crate::math::sum(&terms) / n
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1188,7 +1190,7 @@ pub fn residual_add(x: &[f64], fx: &[f64]) -> Vec<f64> {
 
 /// Gradient clipping by norm. If ||grad|| > max_norm, scale down.
 pub fn clip_grad_norm(grad: &mut [f64], max_norm: f64) -> f64 {
-    let norm: f64 = grad.iter().map(|&g| g * g).sum::<f64>().sqrt();
+    let norm: f64 = crate::math::sum_sq(grad).sqrt();
     if norm > max_norm {
         let scale = max_norm / norm;
         for g in grad.iter_mut() {

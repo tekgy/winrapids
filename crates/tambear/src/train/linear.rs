@@ -39,11 +39,10 @@ impl LinearModel {
     pub fn predict(&self, x: &[f64], n: usize) -> Vec<f64> {
         let d = self.n_features;
         assert_eq!(x.len(), n * d, "x must be {} x {}", n, d);
-        let mut y = vec![self.intercept; n];
+        let mut y = vec![0.0f64; n];
         for i in 0..n {
-            for j in 0..d {
-                y[i] += self.coefficients[j] * x[i * d + j];
-            }
+            let dot = crate::math::dot(&self.coefficients, &x[i * d..(i + 1) * d]);
+            y[i] = self.intercept + dot;
         }
         y
     }
@@ -125,20 +124,17 @@ pub fn fit(x: &[f64], y: &[f64], n: usize, d: usize) -> Result<LinearModel, Box<
     // -----------------------------------------------------------------------
     // Step 4: Compute R^2 and RMSE
     // -----------------------------------------------------------------------
-    let y_mean = y.iter().sum::<f64>() / n as f64;
+    let y_mean = crate::math::sum(y) / n as f64;
 
-    let mut ss_res = 0.0;
-    let mut ss_tot = 0.0;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut ss_res_acc = KulischAccumulator::new();
     for i in 0..n {
-        let mut y_hat = beta[d]; // intercept
-        for j in 0..d {
-            y_hat += beta[j] * x[i * d + j];
-        }
+        let y_hat = beta[d] + crate::math::dot(&beta[..d], &x[i * d..(i + 1) * d]);
         let residual = y[i] - y_hat;
-        ss_res += residual * residual;
-        let deviation = y[i] - y_mean;
-        ss_tot += deviation * deviation;
+        ss_res_acc.add_f64(residual * residual);
     }
+    let ss_res = ss_res_acc.to_f64();
+    let ss_tot: f64 = crate::math::centered_sum_sq(y, y_mean);
 
     let r_squared = if ss_tot > 0.0 { 1.0 - ss_res / ss_tot } else { 1.0 };
     let rmse = (ss_res / n as f64).sqrt();

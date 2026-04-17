@@ -42,11 +42,8 @@ impl LogisticModel {
         assert_eq!(x.len(), n * d);
         let mut probs = vec![0.0f64; n];
         for i in 0..n {
-            let mut z = self.intercept;
-            for j in 0..d {
-                z += self.coefficients[j] * x[i * d + j];
-            }
-            probs[i] = sigmoid(z);
+            let dot = crate::math::dot(&self.coefficients, &x[i * d..(i + 1) * d]);
+            probs[i] = sigmoid(self.intercept + dot);
         }
         probs
     }
@@ -119,9 +116,10 @@ pub fn fit(
         let z = tiled.run(&DotProductOp, &x_aug, &beta, n, 1, p)?;
 
         // ── Map: p = sigmoid(z), residual = p - y  (CPU, fuses in lazy) ──
+        use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
         let mut probs = vec![0.0f64; n];
         let mut residual = vec![0.0f64; n];
-        let mut loss = 0.0f64;
+        let mut loss_acc = KulischAccumulator::new();
 
         for i in 0..n {
             probs[i] = sigmoid(z[i]);
@@ -129,9 +127,9 @@ pub fn fit(
 
             // Binary cross-entropy (with numerical stability)
             let pi = probs[i].clamp(1e-15, 1.0 - 1e-15);
-            loss -= y[i] * pi.ln() + (1.0 - y[i]) * (1.0 - pi).ln();
+            loss_acc.add_f64(-(y[i] * pi.ln() + (1.0 - y[i]) * (1.0 - pi).ln()));
         }
-        loss /= n_f;
+        let loss = loss_acc.to_f64() / n_f;
 
         // Check convergence
         if (prev_loss - loss).abs() < tol {

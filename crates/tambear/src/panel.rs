@@ -116,18 +116,18 @@ pub fn panel_fe(x: &[f64], y: &[f64], n: usize, d: usize, units: &[usize]) -> Fe
     let beta = lstsq(&x_mat, &y_dm);
 
     // Residuals + R²
-    let mut ss_res = 0.0;
-    let mut ss_tot = 0.0;
-    let y_dm_mean = y_dm.iter().sum::<f64>() / n as f64;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut ss_res_acc = KulischAccumulator::new();
+    let y_dm_mean = crate::math::sum(&y_dm) / n as f64;
     let mut residuals = vec![0.0; n];
     for i in 0..n {
-        let mut fitted = 0.0;
-        for j in 0..d { fitted += beta[j] * x_dm[i * d + j]; }
+        let fit_terms: Vec<f64> = (0..d).map(|j| beta[j] * x_dm[i * d + j]).collect();
+        let fitted = crate::math::sum(&fit_terms);
         residuals[i] = y_dm[i] - fitted;
-        ss_res += residuals[i] * residuals[i];
-        let dev = y_dm[i] - y_dm_mean;
-        ss_tot += dev * dev;
+        ss_res_acc.add_f64(residuals[i] * residuals[i]);
     }
+    let ss_res = ss_res_acc.to_f64();
+    let ss_tot: f64 = crate::math::centered_sum_sq(&y_dm, y_dm_mean);
     let r2_within = if ss_tot > 0.0 { 1.0 - ss_res / ss_tot } else { 0.0 };
 
     // Clustered standard errors (sandwich: (X̃'X̃)⁻¹ B (X̃'X̃)⁻¹)
@@ -245,15 +245,17 @@ pub fn panel_fd(x: &[f64], y: &[f64], n: usize, d: usize, units: &[usize]) -> Fd
     let dx_mat = Mat::from_vec(n_diff, d, dx);
     let beta = lstsq(&dx_mat, &dy);
 
-    let dy_mean = dy.iter().sum::<f64>() / n_diff as f64;
-    let mut ss_res = 0.0;
-    let mut ss_tot = 0.0;
+    let dy_mean = crate::math::sum(&dy) / n_diff as f64;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut ss_res_acc = KulischAccumulator::new();
     for i in 0..n_diff {
-        let mut fitted = 0.0;
-        for j in 0..d { fitted += beta[j] * dx_mat.data[i * d + j]; }
-        ss_res += (dy[i] - fitted).powi(2);
-        ss_tot += (dy[i] - dy_mean).powi(2);
+        let fit_terms: Vec<f64> = (0..d).map(|j| beta[j] * dx_mat.data[i * d + j]).collect();
+        let fitted = crate::math::sum(&fit_terms);
+        let r = dy[i] - fitted;
+        ss_res_acc.add_f64(r * r);
     }
+    let ss_res = ss_res_acc.to_f64();
+    let ss_tot: f64 = crate::math::centered_sum_sq(&dy, dy_mean);
     let r2 = if ss_tot > 0.0 { 1.0 - ss_res / ss_tot } else { 0.0 };
 
     FdResult { beta, r2 }
@@ -329,17 +331,18 @@ fn panel_fe_from_demeaned(
     let x_mat = Mat::from_vec(n, d, x_dm.to_vec());
     let beta = lstsq(&x_mat, y_dm);
 
-    let y_dm_mean = y_dm.iter().sum::<f64>() / n as f64;
-    let mut ss_res = 0.0;
-    let mut ss_tot = 0.0;
+    let y_dm_mean = crate::math::sum(y_dm) / n as f64;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut ss_res_acc = KulischAccumulator::new();
     let mut residuals = vec![0.0; n];
     for i in 0..n {
-        let mut fitted = 0.0;
-        for j in 0..d { fitted += beta[j] * x_dm[i * d + j]; }
+        let fit_terms: Vec<f64> = (0..d).map(|j| beta[j] * x_dm[i * d + j]).collect();
+        let fitted = crate::math::sum(&fit_terms);
         residuals[i] = y_dm[i] - fitted;
-        ss_res += residuals[i] * residuals[i];
-        ss_tot += (y_dm[i] - y_dm_mean).powi(2);
+        ss_res_acc.add_f64(residuals[i] * residuals[i]);
     }
+    let ss_res = ss_res_acc.to_f64();
+    let ss_tot: f64 = crate::math::centered_sum_sq(y_dm, y_dm_mean);
     let r2_within = if ss_tot > 0.0 { 1.0 - ss_res / ss_tot } else { 0.0 };
 
     // Clustered SE
@@ -481,14 +484,16 @@ pub fn breusch_pagan_re(residuals: &[f64], units: &[usize]) -> f64 {
     let n_units = *units.iter().max().unwrap_or(&0) + 1;
 
     // A = Σ_i (Σ_t ê_it)²
-    let mut unit_sums = vec![0.0; n_units];
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut us_accs: Vec<KulischAccumulator> = (0..n_units).map(|_| KulischAccumulator::new()).collect();
     for i in 0..n_obs {
-        unit_sums[units[i]] += residuals[i];
+        us_accs[units[i]].add_f64(residuals[i]);
     }
-    let a: f64 = unit_sums.iter().map(|s| s * s).sum();
+    let unit_sums: Vec<f64> = us_accs.iter().map(|a| a.to_f64()).collect();
+    let a: f64 = crate::math::sum_sq(&unit_sums);
 
     // B = Σ_i Σ_t ê²_it
-    let b: f64 = residuals.iter().map(|r| r * r).sum();
+    let b: f64 = crate::math::sum_sq(residuals);
 
     if b.abs() < 1e-15 { return 0.0; }
 
@@ -543,16 +548,21 @@ pub fn two_sls(
         let gamma = lstsq(&z_mat, &x_col);
 
         // Fitted values
-        let x_mean = x_col.iter().sum::<f64>() / n as f64;
-        let mut ss_reg = 0.0;
-        let mut ss_res = 0.0;
+        let x_mean = crate::math::sum(&x_col) / n as f64;
+        use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+        let mut ss_reg_acc = KulischAccumulator::new();
+        let mut ss_res_acc = KulischAccumulator::new();
         for i in 0..n {
-            let mut fitted = 0.0;
-            for j in 0..d_z { fitted += gamma[j] * z[i * d_z + j]; }
+            let fit_terms: Vec<f64> = (0..d_z).map(|j| gamma[j] * z[i * d_z + j]).collect();
+            let fitted = crate::math::sum(&fit_terms);
             x_hat[i * d_endog + col] = fitted;
-            ss_reg += (fitted - x_mean).powi(2);
-            ss_res += (x_col[i] - fitted).powi(2);
+            let reg_dev = fitted - x_mean;
+            ss_reg_acc.add_f64(reg_dev * reg_dev);
+            let res_dev = x_col[i] - fitted;
+            ss_res_acc.add_f64(res_dev * res_dev);
         }
+        let ss_reg = ss_reg_acc.to_f64();
+        let ss_res = ss_res_acc.to_f64();
         let df_reg = d_z as f64;
         let df_res = (n as f64 - d_z as f64).max(1.0);
         let f = (ss_reg / df_reg) / (ss_res / df_res);
@@ -582,12 +592,13 @@ pub fn did(y: &[f64], treated: &[bool], post: &[bool]) -> DidResult {
     assert_eq!(treated.len(), n);
     assert_eq!(post.len(), n);
 
-    let mut sums = [0.0_f64; 4]; // [ctrl_pre, ctrl_post, treat_pre, treat_post]
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut sum_accs: Vec<KulischAccumulator> = (0..4).map(|_| KulischAccumulator::new()).collect(); // [ctrl_pre, ctrl_post, treat_pre, treat_post]
     let mut counts = [0usize; 4];
 
     for i in 0..n {
         let idx = (treated[i] as usize) * 2 + (post[i] as usize);
-        sums[idx] += y[i];
+        sum_accs[idx].add_f64(y[i]);
         counts[idx] += 1;
     }
 
@@ -595,25 +606,28 @@ pub fn did(y: &[f64], treated: &[bool], post: &[bool]) -> DidResult {
     if counts.iter().any(|&c| c == 0) {
         return DidResult { att: f64::NAN, se: f64::NAN, t_stat: f64::NAN };
     }
-    let means: Vec<f64> = (0..4).map(|i| sums[i] / counts[i] as f64).collect();
+    let means: Vec<f64> = (0..4).map(|i| sum_accs[i].to_f64() / counts[i] as f64).collect();
 
     // ATT = (Ȳ_treat_post - Ȳ_treat_pre) - (Ȳ_ctrl_post - Ȳ_ctrl_pre)
     let att = (means[3] - means[2]) - (means[1] - means[0]);
 
     // SE via pooled variance of the four cell means
-    let mut ss = [0.0_f64; 4];
+    let mut ss_accs: Vec<KulischAccumulator> = (0..4).map(|_| KulischAccumulator::new()).collect();
     for i in 0..n {
         let idx = (treated[i] as usize) * 2 + (post[i] as usize);
-        ss[idx] += (y[i] - means[idx]).powi(2);
+        let d = y[i] - means[idx];
+        ss_accs[idx].add_f64(d * d);
     }
+    let ss: Vec<f64> = ss_accs.iter().map(|a| a.to_f64()).collect();
 
-    let var_att: f64 = (0..4).map(|i| {
+    let var_terms: Vec<f64> = (0..4).map(|i| {
         if counts[i] > 1 {
             ss[i] / ((counts[i] - 1) as f64 * counts[i] as f64)
         } else {
             0.0
         }
-    }).sum();
+    }).collect();
+    let var_att: f64 = crate::math::sum(&var_terms);
 
     let se = var_att.sqrt();
     let t_stat = if se > 0.0 { att / se } else { 0.0 };

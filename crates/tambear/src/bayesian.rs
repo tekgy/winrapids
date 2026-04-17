@@ -161,19 +161,22 @@ pub fn bayesian_linear_regression(
     let alpha_n = alpha0 + n as f64 / 2.0;
 
     // β_n = β₀ + 0.5 * (y'y + β₀'Λ₀β₀ - β_n'Λ_n β_n)
-    let yty: f64 = y.iter().map(|yi| yi * yi).sum();
-    let mut b0_lam_b0 = 0.0;
+    let yty: f64 = crate::math::sum_sq(y);
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut b0_lam_b0_acc = KulischAccumulator::new();
     for j in 0..d {
         for k in 0..d {
-            b0_lam_b0 += prior_mean[j] * prior_precision[j * d + k] * prior_mean[k];
+            b0_lam_b0_acc.add_f64(prior_mean[j] * prior_precision[j * d + k] * prior_mean[k]);
         }
     }
-    let mut bn_lamn_bn = 0.0;
+    let b0_lam_b0 = b0_lam_b0_acc.to_f64();
+    let mut bn_lamn_bn_acc = KulischAccumulator::new();
     for j in 0..d {
         for k in 0..d {
-            bn_lamn_bn += beta_mean[j] * lambda_n[j * d + k] * beta_mean[k];
+            bn_lamn_bn_acc.add_f64(beta_mean[j] * lambda_n[j * d + k] * beta_mean[k]);
         }
     }
+    let bn_lamn_bn = bn_lamn_bn_acc.to_f64();
     let beta_n = beta0 + 0.5 * (yty + b0_lam_b0 - bn_lamn_bn);
 
     let sigma2_mean = beta_n / (alpha_n - 1.0).max(0.5);
@@ -208,10 +211,7 @@ pub fn effective_sample_size(samples: &[f64]) -> f64 {
     let max_lag = n / 2;
     let mut rhos = Vec::with_capacity(max_lag);
     for lag in 1..=max_lag {
-        let rho: f64 = samples[..n - lag].iter()
-            .zip(samples[lag..].iter())
-            .map(|(a, b)| (a - mean) * (b - mean))
-            .sum::<f64>() / (n as f64 * var);
+        let rho: f64 = crate::math::centered_dot(&samples[..n - lag], mean, &samples[lag..], mean) / (n as f64 * var);
         rhos.push(rho);
     }
 
@@ -234,7 +234,7 @@ pub fn effective_sample_size(samples: &[f64]) -> f64 {
             pair_sums[i] = pair_sums[i - 1];
         }
     }
-    let mut sum_rho: f64 = pair_sums.iter().sum();
+    let mut sum_rho: f64 = crate::math::sum(&pair_sums);
     // Add the last odd autocorrelation if it's positive and we haven't truncated
     if 2 * k < rhos.len() && rhos[2 * k] > 0.0 {
         sum_rho += rhos[2 * k];
@@ -251,13 +251,14 @@ pub fn r_hat(chains: &[&[f64]]) -> f64 {
     let m = chains.len() as f64;
     let n = chains[0].len() as f64;
 
-    let chain_means: Vec<f64> = chains.iter().map(|c| c.iter().sum::<f64>() / n).collect();
-    let overall_mean: f64 = chain_means.iter().sum::<f64>() / m;
+    let chain_means: Vec<f64> = chains.iter().map(|c| crate::math::sum(c) / n).collect();
+    let overall_mean: f64 = crate::math::sum(&chain_means) / m;
 
-    let b = n / (m - 1.0) * chain_means.iter().map(|&cm| (cm - overall_mean).powi(2)).sum::<f64>();
-    let w: f64 = chains.iter().zip(&chain_means)
-        .map(|(c, &cm)| c.iter().map(|s| (s - cm).powi(2)).sum::<f64>() / (n - 1.0))
-        .sum::<f64>() / m;
+    let b = n / (m - 1.0) * crate::math::centered_sum_sq(&chain_means, overall_mean);
+    let w_terms: Vec<f64> = chains.iter().zip(&chain_means)
+        .map(|(c, &cm)| crate::math::centered_sum_sq(c, cm) / (n - 1.0))
+        .collect();
+    let w: f64 = crate::math::sum(&w_terms) / m;
 
     let var_hat = (n - 1.0) / n * w + b / n;
     // w=0 means all chains have zero within-chain variance (constant chains).

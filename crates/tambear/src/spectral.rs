@@ -126,7 +126,7 @@ pub fn cross_spectral(x: &[f64], y: &[f64], fs: f64, seg_len: usize, overlap: f6
     let half = nfft / 2 + 1;
 
     let win = window_hann(seg);
-    let win_power: f64 = win.iter().map(|w| w * w).sum::<f64>();
+    let win_power: f64 = crate::math::sum_sq(&win);
 
     let mut sxx = vec![0.0; half];
     let mut syy = vec![0.0; half];
@@ -187,16 +187,17 @@ pub fn cross_spectral(x: &[f64], y: &[f64], fs: f64, seg_len: usize, overlap: f6
 /// `psd`: power spectral density (positive values). Returns H ∈ [0, log(N)].
 /// H → 0 for pure tone, H → log(N) for white noise.
 pub fn spectral_entropy(psd: &[f64]) -> f64 {
-    let total: f64 = psd.iter().sum();
+    let total: f64 = crate::math::sum(psd);
     if total <= 0.0 { return 0.0; }
-    let mut h = 0.0;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut h_acc = KulischAccumulator::new();
     for &p in psd {
         if p > 0.0 {
             let norm = p / total;
-            h -= norm * norm.ln();
+            h_acc.add_f64(-(norm * norm.ln()));
         }
     }
-    h
+    h_acc.to_f64()
 }
 
 /// Normalized spectral entropy ∈ [0, 1]. 0 = pure tone, 1 = white noise.
@@ -217,7 +218,8 @@ pub fn spectral_entropy_normalized(psd: &[f64]) -> f64 {
 /// `f_low`, `f_high`: band boundaries (Hz).
 pub fn band_power(freqs: &[f64], psd: &[f64], f_low: f64, f_high: f64) -> f64 {
     assert_eq!(freqs.len(), psd.len());
-    let mut power = 0.0;
+    use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
+    let mut power_acc = KulischAccumulator::new();
     for i in 0..freqs.len() {
         if freqs[i] >= f_low && freqs[i] <= f_high {
             let df = if i == 0 {
@@ -227,10 +229,10 @@ pub fn band_power(freqs: &[f64], psd: &[f64], f_low: f64, f_high: f64) -> f64 {
             } else {
                 (freqs[i + 1] - freqs[i - 1]) / 2.0
             };
-            power += psd[i] * df;
+            power_acc.add_f64(psd[i] * df);
         }
     }
-    power
+    power_acc.to_f64()
 }
 
 /// Relative band power: fraction of total power in the given band.
@@ -257,7 +259,7 @@ pub struct SpectralPeak {
 pub fn spectral_peaks(freqs: &[f64], psd: &[f64], threshold_ratio: f64) -> Vec<SpectralPeak> {
     let n = psd.len();
     if n < 3 { return Vec::new(); }
-    let mean_power = psd.iter().sum::<f64>() / n as f64;
+    let mean_power = crate::math::sum(psd) / n as f64;
     let threshold = mean_power * threshold_ratio;
 
     let mut peaks = Vec::new();

@@ -2,13 +2,21 @@
 
 **Status**: Load-bearing architecture. Every recipe written from this point forward follows this structure.
 
-**Relationship to CLAUDE.md**: This document extends the Tambear Contract and "Methods Are Compositions" principle with a concrete three-layer decomposition. CLAUDE.md establishes *why* methods decompose into primitives. This document establishes *what* the decomposition looks like in the filesystem, in the type system, and in the compilation pipeline.
+**Vocabulary lock (2026-04-17):** the canonical vocabulary lives at
+`R:\winrapids\docs\architecture\vocabulary.md`. That document is the
+single source of truth for terminology. **Read it before this one.**
+This document covers the three central tiers — atoms, primitives, and
+recipes — of the larger five-tier vocabulary (primitives → op/expr →
+atoms → recipes → pipelines). Where any reading of this document
+conflicts with `vocabulary.md`, `vocabulary.md` wins.
+
+**Relationship to CLAUDE.md**: This document extends the Tambear Contract by giving the three central tiers a concrete decomposition in the filesystem, in the type system, and in the compilation pipeline. CLAUDE.md establishes *why* recipes decompose into atoms and primitives. This document establishes *what* that decomposition looks like in practice, with worked examples and lowering strategies.
 
 ---
 
-## The three layers
+## The three central tiers
 
-Every piece of mathematics in tambear lives at exactly one of three layers:
+Every piece of mathematics in tambear lives at exactly one of three tiers (with two more tiers — op/expr below and pipelines above — covered in `vocabulary.md`):
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -503,14 +511,24 @@ The recipe is 4 lines plus imports. The heavy lifting lives in `welford_two_var`
 
 This document is an extension, not a replacement, of the existing Tambear Contract. Specific relationships:
 
-- **Principle 1 (Custom implemented, our way)**: primitives are the lowest level where we hand-write from first principles. Hardware ops call Rust stdlib which calls LLVM intrinsics which emit machine instructions. We do not wrap vendor libraries above the hardware primitive layer.
-- **Principle 2 (Accumulate + gather decomposition)**: unchanged. The two atoms are the top of the tree. Recipes orchestrate accumulate/gather calls.
+- **Principle 1 (Custom implemented, our way)**: primitives are the lowest level where we hand-write from first principles. Hardware ops call Rust stdlib which calls LLVM intrinsics which emit machine instructions. We do not wrap vendor libraries above the hardware primitive tier.
+- **Principle 2 (Accumulate + gather decomposition)**: unchanged. The two atoms are the orchestration substrate. Recipes orchestrate accumulate/gather calls.
 - **Principle 3 (Shareable intermediates via TamSession)**: unchanged. Intermediates register at the recipe level. Primitives are too low-level to share via TamSession; they are called fresh each time and rely on compiler inlining for efficiency.
 - **Principle 4 (Every parameter tunable)**: extended. In addition to algorithm parameters, every recipe now has a tunable precision strategy via the `using()` bag.
 - **Principle 5 (Every measure in every family)**: unchanged. The flat catalog is now more precisely "atoms × primitives × recipes with tags."
 - **Principle 10 (Publication-grade rigor)**: extended. Every recipe's oracle comparison runs against all three lowering strategies. A recipe passes publication-grade rigor when its correctly_rounded lowering matches mpmath/kulisch to 1 ULP across the full domain.
 
-The **Layers Above the Math** section of CLAUDE.md (L0 primitives → L1 diagnostics → L2 override → L3 pipelines → L4 discovery) is orthogonal to this document's three-layer decomposition. The CLAUDE.md layers describe the *vertical stack of abstractions users see*. This document's layers (atoms, primitives, recipes) describe the *horizontal decomposition of any single primitive*. A Level 0 primitive in the user-facing sense is a recipe in this document's sense; its horizontal decomposition bottoms out at the primitives layer.
+**Note on older "Layers Above the Math" framing.** Earlier versions of CLAUDE.md described a vertical "L0 primitives → L1 diagnostics → L2 override → L3 pipelines → L4 discovery" stack. Under the locked vocabulary (see `vocabulary.md`):
+
+- "L0 primitives" in that older framing → **recipes** (Tier 4) in the locked vocabulary
+- "L1 diagnostics / auto-method-selection" → also recipes (Tier 4) — a higher-level recipe that selects among other recipes
+- "L2 using() override transparency" → not a vocabulary tier; it's a runtime property of any recipe
+- "L3 expert pipelines" (e.g. `efa`, `garch_fit`, `two_group_comparison`) → also recipes (Tier 4) — multi-step compositions are still recipes
+- "L4 discover/superposition" → not a tier; it's a runtime execution mode of any recipe
+
+That older "Layers Above the Math" stack was describing *runtime modes and abstraction stances over recipes*, not a separate horizontal decomposition. It collapses neatly into "everything is a recipe (Tier 4); recipes can be small, large, decision-tree-shaped, or superposition-shaped, depending on what they orchestrate."
+
+The horizontal decomposition this document describes — atoms, primitives, recipes — is unchanged. The Tier 5 pipelines layer (the user's full project, including hardware bindings and interaction surfaces) sits above recipes and is documented in `vocabulary.md`.
 
 ---
 

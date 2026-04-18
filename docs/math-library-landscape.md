@@ -1,7 +1,26 @@
 # Tambear Math Library — Complete Landscape
 
-Every family below is a campsite. Every method within each family is a sub-campsite.
-Every method has all flavors/variants. Every implementation is from tambear primitives.
+> **Vocabulary lock (2026-04-17):** the canonical vocabulary is at
+> `R:\winrapids\docs\architecture\vocabulary.md`. This landscape doc
+> uses the older "primitive" terminology to mean what the locked
+> vocabulary calls **recipes** (Tier 4). Read every "Foundational
+> Primitives", "primitive", "method", or "family member" below as
+> "recipe in the locked vocabulary." The locked-tier-1 *primitives*
+> (hardware ops, compensated arithmetic, Kulisch) are the
+> implementation machinery underneath the recipe layer; this doc
+> doesn't address them directly.
+>
+> Mapping for this doc:
+> - "Foundational Primitives" section → foundational recipes
+> - "method" / "method within a family" → recipe
+> - "family" → tag (recipes are flat with multi-family tags, not
+>   nested by family folder)
+> - "Every implementation is from tambear primitives" → every recipe
+>   composes atoms (`accumulate`, `gather`) parameterized by op/expr
+>   and ultimately lowering to locked-tier-1 primitives at the
+>   compiler / kernel layer.
+
+Every family-tag below is a recipe collection. Every recipe within each tag has all flavors/variants. Every recipe composes atoms + locked-tier-1 primitives.
 No vendor libraries. No fallbacks. Any GPU. Bit-perfect cross-platform.
 
 This replaces: cuBLAS, cuFFT, cuML, cuDNN, cuSOLVER, cuSPARSE, cuRAND,
@@ -9,7 +28,7 @@ SPSS, SAS, Stata, MATLAB, Mplus, R, Python scipy/sklearn/statsmodels.
 
 ---
 
-## Foundational Primitives (build first — everything else uses these)
+## Foundational Recipes (build first — everything else uses these)
 
 ### 01. Distance & Similarity
 L2, cosine, Mahalanobis, Poincaré, spherical geodesic, Minkowski,

@@ -1,9 +1,16 @@
 # Adding a New Recipe to Tambear
 
-This is the playbook for adding a new mathematical recipe to tambear,
-distilled from the first three `.spec.toml` migrations (exp, correlation_matrix,
-factor_analysis) and the five Phase-C libm implementations (exp, log, sin/cos,
-erf/erfc, gamma).
+> **Vocabulary lock (2026-04-17):** the canonical vocabulary is at
+> `R:\winrapids\docs\architecture\vocabulary.md`. A "recipe" is any
+> named composition (Tier 4) — `mean`, `correlation`, `log`, `exp`,
+> `parkinson_volatility`, `efa`, `garch_fit`, etc. The five tiers are
+> pipelines / recipes / atoms / op+expr / primitives. This playbook
+> uses the locked vocabulary throughout.
+
+This is the playbook for adding a new recipe to tambear, distilled from
+the first three `.spec.toml` migrations (exp, correlation_matrix,
+factor_analysis) and the five Phase-C libm implementations (exp, log,
+sin/cos, erf/erfc, gamma).
 
 ## The five-artifact pattern
 
@@ -25,19 +32,54 @@ Every production recipe ships with five artifacts:
 
 ## Step-by-step
 
-### 1. Place the recipe in the family tree
+### 1. Place the recipe — flat under recipes/
+
+**Target shape (per locked vocabulary):**
 
 ```
 crates/tambear/src/recipes/
-├── libm/                    # elementary transcendentals
-├── statistics/              # correlation, factor analysis, descriptive
-├── multivariate/            # (future) PCA, ICA, MDS
-├── time_series/             # (future) ARIMA, spectral, state-space
-└── pipelines/               # orchestration layer — don't put recipes here
+├── exp.rs                   # one file per recipe, flat
+├── log.rs
+├── sin.rs
+├── cos.rs
+├── erf.rs
+├── gamma.rs
+├── mean.rs
+├── correlation.rs
+├── pearson_r.rs
+├── parkinson_volatility.rs
+├── kyle_lambda.rs
+├── vpin.rs
+├── efa.rs                   # multi-step recipes also flat at top level
+├── garch_fit.rs
+└── ...
 ```
 
-If your family doesn't exist, create it as a subdirectory under `recipes/`
-with its own `mod.rs` that documents the family.
+Recipes are **flat** with tags. Family membership lives in the
+`.spec.toml` `[recipe.family]` array (a recipe can belong to many
+families simultaneously — `["statistics", "microstructure", "estimator"]`),
+not in folder hierarchy. Folder nesting risks losing multi-family
+discoverability.
+
+**Current state (legacy, mid-migration):** the codebase still has some
+domain subfolders — `recipes/libm/`, `recipes/statistics/`,
+`recipes/pipelines/` (the last is *pipeline infrastructure* like
+`invoke.rs`, `schema.rs`, `serialize.rs`, NOT pipelines in the locked-
+vocabulary Tier 5 sense). When adding a new recipe today:
+
+- New libm-style recipes: drop into `recipes/libm/` if you want
+  consistency with current placement, or place flat at `recipes/<name>.rs`.
+  Either is acceptable; flat is the long-term target.
+- New stat / microstructure / time-series recipes: place flat at
+  `recipes/<name>.rs`.
+- Multi-step recipes (the kind that used to live in `recipes/pipelines/`,
+  e.g. `efa.rs`): place flat at `recipes/<name>.rs`. They are recipes
+  too, just multi-step ones.
+- Pipeline infrastructure (`invoke.rs`, `schema.rs`, `serialize.rs`,
+  `shape.rs`, `toml_schema.rs` — the machinery that compiles user
+  pipelines, not user-callable recipes): keep in `recipes/pipelines/`
+  for now; will move to a top-level `pipelines/` module in a future
+  cleanup.
 
 ### 2. Write the `.spec.toml`
 
@@ -46,7 +88,7 @@ Minimal skeleton — flesh out the sections as applicable:
 ```toml
 [recipe]
 name = "my_recipe"
-layer = "recipe"  # or "expr", "primitive", "atom"
+tier = "recipe"  # locked vocabulary: pipeline | recipe | atom | op_expr | primitive
 family = ["category_1", "category_2"]  # flat tags, not hierarchical
 description = "One-line human-readable summary."
 

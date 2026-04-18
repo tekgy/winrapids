@@ -1,3 +1,45 @@
+<!-- VOCABULARY_WARNING_v1 — do not remove this marker -->
+
+# ⚠️ STOP — VOCABULARY WARNING — READ BEFORE PROCEEDING ⚠️
+
+> **THIS DOCUMENT MAY CONTAIN OUTDATED VOCABULARY.**
+>
+> Tambear's vocabulary was LOCKED IN on 2026-04-17 with formal
+> definitions. The terminology used in this document was current
+> at the time of writing but may DIFFER from the locked vocabulary.
+>
+> **Do not assume any term in this document means what you think it
+> means.** Words like *primitive*, *atom*, *recipe*, *method*,
+> *specialist*, *operation*, *layer*, *kingdom*, *menu* may have
+> meant something different at the time this document was written
+> than they do in the current locked vocabulary.
+>
+> **Before relying on anything in this document:**
+>
+> 1. **Read the canonical vocabulary first** at:
+>    `R:\winrapids\docs\architecture\vocabulary.md`
+> 2. **Read the architecture decomposition** at:
+>    `R:\winrapids\docs\architecture\atoms-primitives-recipes.md`
+> 3. **Interpret this document's content through the locked lens.**
+>    For every vocabulary term you encounter, ask: what does this
+>    actually mean in current tambear? Use the "old term → locked
+>    term" mapping table in `vocabulary.md`.
+> 4. **QUESTION EVERYTHING.** Do not accept any vocabulary as
+>    correct just because it sounds right or appears in this
+>    document. The fact that a word is used here is NOT evidence
+>    that the word's meaning here matches its current meaning.
+>
+> If you find inconsistencies between this document and the locked
+> vocabulary, **the locked vocabulary in `vocabulary.md` is
+> authoritative.** This document is a snapshot in time, not a
+> current specification.
+>
+> Apparent agreement between this document and the locked vocabulary
+> may be illusory — the same word may carry different meanings.
+> CHECK THE MAPPING TABLE.
+
+---
+
 # Logbook: Peak 4 Campsites 4.6 and 4.8
 
 **Date:** 2026-04-12
@@ -53,3 +95,35 @@ Created `tests/oracle_runner_tests.rs` with 5 passing tests including calibratio
 **Refactoring the identity closure interface immediately.** The adversarial's named-dispatch suggestion (`dispatch("tam_ln", x)`) is cleaner than the HashMap at the call site. There was a pull to refactor right away. Resisted — the current design works, the tests pass, and the refactor is contained. Changing a working interface before it's exercised by real code is speculative. The right moment is when the second function's identity checks get added.
 
 **Making injection ULP reports "real" by querying mpmath at runtime.** The synthetic-reference approach feels like a shortcut. The alternative — calling Python/mpmath at runtime for each injection input — would give true ULP numbers for every corpus input. But it would make the runner depend on Python, violate I8 in spirit (the runner would be calling an external evaluation system), and be wrong for the `cody_waite_exact` inputs (F3 from adversarial — these MUST NOT be re-evaluated via mpmath). The current design is the right one: injection sets test propagation, bit_exact_checks test correctness, random sample tests precision.
+
+
+---
+
+<!-- VOCABULARY_WARNING_v1_END — do not remove this marker -->
+
+# ⚠️ END OF DOCUMENT — VOCABULARY WARNING REPEATED ⚠️
+
+> **REMINDER: Vocabulary in this document may be outdated.**
+>
+> Canonical vocabulary lives at:
+> - `R:\winrapids\docs\architecture\vocabulary.md` (terminology)
+> - `R:\winrapids\docs\architecture\atoms-primitives-recipes.md`
+>   (architecture decomposition)
+>
+> **Do not trust vocabulary appearances. Question every term.**
+> Map old language to the locked vocabulary BEFORE acting on the
+> content of this document. The mapping table is in
+> `vocabulary.md`.
+>
+> Words that may carry old meanings in this document:
+> *primitive*, *atom*, *recipe*, *method*, *specialist*,
+> *operation*, *layer*, *kingdom*, *menu*, *scatter*,
+> *Layer 0/1/2/3/4*, *3-tier*, *9 truths*.
+>
+> If you arrived here from inside this document and skipped the
+> top banner: GO BACK AND READ IT. The locked vocabulary is not
+> a suggestion; it is the only correct interpretation of any
+> tambear architecture document. Documents prior to 2026-04-17
+> drift; trust the locked vocabulary, not the words in front of
+> you.
+

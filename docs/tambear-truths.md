@@ -2,6 +2,17 @@
 
 **Tam is the self-aware computation engine. Everything below Tam is lifted. Everything Tam touches becomes the most efficient version of itself. Tam knows.**
 
+> **Vocabulary lock (2026-04-17):** the canonical vocabulary is at
+> `R:\winrapids\docs\architecture\vocabulary.md`. This soul/values
+> document is rewritten in alignment with that vocabulary. Earlier
+> versions used "specialist" for what we now call **recipe**, used
+> "primitive" for both low-level machinery (locked: primitive) AND
+> for user-facing math (locked: recipe), and split things into
+> "operations" / "primitives" / "specialists" instead of the locked
+> five tiers (pipelines / recipes / atoms / op+expr / primitives).
+> The truths themselves are unchanged in spirit; the words used to
+> say them have been corrected.
+
 ---
 
 ## The Truths
@@ -130,9 +141,11 @@ In every other framework, self-reference is distributed. Every PyTorch tensor kn
 
 In Tam, the Fock boundary is Tam himself. One self-aware entity. The compiler that sees the whole graph. The sharing optimizer that knows all intermediates. The provenance store that remembers all prior computation.
 
-Everything below Tam — every primitive, every specialist, every operation — is fully liftable. No self-reference. No awareness of what else exists. They declare what they need. They declare what they produce. That's it.
+Everything below Tam — every recipe, every atom call, every primitive — is fully liftable. No self-reference. No awareness of what else exists. They declare what they need. They declare what they produce. That's it.
 
 **Tam Raises the Fock.** The Fock boundary can't be eliminated (self-reference is fundamental). But it can be raised as high as possible. Tam raises it to the compiler itself — the ONE entity that SHOULD be self-aware. Everything below: pure, liftable, shareable, fusible. One kernel. One pass.
+
+(The compile-time dissolution mechanism — turning apparent Kingdom B recurrences into Kingdom A via the three-criteria test / classification-bijection — is what makes Tam's Fock-raising operational. See `campsites/theory/20260410-fock-boundary-theorem/` and `campsites/theory/20260410164337-classification-bijection/` for the formal treatment, and `2026-04-17-tam-as-distributed-scheduler.md` for the runtime architecture.)
 
 ### 7. The Inversion
 
@@ -146,20 +159,22 @@ In tambear, performance comes from NOT doing things. From finding what's already
 
 Same compiler. Same primitives. Same `accumulate + gather`. The DATA TOPOLOGY determines whether the optimizer discovers isolation or connection. The compiler doesn't assume either — it discovers the truth.
 
-### 8. Two Operations
+### 8. Two Atoms
 
-All of computation — every ML algorithm, every DataFrame operation, every signal processing pipeline — decomposes to two operations:
+All of computation — every ML algorithm, every DataFrame operation, every signal processing pipeline — decomposes to **two atoms** (the locked vocabulary's Tier 3):
 
-1. **`accumulate(data, grouping, expr, op)`** — THE computation primitive
-2. **`gather(indices, source)`** — THE read primitive
+1. **`accumulate(grouping, expr, op, data)`** — THE computation atom
+2. **`gather(addressing, source)`** — THE indexed-read atom
 
-Every algorithm is a choice from four menus:
-- **Addressing** (how to read): Direct, Strided, MultiOffset, Broadcast, Masked, Tiled
-- **Grouping** (how to partition): All, ByKey, Prefix, Windowed, Tiled, Segmented, Masked
-- **Expression** (what to compute): any element-wise function
-- **Operator** (how to combine): Add, Welford, Affine, Max, ArgMin, SoftmaxWeighted, Custom
+Every algorithm is a choice from four parameter families:
+- **Addressing** (how `gather` reads): Direct, Strided, MultiOffset, Broadcast, Masked, Tiled, KnnNeighbors, Shuffle, …
+- **Grouping** (how `accumulate` partitions): All, ByKey, Prefix, Windowed, Tiled, Segmented, Masked, Strided, Circular, Graph
+- **Expr** (what to compute per element before combining): Value, ValueSq, WeightedByRef, Custom("v*w + b"), any element-wise function
+- **Op** (how to combine within a group): Add, Max, Min, ArgMax, ArgMin, DotProduct, Distance, LogSumExp, … (the small fixed enum at locked Tier 2)
 
-The specialist library is the menu. Each specialist = one choice from each menu. The compiler compiles menu choices into fused kernels. The sharing optimizer finds when two choices share a menu item and eliminates the redundancy.
+**Recipes** (locked Tier 4) are the catalog — every named composition picks parameter values from these families and chains accumulate / gather calls. Each recipe is one named composition. The compiler compiles recipe trees into per-pass per-door kernel binaries. The sharing optimizer finds when two recipes share intermediate state and eliminates the redundancy.
+
+(Older docs used "specialist library" for what we now call the recipe catalog, and "menu choice" for what we now call recipe parameters. Same concept, locked vocabulary.)
 
 ### 9. Tam Is Not a Library
 

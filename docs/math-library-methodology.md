@@ -1,6 +1,19 @@
 # Tambear Math Library: Methodology
 
-**Goal**: Every algorithm in mathematics, statistics, and signal processing — individually verified, audited, composable, on any GPU. Replaces SPSS, SAS, Mplus, MATLAB, cuBLAS, cuFFT, cuML, cuDNN, and every other numerical library. Not wrappers. Native implementations from tambear primitives.
+> **Vocabulary lock (2026-04-17):** the canonical vocabulary is at
+> `R:\winrapids\docs\architecture\vocabulary.md`. In this methodology
+> doc, "algorithm" / "method" / "primitive in the existing tambear
+> sense" all map to **recipe** in the locked vocabulary (Tier 4).
+> "Tambear primitives" used as raw building blocks (distance, scatter,
+> scan, tiled, accumulate, gather) is a mix: `accumulate` and `gather`
+> are **atoms** (Tier 3); `distance`, `scatter`, `scan`, `tiled` are
+> particular configurations of those atoms (with specific Op /
+> Grouping parameters), exposed as named **recipes** at the catalog
+> top level. The locked-tier-1 *primitives* are hardware ops,
+> compensated arithmetic, and Kulisch — implementation machinery the
+> compiler uses below the atom layer.
+
+**Goal**: Every algorithm in mathematics, statistics, and signal processing — individually verified, audited, composable, on any GPU. Replaces SPSS, SAS, Mplus, MATLAB, cuBLAS, cuFFT, cuML, cuDNN, and every other numerical library. Not wrappers. Native implementations decomposed to tambear atoms + locked-tier-1 primitives.
 
 ---
 

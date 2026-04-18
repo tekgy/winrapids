@@ -1,5 +1,34 @@
 # WinRapids Vision
 
+> **Vocabulary lock (2026-04-17):** the canonical vocabulary is at
+> `R:\winrapids\docs\architecture\vocabulary.md`. This vision document
+> predates the lock and uses the older "9 primitives + specialists"
+> framing throughout. Specific mappings to read this document through
+> the locked lens:
+>
+> - **"primitives" (the 9 listed below)** → in locked vocab these are
+>   common atom-call configurations — specific `accumulate` invocations
+>   with particular Grouping × Op × Expr combinations. They sit at the
+>   atom layer (Tier 3) parameterized by Tier 2 dials, not at the
+>   locked Tier 1 *primitives* layer (which is the implementation
+>   machinery: hardware ops, compensated arithmetic, Kulisch).
+> - **"specialists"** → in locked vocab these are **recipes** (Tier 4).
+>   Every named composition is a recipe; "specialist library" is the
+>   recipe catalog.
+> - **"sharing surfaces" / "sharing granularity"** → properties of the
+>   atom-call configurations. A recipe declares which sharing
+>   granularities it touches via its composition; the compiler finds
+>   overlapping granularities across recipes and eliminates redundant
+>   computation.
+> - **"sharing optimizer" / "compiler"** → still the compiler. Same
+>   thing. TAM (the runtime) consumes the compiler's output `.tam` IR
+>   and orchestrates execution across surfaces.
+>
+> Substitution is mostly mechanical. The vision's central claims —
+> sharing is the architecture, persistent store extends sharing across
+> sessions, the catalog declares where sharing surfaces are — are
+> preserved verbatim under the locked vocabulary.
+
 **A sharing optimizer that happens to compile code for the things it can't share.**
 
 **In longer form: a GPU computation compiler for data science.** The compiler's primary job is to find what can be shared across computations — not to optimize individual computations. Computation is the fallback when sharing fails.

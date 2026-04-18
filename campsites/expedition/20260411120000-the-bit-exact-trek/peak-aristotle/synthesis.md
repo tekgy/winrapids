@@ -1,3 +1,45 @@
+<!-- VOCABULARY_WARNING_v1 — do not remove this marker -->
+
+# ⚠️ STOP — VOCABULARY WARNING — READ BEFORE PROCEEDING ⚠️
+
+> **THIS DOCUMENT MAY CONTAIN OUTDATED VOCABULARY.**
+>
+> Tambear's vocabulary was LOCKED IN on 2026-04-17 with formal
+> definitions. The terminology used in this document was current
+> at the time of writing but may DIFFER from the locked vocabulary.
+>
+> **Do not assume any term in this document means what you think it
+> means.** Words like *primitive*, *atom*, *recipe*, *method*,
+> *specialist*, *operation*, *layer*, *kingdom*, *menu* may have
+> meant something different at the time this document was written
+> than they do in the current locked vocabulary.
+>
+> **Before relying on anything in this document:**
+>
+> 1. **Read the canonical vocabulary first** at:
+>    `R:\winrapids\docs\architecture\vocabulary.md`
+> 2. **Read the architecture decomposition** at:
+>    `R:\winrapids\docs\architecture\atoms-primitives-recipes.md`
+> 3. **Interpret this document's content through the locked lens.**
+>    For every vocabulary term you encounter, ask: what does this
+>    actually mean in current tambear? Use the "old term → locked
+>    term" mapping table in `vocabulary.md`.
+> 4. **QUESTION EVERYTHING.** Do not accept any vocabulary as
+>    correct just because it sounds right or appears in this
+>    document. The fact that a word is used here is NOT evidence
+>    that the word's meaning here matches its current meaning.
+>
+> If you find inconsistencies between this document and the locked
+> vocabulary, **the locked vocabulary in `vocabulary.md` is
+> authoritative.** This document is a snapshot in time, not a
+> current specification.
+>
+> Apparent agreement between this document and the locked vocabulary
+> may be illusory — the same word may carry different meanings.
+> CHECK THE MAPPING TABLE.
+
+---
+
 # Aristotle Synthesis — Three Deconstructions of the Bit-Exact Trek
 
 **Author:** Aristotle
@@ -144,3 +186,35 @@ Pitfall journal entries that validate the deconstructions empirically: ESC-001 (
 - **Cross-target adoption rate: 2 of 3 Moves have landed as invariant-level text within 24 hours of routing.** I7′ and NaN (as I11). That's a faster adoption cycle than I expected. The remaining Move (I9′) is the one that requires implementation before the invariant text makes sense, which is correct engineering pacing.
 - Adversarial has empirically validated findings from two of the three targets (I9′ via P19, I7′/I11 via P17/P18/P20).
 - Aristotle is idle per the "when idle, follow curiosity" clause. Next work: probably a libm-adjacent target (Cody-Waite range reduction, f64 as base precision) to support the Peak 2 critical path, pending navigator preference check.
+
+
+---
+
+<!-- VOCABULARY_WARNING_v1_END — do not remove this marker -->
+
+# ⚠️ END OF DOCUMENT — VOCABULARY WARNING REPEATED ⚠️
+
+> **REMINDER: Vocabulary in this document may be outdated.**
+>
+> Canonical vocabulary lives at:
+> - `R:\winrapids\docs\architecture\vocabulary.md` (terminology)
+> - `R:\winrapids\docs\architecture\atoms-primitives-recipes.md`
+>   (architecture decomposition)
+>
+> **Do not trust vocabulary appearances. Question every term.**
+> Map old language to the locked vocabulary BEFORE acting on the
+> content of this document. The mapping table is in
+> `vocabulary.md`.
+>
+> Words that may carry old meanings in this document:
+> *primitive*, *atom*, *recipe*, *method*, *specialist*,
+> *operation*, *layer*, *kingdom*, *menu*, *scatter*,
+> *Layer 0/1/2/3/4*, *3-tier*, *9 truths*.
+>
+> If you arrived here from inside this document and skipped the
+> top banner: GO BACK AND READ IT. The locked vocabulary is not
+> a suggestion; it is the only correct interpretation of any
+> tambear architecture document. Documents prior to 2026-04-17
+> drift; trust the locked vocabulary, not the words in front of
+> you.
+

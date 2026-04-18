@@ -1,10 +1,30 @@
 # Build Plan — Atoms, Primitives, Recipes
 
+> **Vocabulary lock (2026-04-17):** the canonical vocabulary is at
+> `R:\winrapids\docs\architecture\vocabulary.md`. In this plan,
+> "primitives" refers to the locked-Tier-1 implementation machinery
+> (hardware ops, compensated arithmetic, DoubleDouble, Kulisch),
+> "atoms" refers to the locked-Tier-3 `accumulate` and `gather`, and
+> "recipes" refers to the locked-Tier-4 named compositions (libm
+> functions, statistical methods, multi-step workflows). Where this
+> plan was written before the vocabulary lock, language has been
+> verified to match.
+
 **Goal**: implement the architecture in `docs/architecture/atoms-primitives-recipes.md` end-to-end, from grounding the current build through a first libm recipe, a migration pilot, and replay harness integration.
 
 **Rule**: work through the phases in order. Do not skip ahead. Each phase depends on the previous. The value of this plan is that it exists — if we lose the thread, we come back to the checked/unchecked items.
 
 **Relationship to Peaks**: this plan is the next chunk of concrete work under Peak 1 (IR foundation) and Peak 2 (libm Phase 1), with oracle pieces that serve Peak 4 (replay harness). Peaks 3, 5, 6, 7 are downstream of this plan.
+
+**Status note (2026-04-17):** Phases A through E are largely complete. The
+2026-04-16/17 work added: Op determinism contract (Kulisch as default),
+library-wide migration of `.iter().sum::<f64>()` patterns to the
+`tambear::math::` Kulisch-backed building blocks (~190 sites across 28+
+files, see commits `06f4cba`..`9087d94`), and TAM as the distributed
+compute scheduler (architecture capture in
+`campsites/industrialization/architecture/2026-04-17-tam-as-distributed-scheduler.md`).
+Pre-existing libm test failures (`recipes::libm::*::tests::*_accuracy`)
+are uncommitted 4/14 work; not introduced by the migration.
 
 ---
 

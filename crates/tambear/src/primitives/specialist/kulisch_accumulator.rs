@@ -61,7 +61,7 @@ const RADIX_BITS: i32 = 2100;
 /// Construct via `new()` or `default()`, add values with `add_f64`, read
 /// back with `to_f64()`. The instance is not thread-safe and must be held
 /// by exactly one writer at a time.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct KulischAccumulator {
     words: [i128; NUM_WORDS],
 }

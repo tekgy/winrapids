@@ -100,6 +100,11 @@ pub fn price_percentiles_with(
             sk.add_slice(prices);
             sk.quantiles(qs)
         }
+        SketchAlgorithm::DdSketch => {
+            let mut sk = crate::primitives::specialist::DdSketch::new(epsilon);
+            sk.add_slice(prices);
+            sk.quantiles(qs)
+        }
     }
 }
 

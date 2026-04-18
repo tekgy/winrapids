@@ -107,6 +107,11 @@ pub fn cvar_with(
             sk.add_slice(returns);
             sk.quantile(tail_pct)
         }
+        SketchAlgorithm::DdSketch => {
+            let mut sk = crate::primitives::specialist::DdSketch::new(epsilon);
+            sk.add_slice(returns);
+            sk.quantile(tail_pct)
+        }
     };
 
     if !var_threshold.is_finite() {

@@ -131,6 +131,11 @@ pub fn hill_estimator_streaming_with(
             sk.add_slice(&abs_rets);
             sk.quantile(q_threshold)
         }
+        SketchAlgorithm::DdSketch => {
+            let mut sk = crate::primitives::specialist::DdSketch::new(epsilon);
+            sk.add_slice(&abs_rets);
+            sk.quantile(q_threshold)
+        }
     };
 
     if !threshold.is_finite() || threshold <= 0.0 {

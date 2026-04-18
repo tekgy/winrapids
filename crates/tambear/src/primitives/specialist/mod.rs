@@ -40,11 +40,15 @@ pub mod quantile_sketch;
 pub mod sketch_kll;
 pub mod sketch_gk;
 pub mod sketch_tdigest;
+pub mod sketch_ddsketch;
 
 pub use kulisch_accumulator::KulischAccumulator;
 pub use sum_k::{sum_2, sum_3, sum_4, sum_k};
-pub use observations::FiniteObservations;
+pub use observations::{
+    FiniteObservations, MomentObservations, WeightedObservations, WelfordObservations,
+};
 pub use quantile_sketch::{QuantileSketch, SketchAlgorithm};
 pub use sketch_kll::KllSketch;
 pub use sketch_gk::GkSketch;
 pub use sketch_tdigest::TdigestSketch;
+pub use sketch_ddsketch::DdSketch;

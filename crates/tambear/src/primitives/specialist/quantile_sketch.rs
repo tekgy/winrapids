@@ -125,18 +125,23 @@ pub enum SketchAlgorithm {
     Gk,
     /// Dunning 2014/2019 — best empirical tail accuracy.
     Tdigest,
+    /// DDSketch (Masson-Rim-Lee 2019) with our native two-sided
+    /// signed-index variant. Sort-free in hot path AND merge.
+    /// Permutation-invariant state. Bounded relative error.
+    DdSketch,
 }
 
 impl SketchAlgorithm {
     /// Parse from a string (typical `using()` value form).
     ///
-    /// Accepts `"kll"`, `"gk"`, `"tdigest"` (case-insensitive).
+    /// Accepts `"kll"`, `"gk"`, `"tdigest"`, `"ddsketch"` (case-insensitive).
     /// Returns `None` for any other value.
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "kll" => Some(Self::Kll),
             "gk" => Some(Self::Gk),
             "tdigest" | "t-digest" | "t_digest" => Some(Self::Tdigest),
+            "ddsketch" | "dd-sketch" | "dd_sketch" => Some(Self::DdSketch),
             _ => None,
         }
     }

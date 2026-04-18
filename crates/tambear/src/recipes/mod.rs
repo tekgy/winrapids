@@ -47,3 +47,6 @@ pub mod vpin;
 pub mod max_drawdown;
 pub mod volume_profile;
 pub mod realized_vol_subsampled;
+pub mod lee_mykland_jump_count;
+pub mod hawkes_intensity;
+pub mod realized_spread;

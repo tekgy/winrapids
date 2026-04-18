@@ -50,3 +50,6 @@ pub mod realized_vol_subsampled;
 pub mod lee_mykland_jump_count;
 pub mod hawkes_intensity;
 pub mod realized_spread;
+pub mod cvar;
+pub mod price_percentiles;
+pub mod hill_estimator_streaming;

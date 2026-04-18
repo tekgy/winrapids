@@ -39,3 +39,11 @@
 pub mod libm;
 pub mod pipelines;
 pub mod statistics;
+
+// Flat top-level recipes (locked vocabulary 2026-04-17 — every named
+// composition is a recipe, lives flat under recipes/, one file per recipe).
+pub mod parkinson_volatility;
+pub mod vpin;
+pub mod max_drawdown;
+pub mod volume_profile;
+pub mod realized_vol_subsampled;

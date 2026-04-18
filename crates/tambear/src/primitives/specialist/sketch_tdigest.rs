@@ -45,6 +45,7 @@
 //! Tighter ε needs larger δ. Empirically `δ ≈ 5/ε` works well; the
 //! `new(epsilon)` constructor uses this rule.
 
+use super::observations::FiniteObservations;
 use super::quantile_sketch::QuantileSketch;
 
 /// One centroid: mean and weight.
@@ -89,12 +90,8 @@ pub struct TdigestSketch {
     epsilon: f64,
     /// Centroid list, sorted by mean after every compression.
     centroids: Vec<Centroid>,
-    /// Total observations ingested (finite).
-    n: u64,
-    /// Min finite value observed (NaN if none).
-    min: f64,
-    /// Max finite value observed (NaN if none).
-    max: f64,
+    /// Shared finite-observation bookkeeping (n / min / max + skip gate).
+    obs: FiniteObservations,
     /// Buffer-then-compress threshold: compress when uncompressed
     /// centroid count exceeds this. Amortizes O(n log n) compression
     /// over many insertions.
@@ -172,24 +169,15 @@ impl QuantileSketch for TdigestSketch {
             delta,
             epsilon,
             centroids: Vec::new(),
-            n: 0,
-            min: f64::NAN,
-            max: f64::NAN,
+            obs: FiniteObservations::new(),
             compress_threshold,
             is_compressed: true,
         }
     }
 
     fn add(&mut self, x: f64) {
-        if !x.is_finite() {
+        if !self.obs.observe(x) {
             return;
-        }
-        self.n += 1;
-        if self.min.is_nan() || x < self.min {
-            self.min = x;
-        }
-        if self.max.is_nan() || x > self.max {
-            self.max = x;
         }
         // Each insertion is a weight-1 centroid; compression aggregates them.
         self.centroids.push(Centroid {
@@ -211,13 +199,7 @@ impl QuantileSketch for TdigestSketch {
         );
         self.centroids.extend_from_slice(&other.centroids);
         self.is_compressed = false;
-        self.n = self.n.saturating_add(other.n);
-        if !other.min.is_nan() && (self.min.is_nan() || other.min < self.min) {
-            self.min = other.min;
-        }
-        if !other.max.is_nan() && (self.max.is_nan() || other.max > self.max) {
-            self.max = other.max;
-        }
+        self.obs.merge(&other.obs);
         // Always compress after a merge — preserves the canonical form
         // and ensures associativity of quantile queries.
         self.compress();
@@ -228,14 +210,14 @@ impl QuantileSketch for TdigestSketch {
             q.is_finite() && (0.0..=1.0).contains(&q),
             "TdigestSketch::quantile: q must be finite and in [0, 1], got {q}"
         );
-        if self.n == 0 {
+        if self.obs.is_empty() {
             return f64::NAN;
         }
         if q == 0.0 {
-            return self.min;
+            return self.obs.min();
         }
         if q == 1.0 {
-            return self.max;
+            return self.obs.max();
         }
 
         // For deterministic queries we need a compressed centroid list.
@@ -266,7 +248,7 @@ impl QuantileSketch for TdigestSketch {
         // adjacent centroid means for accuracy.
         let mut cum = 0.0_f64;
         let mut prev_cum = 0.0_f64;
-        let mut prev_mean = self.min;
+        let mut prev_mean = self.obs.min();
         for c in centroids {
             let next_cum = cum + c.weight;
             if next_cum >= target_rank {
@@ -290,11 +272,11 @@ impl QuantileSketch for TdigestSketch {
             // form). Keeping the variable simplifies future tweaks.
             let _ = prev_cum;
         }
-        centroids.last().map(|c| c.mean).unwrap_or(self.max)
+        centroids.last().map(|c| c.mean).unwrap_or(self.obs.max())
     }
 
     fn count(&self) -> u64 {
-        self.n
+        self.obs.count()
     }
 }
 

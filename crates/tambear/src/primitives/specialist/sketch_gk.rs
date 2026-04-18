@@ -49,6 +49,7 @@
 //! `O((1/ε) · log(εN))` tuples in the worst case. For `ε = 0.01` and
 //! `N = 1_000_000`, that's ~1300 tuples × 24 bytes = ~31 KB.
 
+use super::observations::FiniteObservations;
 use super::quantile_sketch::QuantileSketch;
 
 /// One tuple in the GK summary.
@@ -69,12 +70,8 @@ pub struct GkSketch {
     epsilon: f64,
     /// Tuple list, sorted ascending by `v`.
     tuples: Vec<GkTuple>,
-    /// Total observations ingested (finite).
-    n: u64,
-    /// Min finite value observed (NaN if none).
-    min: f64,
-    /// Max finite value observed (NaN if none).
-    max: f64,
+    /// Shared finite-observation bookkeeping (n / min / max + skip gate).
+    obs: FiniteObservations,
     /// Compress only every `compress_period` insertions (amortized).
     compress_period: u64,
     /// Insertions since last compress.
@@ -85,7 +82,7 @@ impl GkSketch {
     /// `floor(2εN)` — the GK invariant bound.
     #[inline]
     fn invariant_bound(&self) -> u64 {
-        (2.0 * self.epsilon * self.n as f64).floor() as u64
+        (2.0 * self.epsilon * self.obs.count() as f64).floor() as u64
     }
 
     /// Insert a value at the correct sorted position.
@@ -158,24 +155,15 @@ impl QuantileSketch for GkSketch {
         Self {
             epsilon,
             tuples: Vec::new(),
-            n: 0,
-            min: f64::NAN,
-            max: f64::NAN,
+            obs: FiniteObservations::new(),
             compress_period,
             insertions_since_compress: 0,
         }
     }
 
     fn add(&mut self, x: f64) {
-        if !x.is_finite() {
+        if !self.obs.observe(x) {
             return;
-        }
-        self.n += 1;
-        if self.min.is_nan() || x < self.min {
-            self.min = x;
-        }
-        if self.max.is_nan() || x > self.max {
-            self.max = x;
         }
         self.insert_sorted(x);
         self.insertions_since_compress += 1;
@@ -201,15 +189,7 @@ impl QuantileSketch for GkSketch {
         combined.sort_by(|a, b| a.v.total_cmp(&b.v));
 
         self.tuples = combined;
-        self.n = self.n.saturating_add(other.n);
-
-        // Update aggregate stats.
-        if !other.min.is_nan() && (self.min.is_nan() || other.min < self.min) {
-            self.min = other.min;
-        }
-        if !other.max.is_nan() && (self.max.is_nan() || other.max > self.max) {
-            self.max = other.max;
-        }
+        self.obs.merge(&other.obs);
 
         // Re-compress under the merged N.
         self.compress();
@@ -221,14 +201,14 @@ impl QuantileSketch for GkSketch {
             q.is_finite() && (0.0..=1.0).contains(&q),
             "GkSketch::quantile: q must be finite and in [0, 1], got {q}"
         );
-        if self.n == 0 {
+        if self.obs.is_empty() {
             return f64::NAN;
         }
         if q == 0.0 {
-            return self.min;
+            return self.obs.min();
         }
         if q == 1.0 {
-            return self.max;
+            return self.obs.max();
         }
 
         // Use the actual sum of g as the rank denominator.
@@ -259,7 +239,7 @@ impl QuantileSketch for GkSketch {
     }
 
     fn count(&self) -> u64 {
-        self.n
+        self.obs.count()
     }
 }
 

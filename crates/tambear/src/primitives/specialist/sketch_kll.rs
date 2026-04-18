@@ -45,6 +45,7 @@
 //! bounded by `log_2(n/k)`. Memory is `O(k · log(n/k))` items. For
 //! `k = 200` and `n = 1_000_000`, that's ~3000 items.
 
+use super::observations::FiniteObservations;
 use super::quantile_sketch::QuantileSketch;
 
 /// Capacity formula tying ε to k. KLL's error in rank is approximately
@@ -67,12 +68,10 @@ pub struct KllSketch {
     /// `compaction_counts[i]` is how many times level i has been
     /// compacted; coin at next compaction is `count & 1`.
     compaction_counts: Vec<u64>,
-    /// Total observations ingested (finite).
-    n: u64,
-    /// Min finite value observed (NaN if none).
-    min: f64,
-    /// Max finite value observed (NaN if none).
-    max: f64,
+    /// Shared finite-observation bookkeeping (n / min / max + skip
+    /// gate). All quantile sketches use the same pattern; factored
+    /// into `FiniteObservations`.
+    obs: FiniteObservations,
 }
 
 impl KllSketch {
@@ -143,22 +142,13 @@ impl QuantileSketch for KllSketch {
             epsilon,
             compactors: vec![Vec::new()],
             compaction_counts: vec![0],
-            n: 0,
-            min: f64::NAN,
-            max: f64::NAN,
+            obs: FiniteObservations::new(),
         }
     }
 
     fn add(&mut self, x: f64) {
-        if !x.is_finite() {
+        if !self.obs.observe(x) {
             return;
-        }
-        self.n += 1;
-        if self.min.is_nan() || x < self.min {
-            self.min = x;
-        }
-        if self.max.is_nan() || x > self.max {
-            self.max = x;
         }
         self.compactors[0].push(x);
         self.compact_if_full(0);
@@ -196,14 +186,8 @@ impl QuantileSketch for KllSketch {
             }
         }
 
-        // Update aggregate stats.
-        self.n = self.n.saturating_add(other.n);
-        if !other.min.is_nan() && (self.min.is_nan() || other.min < self.min) {
-            self.min = other.min;
-        }
-        if !other.max.is_nan() && (self.max.is_nan() || other.max > self.max) {
-            self.max = other.max;
-        }
+        // Update shared bookkeeping (n / min / max).
+        self.obs.merge(&other.obs);
 
         // Cascade compaction starting at level 0 in case any level is now full.
         for level in 0..self.compactors.len() {
@@ -216,14 +200,14 @@ impl QuantileSketch for KllSketch {
             q.is_finite() && (0.0..=1.0).contains(&q),
             "KllSketch::quantile: q must be finite and in [0, 1], got {q}"
         );
-        if self.n == 0 {
+        if self.obs.is_empty() {
             return f64::NAN;
         }
         if q == 0.0 {
-            return self.min;
+            return self.obs.min();
         }
         if q == 1.0 {
-            return self.max;
+            return self.obs.max();
         }
 
         // Collect (value, weight) and sort by value.
@@ -252,7 +236,7 @@ impl QuantileSketch for KllSketch {
     }
 
     fn count(&self) -> u64 {
-        self.n
+        self.obs.count()
     }
 }
 

@@ -28,6 +28,11 @@
 pub mod kulisch_accumulator;
 pub mod sum_k;
 
+// Shared bookkeeping for streaming/mergeable accumulators (n / min /
+// max plus the NaN/Inf-skip gate). Composed by every quantile sketch
+// and any future accumulator that needs the same pattern.
+pub mod observations;
+
 // Quantile sketches — KLL (default), GK, t-digest. Common trait at
 // quantile_sketch::QuantileSketch; concrete implementations selected
 // at the recipe layer via using(sketch: "...").
@@ -38,6 +43,7 @@ pub mod sketch_tdigest;
 
 pub use kulisch_accumulator::KulischAccumulator;
 pub use sum_k::{sum_2, sum_3, sum_4, sum_k};
+pub use observations::FiniteObservations;
 pub use quantile_sketch::{QuantileSketch, SketchAlgorithm};
 pub use sketch_kll::KllSketch;
 pub use sketch_gk::GkSketch;

@@ -214,11 +214,32 @@ Fintek's leaves become one-liners calling our primitives. Auto-detection chains 
 
 Fused passes over modern memory hierarchies. Cache-aware layouts. SIMD where natural. Wavefront scheduling for massively parallel hardware. Avoiding data copies. Minimizing synchronization. Designed for 128-core CPUs, Blackwell/M4 Pro/Grace Hopper, and future accelerators.
 
-### 7. No vendor lock-in
+### 7. No vendor lock-in — native-door JIT, no middleware
 
-The ONLY hardware dependency we accept is the kernel driver that lets us talk to an ALU — CPU instructions natively, GPU compute units via wgpu (Vulkan/Metal/DX12 cross-platform), NPU via open interfaces when they mature. `cudarc` is feature-gated behind a door, never in the core path.
+Per `R:\tambear\docs\decisions.md` DEC-019 (locked 2026-04-21): tambear does not use middleware. Not wgpu, not cudarc, not nvrtc, not ash, not any vendor-runtime library. Each hardware door is a direct kernel-driver call with tambear-authored vendor IR, via a JIT shape-cache.
 
-**Rationale**: vendor lock-in means our library dies when the vendor does. wgpu means the same binary runs on NVIDIA, AMD, Intel, Apple, mobile — everywhere. The portable path is the fast path because we own the kernels.
+**Per-door contract**:
+
+- **NVIDIA** — tambear emits PTX (text or bytecode), dispatches via the **CUDA Driver API** (`cuModuleLoadData`, `cuLaunchKernel`) directly. No cudarc. No CUDA Runtime API. No nvrtc.
+- **Vulkan-class (cross-vendor discrete GPU)** — tambear emits **SPIR-V** bytecode, dispatches via the **Vulkan API** (`vkCreateComputePipelines`, `vkCmdDispatch`) directly. No wgpu.
+- **Apple Metal** — tambear emits **AIR / MSL**, dispatches via the **Metal framework** directly.
+- **DirectX 12** — tambear emits **DXIL**, dispatches via the **DX12 API** directly.
+- **AMD native** — RDNA-family ISA or SPIR-V via ROCm driver.
+- **Intel native** — SPIR-V via oneAPI driver.
+- **CPU** — **Cranelift** JIT (sub-ms compile, Rust-native, x86_64/AArch64/RISC-V). Direct ISA emission reserved for hot paths if profiling demands.
+- **NPU / future** — whatever ISA the driver accepts.
+
+The ONLY external dependencies are (a) the kernel driver for each door (the inescapable hardware-address-space boundary) and (b) Cranelift for CPU JIT codegen (Rust-native, vendor-neutral, production-grade). Everything else — IR lowering, specialization, dispatch scheduling, persistent kernel cache — tambear owns.
+
+**The architecture is JIT, not AOT.** Kernel specialization depends on (pipeline IR × `using()` params × shape fingerprint × validity policy × door × sharing opportunities). That product is combinatorial; AOT cannot pre-enumerate. The JIT compiles only what dispatches, fully specialized. Cache key: BLAKE3 of `(tambear_ir_hash, param_bag_hash, shape_fingerprint, validity_policy, door_id)`. Data *shape* (dtype / dim / grouping / assumption tags / NaN-Inf presence) bakes in; data *content* flows through at dispatch. Cache persists on disk; second-run boots warm.
+
+**Rationale**: vendor lock-in means our library dies when the vendor does. Middleware (wgpu, cudarc) is vendor lock-in dressed up — it ties us to the middleware's choices about threading, memory, precision, error handling. Going direct to each driver + authoring vendor IR ourselves means:
+- The same tambear binary runs on NVIDIA, AMD, Intel, Apple, ARM, embedded — everywhere with a driver.
+- Vendor-specific features (tensor cores, cooperative groups, Metal performance shaders, NPU intrinsics) are reachable.
+- Bit-exact determinism across middleware updates — wgpu/cudarc version bumps don't change what compiles to what.
+- GPU kernel compilation is already JIT-shaped at the driver level (shaders have never been AOT-compiled to specific SASS); tambear inherits this naturally.
+
+See `R:\tambear\docs\decisions.md#DEC-019` for the locked spec.
 
 ### 8. No OS lock-in
 

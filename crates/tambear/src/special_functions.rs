@@ -2000,11 +2000,13 @@ pub fn logit(p: f64) -> f64 {
 /// Returns a uniform distribution if all inputs are identical.
 pub fn softmax(x: &[f64]) -> Vec<f64> {
     if x.is_empty() { return Vec::new(); }
-    let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
+    if x.iter().any(|v| v.is_nan()) {
+        return vec![f64::NAN; x.len()];
+    }
+    let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let exps: Vec<f64> = x.iter().map(|&xi| (xi - max_x).exp()).collect();
     let sum: f64 = crate::math::sum(&exps);
     if sum < 1e-300 {
-        // Degenerate: return uniform
         let n = x.len() as f64;
         return vec![1.0 / n; x.len()];
     }
@@ -2017,7 +2019,10 @@ pub fn softmax(x: &[f64]) -> Vec<f64> {
 /// More numerically stable than log(softmax(x)) when probabilities are tiny.
 pub fn log_softmax(x: &[f64]) -> Vec<f64> {
     if x.is_empty() { return Vec::new(); }
-    let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, crate::numerical::nan_max);
+    if x.iter().any(|v| v.is_nan()) {
+        return vec![f64::NAN; x.len()];
+    }
+    let max_x = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let exps: Vec<f64> = x.iter().map(|&xi| (xi - max_x).exp()).collect();
     let log_sum = crate::math::sum(&exps).ln();
     x.iter().map(|&xi| xi - max_x - log_sum).collect()

@@ -100,6 +100,9 @@ pub fn knn_from_distance(dist: &DistanceMatrix, k: usize) -> KnnResult {
 
         // If any off-diagonal distance in row i is NaN, the k-neighborhood of point i
         // is undefined — we cannot claim any specific set of k nearest neighbors.
+        // Silently skipping NaN distances and returning remaining finite neighbors
+        // would produce a false claim (e.g., returning point 2 as "nearest" when
+        // point 0's distance is unknown and might be smaller).
         // Return an empty neighbor list to propagate the undefined signal explicitly.
         let has_nan = (0..n).filter(|&j| j != i).any(|j| row[j].is_nan());
         if has_nan {

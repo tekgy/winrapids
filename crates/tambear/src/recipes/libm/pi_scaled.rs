@@ -195,9 +195,10 @@ pub fn tanpi_strict(x: f64) -> f64 {
         let n = x_pos.floor() as i64;
         let frac = x_pos - n as f64;
         // frac is exactly 0.25 or 0.75.
-        let base_positive = frac < 0.5; // 0.25 → true, 0.75 → false
-        let integer_flips = (n & 1) != 0;
-        let pos_sign = base_positive ^ integer_flips ^ x.is_sign_negative();
+        // tan has period π, so tanpi(n + 0.25) = tanpi(0.25) = +1 for all n.
+        // tanpi(n + 0.75) = tanpi(0.75) = -1 for all n. n-parity does NOT flip.
+        let base_positive = frac < 0.5; // 0.25 → true (+1), 0.75 → false (-1)
+        let pos_sign = base_positive ^ x.is_sign_negative();
         return if pos_sign { 1.0 } else { -1.0 };
     }
 
@@ -248,6 +249,20 @@ mod tests {
         assert!(v.is_infinite(), "tanpi(0.5) = {v}");
         assert_eq!(tanpi_strict(0.0), 0.0);
         assert_eq!(tanpi_strict(1.0), 0.0);
+    }
+
+    #[test]
+    fn tanpi_quarter_integer_exact() {
+        // tan has period π, so tanpi(n+0.25)=+1 and tanpi(n+0.75)=-1 for all n.
+        // The old code incorrectly flipped sign based on n-parity.
+        for n in [-4_i64, -3, -2, -1, 0, 1, 2, 3, 4] {
+            let x_pos25 = n as f64 + 0.25;
+            let x_pos75 = n as f64 + 0.75;
+            assert_eq!(tanpi_strict(x_pos25), 1.0, "tanpi({x_pos25}) should be +1");
+            assert_eq!(tanpi_strict(x_pos75), -1.0, "tanpi({x_pos75}) should be -1");
+            assert_eq!(tanpi_strict(-x_pos25), -1.0, "tanpi({}) should be -1", -x_pos25);
+            assert_eq!(tanpi_strict(-x_pos75), 1.0, "tanpi({}) should be +1", -x_pos75);
+        }
     }
 
     #[test]

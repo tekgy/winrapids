@@ -142,6 +142,64 @@ fn cospi_is_even() {
     }
 }
 
+/// cos has period 2π, so cospi(n + frac) = (-1)^n · cospi(frac).
+/// Regression anchor: old code stripped integer part via .fract() but never
+/// applied the (-1)^n sign flip. cospi(1.3) returned +cospi(0.3) instead of
+/// -cospi(0.3). Bug also corrupted tanpi general-path values since tanpi
+/// dispatches as sinpi/cospi.
+///
+/// Tolerance note: the (n + frac) decomposition routes through different
+/// frac-reduction branches than (frac) directly when frac > 0.5, so values
+/// match within a small ULP envelope rather than bit-exactly. The
+/// regression-anchor purpose is the SIGN, not bit-exactness.
+#[test]
+fn cospi_general_path_integer_parity_sign() {
+    let frac = 0.3_f64;
+    let base = cospi_strict(frac); // expected sign for even n
+    for n in 0_i32..=4 {
+        let x = n as f64 + frac;
+        let expected = if n & 1 == 0 { base } else { -base };
+        let got = cospi_strict(x);
+        // Sign must match exactly (this is the regression target).
+        assert_eq!(
+            got.signum(), expected.signum(),
+            "cospi({x}) = {got:e} expected {expected:e} (n={n}, frac={frac}; (-1)^n SIGN regression)"
+        );
+        // Magnitude within ULP envelope.
+        let diff_ulps = ulps_between(got.abs(), expected.abs());
+        assert!(
+            diff_ulps <= 8,
+            "cospi({x}) magnitude differs from expected by {diff_ulps} ULPs"
+        );
+    }
+}
+
+/// tanpi general-path corruption follow-on: tanpi(n + 0.3) for any positive n
+/// must equal tanpi(0.3) since tan has period π. Old cospi sign-flip bug
+/// flipped the denominator for odd n, producing wrong-sign tanpi values.
+///
+/// Tolerance note: same routing-divergence story as cospi above.
+#[test]
+fn tanpi_general_path_integer_parity_invariant() {
+    let frac = 0.3_f64;
+    let base = tanpi_strict(frac);
+    for n in 0_i32..=4 {
+        let x = n as f64 + frac;
+        let got = tanpi_strict(x);
+        // Sign must match exactly (regression target).
+        assert_eq!(
+            got.signum(), base.signum(),
+            "tanpi({x}) = {got:e} sign differs from tanpi({frac}) = {base:e} (cospi sign-flip regression)"
+        );
+        // Magnitude within ULP envelope.
+        let diff_ulps = ulps_between(got.abs(), base.abs());
+        assert!(
+            diff_ulps <= 16,
+            "tanpi({x}) magnitude differs from tanpi({frac}) by {diff_ulps} ULPs"
+        );
+    }
+}
+
 // ── tanpi ─────────────────────────────────────────────────────────────────────
 
 #[test]

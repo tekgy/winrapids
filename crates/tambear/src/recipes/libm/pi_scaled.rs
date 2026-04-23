@@ -130,11 +130,16 @@ pub fn cospi_strict(x: f64) -> f64 {
         return 0.0;
     }
 
-    // General: cos is even, so reduce to |x|.
+    // cos(π·x) = cos(π·(n + frac)) = (-1)^n · cos(π·frac) where n = floor(|x|).
+    // cos is even, so the sign of x doesn't matter — only the integer-part parity does.
     let x_pos = x.abs();
-    let frac = x_pos.fract();
+    let n = x_pos.floor() as i64;
+    let frac = x_pos - n as f64; // exact fractional part
 
-    if frac < 0.25 {
+    // (-1)^n flips sign when n is odd.
+    let integer_sign_neg = (n & 1) != 0;
+
+    let result = if frac < 0.25 {
         cos_strict(std::f64::consts::PI * frac)
     } else if frac < 0.5 {
         // cos(π·frac) = sin(π·(0.5 - frac)) for frac ∈ [0.25, 0.5)
@@ -147,7 +152,9 @@ pub fn cospi_strict(x: f64) -> f64 {
         // cos(π·frac) = cos(π·(1 - frac)) for frac ∈ [0.75, 1) (cos is even around π)
         // (1-frac) ∈ (0, 0.25]
         cos_strict(std::f64::consts::PI * (1.0 - frac))
-    }
+    };
+
+    if integer_sign_neg { -result } else { result }
 }
 
 /// `cospi(x)` — compensated.

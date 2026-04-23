@@ -102,6 +102,25 @@ fn sinpi_accuracy_general_inputs() {
 
 // ── cospi ─────────────────────────────────────────────────────────────────────
 
+/// External-oracle accuracy test for cospi. Symmetric-wrongness coincidence can
+/// make parity/evenness tests pass while the VALUES are wrong (the cospi (-1)^n
+/// bug was exactly this: cospi_is_even passed while cospi(1.3) was wrong-signed).
+/// This test uses (π*x).cos() as an independent oracle so self-referential
+/// tests can't mask value bugs.
+#[test]
+fn cospi_accuracy_general_inputs() {
+    let pi = std::f64::consts::PI;
+    // Tolerance 10: cospi reduces frac = x - floor(x) then multiplies by π;
+    // (π*x).cos() multiplies first then reduces. For x > 1 these float paths
+    // diverge by up to ~10 ulps (same bound as sinpi_accuracy_general_inputs).
+    for x in [0.1_f64, 0.25, 0.3, 0.7, 1.1, 1.3, 2.3, 3.7] {
+        let got = cospi_strict(x);
+        let expected = (pi * x).cos();
+        let d = ulps_between(got, expected);
+        assert!(d <= 10, "cospi({x}) vs cos(π·{x}): {d} ulps, got={got:e} expected={expected:e}");
+    }
+}
+
 #[test]
 fn cospi_half_is_exactly_zero() {
     // cospi(0.5) = cos(π/2) = 0 exactly. cos(f64::FRAC_PI_2) is not exactly 0.

@@ -53,3 +53,17 @@ pub mod realized_spread;
 pub mod cvar;
 pub mod price_percentiles;
 pub mod hill_estimator_streaming;
+
+// SIP signal-compute-spec recipes (2026-04-22 — filling out the ternyx-sip
+// kernel catalog). Same composition-over-primitives pattern as above; each
+// recipe documents its SIP context, accumulate lowering, and NaN/Inf policy.
+pub mod roll_spread;
+pub mod kyle_lambda;
+pub mod amihud_illiquidity;
+pub mod skewness;
+pub mod kurtosis_excess;
+pub mod jarque_bera;
+pub mod hurst_exponent;
+pub mod stationarity_adf;
+pub mod regime;
+pub mod n_structural_breaks;

@@ -304,12 +304,16 @@ fn hardened_knn_nan_distances_prefer_finite() {
         2.0, 3.0, 0.0,
     ]);
     let result = tambear::knn::knn_from_distance(&dist, 1);
-    // Point 0: point 1 has NaN distance, point 2 has d=2.
-    // KNN should prefer the finite-distance neighbor (point 2, d=2)
-    // over the NaN-distance neighbor (point 1).
-    assert_eq!(result.neighbors[0][0].0, 2,
-        "KNN should prefer finite-distance neighbor (point 2, d=2) over NaN-distance (point 1). \
-         Got neighbor={}, d={}", result.neighbors[0][0].0, result.neighbors[0][0].1);
+    // Point 0: D(0,1) = NaN. We don't know if point 1 is closer than point 2 (d=2).
+    // KNN returns empty — the neighborhood is undefined when any distance is unknown.
+    // Returning point 2 as "nearest" would be a false claim (point 1 might be closer).
+    assert!(result.neighbors[0].is_empty(),
+        "KNN with NaN distance must return empty neighborhood (undefined), not a false nearest");
+    assert!(result.neighbors[1].is_empty(),
+        "KNN with NaN distance must return empty neighborhood (undefined), not a false nearest");
+    // Point 2: all distances finite (d=2 to 0, d=3 to 1). Nearest is point 0.
+    assert_eq!(result.neighbors[2][0].0, 0,
+        "Point 2's nearest neighbor is point 0 (d=2)");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

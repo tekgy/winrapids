@@ -1878,18 +1878,13 @@ fn log_gamma_near_poles() {
             "log_gamma at pole should be inf or nan, got {val}");
     }
 
-    // DOCUMENTED LIMITATION: log_gamma returns inf for ALL x ≤ 0.
-    // The reflection formula only handles (0, 0.5). For negative arguments,
-    // the implementation doesn't compute log|Γ(x)| — it unconditionally returns inf.
-    //
-    // This is acceptable because all statistical callers (incomplete beta, gamma,
-    // chi2_cdf, t_cdf, f_cdf) only pass positive a, b, df values.
-    // But it means log_gamma(-0.5) = inf instead of the correct ln(2√π) ≈ 1.265.
+    // GAP CLOSED: log_gamma now uses the reflection formula for non-integer negative x.
+    // log_gamma(-0.5) = ln(π) - ln|sin(-π/2)| - log_gamma(1.5) = ln(2√π) ≈ 1.2655.
     let lg_neg_half = log_gamma(-0.5);
-    eprintln!("log_gamma(-0.5) = {lg_neg_half}  (limitation: returns inf, correct = {:.4})",
-        (2.0 * std::f64::consts::PI.sqrt()).ln());
-    assert!(lg_neg_half.is_infinite(),
-        "Documenting: log_gamma returns inf for negative args");
+    let expected_lg_neg_half = (2.0 * std::f64::consts::PI.sqrt()).ln();
+    eprintln!("log_gamma(-0.5) = {lg_neg_half}  (expected {expected_lg_neg_half:.4})");
+    assert!((lg_neg_half - expected_lg_neg_half).abs() < 1e-10,
+        "log_gamma(-0.5) = ln(2√π) ≈ 1.2655, got {lg_neg_half}");
 
     // Γ(0.5) = √π — sanity check the reflection formula
     let g_half = gamma(0.5);
@@ -2508,8 +2503,9 @@ fn garch_igarch_boundary() {
 fn digamma_near_poles() {
     use tambear::special_functions::digamma;
 
-    // At x=0: documented NaN
-    assert!(digamma(0.0).is_nan(), "ψ(0) should be NaN");
+    // At x=0: pole → -∞ (ψ has a simple pole at 0 with residue -1, limit is -∞).
+    // GAP CLOSED: implementation returns NEG_INFINITY, matching the mathematical pole.
+    assert_eq!(digamma(0.0), f64::NEG_INFINITY, "ψ(0) should be -∞ (pole)");
 
     // At negative integers: poles. tan(πn) = 0 for integer n → division by zero.
     // PREVIOUSLY: returned huge finite values due to tan(nπ) ≈ ε_mach.
@@ -3118,9 +3114,10 @@ fn trigamma_boundary_and_consistency() {
     assert!((tri_small / approx - 1.0).abs() < 0.01,
         "ψ₁(x) ~ 1/x² near 0, got ratio {}", tri_small / approx);
 
-    // Trigamma at negative x: should be NaN (poles + domain)
-    assert!(trigamma(-1.0).is_nan(), "ψ₁(-1) should be NaN");
-    assert!(trigamma(0.0).is_nan(), "ψ₁(0) should be NaN");
+    // Trigamma at negative integer x: pole of order 2 → +∞.
+    // GAP CLOSED: implementation returns +∞ at non-positive integer poles.
+    assert_eq!(trigamma(-1.0), f64::INFINITY, "ψ₁(-1) should be +∞ (pole of order 2)");
+    assert_eq!(trigamma(0.0), f64::INFINITY, "ψ₁(0) should be +∞ (pole of order 2)");
 
     // Known value: ψ₁(1) = π²/6
     let tri1 = trigamma(1.0);

@@ -133,6 +133,21 @@ fn tanh_bounded_for_finite_input() {
     }
 }
 
+/// The saturation boundary: for |x| ≥ ~19.5 the expm1 formula would saturate
+/// to exactly 1.0. tanh_strict clamps to nextDown(1.0) for all finite x.
+/// A naive implementation returns 1.0 here — this test catches that.
+#[test]
+fn tanh_never_exactly_one_for_finite_input() {
+    // Sweep the saturation zone (below, at, and above the 19.5 threshold).
+    for x in [18.0_f64, 19.0, 19.5, 20.0, 25.0, 50.0, 100.0, 710.0] {
+        let v = tanh_strict(x);
+        assert_ne!(v, 1.0, "tanh({x}) = 1.0 exactly — must be strictly < 1 for finite x");
+        assert_ne!(v, -1.0, "tanh(-{x}) = -1.0 exactly — must be strictly > -1 for finite x");
+        let neg_v = tanh_strict(-x);
+        assert_ne!(neg_v, -1.0, "tanh({}) = -1.0 exactly", -x);
+    }
+}
+
 #[test]
 fn tanh_is_odd() {
     for x in [0.5_f64, 1.0, 10.0, 100.0] {

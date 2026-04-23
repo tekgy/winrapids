@@ -232,6 +232,16 @@ pub fn atan2pi_strict(y: f64, x: f64) -> f64 {
         return if y.is_sign_negative() { -1.0 } else { 1.0 };
     }
 
+    // Finite diagonal |y| = |x|: atan2 = ±π/4 or ±3π/4 → ±0.25, ±0.75 exactly.
+    // div_pi of π/4 is not guaranteed exact; catching these preserves the contract.
+    if x.is_finite() && y.is_finite() && y.abs() == x.abs() {
+        return if x > 0.0 {
+            if y >= 0.0 { 0.25 } else { -0.25 }
+        } else {
+            if y >= 0.0 { 0.75 } else { -0.75 }
+        };
+    }
+
     // General case via atan2, then divide by π.
     div_pi(atan2_strict(y, x))
 }
@@ -353,11 +363,18 @@ mod tests {
 
     #[test]
     fn atan2pi_exact_values() {
-        // atan2pi(1, 1) = 0.25, atan2pi(0, -1) = 1.
-        let v = atan2pi_strict(1.0, 1.0);
-        assert!(ulps_between(v, 0.25) <= 2, "atan2pi(1,1) = {v}");
+        // atan2pi(0, -1) = ±1 exactly.
         assert_eq!(atan2pi_strict(0.0, -1.0), 1.0);
         assert_eq!(atan2pi_strict(-0.0, -1.0), -1.0);
+
+        // Finite diagonals |y| = |x|: all four exact quarter-integers.
+        assert_eq!(atan2pi_strict(1.0, 1.0), 0.25);
+        assert_eq!(atan2pi_strict(-1.0, 1.0), -0.25);
+        assert_eq!(atan2pi_strict(1.0, -1.0), 0.75);
+        assert_eq!(atan2pi_strict(-1.0, -1.0), -0.75);
+        // Scaled diagonals — same angle, same result.
+        assert_eq!(atan2pi_strict(3.0, 3.0), 0.25);
+        assert_eq!(atan2pi_strict(7.0, -7.0), 0.75);
 
         // ±∞, ±∞ corners.
         assert_eq!(atan2pi_strict(f64::INFINITY, f64::INFINITY), 0.25);

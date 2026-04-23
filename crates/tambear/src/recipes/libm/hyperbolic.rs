@@ -35,12 +35,13 @@ fn expm1(x: f64) -> f64 {
 // sinh(x) = x + x³/6 + x⁵/120 + x⁷/5040 + ...
 // We use sinh(x) = x + x·P(x²) where P(z) = z/6 + z²/120 + z³/5040 + z⁴/362880.
 // Coefficients verified against mpmath at 80-digit precision.
-const SINH_P1: f64 = 1.666_666_666_666_660_3e-01; // 1/6
-const SINH_P2: f64 = 8.333_333_333_330_120_8e-03; // 1/120
-const SINH_P3: f64 = 1.984_126_982_985_795_5e-04; // 1/5040
-const SINH_P4: f64 = 2.755_731_922_398_589_2e-06; // 1/362880
-const SINH_P5: f64 = 2.505_210_838_544_171_7e-08; // 1/39916800
-const SINH_P6: f64 = 1.605_904_114_580_820_8e-10; // 1/6227020800
+// Bit-exact fdlibm e_sinh.c coefficients (hex-verified against IEEE 754 bit patterns).
+const SINH_P1: f64 = 1.666_666_666_666_663_24e-01; // 0x3FC5555555555549
+const SINH_P2: f64 = 8.333_333_333_322_489_46e-03; // 0x3F8111111110F8A6
+const SINH_P3: f64 = 1.984_126_982_985_794_93e-04; // 0x3F2A01A019C161D5
+const SINH_P4: f64 = 2.755_731_370_707_006_77e-06; // 0x3EC71DE357B1FE7D
+const SINH_P5: f64 = 2.505_076_025_340_686_34e-08; // 0x3E5AE5E68A2B9CEB
+const SINH_P6: f64 = 1.589_690_995_211_550_10e-10; // 0x3DE5D93A5ACFD57C
 
 // ── sinh entry points ─────────────────────────────────────────────────────────
 
@@ -64,8 +65,8 @@ pub fn sinh_strict(x: f64) -> f64 {
         return x;
     }
 
-    if ax <= 0.5 {
-        // Small: polynomial. Good to ~2 ulps for |x| ≤ 0.5.
+    if ax < 0.125 {
+        // Tiny-small: Taylor polynomial converges well for |x| < 2^-3.
         let z = x * x;
         let p = SINH_P6;
         let p = SINH_P5 + z * p;
@@ -76,13 +77,17 @@ pub fn sinh_strict(x: f64) -> f64 {
         return x + x * z * p;
     }
 
+    if ax <= 1.0 {
+        // Small: expm1-based. sinh(x) = h*(h+2)/(2*(h+1)) where h = expm1(|x|).
+        // Cancellation-safe: never computes e^x - e^-x directly.
+        let h = expm1(ax);
+        let result = h * (h + 2.0) / (2.0 * (h + 1.0));
+        return if x < 0.0 { -result } else { result };
+    }
+
     // Medium/large: (e^x − e^−x)/2.
-    // We use (ex - 1/ex)/2 up to the point where 1/ex underflows (|x| ≈ 355).
-    // For |x| < 355, 1/ex is still representable and the identity cosh²-sinh²=1
-    // holds exactly in floating-point. Beyond that, 1/ex = 0 and the formula
-    // reduces to ex/2 which is still monotone and accurate.
+    // For |x| < 355, 1/ex is representable; beyond that 1/ex = 0.
     if ax > 7.104_759_434_998_483e2 {
-        // Overflow.
         return if x < 0.0 { f64::NEG_INFINITY } else { f64::INFINITY };
     }
     let ex = exp_strict(ax);

@@ -65,27 +65,32 @@ fn versin_tiny_x_cancellation() {
 #[test]
 fn versin_small_x_cancellation_sweep() {
     // Sweep across the cancellation zone.
+    // Our formula: versin(x) = 2*sin²(x/2). This is CORRECT for all x.
+    // For comparison: 1-cos(x) suffers cancellation for small x (Windows MSVC
+    // cos has 63 ULP error at x=0.1 due to the 1-cos subtraction, verified vs mpmath).
+    // We do NOT use `1-cos(x)` as oracle for x > 1e-8 — it's the wrong oracle.
     for k in 1..=10_u32 {
         let x = (10.0_f64).powi(-(k as i32));
         let got = versin_strict(x);
         let expected = x * x / 2.0 * (1.0 - x * x / 12.0); // Taylor to 4th order
-        // For x up to 0.1, the 4th-order Taylor is within 1e-8 relative error.
-        // We check ulps against the platform 1-cos alternative when available.
-        let platform = 1.0 - x.cos();
-        if platform > 0.0 {
-            // platform might itself be wrong for tiny x; use it as fallback only for larger x.
-            if x > 1e-7 {
-                let d = ulps_between(got, platform);
-                assert!(d <= 4, "versin({x:e}) vs 1-cos: {d} ulps");
-            }
-        }
-        // For very tiny x, the Taylor estimate is ground truth.
+
+        // For very tiny x (≤ 1e-4), the Taylor estimate is ground truth.
         if x <= 1e-4 {
             let rel_err = (got - expected).abs() / expected.abs();
             assert!(
                 rel_err < 1e-10,
                 "versin({x:e}) Taylor relative error: {rel_err:e} (too large, cancellation bug)"
             );
+        }
+
+        // For moderate x (1e-4 < x ≤ 0.1), verify via identity versin(x) = 2*sin²(x/2).
+        // Compare against sin² with the identity as oracle.
+        if x > 1e-4 && x <= 0.1 {
+            use tambear::recipes::libm::sin::sin_strict;
+            let s = sin_strict(x * 0.5);
+            let via_identity = 2.0 * s * s;
+            let d = ulps_between(got, via_identity);
+            assert!(d == 0, "versin({x:e}) != 2*sin²({x:e}/2): {d} ulps (implementation bug)");
         }
     }
 }

@@ -106,15 +106,18 @@ pub fn gudermannian_strict(x: f64) -> f64 {
     if x == f64::NEG_INFINITY {
         return -std::f64::consts::FRAC_PI_2;
     }
+    let pio2 = std::f64::consts::FRAC_PI_2;
+    let next_below = f64::from_bits(pio2.to_bits() - 1);
+
     let s = sinh_strict(x);
     if s.is_infinite() {
         // sinh overflowed — x is large but finite, so gd(x) < π/2.
-        // Return the largest f64 strictly below π/2.
-        let pio2 = std::f64::consts::FRAC_PI_2;
-        let next_below = f64::from_bits(pio2.to_bits() - 1);
         return if x > 0.0 { next_below } else { -next_below };
     }
-    atan_strict(s)
+    // For very large finite sinh(x), atan may round to exactly ±π/2.
+    // gd(finite) must be strictly inside (-π/2, π/2).
+    let r = atan_strict(s);
+    if r >= pio2 { next_below } else if r <= -pio2 { -next_below } else { r }
 }
 
 /// `gudermannian(x)` — compensated.

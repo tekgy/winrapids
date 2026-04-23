@@ -158,6 +158,19 @@ fn tanpi_neg_quarter_is_exactly_neg_one() {
     assert_bits!(tanpi_strict(-0.25), -1.0_f64, "tanpi(-0.25) must be EXACTLY -1.0");
 }
 
+/// tan has period π, so tanpi(n+0.25)=+1 for ALL integers n (not just n=0).
+/// Regression anchor: old code XOR'd with (n&1)!=0 ("integer_flips"), flipping
+/// sign for odd n. tanpi(1.25) returned -1 instead of +1.
+#[test]
+fn tanpi_quarter_integer_all_n_exactly_one() {
+    for n in [-4_i32, -3, -2, -1, 0, 1, 2, 3, 4] {
+        let x25 = n as f64 + 0.25;
+        let x75 = n as f64 + 0.75;
+        assert_eq!(tanpi_strict(x25), 1.0, "tanpi({x25}) must be +1 (integer_flips regression)");
+        assert_eq!(tanpi_strict(x75), -1.0, "tanpi({x75}) must be -1 (integer_flips regression)");
+    }
+}
+
 /// THE TANPI POLE CONTRACT: tanpi(0.5) MUST be ±∞.
 /// Unlike tan(π/2) where the f64 π/2 is slightly off and returns a large finite,
 /// tanpi(0.5) has an EXACT argument of 0.5 — the pole is exact. Must be infinite.

@@ -31,9 +31,17 @@
 //! same template.
 
 pub mod adversarial;
+pub mod asin;
+pub mod atan;
 pub mod erf;
 pub mod exp;
 pub mod gamma;
+pub mod hyperbolic;
+pub mod inv_hyperbolic;
+pub mod inv_recip;
 pub mod log;
+pub mod pi_scaled;
+pub mod rare_trig;
 pub mod sin;
+pub mod sincos_pi;
 pub mod tan;

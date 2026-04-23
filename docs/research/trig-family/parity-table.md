@@ -1,167 +1,223 @@
 # Tambear Trig Family — Gold-Standard Parity Table
 
-Maintained by: scientist (TRIG-18)  
-Gold standard: mpmath at 100-digit precision  
-Reference implementations: numpy (platform libm / SVML), scipy  
-Date: 2026-04-13
+Maintained by: scientist (TRIG-18)
+Gold standard: mpmath at 100-digit precision
+Reference implementations: numpy (platform libm / SVML), scipy.special
+Date: 2026-04-14
 
 ---
 
 ## Method
 
-For each trig function:
-1. Generate adversarial inputs: multiples of pi/4, near-zero, large arguments
-   (Payne-Hanek domain), Kahan hard cases, dense sweep through [0, 2*pi]
-2. Evaluate with numpy (f64, platform libm) and mpmath (100 digits -> rounded to f64)
-3. Measure ULP distance between numpy and mpmath
-4. Identify worst-case input
+For each function:
+1. Generate adversarial inputs (region boundaries, powers of 2, dense sweeps,
+   Table-Maker's-Dilemma hard cases)
+2. Evaluate with numpy/scipy and mpmath at 100 digits, both rounded to f64
+3. Measure ULP distance between reference and gold standard
+4. Identify worst-case inputs and classify by region
 
-The "numpy vs mpmath" column is the parity gap for the *reference* implementations.
-When tambear ships Rust bindings, a "tambear vs mpmath" column is added.
+ULP distance: sign-magnitude bit comparison per IEEE 754. Signed zero treated
+as unsigned zero. NaN vs NaN = 0, NaN vs non-NaN = sentinel max.
 
-ULP distance is computed via sign-magnitude bit manipulation (IEEE 754 bit ordering).
-NaN vs non-NaN = sentinel (max uint64). Signed zero treated as unsigned zero.
+**Note on subnormal flush-to-zero**: when a function's output enters the
+subnormal range (< 2.2e-308), some implementations return 0.0 while mpmath
+returns the true subnormal value. ULP distance in this case can be astronomically
+large (trillions of ulps) despite the absolute error being < 1e-308. These are
+documented as saturation policy gaps, not precision failures.
 
 ---
 
-## Parity Table
+## Parity Table: Currently Implemented Functions
 
-| Function | Inputs | Worst ULP (np vs mp) | <= 1 ulp | <= 2 ulp | Worst Input | Sign-off |
-|----------|--------|---------------------|----------|----------|-------------|----------|
-| sin      | 2521   | 1                   | 100.0%   | 100.0%   | x=-153.15... | pending |
-| cos      | 2521   | 1                   | 100.0%   | 100.0%   | x=-1e15    | pending |
-| tan      | —      | —                   | —        | —        | —           | not yet |
-| cot      | —      | —                   | —        | —        | —           | not yet |
-| sec      | —      | —                   | —        | —        | —           | not yet |
-| csc      | —      | —                   | —        | —        | —           | not yet |
-| asin     | —      | —                   | —        | —        | —           | not yet |
-| acos     | —      | —                   | —        | —        | —           | not yet |
-| atan     | —      | —                   | —        | —        | —           | not yet |
-| atan2    | —      | —                   | —        | —        | —           | not yet |
-| sinh     | —      | —                   | —        | —        | —           | not yet |
-| cosh     | —      | —                   | —        | —        | —           | not yet |
-| tanh     | —      | —                   | —        | —        | —           | not yet |
-| asinh    | —      | —                   | —        | —        | —           | not yet |
-| acosh    | —      | —                   | —        | —        | —           | not yet |
-| atanh    | —      | —                   | —        | —        | —           | not yet |
-| sinpi    | —      | —                   | —        | —        | —           | not yet |
-| cospi    | —      | —                   | —        | —        | —           | not yet |
-| tanpi    | —      | —                   | —        | —        | —           | not yet |
-| sincos   | —      | —                   | —        | —        | —           | not yet |
+| Function | Inputs | Worst ULP | <= 1 ulp | Worst Input | Key Notes |
+|----------|--------|-----------|----------|-------------|-----------|
+| sin      | 2521   | 1         | 100.0%   | x=-153.15   | 96.0% bit-perfect |
+| cos      | 2521   | 1         | 100.0%   | x=-1e15     | 96.4% bit-perfect |
+| exp      | 1105   | 1         | 100.0%   | various     | 99.3% bit-perfect |
+| log      | 1197   | 0         | 100.0%   | all         | BIT-PERFECT on all tested |
+| erf      | 1011   | 1         | 100.0%   | various     | 88.4% bit-perfect |
+| erfc     | 2500+  | saturation| 75.5%    | x~26.6      | SATURATION POLICY GAP |
+| tgamma   | 508    | 4         | 85%      | x~1.46      | 96% within 2 ulp |
+| lgamma   | 508    | 169       | 91%      | various     | upstream scipy gap |
+| tan      | 20299  | 1         | 100.0%   | x=-6.279e2  | 95.6% bit-perfect; poles covered |
+
+---
+
+## Pending: Not Yet Implemented
+
+| Function | Status |
+|----------|--------|
+| tan      | VERIFIED — see parity table above |
+| cot, sec, csc | TRIG-13 — awaiting compilable Rust |
+| sincos (fused) | TRIG-13 — awaiting compilable Rust |
+| asin, acos, atan, atan2 | TRIG-14 pending |
+| acot, asec, acsc | TRIG-14 pending |
+| sinh, cosh, tanh | TRIG-15 pending |
+| asinh, acosh, atanh | TRIG-15 pending |
+| sinpi, cospi, tanpi | TRIG-16 pending |
+| asinpi, acospi, atanpi | TRIG-16 pending |
+
+---
+
+## Detailed Notes
+
+### tan: 100% ≤1 ulp, poles covered
+
+20,299 adversarial inputs including ±1/2/3-ulp neighborhoods of every tan/sec
+pole (π/2 + kπ, k in -200..200) and cot/csc pole (kπ, k≠0). Worst case:
+x=-6.278697e+02, ulp=1. 95.6% bit-perfect.
+
+numpy.tan is ≤1 ulp vs mpmath on this input set — platform libm is correctly
+rounded on all tested tan inputs. Tambear's tan_strict shares range reduction
+infrastructure with sin.rs (reduce_trig, kernel_sin, kernel_cos) so accuracy
+is structurally identical.
+
+Pole behavior: at representable values nearest π/2 + kπ, tan(x) returns a
+large finite value (not infinity), because the f64 representation of the pole
+is not exactly π/2 + kπ. Both numpy and mpmath agree on this: the "pole" is
+only approached, never reached, in f64 arithmetic. tan_adversarial() explicitly
+tests ±1/2/3 ulp neighbors of each pole representation to verify that
+tambear handles the steep gradient without overflow or accuracy collapse.
+
+### log: bit-perfect
+
+numpy's log is bit-perfect vs mpmath on all 1197 tested inputs. This means the
+platform libm is returning the correctly-rounded result on every one of our
+adversarial inputs. (It does NOT guarantee correctness on all 10^16 positive
+doubles; Table-Maker's-Dilemma inputs were not exhaustively tested.)
+
+Tambear's log should match this; its Remez-optimized approach is in the same
+accuracy class.
+
+### erfc: saturation policy gap
+
+At x ~= 26.6, erfc(x) enters the subnormal f64 range (~3.7e-311).
+scipy.special.erfc returns 0.0 (flush-to-zero), while mpmath returns the
+true subnormal:
+
+    x=26.663: scipy=0.0, mpmath=3.72e-311, ulp_dist=7.5e12
+
+Absolute error: |0 - 3.72e-311| < 4e-311, which is below f64::MIN_POSITIVE.
+This is a saturation policy decision, not a precision failure.
+
+Tambear policy: return the subnormal when representable (x < ~27.3).
+For x > ~27.3, erfc < 5e-324 (smallest subnormal) and 0.0 is correct.
+This is strictly more accurate than scipy's early flush.
+
+The 15-ulp worst case in the core region (-3 to 5) is real:
+    core: n=1600, worst=15 ulp, <=1: 69%
+
+This is a scipy precision gap worth filing upstream. Tambear target: <=2 ulp
+core.
+
+### lgamma: 169 ulp worst case
+
+scipy.special.gammaln reaches 169 ulp vs mpmath on our tested [0.5, 20] range.
+Likely occurs near the minimum of Gamma at x~1.4616 (Gamma'=0 there, so the
+log of Gamma has a near-flat inflection — Taylor convergence is slowest there).
+
+Tambear uses Lanczos approximation. Lanczos achieves ~15-digit accuracy on
+[0.5, 20], giving <=2 ulp. The scipy 169-ulp is an upstream bug candidate.
+
+### tgamma: 4 ulp worst case
+
+4 ulp on our tested range. Acceptable as a reference gap (scipy), but tambear
+should target <=2 ulp via Lanczos. The worst case is at x~1.4616 (same minimum).
 
 ---
 
 ## Exact Ground Truth: sin(n*pi/6) Grid
 
-These inputs have known closed-form exact values. The "np vs exact" column
-measures how far numpy's f64 result is from the true mathematical value.
-The "np vs mp" column measures agreement between numpy and mpmath.
+| n  | x          | Exact value  | np vs mp | np vs exact | Notes |
+|----|------------|--------------|----------|-------------|-------|
+| 0  | 0.0        | 0.0          | 0 ulp    | 0 ulp       | exact |
+| 1  | pi/6       | 0.5          | 0 ulp    | 1 ulp       | |
+| 2  | pi/3       | sqrt(3)/2    | 0 ulp    | 0 ulp       | |
+| 3  | pi/2       | 1.0          | 0 ulp    | 0 ulp       | exact |
+| 4  | 2*pi/3     | sqrt(3)/2    | 0 ulp    | 1 ulp       | |
+| 5  | 5*pi/6     | 0.5          | 0 ulp    | 1 ulp       | |
+| 6  | pi         | 0.0          | 0 ulp    | ~huge       | see policy note |
+| 7  | 7*pi/6     | -0.5         | 0 ulp    | 5 ulp       | |
+| 8  | 4*pi/3     | -sqrt(3)/2   | 1 ulp    | 1 ulp       | |
+| 9  | 3*pi/2     | -1.0         | 0 ulp    | 0 ulp       | exact |
+| 10 | 5*pi/3     | -sqrt(3)/2   | 0 ulp    | 0 ulp       | |
+| 11 | 11*pi/6    | -0.5         | 0 ulp    | 4 ulp       | |
+| 12 | 2*pi       | 0.0          | 0 ulp    | ~huge       | see policy note |
 
-| n  | x (radians)    | Exact value     | np vs mp | np vs exact | Notes |
-|----|----------------|-----------------|----------|-------------|-------|
-| 0  | 0.0000         | 0.0             | 0 ulp    | 0 ulp       | exact |
-| 1  | pi/6           | 0.5             | 0 ulp    | 1 ulp       | |
-| 2  | pi/3           | sqrt(3)/2       | 0 ulp    | 0 ulp       | |
-| 3  | pi/2           | 1.0             | 0 ulp    | 0 ulp       | exact |
-| 4  | 2*pi/3         | sqrt(3)/2       | 0 ulp    | 1 ulp       | |
-| 5  | 5*pi/6         | 0.5             | 0 ulp    | 1 ulp       | |
-| 6  | pi             | 0.0             | 0 ulp    | ~huge       | see note 1 |
-| 7  | 7*pi/6         | -0.5            | 0 ulp    | 5 ulp       | |
-| 8  | 4*pi/3         | -sqrt(3)/2      | 1 ulp    | 1 ulp       | |
-| 9  | 3*pi/2         | -1.0            | 0 ulp    | 0 ulp       | exact |
-| 10 | 5*pi/3         | -sqrt(3)/2      | 0 ulp    | 0 ulp       | |
-| 11 | 11*pi/6        | -0.5            | 0 ulp    | 4 ulp       | |
-| 12 | 2*pi           | 0.0             | 0 ulp    | ~huge       | see note 1 |
-
-**Note 1**: sin(float(pi)) != 0.0 because float(pi) != pi. The f64 representation
-of pi is pi + ~1.2e-16, so sin(float_pi) ≈ 1.22e-16 (not zero). This is correct
-behavior — the function is not at a zero of the mathematical sine. ULP distance
-from 0.0 is enormous but this is not a bug; it's a consequence of argument
-representation. The test for zero crossings should be sin(pi_mpmath_rounded_f64)
-vs mpmath.sin(pi_mpmath_rounded_f64), not vs exact 0.0.
+Policy note on zero crossings: sin(float(pi)) is not 0 because float(pi) != pi.
+The correct test is sin(float_pi) vs mpmath.sin(float_pi): they agree to 0 ulp.
+The "huge" ulp distance is from comparing sin(approximated-pi) to exact zero.
 
 ---
 
-## Exact Ground Truth: cos(n*pi/6) Grid
+## atan2 Policy Gap Analysis
 
-| n  | x (radians)    | Exact value     | np vs mp | np vs exact | Notes |
-|----|----------------|-----------------|----------|-------------|-------|
-| 0  | 0.0000         | 1.0             | 0 ulp    | 0 ulp       | exact |
-| 1  | pi/6           | sqrt(3)/2       | 0 ulp    | 1 ulp       | |
-| 2  | pi/3           | 0.5             | 0 ulp    | 1 ulp       | |
-| 3  | pi/2           | 0.0             | 0 ulp    | ~huge       | see note 1 |
-| 4  | 2*pi/3         | -0.5            | 0 ulp    | 4 ulp       | |
-| 5  | 5*pi/6         | -sqrt(3)/2      | 0 ulp    | 1 ulp       | |
-| 6  | pi             | -1.0            | 0 ulp    | 0 ulp       | exact |
-| 7  | 7*pi/6         | -sqrt(3)/2      | 0 ulp    | 2 ulp       | |
-| 8  | 4*pi/3         | -0.5            | 0 ulp    | 4 ulp       | |
-| 9  | 3*pi/2         | 0.0             | 0 ulp    | ~huge       | see note 1 |
-| 10 | 5*pi/3         | 0.5             | 0 ulp    | 1 ulp       | |
-| 11 | 11*pi/6        | sqrt(3)/2       | 0 ulp    | 2 ulp       | |
-| 12 | 2*pi           | 1.0             | 0 ulp    | 0 ulp       | exact |
+All 20 IEEE 754-2019 mandatory special cases verified against numpy on Windows.
+Result: numpy agrees with IEEE 754-2019 on all 20 cases. No policy gaps.
 
-**Note 1**: Same as sin — cos(float(pi/2)) is not exactly 0.
+| Case | IEEE 754-2019 | numpy | Status |
+|------|--------------|-------|--------|
+| atan2(+0, +0) | +0 | +0.0 | OK |
+| atan2(+0, -0) | +pi | +pi | OK |
+| atan2(-0, +0) | -0 | -0.0 | OK |
+| atan2(-0, -0) | -pi | -pi | OK |
+| atan2(+0, x<0) | +pi | +pi | OK |
+| atan2(-0, x<0) | -pi | -pi | OK |
+| atan2(+0, x>0) | +0 | +0.0 | OK |
+| atan2(-0, x>0) | -0 | -0.0 | OK |
+| atan2(y>0, +0) | +pi/2 | +pi/2 | OK |
+| atan2(y<0, +0) | -pi/2 | -pi/2 | OK |
+| atan2(y>0, -0) | +pi/2 | +pi/2 | OK |
+| atan2(y<0, -0) | -pi/2 | -pi/2 | OK |
+| atan2(+inf, +inf) | +pi/4 | +pi/4 | OK |
+| atan2(+inf, -inf) | +3*pi/4 | +3*pi/4 | OK |
+| atan2(-inf, +inf) | -pi/4 | -pi/4 | OK |
+| atan2(-inf, -inf) | -3*pi/4 | -3*pi/4 | OK |
+| atan2(+inf, finite) | +pi/2 | +pi/2 | OK |
+| atan2(-inf, finite) | -pi/2 | -pi/2 | OK |
+| atan2(finite, +inf) | +0 | +0.0 | OK |
+| atan2(finite, -inf) | +pi | +pi | OK |
 
----
-
-## Large-Argument Analysis (Payne-Hanek domain, |x| > 1.6e6)
-
-| Function | Inputs tested | Worst ULP | Worst input | Notes |
-|----------|---------------|-----------|-------------|-------|
-| sin      | 8             | 0 ulp     | all zero    | libm and mpmath agree exactly |
-| cos      | 8             | 1 ulp     | x=-1e15     | expected — range reduction regime |
-
-cos shows 1 ulp at x=-1e15. This is within budget. Tambear's Payne-Hanek
-reduction provides ~120 bits of precision; the 1 ulp seen here is the
-rounding boundary from the f64 kernel, not from range reduction failure.
+Tambear atan2 implementation target: match all 20 IEEE cases exactly.
+Policy is clear: implement IEEE 754-2019 verbatim. No decisions to make here.
 
 ---
 
-## Policy Gaps
+## Upstream Bug Candidates
 
-These are places where implementations deliberately differ by policy, not error.
+Functions where scipy/numpy deviates from mpmath gold standard in ways that
+are reproducible, measurable, and likely incorrect:
 
-| Case | numpy | scipy | mpmath | tambear policy |
-|------|-------|-------|--------|----------------|
-| sin(+0.0) | +0.0 | +0.0 | 0 | +0.0 (IEEE 754: sign preserved) |
-| sin(-0.0) | -0.0 | -0.0 | 0 | -0.0 (IEEE 754: sign preserved) |
-| cos(-0.0) | 1.0  | 1.0  | 1 | 1.0 (cos is even) |
-| sin(+inf) | NaN  | NaN  | NaN | NaN |
-| sin(-inf) | NaN  | NaN  | NaN | NaN |
-| sin(NaN)  | NaN  | NaN  | NaN | NaN |
-| cos(+inf) | NaN  | NaN  | NaN | NaN |
-
-All implementations agree on the above. No policy gaps found for sin/cos.
+| Function | Issue | Severity | Action |
+|----------|-------|----------|--------|
+| erfc (subnormal) | Flushes to 0.0 for x > ~26.6 | Policy choice | Document; note scipy divergence |
+| erfc (core) | 15 ulp in transition zone | Real precision gap | File scipy issue |
+| lgamma | 169 ulp on some inputs | Real precision gap | Find input; file scipy issue |
+| tgamma | 4 ulp near x~1.46 | Borderline | Tambear Lanczos should beat this |
 
 ---
 
-## $1M/yr Scientist Defaults (TRIG-6)
+## $1M/yr Scientist Defaults Summary
 
-### sin / cos
-
-| Parameter       | Default          | Rationale |
-|-----------------|------------------|-----------|
-| precision       | compensated      | Worst-case drops from ~2 ulp (strict) to ~1 ulp. ~10% slower. The tradeoff is worth it for a math library. |
-| angle_unit      | radians          | Universal convention for numerical work. Degree/turn inputs are a conversion, not a default. |
-| range_reduction | auto             | Cody-Waite up to |x| < 2^20*pi/2 (exact for |k| < 2^20), Payne-Hanek beyond. Never force one path. |
-
-**Why not correctly_rounded as default?**  
-The correctly_rounded path uses double-double throughout, adding ~3x overhead.
-The compensated path already achieves 1 ulp on nearly all inputs. The marginal
-gain (0 -> 0 ulp on the hardest cases) doesn't justify the 3x slowdown for
-a fintech farm that calls sin() 10^9 times per day.
-
-**Why not strict?**  
-The strict single-FMA Horner path has documented worst-case 2 ulps. For
-scientific computing where users may accumulate errors across billions of
-calls, starting with the 2-ulp path as default is not what a senior
-numerical analyst would choose.
+Universal rule: compensated is the default for every function in tambear.
+The 1-ulp improvement over strict justifies ~10% overhead universally.
+See scientist-defaults.md for full rationale per function.
 
 ---
 
-## Sign-off
+## Sign-off Status
 
-sin (initial): pending (Rust bindings needed for tambear column)  
-cos (initial): pending (Rust bindings needed for tambear column)  
-
-numpy baseline (Python libm): VERIFIED — ≤ 1 ulp vs mpmath on 2521 adversarial inputs.
+| Function | np vs mp verified | Policy gaps | Tambear column | Sign-off |
+|----------|------------------|-------------|----------------|----------|
+| sin      | YES              | none found  | pending        | partial  |
+| cos      | YES              | none found  | pending        | partial  |
+| exp      | YES              | none found  | pending        | partial  |
+| log      | YES (bit-perfect)| none found  | pending        | partial  |
+| erf      | YES              | none found  | pending        | partial  |
+| erfc     | YES              | saturation  | pending        | partial  |
+| tgamma   | YES              | noted       | pending        | partial  |
+| lgamma   | YES              | upstream bug| pending        | partial  |
+| tan      | YES            | none found  | pending Rust   | partial  |
+| cot, sec, csc, sincos | NOT YET | —        | —              | —        |
+| asin..atanh | NOT YET     | —           | —              | —        |
+| sinpi..  | NOT YET          | —           | —              | —        |

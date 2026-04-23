@@ -155,6 +155,228 @@ This is what a convergence finding does — it reshapes the work. I've routed it
 
 ---
 
-*More entries as the expedition unfolds. The job is to make this journey mean something.*
+## Entry 2 — Shared-Pass Analysis (2026-04-13, later)
+
+Navigator picked up the convergence and framed the next thread directly: *"is sincos the MomentStats of trig?"* That became the shared-pass analysis at `docs/research/trig-family/shared-pass-analysis.md`.
+
+Short version: **yes, with four generalizations**. The analogy holds in the load-bearing ways (minimum sufficient representation, scatter-compute, fan-out-by-composition). Where it breaks, the breaks are structurally informative:
+
+1. **Trig has two tiers** (`trig_reduce` → `sincos_kernel`); MomentStats has one. This two-tier pattern likely repeats for hyperbolics (`exp_pair` → `sinhcosh_kernel`) and inverse trig (`atan_reduce` → `atan_kernel`) — math-researcher can verify.
+2. **Trig's intermediate carries a discrete coordinate** (quadrant index mod 4) alongside the continuous residual. This is a group-theoretic signature: any S¹-valued function over a symmetric domain will have one.
+3. **Precision × angle_unit fingerprint required on the IntermediateTag.** A `trig_reduce` computed at `strict` precision is not compatible with a `correctly_rounded` consumer. A `trig_reduce` computed for `radians` is not compatible with a `pi_scaled` consumer (different reduction modulus → different `r_hi`). This is the Tambear Contract §3 (compatibility enforcement) made concrete.
+4. **Content-addressable sharing scope**, not bin-scope. `trig_reduce(1.5708)` is useful across every bin, every session. MomentStats' scope is the bin.
+
+### Consequence — the IntermediateTag needs two new variants
+
+```rust
+TrigReduce     { data_id, angle_unit, precision },
+SincosKernel   { data_id, angle_unit, precision },
+```
+
+With `angle_unit` as a separate field (not a pre-multiply) so the Payne-Hanek-over-radians and frint-over-turns reductions don't collide in the cache.
+
+### What pathmaker has already done
+
+By the time I finished the analysis, pathmaker had shipped .spec.toml files for sin, cos, tan, cot, sec, csc, sincos, sincospi, sinpi, cospi, tanpi, versin, haversin — every one of them declaring `reads = ["trig_reduce"]` or `reads = ["trig_reduce", "sincos_kernel"]`. The sincos.spec.toml literally opens with "sincos is the MomentStats of trigonometry."
+
+The sharing contract is in the specs before the IntermediateTag type exists in intermediates.rs. That's a healthy temporal ordering: design the sharing *before* the cache, not after. When pathmaker adds the tag variants to `intermediates.rs`, every spec is already pointing at them.
+
+---
+
+## Threads to watch (updated)
+
+1. **Does hyperbolic follow the same two-tier pattern?** `exp_pair(x) = (exp(x), exp(-x))` is a natural reduction-tier candidate. The kernel tier `(sinh_k, cosh_k) = ((e_plus - e_minus)/2, (e_plus + e_minus)/2)` is pure arithmetic. If yes, the two-tier pattern is a family-level feature, not trig-specific. Math-researcher owns this in TRIG-15.
+
+2. **Does inverse trig share with forward trig?** Naive expectation is no (different coordinates). But `atan2(y, x)` near the y-axis reduces to `atan(x/y)` which may share kernel polynomials with the forward `cot_kernel` (both are ratios of sincos outputs under rotation). Worth investigating.
+
+3. **When does the kernel tier NOT materialize?** If only `sin` is called, `sincos_kernel`'s second slot is wasted. The session needs lazy materialization — produce the kernel tier only when a second consumer arrives. Implementation detail but worth flagging.
+
+4. **Does the content-addressable cache actually buy anything at real-workload hit rates?** For most float inputs, x values are unique — cache hit rate ~0. For lookup tables, precomputed angles, physical constants, hit rate could be high. Observer could measure on a realistic workload when TRIG-17 gets to benchmarking.
+
+5. **The "precision × unit × algorithm" cube is now five-dimensional**: function × family × precision × angle_unit × algorithm (Cody-Waite / Payne-Hanek / CORDIC / table-lookup). Each axis is orthogonal. The full catalog grows combinatorially; the compatibility-tag approach is what keeps it tractable — we don't enumerate cells, we let the tag match consumers to producers at runtime.
+
+---
+
+## Entry 3 — Three Paths, Same Shape (2026-04-13, evening)
+
+*Outside-inspiration pass. The naturalist leaves the camp to find perspective and returns carrying two things that rhyme with us.*
+
+### Āryabhaṭa, 499 CE
+
+The first sine table in human history — 24 values at π/48 spacing, encoded in verse 12 of the Ganitapada chapter of the *Āryabhaṭīya*.
+
+**The table stored sine-DIFFERENCES, not sine-values.** Āryabhaṭa used the recursion:
+
+> sin(θ + φ) − sin(θ − φ) = 2 sin(φ) cos(θ)
+
+to propagate the table forward by adding differences. The values are derivable from the differences by prefix-sum.
+
+**This is an accumulate+gather decomposition.** The primitive is the difference (local quantity); the accumulate is the prefix-sum (global propagation); the gather is lookup at an index. Tambear's unification principle — all math = accumulate(grouping, expr, op) + gather(addressing) — was *discovered*, in a different vocabulary, by a 5th-century Indian astronomer who needed planetary positions without floating-point hardware.
+
+Worth citing in `references.md` and perhaps in `first-principles.md` as corroboration of Aristotle's T1 (S¹ is the primitive object, not sin-the-function).
+
+### Casey Muratori, 2023
+
+"Turns are Better than Radians" (computerenhance.com) rhymes with Aristotle's Phase 1 almost bullet-for-bullet:
+
+| Muratori | Aristotle | Our expedition |
+|---|---|---|
+| "Callers multiply by tau; libraries multiply by 4/π. Both lossy." | A9: "Angle unit should influence reduction modulus, not pre-multiply." | TRIG-3 angle-unit parameterization routes the unit into the reduction, not before it. |
+| "90° is 0.25 as a turn — a bit-pattern requiring zero mantissa bits." | (new — we didn't have this framing) | **This is the precision argument for pi-scaled trig in one sentence. Worth importing.** |
+| "Turns are a legitimate mathematical unit, not a programming convenience." | T2: "Phase is primary; the unit is a coordinate choice." | Both forward and pi-scaled families are first-class in the catalog. |
+
+The zero-mantissa-bits framing is the sharpest statement I've seen of why pi-scaled trig matters. Rational-turn angles (1/4 turn, 1/8 turn, k/2^n turn) are **exactly representable** in turns and **never** in radians (because π is transcendental). Pi-scaled trig isn't a convenience — it's the numerically *natural* path for rational-turn inputs.
+
+**Action for math-researcher**: adding this to references.md and possibly to whatever TRIG-3 wrote up on angle-units. Muratori's framing is tighter than anything we've written.
+
+### What these two say together
+
+Āryabhaṭa (499 CE), Muratori (2023), and our expedition (2026). Three methodologies, 1500 years apart, no cross-pollination. They converge on three structural claims:
+
+1. **The difference structure of sine is primary.** (Āryabhaṭa stored differences; we compose via accumulate+gather.)
+2. **The pre-multiply-to-radians is the source of precision loss.** (Muratori measured it; Aristotle deduced it; we encode it as a per-unit reduction.)
+3. **sin and cos are not separate — they're projections of one geometric object.** (Āryabhaṭa named them jyā and koṭi-jyā — "half-chord" and "half-chord of the complementary arc"; Aristotle's T3 names them (c,s); we name them `sincos`.)
+
+Three paths, same shape. We're not inventing the structure of trig; we're **discovering** it. The shape is in the mathematics. Tambear's job is to make the shape legible in floating-point with compensated arithmetic, precision tiers, and compatibility fingerprints.
+
+Reflected on it in the garden: `~/.claude/garden/aryabhata-knew-2026-04-13.md`. A feeling, not a finding: this is what the work feels like when it's going well.
+
+---
+
+## Convergence Check — Day One Summary
+
+Today produced **three convergence moments**, each structurally richer than the last:
+
+1. **Entry 1 — Internal convergence**: naturalist + math-researcher + Aristotle + sin.rs itself all landed on "sincos is the forward primitive" independently, within hours.
+2. **Entry 2 — Analogical convergence**: sincos's sharing contract aligned structurally with MomentStats (the tambear canonical shared intermediate), with four generalizations that are findings in their own right.
+3. **Entry 3 — Historical/cross-domain convergence**: Āryabhaṭa's sine-difference table and Muratori's turns essay rhyme with our expedition's structural claims.
+
+The convergence-check methodology predicts that parallel-work rhymes reveal first-principles truths about the problem class. Today demonstrated that prediction across three scales: intra-team (minutes apart), intra-tambear (cross-primitive), and trans-millennial (cross-civilization). **The structure of trig is visible through every window that honestly looks at it.** That's what we've been finding.
+
+Next thing to watch: whether the two-tier pattern (reduction tier → kernel tier) holds for hyperbolics. If yes, it's a family-level feature. If no, trig is idiosyncratic in a way I didn't expect. Math-researcher's TRIG-15 will tell us.
+
+## Entry 4 — Navigator's "Scratch That" and the Near-Unity Rhyme (2026-04-13, late)
+
+Two developments.
+
+### 4.1 Navigator's scratch-that was wrong; pushing back
+
+Navigator returned from the TRIG-3 angle_units writeup (freshly completed) with a *stronger* version of the shared-pass compatibility argument: "only radians need Payne-Hanek; all other units get exact reduction." Agreed — that's correct, and it's the catalog's §5.1 finding.
+
+Then navigator drafted a proposal: *"the tag should be `TrigReduced(x_bits)` where `x_bits` is the raw f64 bit pattern of the radian-equivalent value after unit conversion. Two callers with the same radian-equivalent share."*
+
+I pushed back. Normalizing to radians before the cache key **burns the pi-scaled precision advantage**. If a caller passes `x = 0.25` in turns (exact, zero mantissa bits), converting to radians for the cache key produces `0.25 × 2π ≈ 1.5707963267948966`, which is not exact — that's *literally* the Aristotle A9 / Muratori pre-multiply loss, moved from the math to the cache key. A sinpi consumer calling with `x = 0.25` that pulls a cached radian-path intermediate would inherit Payne-Hanek's error even though its own path never needed Payne-Hanek.
+
+The right tag is the **original** proposal (from Entry 2): `TrigReduce { data_id, angle_unit, precision }`. The unit is *part of the key*, not normalized away. Two mathematically-equal-but-unit-different callers do NOT share — and that's correct, because their reduction paths produce intermediates with different low-bit contents.
+
+The tag exposes the unit distinction; the cache does not hide it.
+
+This is a load-bearing correctness finding. Logged at the shared-pass campsite.
+
+### 4.2 The Fifth Convergence — Near-Unity Cancellation
+
+Math-researcher's catalog §"Convergence Check — Near-Unity Cancellation Rhyme" (lines 613–635) ran the structural-rhyme practice on inverse functions and found:
+
+> Every inverse trig / inverse hyperbolic function has a **near-unity cancellation zone**, and the fix in every case is to rewrite in terms of the **complementary argument** (`1 − x`, `1 + x`, `t = x − 1`) so that the subtraction becomes an addition that preserves the low-order bits. This is the same structural pattern as `log1p` / `expm1` / `sinpi` **at different scales**.
+
+Six functions, same structural rhyme:
+
+| Function | Cancellation site | Fix |
+|---|---|---|
+| `asin(x)` near \|x\|=1 | √(1−x²) | half-angle asin(√((1−x)/2)) |
+| `acos(x)` near \|x\|=1 | √(1−x²) | half-angle 2·asin(√((1±x)/2)) |
+| `acosh(x)` near x=1 | √(x²−1) | log1p(t + √(2t+t²)), t=x−1 |
+| `atanh(x)` near \|x\|=1 | (1−x) in denom | IEEE ±∞ |
+| `atan2(y,x)` at axes | y/x | IEEE table |
+| `asech(x)` near x=1 | √(1−x²)/x | reduces to asin half-angle |
+
+And the structural rhyme continues to `log1p`, `expm1`, `sinpi`, `cosm1` — all "the complementary-argument transform at a different scale." Every one of these primitives exists to make **1 + ε**-style arguments computable without cancellation.
+
+This is a genuine fifth convergence. Day one:
+1. sincos is the primitive (internal four-agent).
+2. Shared-pass ≈ MomentStats with four generalizations (analogical).
+3. Āryabhaṭa + Muratori = us (historical).
+4. Navigator's scratch-that = precision regression (correctness, pushback).
+5. **Every inverse function hides a log1p/expm1/sinpi-shaped primitive** (catalog convergence check).
+
+The fifth is the most generative, I think. It says the trig family's "complementary-argument" move isn't trig-specific. It's the same pattern that birthed `log1p`, `expm1`, `sinpi`, `cosm1`, `log2`, `exp2`, `frexp+ldexp` — all the "one more than an exact thing" primitives across libm. Math-researcher proposes a meta-primitive `complementary_arg_transform(x, function_family) → (t, sign, branch)` that emits the transformed argument for any of these functions, feeding the same post-transform core.
+
+That meta-primitive is what the rhyme is really pointing at. It's not just "inverse functions need log1p"; it's **the complementary-argument transform is a primitive in its own right** — an L1 atom, possibly, or an L2 primitive that every inverse function calls.
+
+### 4.3 Correction to Entry 2
+
+I said hyperbolics "likely have" a two-tier pattern with `exp_pair`. The catalog is clearer: the shared intermediate is **`HyperbolicExpm1Pair = (expm1(|x|), expm1(-|x|))`** — *expm1*, not exp. This matters because expm1 preserves precision at small x (sinh(x) ≈ x, cosh(x) ≈ 1+x²/2 — both need the low-order bits), while exp loses them. Same pair-of-values shape, but the inner function is expm1 because of the same complementary-argument logic as point 4.2.
+
+This is a nice internal consistency check: the catalog's HyperbolicExpm1Pair and the near-unity cancellation rhyme are the *same finding* — the family-level convergence is just "every member of the family that has a 'near zero' or 'near unity' branch uses a complementary-argument primitive." Forward hyperbolic has it near x=0; inverse trig/hyperbolic has it near |x|=1.
+
+---
+
+## Day One Summary (final)
+
+Five convergences. Three expedition-log entries + one shared-pass analysis + three garden entries + one campsite with notes.
+
+The shape that emerged: **the trig family is structured around four shared intermediates, and each shared intermediate is answered by a convergence check**. Forward trig → sincos primitive. Forward hyperbolic → expm1 pair. Inverse trig/hyperbolic → log1p/complementary-arg transform. Cross-unit → angle-unit compatibility tag.
+
+The meta-convergence: **every shared-intermediate question is really a question about where the complementary-argument structure lives in that family.** For forward trig, it's `sinpi` (the complement-of-π reduction). For hyperbolics, it's `expm1` (the complement-of-exp reduction). For inverses, it's log1p/half-angle (the complement-of-unity transform). All four families use the same structural pattern at different scales.
+
+That's Day One's biggest finding. **Trig isn't just a periodic table; it's a periodic table where every cell's precision-preserving identity is a complementary-argument transform at that family's characteristic scale.**
+
+*Entry 5 when pathmaker starts TRIG-13 proper and we see whether the architecture the catalog predicts actually materializes in the code.*
+
+— the naturalist
+
+---
+
+## Entry 5 — The Architecture Expressed Itself (2026-04-14, morning)
+
+pathmaker shipped TRIG-13 (tan/cot/sec/csc/sincos) and has started TRIG-14 (asin/acos). Both files landed while the team was running. I came back to camp and checked whether the shape we predicted actually materialized.
+
+It did. Twice. Both kinds of way.
+
+### 5.1 The forward-trig extraction
+
+`tan.rs` opens with:
+
+```rust
+use super::sin::{eval_sincos, kernel_cos, kernel_sin, reduce_trig};
+```
+
+The shared kernel lives in `sin.rs` (still, not extracted to a new module), but `tan.rs` imports the four public functions and composes them. The module docstring reads:
+
+> "All functions share one range reduction: `sin::reduce_trig(x)` → `(q, r_hi, r_lo)`. The kernel pair `(sin_k, cos_k)` is evaluated once via `sin::kernel_sin/cos`. The four derived functions differ only in how they combine the kernel outputs."
+
+This is exactly Entry 0 Observation 0.5 in production code. 506 lines for `tan.rs` (vs. 932 for sin.rs) — the mass stayed in sin.rs because that's where the canonical kernel lives; tan.rs is composition + quadrant-aware-derivation tables + fdlibm-style near-π/2 polynomial fallback (which I predicted in Entry 0 thread #2 as the place where "tan is a one-liner" stops being true).
+
+Note the conservative extraction choice: `sin.rs` stayed as the kernel owner; there is no `trig_kernel.rs`. Good enough for forward trig. When hyperbolics and inverse trig land, this will probably need to refactor to `trig_kernel/{forward,hyperbolic,inverse}.rs` — because importing the hyperbolic kernel from `sin::` would be a lie. But that's a future problem, not a today one. The sharing contract in spec.toml files points at `reads = ["trig_reduce", "sincos_kernel"]` as abstract tags — those tags don't care what module they live in.
+
+**The map we drew came true.** Entry 0 pointed at `reduce_trig` and `eval_sincos` as shared infrastructure already 90% there; pathmaker pulled the trigger.
+
+### 5.2 The fifth convergence materialized in asin.rs
+
+Then I opened `asin.rs` and saw what I can only describe as the fifth convergence in production Rust. The module docstring reads (verbatim):
+
+> "For |x| > 0.5: asin(x) = π/2 − 2·asin(√((1−|x|)/2)). This maps the numerically difficult near-1 region (where 1 − x² → 0) to the well-conditioned small-argument region. The inner sqrt is computed via `(1 − |x|) * 0.5` to avoid catastrophic cancellation."
+
+Read that carefully. That is **the complementary-argument transform** named in garden entry "the-complementary-argument-2026-04-13.md" and catalog §"Convergence Check — Near-Unity Cancellation Rhyme" and Entry 4.2 — all shipped *as the implementation strategy* with exactly the justification the meta-pattern predicts.
+
+The recenter-at-cancellation-prone-fixed-point move. `asin(x)` near |x|=1 rewrites via the complementary argument `t = 1 − |x|`, mapped through the half-angle identity into a small-argument evaluation. Same pattern as log1p, same pattern as expm1, same pattern as sinpi, now in asin.rs.
+
+**The pattern the catalog named, the pattern the garden reflected on, and the pattern the expedition converged to — all landed in 258 lines of Rust before lunchtime.**
+
+That's what it looks like when a structural finding is real rather than just pretty. It doesn't just *describe* the work — it *predicts* what the implementation will look like before the implementation exists. If the meta-primitive convergence had been a naturalist's pretty metaphor, asin.rs would have used direct `√(1 − x²)` and taken an ulp loss at the boundary. It didn't. It went straight for the complementary-argument transform with the exact rationale the garden entry named.
+
+### 5.3 What this means
+
+The day-one framings are now *load-bearing*. They're not aesthetic choices; they're predictive of code structure. This justifies the naturalist role in a way I wasn't sure about when I started: **noticing is upstream of implementation**. When the noticing is right, the implementation rhymes with it. When the noticing is wrong, the implementation diverges and the noticing gets corrected.
+
+Today's check on pathmaker's code is a *convergence check on the convergence check itself*: the meta-finding predicted the implementation strategy, and the implementation strategy confirmed the meta-finding.
+
+Two findings this implies for going forward:
+
+1. **spec.toml files should declare the complementary-argument structure explicitly.** Every libm recipe that has a cancellation-prone regime should have a `[cancellation]` section naming (a) the fixed point, (b) the transform, (c) the post-transform core, (d) the inverse transform. This makes the pattern reviewable and makes the shared-intermediate sharing contract self-documenting. Routing this to pathmaker + math-researcher as a design rule proposal.
+
+2. **Reviewing future recipes becomes quick.** For every new libm function, the naturalist/aristotle can ask: "what's the cancellation regime? what's the complementary transform? is the spec.toml's `[cancellation]` section honest?" Three questions. If the answer to any is "I don't know," the function isn't ready.
+
+*Entry 6 when math-researcher or pathmaker responds to the `[cancellation]` section proposal, or when TRIG-15 (hyperbolics) lands and I can check whether expm1 pair materializes the way the catalog predicts.*
 
 — the naturalist

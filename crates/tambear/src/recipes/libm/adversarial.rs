@@ -313,6 +313,98 @@ pub fn sin_cos_adversarial() -> Vec<f64> {
     dedup_sort(out)
 }
 
+// ── tan / cot / sec / csc ───────────────────────────────────────────────────
+
+/// Adversarial inputs for `tan`, `cot`, `sec`, `csc`.
+///
+/// The primary challenge is the poles:
+/// - `tan` and `sec` have poles at x = π/2 + kπ.
+/// - `cot` and `csc` have poles at x = kπ.
+///
+/// Near-pole inputs are the critical accuracy region: a 1-ulp error in the
+/// argument translates to a potentially enormous error in the output if the
+/// denominator (cos or sin) is near zero. We include both near-pole inputs
+/// AND the pole approach sequence to verify the recipe doesn't silently
+/// return plausible-looking wrong values.
+///
+/// Inputs that land exactly on a pole representable in f64 are excluded
+/// (those are covered by special-case tests in trig_adversarial.rs).
+pub fn tan_adversarial() -> Vec<f64> {
+    const LO: f64 = -1.0e6;
+    const HI: f64 = 1.0e6;
+
+    let mut out = Vec::new();
+
+    // ── Near-tan/sec poles at π/2 + kπ ──────────────────────────────────
+    // The pole itself is not representable exactly in f64, so the ±1/±2/±3
+    // ulp neighborhood of float(π/2 + kπ) exercises near-pole amplification.
+    let pio2 = PI / 2.0;
+    for k in -200..=200 {
+        let pole = pio2 + (k as f64) * PI;
+        // Emit the float(pole) itself and its ±1/2/3 ulp neighbors.
+        // These are the "should be very large" inputs, not "should be ≈ 1" inputs.
+        for bits_off in [-3i64, -2, -1, 0, 1, 2, 3] {
+            let v = f64::from_bits(pole.to_bits().wrapping_add_signed(bits_off));
+            if v.is_finite() && v.abs() <= HI {
+                out.push(v);
+            }
+        }
+    }
+
+    // ── Near-cot/csc poles at kπ ─────────────────────────────────────────
+    // Exclude 0 (special-cased separately); include ±kπ neighbors.
+    for k in -200..=200i32 {
+        if k == 0 {
+            continue;
+        }
+        let pole = (k as f64) * PI;
+        for bits_off in [-3i64, -2, -1, 0, 1, 2, 3] {
+            let v = f64::from_bits(pole.to_bits().wrapping_add_signed(bits_off));
+            if v.is_finite() && v.abs() <= HI {
+                out.push(v);
+            }
+        }
+    }
+
+    // ── Multiples of π/4 (tan = ±1) ─────────────────────────────────────
+    for k in -400_i32..=400 {
+        // Skip k ≡ 1 mod 4 and k ≡ 3 mod 4 — those are the poles.
+        if (k.rem_euclid(4) == 1) || (k.rem_euclid(4) == 3) {
+            continue;
+        }
+        let x = (k as f64) * (PI / 4.0);
+        push_ulp_neighborhood(&mut out, x, LO, HI);
+    }
+
+    // ── Dense interior sweeps ────────────────────────────────────────────
+    // Avoid the pole neighborhoods by sweeping (kπ + ε, (k+1)π - ε).
+    for k in -5..=5 {
+        let lo = (k as f64) * PI + 0.1;
+        let hi = lo + PI - 0.2;
+        out.extend(linspace(lo.max(LO), hi.min(HI), 200));
+    }
+
+    // ── Large arguments (Payne-Hanek regime) ────────────────────────────
+    // Same as sin_cos_adversarial but for tan.
+    for &mag in &[1.0e4, 1.0e5, 1.0e6] {
+        push_ulp_neighborhood(&mut out, mag, LO, HI);
+        push_ulp_neighborhood(&mut out, -mag, LO, HI);
+    }
+
+    // ── Landmarks ────────────────────────────────────────────────────────
+    // Filter: keep only values where |cos(x)| > 2^-10 and |sin(x)| > 2^-10
+    // (so neither tan nor cot has an amplified denominator in the landmark set).
+    let landmarks = float_landmarks(LO, HI);
+    for x in landmarks {
+        if x.cos().abs() > 1.0 / 1024.0 && x.sin().abs() > 1.0 / 1024.0 {
+            out.push(x);
+        }
+    }
+
+    out.retain(|x| x.is_finite() && x.abs() <= HI);
+    dedup_sort(out)
+}
+
 // ── erf / erfc ──────────────────────────────────────────────────────────────
 
 /// Adversarial inputs for `erf` and `erfc`. The recipe has region

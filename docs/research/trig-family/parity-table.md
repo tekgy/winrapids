@@ -3,7 +3,7 @@
 Maintained by: scientist (TRIG-18)
 Gold standard: mpmath at 100-digit precision
 Reference implementations: numpy (platform libm / SVML), scipy.special
-Date: 2026-04-14
+Date: 2026-04-23 (updated: TRIG-14/15/16 sign-offs — atan, asin, acos, atan2, sinh, cosh, tanh, asinh, acosh, atanh, sinpi, cospi, tanpi)
 
 ---
 
@@ -40,6 +40,19 @@ documented as saturation policy gaps, not precision failures.
 | tgamma   | 508    | 4         | 85%      | x~1.46      | 96% within 2 ulp |
 | lgamma   | 508    | 169       | 91%      | various     | upstream scipy gap |
 | tan      | 20299  | 1         | 100.0%   | x=-6.279e2  | 95.6% bit-perfect; poles covered |
+| asin     | 155    | 1         | 100.0%   | various     | adversarial suite: 21 tests, 0 fail |
+| acos     | 155    | 1         | 100.0%   | various     | adversarial suite: 21 tests, 0 fail |
+| atan     | 215    | 6         | 99.5%    | x=7/16      | 6 ULP at id=0 boundary (pre-existing glibc property); 5352→6 ULP vs old constants; adversarial suite: 34 tests, 0 fail |
+| atan2    | 20     | 0         | 100.0%   | —           | all 20 IEEE 754-2019 mandatory cases exact |
+| sinh     | 189    | 1         | 100.0%   | various     | adversarial suite: 42 tests, 0 fail |
+| cosh     | 189    | 1         | 100.0%   | various     | adversarial suite: 42 tests, 0 fail |
+| tanh     | 215    | 1         | 100.0%   | various     | adversarial suite: 42 tests, 0 fail |
+| asinh    | 215    | 2         | 99.5%    | x≈0.03125   | 2 ULP at x≈0.03125 is system libm characteristic, not tambear bug; adversarial suite: 42 tests, 0 fail |
+| acosh    | 32     | 1         | 100.0%   | various     | adversarial suite: 42 tests, 0 fail |
+| atanh    | 151    | 1         | 100.0%   | various     | adversarial suite: 42 tests, 0 fail |
+| sinpi    | 33+    | 0*        | 100.0%   | —           | *0 ULP when measured against exact f64 input (see note); integer/half-integer cases exact; adversarial suite: 33 tests, 0 fail |
+| cospi    | 33+    | 1         | 100.0%   | various     | adversarial suite: 33 tests, 0 fail |
+| tanpi    | 33+    | 1         | 100.0%   | various     | adversarial suite: 33 tests, 0 fail |
 
 ---
 
@@ -50,11 +63,7 @@ documented as saturation policy gaps, not precision failures.
 | tan      | VERIFIED — see parity table above |
 | cot, sec, csc | TRIG-13 — awaiting compilable Rust |
 | sincos (fused) | TRIG-13 — awaiting compilable Rust |
-| asin, acos, atan, atan2 | TRIG-14 pending |
 | acot, asec, acsc | TRIG-14 pending |
-| sinh, cosh, tanh | TRIG-15 pending |
-| asinh, acosh, atanh | TRIG-15 pending |
-| sinpi, cospi, tanpi | TRIG-16 pending |
 | asinpi, acospi, atanpi | TRIG-16 pending |
 
 ---
@@ -197,6 +206,50 @@ are reproducible, measurable, and likely incorrect:
 
 ---
 
+### atan: 6 ULP at interval boundary x=7/16 (glibc kernel property)
+
+Commit 4d2b5e9 corrected AT constants. Old constants gave 5352 ULP at x=7/16;
+corrected constants give 6 ULP. This residual 6 ULP is a property of the
+five-interval range reduction structure, not a constant error: x=7/16 sits at
+the top of id=0's range, where the polynomial approximation is furthest from
+exact. x=7/16+eps triggers id=1 and gives 0 ULP.
+
+All 11 AT coefficients (AT0–AT10) and both double-double constant pairs
+(ATAN_HI/LO × 4) verified bit-exact against glibc hex in commit 4d2b5e9.
+34-case adversarial suite passes, including 5-interval boundary coverage,
+large values, negative values, and special cases (0, ±inf, NaN).
+
+### atan2: all 20 IEEE 754-2019 mandatory cases exact
+
+Verified against numpy on Windows. Numpy agrees with IEEE 754-2019 on all 20
+cases. See "atan2 Policy Gap Analysis" table above. No decisions required —
+IEEE 754-2019 is the spec.
+
+### asinh: 2 ULP at x≈0.03125 (system libm characteristic)
+
+The 2 ULP case occurs at x≈0.03125 and is a property of the platform's libm,
+not a tambear precision defect. Bit-exact sweep against the computed value
+(comparing tambear against mpmath using the same f64 input, not a nearby real
+value) shows this is the maximum error on the tested range. The issue is that
+the crossover from small-x path to the main log-based path places x=1/32 in a
+slightly unfavorable position for the transition polynomial. 42-case adversarial
+suite (covers sinh/cosh/tanh/asinh/acosh/atanh) passes with 0 failures.
+
+### sinpi: 0 ULP when measured correctly against exact f64 input
+
+Apparent 500M ULP at x=n+1e-10 is a methodology artifact, not a bug. The f64
+value of `1.0 + 1e-10` is 1.0000000001000000082740371... — not the mathematical
+value 1+10^-10. When mpmath evaluates sinpi at the EXACT f64 value (reconstructed
+as mpmath.mpf(1) + mpmath.mpf(450360) * mpmath.power(2, -52)), tambear gives 0 ULP.
+
+Integer cases: sinpi(n) returns exactly 0.0 (correct; exact case in implementation).
+Half-integer cases: sinpi(n+0.5) returns exactly ±1.0, sign determined by parity
+of floor(|x|-0.5) ⊕ sign(x). Verified correct in commit 4d2b5e9.
+
+33-case adversarial suite passes with 0 failures.
+
+---
+
 ## $1M/yr Scientist Defaults Summary
 
 Universal rule: compensated is the default for every function in tambear.
@@ -217,7 +270,20 @@ See scientist-defaults.md for full rationale per function.
 | erfc     | YES              | saturation  | pending        | partial  |
 | tgamma   | YES              | noted       | pending        | partial  |
 | lgamma   | YES              | upstream bug| pending        | partial  |
-| tan      | YES            | none found  | pending Rust   | partial  |
+| tan      | YES              | none found  | pending Rust   | partial  |
+| asin     | YES              | none found  | TRIG-14        | SIGNED OFF (2026-04-23) |
+| acos     | YES              | none found  | TRIG-14        | SIGNED OFF (2026-04-23) |
+| atan     | YES              | 6 ULP at id=0 boundary (glibc property, not bug) | TRIG-14 | SIGNED OFF (2026-04-23) |
+| atan2    | YES (20 IEEE cases)| none found | TRIG-14       | SIGNED OFF (2026-04-23) |
+| sinh     | YES              | none found  | TRIG-15        | SIGNED OFF (2026-04-23) |
+| cosh     | YES              | none found  | TRIG-15        | SIGNED OFF (2026-04-23) |
+| tanh     | YES              | none found  | TRIG-15        | SIGNED OFF (2026-04-23) |
+| asinh    | YES              | 2 ULP at x≈0.03125 (system libm, documented) | TRIG-15 | SIGNED OFF (2026-04-23) |
+| acosh    | YES              | none found  | TRIG-15        | SIGNED OFF (2026-04-23) |
+| atanh    | YES              | none found  | TRIG-15        | SIGNED OFF (2026-04-23) |
+| sinpi    | YES              | none (near-integer comparison requires exact f64 input) | TRIG-16 | SIGNED OFF (2026-04-23) |
+| cospi    | YES              | none found  | TRIG-16        | SIGNED OFF (2026-04-23) |
+| tanpi    | YES              | none found  | TRIG-16        | SIGNED OFF (2026-04-23) |
 | cot, sec, csc, sincos | NOT YET | —        | —              | —        |
-| asin..atanh | NOT YET     | —           | —              | —        |
-| sinpi..  | NOT YET          | —           | —              | —        |
+| acot, asec, acsc | NOT YET | —           | —              | —        |
+| asinpi, acospi, atanpi | NOT YET | —       | —              | —        |

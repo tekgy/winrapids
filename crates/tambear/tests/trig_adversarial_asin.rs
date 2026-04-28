@@ -227,3 +227,78 @@ fn asin_sin_roundtrip_in_range() {
         assert!(d <= 8, "asin(sin({x})): roundtrip {d} ulps off, got {roundtrip:e}");
     }
 }
+
+// ── generator-backed wide sweeps ──────────────────────────────────────────────
+
+/// Sweep the full asin_adversarial() corpus through asin_strict vs f64::asin.
+///
+/// The adversarial generator targets exactly the failure modes that produce
+/// silent wrong answers: domain edges, cancellation zone near ±1, half-angle
+/// transition, epsilon multiples, and a 1000-point interior sweep.
+/// Inputs outside [-1, 1] are skipped (they produce NaN from both sides).
+#[test]
+fn asin_adversarial_sweep_vs_platform() {
+    use tambear::recipes::libm::adversarial::asin_adversarial;
+    let mut worst = 0u64;
+    let mut worst_x = 0.0_f64;
+    let mut count = 0usize;
+    for x in asin_adversarial() {
+        if x < -1.0 || x > 1.0 {
+            continue;
+        }
+        let got = asin_strict(x);
+        let expected = x.asin();
+        if got.is_nan() && expected.is_nan() {
+            continue;
+        }
+        let d = ulps_between(got, expected);
+        count += 1;
+        if d > worst {
+            worst = d;
+            worst_x = x;
+        }
+    }
+    assert!(
+        worst <= 4,
+        "asin adversarial sweep ({count} inputs): worst {worst} ulps at x={worst_x:.15e}\n  \
+         got={:.15e}, expected={:.15e}",
+        asin_strict(worst_x),
+        worst_x.asin()
+    );
+}
+
+/// Sweep the full asin_adversarial() corpus through acos_strict vs f64::acos.
+///
+/// acos shares the same reduction logic as asin (half-angle near ±1), so the
+/// same adversarial corpus exercises its cancellation zone too.
+/// Inputs outside [-1, 1] are skipped (they produce NaN from both sides).
+#[test]
+fn acos_adversarial_sweep_vs_platform() {
+    use tambear::recipes::libm::adversarial::asin_adversarial;
+    let mut worst = 0u64;
+    let mut worst_x = 0.0_f64;
+    let mut count = 0usize;
+    for x in asin_adversarial() {
+        if x < -1.0 || x > 1.0 {
+            continue;
+        }
+        let got = acos_strict(x);
+        let expected = x.acos();
+        if got.is_nan() && expected.is_nan() {
+            continue;
+        }
+        let d = ulps_between(got, expected);
+        count += 1;
+        if d > worst {
+            worst = d;
+            worst_x = x;
+        }
+    }
+    assert!(
+        worst <= 4,
+        "acos adversarial sweep ({count} inputs): worst {worst} ulps at x={worst_x:.15e}\n  \
+         got={:.15e}, expected={:.15e}",
+        acos_strict(worst_x),
+        worst_x.acos()
+    );
+}

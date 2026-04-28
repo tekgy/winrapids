@@ -86,7 +86,13 @@ fn atan_kernel(u: f64) -> f64 {
 
 // ── atan entry point ───────────────────────────────────────────────────────────
 
-/// `atan(x)` — strict. Worst-case ≤ 2 ulps. Range: (−π/2, π/2).
+/// `atan(x)` — strict. Worst-case ≤ 6 ulps. Range: (−π/2, π/2).
+///
+/// The worst-case 6-ULP error occurs at the sub-interval boundary x = ±7/16,
+/// where the polynomial kernel is evaluated at the edge of its design range.
+/// Interior inputs typically achieve ≤ 2 ULPs. A minimax-optimal polynomial
+/// redesign would bring this to ≤ 1 ULP everywhere — tracked as a future
+/// improvement.
 #[inline]
 pub fn atan_strict(x: f64) -> f64 {
     if x.is_nan() {

@@ -478,6 +478,150 @@ pub fn gamma_adversarial() -> Vec<f64> {
     dedup_sort(out)
 }
 
+// ── asin / acos ─────────────────────────────────────────────────────────────
+
+/// Adversarial inputs for `asin(x)` and `acos(x)`.
+///
+/// The critical precision challenge is the **cancellation zone near ±1**:
+/// - Naive implementations use `sqrt(1 - x²)`, which loses all bits when x ≈ 1
+///   because `1 - x²` underflows to zero before `x²` loses its low bits.
+/// - Correct implementations use the half-angle reduction:
+///   `asin(x) = π/2 − 2·asin(√((1−|x|)/2))`.
+///   This maps the hard region near 1 to the well-conditioned region near 0.
+///
+/// This generator probes every region boundary for both approaches, plus the
+/// zero crossings and saturation points at ±1.
+pub fn asin_adversarial() -> Vec<f64> {
+    const LO: f64 = -1.0;
+    const HI: f64 = 1.0;
+
+    let mut out = Vec::new();
+
+    // ── Domain edges (the correctness floor) ────────────────────────────
+    // asin(±1) = ±π/2 exactly to 1 ULP.
+    push_ulp_neighborhood(&mut out, 1.0, -1.1, 1.1);
+    push_ulp_neighborhood(&mut out, -1.0, -1.1, 1.1);
+
+    // ── The half-angle transition boundary at |x| = 0.5 ─────────────────
+    // Implementations using the half-angle identity for |x| > 0.5 switch
+    // algorithm at this boundary. The 3-ULP neighborhood probes the switch.
+    push_ulp_neighborhood(&mut out, 0.5, LO, HI);
+    push_ulp_neighborhood(&mut out, -0.5, LO, HI);
+
+    // ── Cancellation zone: x approaching ±1 from below ──────────────────
+    // These are the inputs where naive implementations produce catastrophically
+    // wrong answers. A 1-ULP error in the output here is a silent failure.
+    for dx_exp in [1, 2, 4, 6, 8, 10, 12, 14] {
+        let dx = (10.0_f64).powi(-dx_exp);
+        push_ulp_neighborhood(&mut out, 1.0 - dx, LO, HI);
+        push_ulp_neighborhood(&mut out, -(1.0 - dx), LO, HI);
+    }
+    // Also: 1-ε where ε is machine epsilon and small multiples.
+    for k in [1, 2, 4, 8, 16, 32, 64] {
+        let dx = (k as f64) * f64::EPSILON;
+        push_ulp_neighborhood(&mut out, 1.0 - dx, LO, HI);
+        push_ulp_neighborhood(&mut out, -(1.0 - dx), LO, HI);
+    }
+
+    // ── Standard angle checkpoints ───────────────────────────────────────
+    // asin(0) = 0, asin(√2/2) = π/4, asin(√3/2) = π/3, etc.
+    use std::f64::consts::FRAC_1_SQRT_2;
+    let sqrt3_over_2 = 3.0_f64.sqrt() / 2.0;
+    for &v in &[
+        0.0_f64,
+        FRAC_1_SQRT_2,  // asin = π/4
+        sqrt3_over_2,   // asin = π/3
+        0.25, 0.75,     // common checkpoints
+    ] {
+        push_ulp_neighborhood(&mut out, v, LO, HI);
+        push_ulp_neighborhood(&mut out, -v, LO, HI);
+    }
+
+    // ── Dense interior sweep: where asin changes most rapidly ─────────────
+    // The derivative 1/√(1-x²) grows fastest near ±1. Dense sweep near 0
+    // (polynomial regime) and around 0.5 (algorithm switch).
+    out.extend(linspace(-1.0 + 1e-10, 1.0 - 1e-10, 1000));
+    out.extend(linspace(-0.6, 0.6, 300));
+
+    // ── Subnormal-scale inputs (tiny x: asin(x) ≈ x) ─────────────────────
+    for &v in &[f64::MIN_POSITIVE, f64::EPSILON, 1e-100, 1e-15, 1e-8, 1e-4] {
+        push_ulp_neighborhood(&mut out, v, LO, HI);
+        push_ulp_neighborhood(&mut out, -v, LO, HI);
+    }
+
+    out.retain(|x| x.is_finite() && x.abs() <= 1.0);
+    dedup_sort(out)
+}
+
+// ── atan / atan2 ─────────────────────────────────────────────────────────────
+
+/// Adversarial inputs for `atan(x)` and `atan2(y, x)`.
+///
+/// The five-subinterval reduction (glibc lineage) has boundaries at
+/// 7/16, 11/16, 19/16, 39/16. Each boundary is a potential precision trap:
+/// an implementation that uses slightly different constants on either side
+/// of a boundary will show a discontinuity at the boundary itself.
+///
+/// The poles of the related functions (atan2 with x=0, cot at x=0) are
+/// not in atan's domain but atan's range approaches ±π/2 asymptotically —
+/// the large-|x| behavior is critical.
+pub fn atan_adversarial() -> Vec<f64> {
+    const LO: f64 = f64::NEG_INFINITY;
+    const HI: f64 = f64::INFINITY;
+
+    let mut out = Vec::new();
+
+    // ── Five-subinterval boundaries ───────────────────────────────────────
+    // Each boundary is where the algorithm switches sub-polynomial.
+    // The ±3 ULP neighborhood exercises the discontinuity threat.
+    for &b in &[7.0_f64 / 16.0, 11.0 / 16.0, 19.0 / 16.0, 39.0 / 16.0] {
+        for bits_off in [-3i64, -2, -1, 0, 1, 2, 3] {
+            let v = f64::from_bits(b.to_bits().wrapping_add_signed(bits_off));
+            if v.is_finite() {
+                out.push(v);
+                out.push(-v);
+            }
+        }
+    }
+
+    // ── Standard checkpoints ─────────────────────────────────────────────
+    // atan(0) = 0, atan(1) = π/4, atan(∞) = π/2, etc.
+    for &v in &[
+        0.0_f64, 0.5, 1.0, 1.5,
+        std::f64::consts::FRAC_1_SQRT_2,  // atan(1/√2) ≈ 0.6155
+        3.0_f64.sqrt(),                    // atan(√3) = π/3
+        1.0 / 3.0_f64.sqrt(),             // atan(1/√3) = π/6
+    ] {
+        push_ulp_neighborhood(&mut out, v, -1e20, 1e20);
+        push_ulp_neighborhood(&mut out, -v, -1e20, 1e20);
+    }
+
+    // ── Large-|x| approach to ±π/2 ───────────────────────────────────────
+    // atan(x) = π/2 - 1/x + O(1/x³) for large x.
+    // The accuracy question: does the reconstruction of π/2 - atan(1/x)
+    // preserve the high bits of π/2?
+    for &mag in &[10.0_f64, 100.0, 1e4, 1e8, 1e15, 1e100, 1e300] {
+        push_ulp_neighborhood(&mut out, mag, -f64::INFINITY, f64::INFINITY);
+        push_ulp_neighborhood(&mut out, -mag, -f64::INFINITY, f64::INFINITY);
+    }
+
+    // ── Dense sweep through the principal range ───────────────────────────
+    out.extend(linspace(-4.0, 4.0, 1000));
+    out.extend(linspace(-1.5, 1.5, 400));  // extra density around 0
+
+    // ── Small |x|: atan(x) ≈ x (Horner accuracy) ──────────────────────────
+    for &v in &[f64::MIN_POSITIVE, f64::EPSILON, 1e-100, 1e-15, 1e-8, 1e-4, 0.001] {
+        push_ulp_neighborhood(&mut out, v, -1e30, 1e30);
+        push_ulp_neighborhood(&mut out, -v, -1e30, 1e30);
+    }
+
+    // ── Float landmarks in the atan-relevant range ────────────────────────
+    out.extend(float_landmarks(-1e6, 1e6));
+
+    out.retain(|x| x.is_finite());
+    dedup_sort(out)
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

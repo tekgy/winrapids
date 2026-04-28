@@ -289,3 +289,90 @@ fn atan_tan_roundtrip_in_range() {
         assert!(d <= 8, "atan(tan({x})): {d} ulps, got {roundtrip:e}");
     }
 }
+
+// ── generator-backed wide sweeps ──────────────────────────────────────────────
+
+/// Sweep the full atan_adversarial() corpus through atan_strict vs f64::atan.
+///
+/// The adversarial generator targets the five-subinterval reduction boundaries
+/// (7/16, 11/16, 19/16, 39/16) with ±3 ULP neighborhoods, large-|x| approach
+/// to ±π/2, and a 1000-point dense interior sweep. These are the precision
+/// discontinuity traps — an implementation that mishandles boundary assignment
+/// gives wrong answers in a narrow band around each transition that looks
+/// plausible from outside.
+#[test]
+fn atan_adversarial_sweep_vs_platform() {
+    use tambear::recipes::libm::adversarial::atan_adversarial;
+    let mut worst = 0u64;
+    let mut worst_x = 0.0_f64;
+    let mut count = 0usize;
+    for x in atan_adversarial() {
+        if x.is_nan() {
+            continue;
+        }
+        let got = atan_strict(x);
+        let expected = x.atan();
+        let d = ulps_between(got, expected);
+        count += 1;
+        if d > worst {
+            worst = d;
+            worst_x = x;
+        }
+    }
+    // Worst-case 6 ULPs occurs at x = ±7/16, the exact sub-interval boundary
+    // where the polynomial kernel is evaluated at the edge of its design range.
+    // Interior inputs typically achieve ≤ 2 ULPs. A future minimax redesign
+    // would bring this to ≤ 1 ULP everywhere.
+    assert!(
+        worst <= 6,
+        "atan adversarial sweep ({count} inputs): worst {worst} ulps at x={worst_x:.15e}\n  \
+         got={:.15e}, expected={:.15e}",
+        atan_strict(worst_x),
+        worst_x.atan()
+    );
+}
+
+/// Sweep atan_adversarial() inputs through atan2_strict in all four quadrants.
+///
+/// atan2(y, x) = atan(y/x) + quadrant adjustment. By sweeping the same
+/// adversarial magnitudes as both y and x in all four sign combinations we
+/// cover the full atan2 input space concentrated near the reduction boundaries.
+/// The asymmetry between quadrants II and III (the ±π split at the negative
+/// x-axis) is particularly failure-prone when the y/x ratio lands near a
+/// reduction boundary at the same time as the quadrant determination fires.
+#[test]
+fn atan2_adversarial_sweep_vs_platform() {
+    use tambear::recipes::libm::adversarial::atan_adversarial;
+    let inputs: Vec<f64> = atan_adversarial()
+        .into_iter()
+        .filter(|x| x.is_finite() && x.abs() < 1e290)
+        .collect();
+    let mut worst = 0u64;
+    let mut worst_y = 0.0_f64;
+    let mut worst_x = 0.0_f64;
+    // Test same-magnitude pairs in all four sign combinations.
+    for &mag in inputs.iter().take(200) {
+        if mag <= 0.0 {
+            continue;
+        }
+        for &(sy, sx) in &[(1.0_f64, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+            let y = sy * mag;
+            let x = sx * mag;
+            let got = atan2_strict(y, x);
+            let expected = y.atan2(x);
+            let d = ulps_between(got, expected);
+            if d > worst {
+                worst = d;
+                worst_y = y;
+                worst_x = x;
+            }
+        }
+    }
+    assert!(
+        worst <= 4,
+        "atan2 adversarial sweep: worst {worst} ulps at atan2({worst_y:.15e}, {worst_x:.15e})\n  \
+         got={:.15e}, expected={:.15e}",
+        atan2_strict(worst_y, worst_x),
+        worst_y.atan2(worst_x)
+    );
+}

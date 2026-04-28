@@ -669,20 +669,27 @@ pub fn davies_bouldin_score(
 
     use crate::primitives::specialist::kulisch_accumulator::KulischAccumulator;
     let sq_dist = |a: &[f64], b: &[f64]| -> f64 {
-        let diffs: Vec<f64> = a.iter().zip(b.iter()).map(|(x, y)| {
+        let mut has_nan = false;
+        let mut sq_sum = 0.0f64;
+        for (&x, &y) in a.iter().zip(b.iter()) {
             let d = x - y;
-            d * d
-        }).collect();
-        crate::math::sum(&diffs)
+            if d.is_nan() { has_nan = true; break; }
+            sq_sum += d * d;
+        }
+        if has_nan { f64::NAN } else { sq_sum }
     };
 
     let mut s_accs: Vec<KulischAccumulator> = (0..*k).map(|_| KulischAccumulator::new()).collect();
+    let mut s_has_nan: Vec<bool> = vec![false; *k];
     for i in 0..n {
         if let Some(&ci) = id_to_idx.get(&labels[i]) {
-            s_accs[ci].add_f64(sq_dist(&data[i*n_dims..(i+1)*n_dims], &centroids[ci*n_dims..(ci+1)*n_dims]).sqrt());
+            let d = sq_dist(&data[i*n_dims..(i+1)*n_dims], &centroids[ci*n_dims..(ci+1)*n_dims]).sqrt();
+            if d.is_nan() { s_has_nan[ci] = true; } else { s_accs[ci].add_f64(d); }
         }
     }
-    let mut s: Vec<f64> = s_accs.iter().map(|a| a.to_f64()).collect();
+    let mut s: Vec<f64> = s_accs.iter().enumerate().map(|(ci, a)| {
+        if s_has_nan[ci] { f64::NAN } else { a.to_f64() }
+    }).collect();
     for ci in 0..*k { if sizes[ci] > 0 { s[ci] /= sizes[ci] as f64; } }
 
     let db_terms: Vec<f64> = (0..*k).map(|i| {
@@ -691,6 +698,8 @@ pub fn davies_bouldin_score(
             if d_ij < 1e-300 { 0.0 } else { (s[i] + s[j]) / d_ij }
         }).fold(f64::NEG_INFINITY, crate::numerical::nan_max)
     }).collect();
+    // math::sum uses KulischAccumulator which skips NaN — check before summing.
+    if db_terms.iter().any(|t| t.is_nan()) { return f64::NAN; }
     let db_sum: f64 = crate::math::sum(&db_terms);
     db_sum / *k as f64
 }

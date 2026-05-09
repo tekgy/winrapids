@@ -53,10 +53,29 @@ should collapse into one kernel + two recipe wrappers).
 ## How to add a tree for a new family
 
 1. **Identify the kernel(s).** Most families have one kernel; some have
-   several with overlapping subsets (means is the canonical example —
-   GeneralizedMean and TransformedMean produce identical answers on a
-   shared subset of named leaves via different parameterizations). Both
-   patterns are valid; document them.
+   several. Two structurally different kernel topologies have surfaced
+   so far, both valid:
+
+   - **Overlapping kernels** (means is the canonical example) — multiple
+     kernels reach the same literature-named leaves via different
+     parameterizations. `geometric_mean` is reachable from
+     `GeneralizedMean(p=0)` AND `TransformedMean(in=log, out=exp)`.
+     This happens when the named transformations are reversible across
+     kernels — different parameter spaces with shared fixed-points.
+
+   - **Disjoint kernels** (sketches is the canonical example) — multiple
+     kernels with no overlapping leaves. DDSketch is in
+     `CompressedHistogram` only; KLL is in `RandomizedCompactor` only;
+     GK is in `RankTuple` only. This happens when the underlying state
+     shapes (bucket-grid vs randomized-multiset vs rank-tuple-list)
+     don't share vocabulary — there's no parameterization in one kernel
+     that produces what another kernel produces.
+
+   Neither topology is "right" — they're family-determined by whether
+   the underlying mathematical operations have shared fixed-points
+   under different parameterizations. When you draft a new tree,
+   check both possibilities; don't force overlap when the family is
+   genuinely disjoint, and don't miss overlap when it's there.
 2. **Identify the parameter axes** for each kernel. Each axis is a
    `using()` knob in the eventual recipe API.
 3. **Map every literature-named variant** to a kernel + parameter

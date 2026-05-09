@@ -408,6 +408,20 @@ Why the tiers are arranged this way:
   IDE renders pipelines as step-card sequences. RUN compiles a pipeline
   to a `.tam` plan plus per-pass kernel binaries.
 
+- **Tiers 1-4 are holonomic; the IR layer is non-holonomic.** The recipe
+  tier (Tier 4) and below are *holonomic* — behavior depends on
+  parameter-assignment configurations, not on binding paths. Cache keys
+  with stable tag bytes per parameter slot operationalize this. The IR
+  layer that lowers Tier 5 pipelines into kernel binaries is
+  *non-holonomic by structural necessity* — pipeline-wide optimization
+  depends on global context (what else is running, what intermediates
+  can be shared). The cache-key-as-path-independence trick breaks at the
+  IR layer, and that breakage is structural. Neither "holonomic" nor
+  "non-holonomic" is a tier; they are *properties* of the existing tiers
+  and the compiler. See `docs/architecture/holonomic-architecture.md`
+  for the path-independence test, the four convergence instances that
+  anchor the recognition, and what kinds of tools each tier needs.
+
 ---
 
 ## Contact / change process

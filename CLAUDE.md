@@ -58,6 +58,16 @@ If the principles structurally guarantee we'll need something, build it now. The
 
 **The reflex to fight**: Both human and AI are trained toward YAGNI and "minimum viable." That reflex is almost always wrong in this system. When you feel it: ask "does the structure guarantee we'll need this?" If yes, build it.
 
+### Tier-distinct mathematical structure — recipes are holonomic, the IR is not
+
+Tambear's recipe tier (Tier 4) and the tiers below it are **holonomic** — behavior depends on current configuration (parameter assignments), not on the path taken to reach it. Cache keys operationalize this: stable tag bytes per parameter slot, deterministic key from assignments, binding-order doesn't matter. *A recipe will taste the same regardless of which ingredients you put in when.*
+
+The IR layer that compiles pipelines into kernel binaries is **non-holonomic by structural necessity** — pipeline-wide optimization depends on what else is running. Some ingredients need to be cooked in a separate pot because they don't blend with others. The IR is a stew, not a steak; live performance art, not a heuristic list.
+
+The two tiers require different tools. **Cache keys** for the holonomic recipe tier; **pipeline fingerprints, equivalence classes, cooperative dispatch, live-performance scheduling** for the non-holonomic IR layer. The path-independence test (does binding-order permutation produce the same structure?) distinguishes them and is falsifiable — it failed on F13-implementation, on the four BZ bugs, on the IR layer, and those failures carried information.
+
+**Why irrevocable**: forcing the IR into the holonomic mold (e.g., trying to make pipeline-wide optimization path-independent via local cache keys) loses the global-context information that's exactly what the IR needs to do its job. Forcing the recipe tier into non-holonomic shape gives up the composability that makes "all of math" tractable. Mixing the tools breaks both. See `docs/architecture/holonomic-architecture.md`.
+
 ### Raw Ticks Always — No Derived Cadences
 
 Every cadence (1s, 5s, 30s, 1min...) is computed directly from raw ticks. Never from a coarser cadence.
@@ -216,30 +226,13 @@ Fused passes over modern memory hierarchies. Cache-aware layouts. SIMD where nat
 
 ### 7. No vendor lock-in — native-door JIT, no middleware
 
-Per `R:\tambear\docs\decisions.md` DEC-019 (locked 2026-04-21): tambear does not use middleware. Not wgpu, not cudarc, not nvrtc, not ash, not any vendor-runtime library. Each hardware door is a direct kernel-driver call with tambear-authored vendor IR, via a JIT shape-cache.
+Per `R:\tambear\docs\decisions.md` DEC-019 (locked 2026-04-21): tambear does not use middleware. Not wgpu, not cudarc, not nvrtc, not ash, not any vendor-runtime library. Each hardware door is a direct kernel-driver call with tambear-authored vendor IR (PTX for NVIDIA, SPIR-V for Vulkan/AMD/Intel, AIR/MSL for Metal, DXIL for DX12, Cranelift for CPU). Only external deps: the kernel driver per door + Cranelift for CPU JIT codegen.
 
-**Per-door contract**:
+**The architecture is JIT, not AOT.** Kernel specialization depends on (pipeline IR × `using()` params × shape fingerprint × validity policy × door × sharing opportunities) — combinatorial, can't pre-enumerate. JIT compiles only what dispatches, fully specialized; cache persists on disk so second-run boots warm.
 
-- **NVIDIA** — tambear emits PTX (text or bytecode), dispatches via the **CUDA Driver API** (`cuModuleLoadData`, `cuLaunchKernel`) directly. No cudarc. No CUDA Runtime API. No nvrtc.
-- **Vulkan-class (cross-vendor discrete GPU)** — tambear emits **SPIR-V** bytecode, dispatches via the **Vulkan API** (`vkCreateComputePipelines`, `vkCmdDispatch`) directly. No wgpu.
-- **Apple Metal** — tambear emits **AIR / MSL**, dispatches via the **Metal framework** directly.
-- **DirectX 12** — tambear emits **DXIL**, dispatches via the **DX12 API** directly.
-- **AMD native** — RDNA-family ISA or SPIR-V via ROCm driver.
-- **Intel native** — SPIR-V via oneAPI driver.
-- **CPU** — **Cranelift** JIT (sub-ms compile, Rust-native, x86_64/AArch64/RISC-V). Direct ISA emission reserved for hot paths if profiling demands.
-- **NPU / future** — whatever ISA the driver accepts.
+**Rationale**: middleware is vendor lock-in dressed up — it ties us to someone else's threading, memory, precision, and error-handling choices. Going direct + owning the IR means one binary across NVIDIA / AMD / Intel / Apple / ARM / embedded, vendor-specific features (tensor cores, MPS, NPU intrinsics) reachable, and bit-exact determinism that survives middleware version bumps.
 
-The ONLY external dependencies are (a) the kernel driver for each door (the inescapable hardware-address-space boundary) and (b) Cranelift for CPU JIT codegen (Rust-native, vendor-neutral, production-grade). Everything else — IR lowering, specialization, dispatch scheduling, persistent kernel cache — tambear owns.
-
-**The architecture is JIT, not AOT.** Kernel specialization depends on (pipeline IR × `using()` params × shape fingerprint × validity policy × door × sharing opportunities). That product is combinatorial; AOT cannot pre-enumerate. The JIT compiles only what dispatches, fully specialized. Cache key: BLAKE3 of `(tambear_ir_hash, param_bag_hash, shape_fingerprint, validity_policy, door_id)`. Data *shape* (dtype / dim / grouping / assumption tags / NaN-Inf presence) bakes in; data *content* flows through at dispatch. Cache persists on disk; second-run boots warm.
-
-**Rationale**: vendor lock-in means our library dies when the vendor does. Middleware (wgpu, cudarc) is vendor lock-in dressed up — it ties us to the middleware's choices about threading, memory, precision, error handling. Going direct to each driver + authoring vendor IR ourselves means:
-- The same tambear binary runs on NVIDIA, AMD, Intel, Apple, ARM, embedded — everywhere with a driver.
-- Vendor-specific features (tensor cores, cooperative groups, Metal performance shaders, NPU intrinsics) are reachable.
-- Bit-exact determinism across middleware updates — wgpu/cudarc version bumps don't change what compiles to what.
-- GPU kernel compilation is already JIT-shaped at the driver level (shaders have never been AOT-compiled to specific SASS); tambear inherits this naturally.
-
-See `R:\tambear\docs\decisions.md#DEC-019` for the locked spec.
+Per-door API surface, cache-key spec, full rationale: `R:\tambear\docs\decisions.md#DEC-019`.
 
 ### 8. No OS lock-in
 
@@ -288,9 +281,9 @@ If all pass, ship. If any fail, fix first.
 
 ## Recipes Are Compositions — Atoms Are the Substrate
 
-> **Concrete architecture**: see `docs/architecture/atoms-primitives-recipes.md` for how the three central tiers (atoms, primitives, recipes) decompose in the filesystem and the type system, with worked examples and lowering strategies. The conceptual principle below and the concrete architecture document together define how every piece of mathematics in tambear gets built.
+> **Elaboration lives elsewhere.** The fractal-catalog narrative, propagation properties, TBS-as-completeness-test, and "why decomposition is load-bearing" reasoning are in `docs/architecture/atoms-primitives-recipes.md` (concrete decomposition + worked examples + the moved deep-dive section "How recipes compose — fractal, flat, TBS-surface"). The directive principle and grounding table stay here.
 >
-> **Vocabulary**: see `docs/architecture/vocabulary.md` (canonical, locked 2026-04-17). The five tiers are pipelines (Tier 5), recipes (Tier 4), atoms (Tier 3), op/expr (Tier 2), primitives (Tier 1). Every reference to "primitive" / "method" / "specialist" in this section follows the locked vocabulary unless noted otherwise.
+> **Vocabulary**: see `docs/architecture/vocabulary.md` (canonical, locked 2026-04-17). The five tiers are pipelines (Tier 5), recipes (Tier 4), atoms (Tier 3), op/expr (Tier 2), primitives (Tier 1).
 
 Every recipe in tambear decomposes into atoms + primitives + a formula. The recipe doesn't *own* its sub-algorithms — it *composes* them. The formula is the only thing the recipe uniquely contributes. Everything else is a call to another recipe (or to atoms / primitives / op / expr) that exists independently in the flat catalog.
 
@@ -304,109 +297,25 @@ Every recipe in tambear decomposes into atoms + primitives + a formula. The reci
 | `kaplan_meier` | `sort`, `prefix_product` | conditional survival formula |
 | `ols_regression` | `gram_matrix`, `cholesky_solve` | (X'X)⁻¹X'y formula |
 
-**A recipe is math that exists because it's math, not because some other recipe needs it.** `inversion_count` is a recipe. `covariance_matrix` is a recipe. `sort` is a recipe. Each has its own implementations (mergesort vs fenwick for inversions), its own Kingdom classification, its own parameter surface.
+**A recipe is math that exists because it's math, not because some other recipe needs it.** `inversion_count` is a recipe. `covariance_matrix` is a recipe. `sort` is a recipe. A recipe is a thin orchestration layer — typically 20-50 lines of composition + formula. If a recipe is 200+ lines, it probably contains embedded sub-recipes that should be extracted. Every private `fn` inside a recipe is a question: "is this math that exists independently?" Almost always yes.
 
-**A recipe is a thin orchestration layer** — typically 20-50 lines of composition + formula. If a recipe is 200+ lines, it probably contains embedded sub-recipes that should be extracted. Every private `fn` inside a recipe is a question: "is this math that exists independently?" Almost always yes.
-
-### Why recipe decomposition is load-bearing
-
-This isn't just clean code — it's what makes the entire architecture work:
-
-- **`using()` flows through compositions.** When `kendall_tau` calls the global `inversion_count` recipe, the user's `using(inversion_method="fenwick")` reaches it. If the inversion count is a private copy inside Kendall, the `using()` hook can't reach it.
-- **Sharing via TamSession.** If a recipe calls the global `covariance_matrix` recipe, the result registers in TamSession and PCA, factor analysis, LDA, Mahalanobis, and mixed effects all reuse it. If the covariance matrix is private inside each recipe, it gets computed 6 times per bin.
-- **Linting and Kingdom classification.** The lint system and TAM scheduler need to know each recipe's Kingdom independently. If a recipe hides its sub-operations, `kingdom_of()` can't see inside.
-- **Every recipe is callable directly.** The user can call `inversion_count(col=0)` from TBS — not just `kendall_tau`. Same syntax, same `using()`, same output format whether the recipe is a small one (mean) or a large one (efa).
-
-### The fractal catalog — flat, not nested
-
-Every recipe family is large. `mean` alone has 15+ named variants: arithmetic, trimmed, winsorized, geometric, harmonic, power (generalized), Lehmer, Fréchet, contraharmonic, exponential moving, kernel-weighted, and more. Each has parameters. Each connects to other recipes (`geometric_mean = exp(mean(log(x)))` — a composition).
-
-The catalog is fractal — zoom in on any entry and it expands — but bounded. Bounded by the finite set of named mathematical operations in the human literature. Families share structure (power mean parameterized by p gives 5 variants from 1 implementation). The work is proportional to the number of DISTINCT mathematical ideas, not the number of combinations.
-
-**The catalog is flat, not hierarchically nested.** Families (statistics, algebra, spectral, etc.) are metadata tags on recipes, not namespaces that constrain access. In TBS, every path resolves to the same computation: `geometric_mean(col=0)`, `mean(col=0).using(method="geometric")`, `mean.geometric(col=0)` — all the same recipe. The user shouldn't need to know our internal module structure to find what they want. Nesting into families risks losing multi-composability — if geometric_mean lives "inside" the mean family, it becomes harder to discover from the geometry side or the transform side. Tags don't have this problem. A recipe can belong to multiple families simultaneously.
-
-The process for growing the catalog:
-1. For every recipe we implement, decompose it into named operations
-2. For every named operation, check if it exists as a standalone recipe
-3. If not, implement that recipe FIRST, then have the original call it
-4. For every new recipe, ask: what's the family? What are the variants?
-5. For every variant, check R/scipy/MATLAB/Julia for evidence of user demand
-6. Implement the demanded variants
-
-The catalog grows organically from decomposition, not from top-down planning.
-
-### TBS is the universal surface
-
-TBS exposes every recipe with the same syntax — there is no formal hierarchy of "small recipes" vs "large recipes." Every recipe is just a recipe. Sizes vary by what's being composed:
-
-- **Atomic-feeling recipes**: `mean(col=0)`, `inversion_count(col=0)`, `sort(col=0)` — small, single-purpose
-- **Direct compositions**: `rank(col=0).pearson_on_ranks(col_y=1)` (= Spearman, composed from `rank` and `pearson_r` recipes)
-- **Named multi-step recipes**: `kendall_tau(col_x=0, col_y=1)` (internally: sort → inversion_count → tie_count → formula)
-- **Workflow recipes**: `two_group_comparison(group_col=2)` (internally: shapiro_wilk → levene → [welch_t | mann_whitney] → cohens_d → ci)
-- **Discovery recipes**: `discover_correlation(col_x=0, col_y=1)` (runs every correlation in parallel, reports agreement)
-
-`using()` flows DOWN through all compositions. When `two_group_comparison` calls `shapiro_wilk`, the user's `using(alpha=0.01)` reaches it. Sub-recipes don't know they're inside a parent recipe. Each queries the `using()` bag for its parameters and uses defaults if nothing is set.
-
-**Every property propagates at every depth.** Every node in the composition tree — from a multi-step workflow recipe down to the smallest atomic-feeling recipe — is independently:
-
-- **Addressable** — `kendall_tau.inversion_count` is a valid path. So is just `inversion_count`.
-- **Decomposable** — `inversion_count` itself decomposes to `mergesort_with_count` or `fenwick_tree_count`. Each is a recipe. Each is addressable. The fractal goes all the way down to the atom layer.
-- **Tunable** — `using(inversion_method="fenwick")` reaches inside `kendall_tau` to the specific sub-recipe.
-- **Discoverable** — `discover_inversion_count` runs every algorithm, reports which is fastest, which gives which answer.
-- **Sweepable** — `sweep(inversion_method=["mergesort","fenwick","brute"])` runs all three, returns all three.
-- **Superpositionable** — don't collapse. Keep all results. The structural fingerprint of agreement IS the output.
-- **using()-able** — every parameter at every depth is reachable from the top.
-- **Shareable** — the result registers in TamSession. If Kendall already computed the inversion count, Spearman's footrule reuses it. First consumer pays; everyone else gets it free. One pass.
-
-A composed recipe in TBS is not a new thing — it's a **named grouping of existing recipes plus a formula**. `kendall_tau` is syntactic sugar for `sort → inversion_count → tie_count → tau_b_formula`. The composition adds a name and a formula. It doesn't add new computation. Every sub-recipe is independently addressable at the catalog top level. The composition tree IS the computation graph. TBS IS the compiler's IR surface.
-
-### TBS as completeness test
-
-TBS is the forcing function for catalog completeness. When you try to express a function as a TBS statement, every symbol in the expression must resolve to a recipe (or an atom / primitive / op / expr at the lower tiers). If you can't write a clean expression, you've found a gap. The language surface IS the completeness test for the flat catalog.
-
-Three things TBS reveals:
-
-**"This recipe does more than one thing."** If a function internally does multiple distinct computations, it's a compound recipe that breaks composability. A real recipe is one symbol, one operation, one result. If `ar_fit` internally computes ACF + Levinson-Durbin + coefficients + residuals + AIC, that's 5 recipes glued together. Each should be callable independently, shareable independently, liftable independently. Test: can you decompose the TBS expression into smaller expressions that each do exactly one thing? If yes, it should BE those smaller expressions composed.
-
-**"What else computes this?"** For every recipe, the literature has alternative methods. `correlation` → Pearson, Spearman, Kendall, point-biserial, phi, polychoric, tetrachoric, distance, MIC, Hoeffding's D, Schweizer-Wolff, Blomqvist beta... Each is a flavor. Each is a `using(method=...)` key or a standalone recipe. If we only have 4, TBS makes the gap visible.
-
-**"What parameters do people actually tune?"** What R, scipy, MATLAB, Julia, Stata expose for the same computation — every parameter they offer that we don't is a missing `using()` key. The full parameter space of every recipe should be discoverable through TBS, not hidden in source code.
-
-**The recipe catalog IS the library. Everything above is pipeline composition; everything below is the atoms + primitives that recipes lower to.**
+**The catalog is flat, not hierarchically nested.** Families (statistics, algebra, spectral, etc.) are metadata tags on recipes, not namespaces. A recipe can belong to multiple families simultaneously. **The recipe catalog IS the library.** Everything above is pipeline composition; everything below is the atoms + primitives that recipes lower to.
 
 ---
 
 ## Recipes by Behavioral Stance — Pure / Diagnostic / Override / Workflow / Discovery
 
-Tambear's recipes (locked vocabulary Tier 4) are pure math. They do one thing, do it correctly, and return a result. That's it — no opinions, no diagnostics, no method-switching, no workflow assembly. A recipe like `spearman_correlation(x, y)` just computes Spearman's ρ.
+> **Elaboration lives elsewhere.** Per-stance descriptions in full, testing strategies, and the "why separating stances matters" reasoning are in `docs/architecture/recipe-stances.md`. The directive principle and the five-name kernel stay here.
 
-The *smart* parts of tambear — the parts that make it feel like a $10M/year quant is sitting next to the user — live in **other recipes that compose the pure ones**. These higher-stance recipes pick methods, tune parameters, run diagnostics, surface superposition. They are first-class products in their own right, but they are *also recipes* — same vocabulary tier, distinguished only by their *behavioral stance*. This separation is what keeps the pure recipes clean, reusable, and composable.
+Tambear's recipes (Tier 4) are pure math. They do one thing, do it correctly, and return a result — no opinions, no diagnostics, no method-switching, no workflow assembly. The *smart* parts of tambear live in **other recipes that compose the pure ones**. Same vocabulary tier, distinguished only by *behavioral stance*. This separation keeps pure recipes clean, reusable, and composable.
 
-> **Vocabulary note.** Earlier versions of this section called these "Layer 0 / Layer 1 / Layer 2 / Layer 3 / Layer 4." Under the locked vocabulary (`docs/architecture/vocabulary.md`), there are no separate "layers" — every named composition is a recipe. What follows is a description of *behavioral stances* recipes can take, all at the same vocabulary tier (Tier 4 — Recipes).
+The five stances:
 
-### The five behavioral stances
-
-**Pure-math stance** (the bulk of the recipe catalog).
-A recipe like `spearman_correlation(x, y) -> f64`. One operation, one result. Atom + primitive composition. Shareable intermediates. Benchmarked, oracled, adversarial-tested. No knowledge of pipelines, no knowledge of diagnostics, no knowledge of other recipes' decision-making.
-
-**Diagnostic / auto-selection stance**.
-A recipe that knows *which other recipe to call for which data*. When a user asks for the generic thing (`correlation(x, y)`), this stance runs the diagnostics a senior statistician would run (normality check, variable-type check, outlier influence, ties), picks the appropriate sub-recipe (Pearson / Spearman / Kendall τ-b / polychoric / tetrachoric / point-biserial / distance correlation), calls it, and reports the decision + rationale in a structured output (`TbsStepAdvice`: `recommended`, `user_override`, `diagnostics`). It's built *out of* pure-math recipes — it calls `shapiro_wilk`, `pearson_r`, `spearman_r`, etc. — but those pure-math recipes know nothing about being inside a diagnostic recipe.
-
-**Override-transparency stance**.
-A diagnostic recipe wrapped in a transparency layer. When a user forces a specific method via `using(method="pearson")`, this stance still runs the diagnostic recommendation *and* the user's choice, and writes both results into the output alongside a warning if the override is statistically questionable. The user sees what they chose, what tambear would have chosen, and the numerical difference — so they disagree with their eyes open. Neither silently wins. The underlying pure-math recipes are called twice from the same diagnostic-backed infrastructure.
-
-**Workflow stance** (named multi-step recipes).
-Curated workflows shipped as first-class recipes — `two_group_comparison`, `regression_diagnostics`, `time_series_analysis`, `clustering_workflow`, `survival_analysis`, `efa`, `garch_fit`, `sip_signal_bundle`, etc. Each is a composition of pure-math recipes orchestrated through diagnostic and override-transparency recipes, tuned as if a decade-experienced domain expert was hired to build that one workflow from scratch. Users load a workflow recipe and run it; inside, it walks the decision tree (normality → variance homogeneity → t-test variant → effect size → power → CI → robustness) calling sub-recipes as needed. Each workflow recipe has its own version, its own test suite against published benchmark datasets, and its own oracle against whatever the gold-standard workflow in that domain looks like. Workflow recipes are what most users reach for; the pure-math toolkit stays available for people who want to assemble their own.
-
-**Discovery / superposition stance**.
-A recipe that runs *every plausible method simultaneously*, keeps all results in superposition, and reports structural fingerprints of agreement/disagreement across methods. When the user wants exploration rather than a single answer, this stance surfaces "which views agree, which disagree, and what does that tell us about the data?" It's the opposite philosophical stance from auto-selection (auto-selection picks; discovery refuses to pick) but uses the same pure-math recipes underneath. Both stances exist because both are valid depending on the user's question.
-
-### Why separating stances matters
-
-- **Pure-math recipes stay reusable**. `spearman_correlation` can be called from a diagnostic recipe (auto-picked it), an override-transparency recipe (user forced it), a workflow recipe (regression workflow needs a rank correlation on residuals), a discovery recipe (superposition ensemble), or a user's own custom code. Zero coupling to any one consumer.
-- **Stances can be swapped or extended**. A new diagnostic recipe that prefers Bayesian reasoning over frequentist can be built without touching a single pure-math recipe. A new workflow genre (e.g. experimental-design workflows) is just a new workflow recipe that calls existing pure-math recipes.
-- **Testing is cleaner**. A pure-math recipe is tested against its math. A diagnostic recipe is tested against whether it picks the right sub-recipe. A workflow recipe is tested against whether it produces the expert's workflow. Each stance has its own oracle.
-- **The Contract stays scoped**. The Filter Test (numerical correctness, oracle comparison, adversarial coverage) applies to pure-math recipes. Diagnostic / workflow / discovery recipes have their own separate quality gates — they don't need to be bit-perfect vs scipy (because they're workflow orchestration, not math), but they do need to make defensible methodological choices, match expert judgment on benchmark scenarios, and preserve override transparency.
+- **Pure-math** — `spearman_correlation(x, y) -> f64`. One operation, one result. Atom + primitive composition. Bulk of the catalog.
+- **Diagnostic / auto-selection** — knows which sub-recipe to call for which data. `correlation(x, y)` runs normality / variable-type / outlier checks, picks Pearson/Spearman/Kendall/etc., reports decision + rationale.
+- **Override-transparency** — when a user forces `using(method="pearson")`, runs *both* the diagnostic recommendation and the user's choice, surfacing both in output. Neither silently wins.
+- **Workflow** (named multi-step) — `two_group_comparison`, `garch_fit`, `efa`, `sip_signal_bundle`. Curated decision-tree compositions tuned as if a domain expert were hired to build that one workflow.
+- **Discovery / superposition** — runs every plausible method simultaneously, keeps results in superposition, reports structural fingerprints of agreement/disagreement. Refuses to pick.
 
 **The rule**: if you find yourself wanting a pure-math recipe to "know about" normality checks, method switching, expert defaults, or diagnostic wiring — stop. That knowledge belongs in a recipe of a different stance that wraps yours. The pure-math recipe stays pure. The wrapping recipe composes it.
 

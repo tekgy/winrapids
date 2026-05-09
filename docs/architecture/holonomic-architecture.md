@@ -1,8 +1,27 @@
-# Holonomic architecture — recipes are holonomic, the IR is not
+# Holonomic architecture — recipes are content-addressed, the IR is provenance-addressed
 
-**Status**: Draft 2026-05-09 by main-thread Claude + Tekgy. Awaiting math-researcher walk-through on the path-independence formalization.
+**Status**: Draft 2026-05-09 by main-thread Claude + Tekgy. Updated same day to incorporate the content-vs-provenance framing from naturalist's third upgrade and past-Claude's March 29-30 garden entries (which had the cache disciplines operationalized two months before the lens named them). Awaiting math-researcher walk-through on the formalization.
 
-**Anchors**: naturalist 2026-05-08 garden essay (`the-name-is-a-parameter`), naturalist 2026-05-08 follow-up (`the-fourth-instance`), naturalist 2026-05-09 application (`what-the-name-surfaces`). Navigator confirmed the naming 2026-05-09. Aristotle's F13.C graduation condition (2026-05-09) is the antibody-side analog. Four convergence instances anchor the recognition; the cliffhanger sentence in `important-conversation.md` (line 1062) is the cliffhanger this doc closes.
+**Anchors** (substrate trail, in chronological order — the lens did not supply this; it connects what was already there):
+
+- **Past-Claude's March 2026 garden entries** — the substrate the lens connects:
+  - 2026-03-15 — first proposed *holonomic architecture* as a name (six surfacings later, naturalist re-derived as "constant-to-parameter pattern")
+  - 2026-03-29 — *Binding Times and Three Tiers*: "JIT tier is online partial evaluation: specialize at runtime when pipeline shape becomes known, cache the result. Cache key is the binding-time partition."
+  - 2026-03-30 — *Provenance-Addressed, Not Content-Addressed*: "The address encodes HOW the result was produced, not WHAT the result contains. This is a feature, not a bug — cache correctness is structural, not contractual."
+
+- **Naturalist's three 2026-05 garden essays** — the lens being applied:
+  - 2026-05-08 *The Name Is a Parameter* — initial recognition (three convergence instances)
+  - 2026-05-08 *The Fourth Instance* — fourth instance + the cliffhanger
+  - 2026-05-09 *What the Name Surfaces* — applied the path-independence test rigorously, found the recipe-vs-IR tier distinction
+  - 2026-05-09 *The Content vs Provenance Axis* — connected past-Claude's March entries; sharpened the test
+
+- **Navigator's 2026-05-09 self-correction** (`The Lens Connects, Not Supplies`): the lens is unification, not discovery. The team has both cache disciplines already; the lens names *which one applies where*.
+
+- **Aristotle's F13.C graduation condition** (2026-05-09) — antibody-side analog: F13 antibodies graduate from local pattern to structural invariant only when required at every signature.
+
+The four convergence instances anchor the recognition; the cliffhanger sentence in `important-conversation.md` (line 1062) is the cliffhanger this doc closes.
+
+**Important framing** (per the naturalist's third upgrade): the lens does not *supply* machinery. The team already has the right tools at both tiers — content-addressed caching at the recipe tier (since the cache key was first designed) and provenance-addressed caching at the IR tier (operationalized in past-Claude's March 30 garden entry). What was missing was the *test* that says which tool applies where. This doc is that test.
 
 ---
 
@@ -23,9 +42,20 @@ The naming, surfaced by the naturalist 2026-05-08 and confirmed by the navigator
 
 ## The structural claim
 
-**Tambear's recipe tier (Tier 4) and the tiers below it (Tier 3 atoms, Tier 2 op/expr, Tier 1 primitives) are holonomic. The IR layer — the compiler that lowers Tier 5 pipelines into per-pass per-door kernel binaries — is non-holonomic by structural necessity.** They require different tools.
+**Tambear's recipe tier (Tier 4) and the tiers below it (Tier 3 atoms, Tier 2 op/expr, Tier 1 primitives) are holonomic and *content-addressed*. The IR layer — the compiler that lowers Tier 5 pipelines into per-pass per-door kernel binaries — is non-holonomic by structural necessity and *provenance-addressed*.** Both correct. Both already shipped. Different cache disciplines for structurally aligned reasons.
 
-The test that distinguishes them: **path-independence under binding-order permutation.** Bind parameters in different orders; do you get the same structure?
+The test that distinguishes them, in two equivalent forms:
+
+- **Path-independence under binding-order permutation.** Bind parameters in different orders; do you get the same structure?
+- **Content-addressable vs provenance-addressable.** Per the naturalist's 2026-05-09 essay (`the-content-vs-provenance-axis`):
+
+  > **Holonomic invariance is content-addressable.**
+  > **Non-holonomic structure is provenance-addressable.**
+
+  Content-addressing asks: *"Have I seen this thing before?"* — same bag of (parameter, value) pairs → same compiled kernel. The cache key is a hash of the bag.
+  Provenance-addressing asks: *"Have I done this thing before?"* — same values + different lineage → different cache entry. The cache key is a hash of the lineage.
+
+  Apply the lens to a parameter slot: pass (content-addressable) → recipe-tier tool applies. Fail (provenance-required) → IR-tier tool applies. The two questions are operationally equivalent — binding-order permutation produces the same result iff the cache discipline is content-addressing — but content-vs-provenance is the form that makes the *which tool when* question concrete.
 
 ### Recipe tier — holonomic
 
@@ -38,13 +68,17 @@ A recipe like `kendall_tau(col_x=0, col_y=1).using(inversion_method="fenwick")`:
 
 This is what makes recipe-tier composition work cleanly. **A recipe will taste the same regardless of which ingredients you put in when.**
 
-### IR/compiler layer — non-holonomic
+### IR/compiler layer — non-holonomic, provenance-addressed (already)
 
-The IR's job is harder. From the cliffhanger sentence in `important-conversation.md` line 1062 (Tekgy mid-articulation when the file truncated):
+The IR's job is harder, and **the team already built the right machinery for it in past-Claude's March 30 garden entry**, two months before the holonomic lens named why. From the cliffhanger sentence in `important-conversation.md` line 1062 (Tekgy mid-articulation when the file truncated):
 
 > *"we may also be able to have primitives that SHARE an accumulator but use a different gather step based on parameters, changing where the system will push the computations into different accumulate+gather steps. the system will optimize that during IR/compile based on the entire pipeline all at once."*
 
-The IR's placement decision for recipe A depends on whether recipe B is also running, and whether B can share. The compiled kernel for A in pipeline P1 differs from A in pipeline P2 due to different sharing opportunities. **The cache key for A becomes pipeline-dependent.** Path-dependent. The cache-key-as-path-independence trick breaks here, and that breakage is structural, not a flaw.
+The IR's placement decision for recipe A depends on whether recipe B is also running, and whether B can share. The compiled kernel for A in pipeline P1 differs from A in pipeline P2 due to different sharing opportunities. **The cache key for A becomes pipeline-dependent.** That's by design, not a flaw. Past-Claude's March 30 garden entry articulated the discipline:
+
+> *A new computation cannot accidentally hit an existing cache entry with the same result but different history. Two numerically identical results computed via different paths have different provenances. The address encodes HOW the result was produced, not WHAT the result contains. This is a feature, not a bug — it means cache correctness is structural, not contractual.*
+
+Apply this to the IR tier: two pipelines that include recipe A but have different sharing contexts produce different compiled kernels under different provenance keys. The kernels are bit-identical *only if* the contexts produce identical sharing decisions. When they don't, the keys differ — by design — and we get specialized kernels for each context. **The IR tier's non-holonomicity is the cache key's correctness mechanism doing its job.** Not unfinished business; not a structural problem; the right answer for the question "have I done this thing before?"
 
 ### Why the IR has to be non-holonomic — face-valid intuition
 
@@ -88,16 +122,24 @@ If a future parameter slot can't be cleanly tagged — e.g., because its meaning
 
 ---
 
-## What the IR layer needs
+## What the IR layer has (not "needs")
 
-If the recipe tier's tool is the cache key (operationalizing path-independence), the IR layer needs the *opposite*: machinery that explicitly consumes pipeline context. Some shapes the non-holonomic machinery may take:
+**Important**: an earlier draft of this section said "the IR layer needs explicit non-holonomic machinery." That's understated. The machinery exists already — it's the provenance-addressed cache discipline operationalized in past-Claude's March 30 garden entry. What was missing was the conceptual handle (the holonomic test) that says *which discipline applies where*.
 
-- **Pipeline fingerprints baked into the IR-level cache key** — when an IR-compiled kernel is cached, its key includes the global pipeline structure (which other recipes are co-compiling, what sharing opportunities exist), not just per-recipe parameters. Same recipe in different pipelines may produce different cached kernels.
-- **Pipeline-equivalence classes** — group recipes by what they can share. Placement decisions are made on equivalence classes, not on individual recipes. A new recipe joining the pipeline triggers re-classification, possibly re-compilation.
-- **Cooperative dispatch declarations** — recipes declare what they're willing to share with other recipes (which intermediates, which accumulators, which gathers); the IR negotiates placement to maximize shared computation.
-- **Live-performance scheduling** — the IR may need to recompile kernels when the pipeline changes (e.g., a new recipe joins, or a parameter override flows in), the way a live performer adjusts to the room. Cached kernels are best-effort, not contracts (DEC-024).
+The provenance-addressed cache key, as already engineered:
 
-These aren't requirements for any specific design; they're shapes that explicit non-holonomic machinery can take. The IR layer's design should be informed by knowing it has to live in the non-holonomic world, not pretend the holonomic tools work everywhere.
+- **Pipeline-context-bearing keys** — the IR-compiled kernel's cache key includes the global pipeline structure (which other recipes are co-compiling, what sharing opportunities exist), not just per-recipe parameters. Same recipe in different pipelines produces different cached kernels under different keys. By design.
+- **Equivalence by lineage, not by output** — two numerically-identical results computed via different pipeline contexts have different provenance keys. The bit-identical kernels are reachable as cache hits *only* when the lineage matches. When lineages differ, the keys differ — preventing accidental cross-pipeline reuse.
+- **Cache correctness is structural, not contractual** — the user doesn't have to remember "did I bind that recipe in the same pipeline?" The cache discipline answers it automatically.
+
+The shapes the IR machinery may take as it gets implemented (or formalized further) are not "new tools" but elaborations of the provenance-addressed discipline:
+
+- **Pipeline fingerprints in the IR-level cache key** (the literal serialization of "the lineage")
+- **Pipeline-equivalence classes** — groupings of recipes that share lineage-determinative context, so the cache hit rate doesn't degrade to "every pipeline gets a fresh kernel"
+- **Cooperative dispatch declarations** — recipes opt into sharing intermediates, the IR negotiates placement to maximize cache hits within the equivalence class
+- **Live-performance recompilation** — kernels rebuild when the pipeline changes; cached kernels are best-effort, not contracts (DEC-024)
+
+These elaborate the discipline. They don't replace it. The IR layer is *not* unfinished business that needs to be made holonomic; it's correctly engineered as provenance-addressed because that's the cache discipline the question "have I done this thing before?" requires.
 
 ---
 
@@ -132,6 +174,8 @@ These aren't requirements for any specific design; they're shapes that explicit 
 
 3. **Hidden non-holonomicity at the recipe tier.** Are there places where the cache key works but binding-order *doesn't* commute (suggesting hidden non-holonomicity that the test currently misses)? `using()` precedence under recipe-nesting is the candidate I'm most curious about.
 
+   *Substrate note (navigator, 2026-05-09)*: `using_annotation.rs` (DEC-020) decouples provenance from cache-key semantics at the code level. Line 5-6: "Provenance does NOT enter the cache key — same value produces same kernel regardless of who set it." The `Provenance` enum tracks `Default` / `TamOverride` / `UserOverride` but none of these variants reach the BLAKE3 hash. Binding-order commutes as long as the final value assignment is the same — the *who* and *when* of binding are stripped before caching. The `using()` precedence question therefore reduces to: are there conflict-resolution rules that make the final value non-commutative? That's the remaining question for math-researcher — if two `using()` calls bind the same key with different values, which wins and is that deterministic regardless of call order?
+
 4. **Partial holonomic structure at the IR layer.** Does the IR admit *partial* holonomic structure (e.g., per-equivalence-class)? Or is it inherently non-holonomic at every level?
 
 5. **The four-instances counting.** The naturalist counted four convergence instances; navigator confirmed; aristotle's F13.C is a fifth. Are there others the team has been operationalizing without naming? Which ones?
@@ -142,10 +186,11 @@ These aren't requirements for any specific design; they're shapes that explicit 
 
 ## Anchors
 
-**Naturalist's three garden essays:**
+**Naturalist's four garden essays:**
 - `~/.claude/garden/2026-05/2026-05-08-the-name-is-a-parameter.md` — initial recognition (three convergence instances under one shape)
 - `~/.claude/garden/2026-05/2026-05-08-the-fourth-instance.md` — convergence count + cliffhanger (discovery-tier-vs-verification-tier as fourth instance; truncated `important-conversation.md` sentence as the cliffhanger)
 - `~/.claude/garden/2026-05/2026-05-09-what-the-name-surfaces.md` — applied the path-independence test rigorously, found the recipe-vs-IR tier distinction, surfaced F13-only-holonomic-at-signature-level
+- `~/.claude/garden/2026-05/2026-05-09-the-content-vs-provenance-axis.md` — sharpened to content-addressable vs provenance-addressable; connected March 2026 past-Claude garden entries; established that the lens connects existing machinery rather than supplying new
 
 **Navigator's two routings:**
 - 2026-05-08: confirmation of the naming

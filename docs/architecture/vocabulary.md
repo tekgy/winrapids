@@ -408,19 +408,23 @@ Why the tiers are arranged this way:
   IDE renders pipelines as step-card sequences. RUN compiles a pipeline
   to a `.tam` plan plus per-pass kernel binaries.
 
-- **Tiers 1-4 are holonomic; the IR layer is non-holonomic.** The recipe
-  tier (Tier 4) and below are *holonomic* — behavior depends on
-  parameter-assignment configurations, not on binding paths. Cache keys
-  with stable tag bytes per parameter slot operationalize this. The IR
-  layer that lowers Tier 5 pipelines into kernel binaries is
-  *non-holonomic by structural necessity* — pipeline-wide optimization
-  depends on global context (what else is running, what intermediates
-  can be shared). The cache-key-as-path-independence trick breaks at the
-  IR layer, and that breakage is structural. Neither "holonomic" nor
-  "non-holonomic" is a tier; they are *properties* of the existing tiers
-  and the compiler. See `docs/architecture/holonomic-architecture.md`
-  for the path-independence test, the four convergence instances that
-  anchor the recognition, and what kinds of tools each tier needs.
+- **Tiers 1-4 are content-addressed (holonomic); the IR layer is
+  provenance-addressed (non-holonomic).** The recipe tier (Tier 4) and
+  below ask *"have I seen this thing before?"* — same bag of (parameter,
+  value) pairs produces the same compiled kernel; cache keys are a hash
+  of the assignments; order and lineage are irrelevant. The IR layer
+  that lowers Tier 5 pipelines into kernel binaries asks *"have I done
+  this thing before?"* — same values + different pipeline context
+  produce different compiled kernels under different provenance keys; the
+  address encodes HOW the result was produced, not WHAT the result
+  contains. Both cache disciplines already exist in tambear (the IR's
+  provenance-addressing was operationalized in past-Claude's March 30
+  garden entry, two months before the holonomic lens named the
+  distinction). Neither "holonomic" nor "non-holonomic" is a tier; they
+  are *properties* of the existing tiers and the compiler.
+  See `docs/architecture/holonomic-architecture.md` for the
+  content-vs-provenance test, the four convergence instances that
+  anchor the recognition, and the lens-connects-not-supplies framing.
 
 ---
 

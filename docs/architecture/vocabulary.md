@@ -130,8 +130,12 @@ Examples:
 - Time series: `garch_filter`, `arma_filter`, `dfa`, `adf_test`,
   `jarque_bera`, `cusum`, `bocpd`
 - Multivariate: `pca`, `factor_analysis`, `efa`, `lda`, `cca`
-- Sketches: `kll_sketch` (default mergeable quantile), `tdigest`,
-  `gk_sketch`
+- Sketches: `ddsketch` (locked default — relative-value error,
+  bit-exact distributed merge, no internal sorts, permutation-
+  invariant — required for SIP's Merkle-anchored chain),
+  `kll_sketch` (rank-error mergeable; `using(sketch: "kll")`),
+  `tdigest` (best empirical tail accuracy; `using(sketch: "tdigest")`),
+  `gk_sketch` (rank-error intrinsically mergeable; `using(sketch: "gk")`)
 - Pipelines-as-recipes: `efa`, `garch_fit`, `sip_signal_bundle`,
   `two_group_comparison`, `regression_diagnostics` — these are also
   recipes; "pipeline" in this list means "multi-step composition," not

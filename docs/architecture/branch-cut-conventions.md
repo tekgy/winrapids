@@ -1,12 +1,14 @@
 # Branch-cut conventions for complex-transcendental recipes
 
-**Status**: Roadmap draft, awaiting math-researcher ratification → proposed `DEC-032`.
+**Status**: Ratification-ready (2026-05-09). Math-researcher's literature-anchored amendments applied — sub-clauses D-prime, E (extended), F added. Awaiting copy-to-DEC-032 in `R:\tambear\docs\decisions.md`.
 
 **Drafted**: 2026-05-08, main-thread Claude (tambear-sweep31-finish team-lead lane), with Tekgy.
 
+**Ratified**: 2026-05-09 by math-researcher; ratification doc at `R:\winrapids\campsites\tambear-sweep31-finish\math-researcher\branch-cut-ratification-2026-05-09.md` (Kahan 1987, Chyzak et al. 2011, C99 §G.6, CLISP §12.5.3 anchors).
+
 **Anchor**: `R:\winrapids\PLEASE_READ_from_gpu_verifier_port.md` finding 4 + naturalist's `R:\winrapids\campsites\tambear-formalize\naturalist\` thread "graph-form keeps appearing as recognition" (2026-05-08).
 
-**Ratification path**: Math-researcher reviews the variant set + identity preservation sub-clauses + open questions, signs off async, lands as DEC-032 in `R:\tambear\docs\decisions.md` with this content as the body. Pathmaker implements at first-complex-transcendental-recipe time. Until then, **no complex-transcendental recipe enters the queue.**
+**Roadmap path**: Math-researcher copies ratified content to `R:\tambear\docs\decisions.md` as DEC-032 when ready. Pathmaker implements at first-complex-transcendental-recipe time. Until then, **no complex-transcendental recipe enters the queue.**
 
 ---
 
@@ -49,10 +51,12 @@ The verifier-port team — nine agents working on a substrate-search verificatio
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BranchPolicy {
-    /// Standard principal-value convention. `ln(-1) = +iπ`, cut along the
-    /// negative real axis approached from above. Counterclockwise sense.
-    /// `arctan(z)` cut along `(-i∞, -i] ∪ [+i, +i∞)`. The most common
-    /// convention in modern analysis textbooks (Ahlfors, Conway, Stein).
+    /// Kahan 1987 / C99 §G.6 / counter-clockwise-continuous (CCC)
+    /// convention. The unique cut placement compatible with IEEE 754
+    /// signed-zero arithmetic. Universal across modern systems —
+    /// Mathematica (≥v10), Wolfram, MATLAB R2016a+, NumPy, Boost,
+    /// Sage, Maple, GSL all converge on this. See sub-clause D-prime
+    /// for explicit cut placements per function. `clog(-1) = +iπ`.
     Principal,
 
     /// Alternative principal-value convention. `ln(-1) = -iπ`. Clockwise
@@ -135,29 +139,107 @@ impl BranchPolicy {
     #[inline]
     pub const fn tag(self) -> u8 {
         match self {
-            BranchPolicy::Principal         => 0,
-            BranchPolicy::AntiPrincipal     => 1,
-            BranchPolicy::NumericallyStable => 2,
-            BranchPolicy::Discovery         => 3,
+            // Tag 0 RESERVED — asserts "uninitialized / byte not fed."
+            // Per math-researcher ratification 2026-05-09: keeping 0
+            // free gains explicit antibody coverage on the "did the
+            // byte get fed?" question, at zero cost. Pre-bump kernels
+            // can never silently match post-bump kernels.
+            BranchPolicy::Principal         => 1,
+            BranchPolicy::AntiPrincipal     => 2,
+            BranchPolicy::NumericallyStable => 3,
+            BranchPolicy::Discovery         => 4,
         }
     }
 }
 ```
 
-`#[non_exhaustive]` allows future variants without re-ratifying the existing four.
+`#[non_exhaustive]` allows future variants without re-ratifying the existing four. Reserved tag `5` for `Custom(Vec<CutSegment>)` v2-amendment.
 
-### E. Discovery-mode output shape
+### D-prime. `Principal` is normatively Kahan / C99 / CCC
 
-`Discovery` policy returns *all branches* of a multi-valued function. Output type for `complex_log`:
+Per math-researcher's literature ratification (2026-05-09):
+
+`Principal` is **the Kahan 1987 / C99 §G.6 / counter-clockwise-continuous (CCC) convention** — not "one of several principal-value conventions." This is the unique cut placement compatible with IEEE 754 signed-zero arithmetic (Kahan 1987 §3, §4). The contested-placement framing in earlier drafts was a 1990s-era residue: modern Mathematica, Wolfram, MATLAB, NumPy, Boost.Multiprecision, Sage, Maple, GSL, and IEEE 754-2019 §9.2 normative recommendations have all converged on Kahan's CCC. The real-axis arctan variant survives only in legacy FORTRAN libraries.
+
+**Normative cut placements** for the twelve canonical complex-transcendental recipes:
+
+| Recipe | Cut placement | Sign at cut | Reference |
+|---|---|---|---|
+| `clog(z)` | negative real axis | approached from above; `clog(-1) = +iπ` | C99 §G.6.3.4 |
+| `csqrt(z)` | negative real axis | approached from above | C99 §G.6.4.2 |
+| `casin(z)` | `(-∞, -1] ∪ [+1, +∞)` on real axis | per CCC | C99 §G.6.2.1 |
+| `cacos(z)` | `(-∞, -1] ∪ [+1, +∞)` on real axis | per CCC | C99 §G.6.2.2 |
+| `catan(z)` | `(-i∞, -i) ∪ (+i, +i∞)` on imaginary axis (excluding ±i) | per CCC | C99 §G.6.2.3 |
+| `casinh(z)` | `(-i∞, -i) ∪ (+i, +i∞)` on imaginary axis | per CCC | C99 §G.6.2.4 |
+| `cacosh(z)` | `(-∞, +1)` on real axis | per CCC | C99 §G.6.2.5 |
+| `catanh(z)` | `(-∞, -1] ∪ [+1, +∞)` on real axis | per CCC | C99 §G.6.2.6 |
+| `cexp(z)` | (entire — no branch cut) | — | — |
+| `csin(z)`, `ccos(z)`, `ctan(z)` | (entire — no branch cuts) | — | — |
+| `cpow(z, w)` | inherits from `clog`: `cpow(z, w) = cexp(w · clog(z))` | per CCC | C99 §G.6 derived |
+| `complex_root(z, n)` | inherits from `cpow(z, 1/n)` | per CCC | C99 §G.6 derived |
+
+These placements are derived from a single principle (Kahan 1987 §3): counter-clockwise continuity at the cut, which fixes the sign-of-zero behavior in the limiting approach.
+
+**`AntiPrincipal` is the sign-conjugate**: same cut placements, but with the imaginary part of values on the cut negated where the function is purely-imaginary on the cut. Implementations obtain `AntiPrincipal` outputs by post-processing `Principal` outputs; the conjugate convention is checkable by the trivial identity `AntiPrincipal(z) = conj(Principal(conj(z)))` for real-axis cuts.
+
+**Implementation cross-check**: any `Principal` recipe must reproduce the C99 §G.6 reference values bit-for-bit at f64 (the C99 reference points where conjugation-of-zero-sign is observable). Adversarial proptests verify against:
+- `clog(-1.0 + 0.0i) == +iπ` (cut approached from above)
+- `clog(-1.0 - 0.0i) == -iπ` (cut approached from below — sign-of-zero matters)
+- `csqrt(-1.0 + 0.0i) == +i`
+- `casin(2.0 + 0.0i) == π/2 + i·acosh(2.0)` (above-cut limit)
+- `catan(2.0i + 0.0) == π/2 + i·atanh(0.5)` (right of imaginary cut)
+
+### E. Discovery output shape — per-family bounds
+
+The `Discovery` policy enumerates multiple branches. The literature distinguishes between three multi-valuedness regimes; the output shape adapts per recipe family. Per math-researcher ratification (2026-05-09):
+
+**(E.1) Single-valued-on-cut** — `complex_log`, `complex_arctan`, `complex_arctanh`. Naturally enumerable by integer winding number. Output:
 
 ```rust
-pub struct BranchedComplex {
-    pub primary: Complex<f64>,    // Principal-branch value
-    pub witnesses: Vec<(BranchTag, Complex<f64>)>,  // All other branches
+pub struct WoundComplex {
+    pub primary: Complex<f64>,                  // Principal branch
+    pub windings: Vec<(i64, Complex<f64>)>,    // (winding_number, value)
 }
 ```
 
-The naturalist's catalog-as-tree pattern surfaces here: `Discovery` is the structural-rhyme analog to `discover()` for sketches/correlations/distances. The relationship IS the answer.
+User specifies `using(max_windings: i64)`, default `0` (just `primary`). Setting `max_windings = 3` returns winding numbers `{-3, -2, -1, 0, 1, 2, 3}`.
+
+**(E.2) Finite-root** — `complex_sqrt`, `complex_root(z, n)`, `complex_pow(z, p/q)` for rational `p/q`. Enumerate all `n` (or `q`) roots:
+
+```rust
+pub struct RootedComplex {
+    pub primary: Complex<f64>,                  // Principal root
+    pub roots: Vec<(BranchTag, Complex<f64>)>, // All other roots
+}
+```
+
+For `complex_root(z, n)`, `roots.len() = n - 1` (the n principal roots minus `primary`). For `complex_pow(z, p/q)`, the irreducible-fraction `q` determines branch count.
+
+**(E.3) Dense-branch** — `complex_pow(z, w)` for irrational `w`. Branches are dense in `ℂ \ {0}` (countably infinite, enumerable but non-terminating). User MUST specify `max_branches: usize`:
+
+```rust
+pub struct BranchedComplex {
+    pub primary: Complex<f64>,                          // Principal value
+    pub witnesses: Vec<(BranchTag, Complex<f64>)>,     // up to max_branches
+    pub truncated: bool,                                // true if true count > max_branches
+}
+```
+
+**Antibody (F13-shaped)**: `complex_pow(z, w)` with irrational `w` and `BranchPolicy::Discovery` selected without explicit `using(max_branches: ...)` panics at construction. "No silent-default for an enumeration that can't terminate" — there is no principled bound to default to, so refusing to default is the correct antibody.
+
+The per-family enumeration matches the literature distinction between finite-multi-valued and dense-multi-valued functions. The naturalist's catalog-as-tree pattern surfaces here: `Discovery` is the structural-rhyme analog to `discover()` for sketches/correlations/distances. The relationship IS the answer; the enumeration shape is the relationship's structural type.
+
+### F. NumericallyStable × DEC-031 precision-tier interaction
+
+Per math-researcher ratification (2026-05-09): when `BranchPolicy::NumericallyStable` is active, the recipe **internally widens by ≥50 bits above the requested precision** for the branch-selection step. The branch chosen at the wider precision is committed; the per-branch arithmetic then proceeds at the user-requested precision and rounds via the active `RoundingMode`.
+
+The 50-bit widening is the same constant used by BZ §3.1.6 + DEC-031 §3.5 for Newton-iteration guard bits. NS borrows it for symmetry — the structural argument is identical: the *selection step* needs more precision than the *output*, otherwise the cancellation NS is supposed to detect corrupts the comparison NS uses to select.
+
+**Why this matters**: without the widening, NS reduces to "Principal with bookkeeping." Branch-selection at the requested precision incorporates the cancellation it's supposed to be avoiding. The chosen branch ends up identical to `Principal`'s default for nearly all inputs — *except* in the 0.0001% adversarial-input regime where NS *would* matter, the comparison is corrupted by the very cancellation NS is supposed to detect. Silent wrong answer at the precise input regime where the user reached for NS.
+
+**Per-recipe widening declarations**: recipes whose analytic cancellation bound exceeds 50 bits (e.g., `complex_log` near `z = -1` where the imaginary part can cancel a multi-thousand-bit mantissa) declare a higher per-recipe widening in their `spec.toml` stance metadata. The widening is part of the F12 stance contract.
+
+**Interaction with `PrecisionContext`**: when `PrecisionContext::dispatched_precision_bits()` is `53` (P0F64) or `106` (P1DD), the NS internal widening forces a tier bump to the next available tier (P0F64 → P1DD; P1DD → P2BigFloat with `precision_bits = 106 + 50 = 156`). The widened computation completes at the higher tier; the result rounds back to the user's tier on output. Tier-bump cost is paid once per call — acceptable since NS is reached for explicitly when the user wants the cancellation-aware computation.
 
 ---
 
@@ -171,19 +253,23 @@ The naturalist's catalog-as-tree pattern surfaces here: `Discovery` is the struc
 
 ---
 
-## Open questions for math-researcher
+## Open questions — ratification status (2026-05-09)
 
-These are the points the spec-author (main-thread Claude) cannot decide alone; math-researcher's literature work is the appropriate authority:
+Math-researcher's ratification doc at `R:\winrapids\campsites\tambear-sweep31-finish\math-researcher\branch-cut-ratification-2026-05-09.md` resolved all five. Status:
 
-1. **Variant enumeration sufficiency.** Is `Principal | AntiPrincipal | NumericallyStable | Discovery` the right base set, or should the enum be parametric (e.g., `BranchPolicy::Custom(Vec<CutSegment>)`) to handle non-standard cuts (Riemann-surface unfoldings, custom-domain analyses) from day one?
+1. **Variant enumeration sufficiency** — **CLOSED**: APPROVE four-variant base set for v1; `Custom(Vec<CutSegment>)` reserved for v2 amendment via `#[non_exhaustive]`. (Tag `5` reserved for the Custom variant.) Anchor: Kahan 1987 §1; CCC convention is universal at v1.
 
-2. **Default choice within `Principal`.** The literature converges on `ln(-1) = +iπ` for principal-branch logarithm, but `arctan` cut placement is more contested. Should `Principal` be one bundled convention (the dominant analyst-facing set), or four sub-policies (`PrincipalLog | PrincipalArctan | PrincipalSqrt | PrincipalAcos`) each independently picked?
+2. **Default choice within `Principal`** — **CLOSED**: ONE bundled convention. `Principal` is normatively Kahan / C99 §G.6 / counter-clockwise-continuous (CCC). The "arctan placement is contested" framing in the v1 draft was a 1990s-era residue; modern Mathematica, Wolfram, MATLAB, NumPy, Boost, Sage, Maple, GSL have all converged on Kahan's imaginary-axis convention. Sub-clause D-prime now codifies the placements normatively. Anchor: Kahan 1987 §3; C99 §G.6.2/3/4; CLISP §12.5.3.
 
-3. **NumericallyStable ULP budget interaction with DEC-031.** When `BranchPolicy::NumericallyStable` is active and the recipe's `PrecisionContext` is `P2BigFloat { precision_bits: 1024 }`, what's the right interaction? Does NS pick branches per-call within the 1024-bit precision, or does it require a higher precision tier internally?
+3. **NumericallyStable × DEC-031 interaction** — **CLOSED**: NS implies internal precision-tier bump of ≥50 bits above the requested precision for the branch-selection step. Per-recipe analytic-cancellation-bound overrides via `spec.toml` stance metadata (F12 contract). Sub-clause F now codifies. Anchor: BZ §3.1.6 / DEC-031 §3.5 guard-bit conventions, structurally extended.
 
-4. **Discovery-mode output shape across recipe families.** For `complex_log`, `Discovery` returns one primary + witnesses. For `complex_pow(z, w)`, the output may be infinite (irrational `w`). What's the principled bound — per-call user-specified `max_branches`, or fixed convention (e.g., the n principal roots for `complex_pow(z, 1/n)`)?
+4. **Discovery output bound** — **CLOSED**: per-family enumeration. Single-valued (`WoundComplex` indexed by integer winding); finite-root (`RootedComplex` for n-th root family); dense-branch (`BranchedComplex` with mandatory `max_branches`). Antibody: `complex_pow(z, w)` with irrational `w` and `Discovery` selected *without* explicit `using(max_branches: ...)` panics at construction. Sub-clause E (now extended) codifies. Anchor: Riemann-surface theory; finite-vs-dense multi-valuedness distinction.
 
-5. **Pipeline-level resolution semantics.** Sub-clause B says mixed-policy pipelines fail to compile if no pipeline-level `using(branch: ...)` is set. Is "fail to compile" the right strength, or should it be "warn and pick the alphabetically-first policy as default" with an opt-out? Alphabetical defaults are fragile (rename-sensitive); compile-fail is strict but enforces the antibody. Recommend: keep compile-fail.
+5. **Pipeline strictness** — **CLOSED**: keep compile-fail. Reject alphabetical defaults entirely. Reproducibly-wrong is still wrong; the antibody is silent-commitment-via-implicit-choice, and alphabetical-default is silent-commitment-by-another-name. Anchor: F13 antibody discipline.
+
+**Sign-off**: math-researcher signs off on Q1 + Q5 as originally written; Q2 / Q3 / Q4 sign-offs land with the three spec edits applied above (this commit).
+
+**Next step**: spec is ratification-ready. Math-researcher copies content to `R:\tambear\docs\decisions.md` as **DEC-032** when ready (async). Adversarial designs identity-preservation proptests for each policy + recipe combination at first-complex-recipe time. Aristotle adds branch-cut-violation cases to the silent-failure gauntlet.
 
 ---
 

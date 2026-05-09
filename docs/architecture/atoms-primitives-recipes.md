@@ -577,3 +577,74 @@ The smallest viable slice that proves the architecture works end-to-end:
 6. **Pick one existing tambear recipe — `pearson_r`** — and migrate it to explicit primitive calls with the `#[precision(compensated)]` tag. Verify the lowering gives the expected accuracy improvement on adversarial inputs (large-magnitude near-constant series).
 
 Steps 2-4 are Sonnet-agent work once step 1 is approved. Step 5 is the Peak 2 kickoff. Step 6 is the pilot migration for the Sonnet-agent wave that follows.
+
+
+---
+
+## How recipes compose — fractal, flat, TBS-surface
+
+> **Source**: this section was extracted from CLAUDE.md (2026-05-08) so the project root file stays under context-budget. CLAUDE.md retains the directive principle plus the example table; this section is the elaboration. Where any reading of this section conflicts with `vocabulary.md`, that document wins.
+
+### Why recipe decomposition is load-bearing
+
+Recipe decomposition isn't just clean code — it's what makes the entire architecture work:
+
+- **`using()` flows through compositions.** When `kendall_tau` calls the global `inversion_count` recipe, the user's `using(inversion_method="fenwick")` reaches it. If the inversion count is a private copy inside Kendall, the `using()` hook can't reach it.
+- **Sharing via TamSession.** If a recipe calls the global `covariance_matrix` recipe, the result registers in TamSession and PCA, factor analysis, LDA, Mahalanobis, and mixed effects all reuse it. If the covariance matrix is private inside each recipe, it gets computed 6 times per bin.
+- **Linting and Kingdom classification.** The lint system and TAM scheduler need to know each recipe's Kingdom independently. If a recipe hides its sub-operations, `kingdom_of()` can't see inside.
+- **Every recipe is callable directly.** The user can call `inversion_count(col=0)` from TBS — not just `kendall_tau`. Same syntax, same `using()`, same output format whether the recipe is a small one (mean) or a large one (efa).
+
+### The fractal catalog — flat, not nested
+
+Every recipe family is large. `mean` alone has 15+ named variants: arithmetic, trimmed, winsorized, geometric, harmonic, power (generalized), Lehmer, Fréchet, contraharmonic, exponential moving, kernel-weighted, and more. Each has parameters. Each connects to other recipes (`geometric_mean = exp(mean(log(x)))` — a composition).
+
+The catalog is fractal — zoom in on any entry and it expands — but bounded. Bounded by the finite set of named mathematical operations in the human literature. Families share structure (power mean parameterized by p gives 5 variants from 1 implementation). The work is proportional to the number of DISTINCT mathematical ideas, not the number of combinations.
+
+**The catalog is flat, not hierarchically nested.** Families (statistics, algebra, spectral, etc.) are metadata tags on recipes, not namespaces that constrain access. In TBS, every path resolves to the same computation: `geometric_mean(col=0)`, `mean(col=0).using(method="geometric")`, `mean.geometric(col=0)` — all the same recipe. The user shouldn't need to know our internal module structure to find what they want. Nesting into families risks losing multi-composability — if geometric_mean lives "inside" the mean family, it becomes harder to discover from the geometry side or the transform side. Tags don't have this problem. A recipe can belong to multiple families simultaneously.
+
+The process for growing the catalog:
+1. For every recipe we implement, decompose it into named operations
+2. For every named operation, check if it exists as a standalone recipe
+3. If not, implement that recipe FIRST, then have the original call it
+4. For every new recipe, ask: what's the family? What are the variants?
+5. For every variant, check R/scipy/MATLAB/Julia for evidence of user demand
+6. Implement the demanded variants
+
+The catalog grows organically from decomposition, not from top-down planning.
+
+### TBS is the universal surface
+
+TBS exposes every recipe with the same syntax — there is no formal hierarchy of "small recipes" vs "large recipes." Every recipe is just a recipe. Sizes vary by what's being composed:
+
+- **Atomic-feeling recipes**: `mean(col=0)`, `inversion_count(col=0)`, `sort(col=0)` — small, single-purpose
+- **Direct compositions**: `rank(col=0).pearson_on_ranks(col_y=1)` (= Spearman, composed from `rank` and `pearson_r` recipes)
+- **Named multi-step recipes**: `kendall_tau(col_x=0, col_y=1)` (internally: sort → inversion_count → tie_count → formula)
+- **Workflow recipes**: `two_group_comparison(group_col=2)` (internally: shapiro_wilk → levene → [welch_t | mann_whitney] → cohens_d → ci)
+- **Discovery recipes**: `discover_correlation(col_x=0, col_y=1)` (runs every correlation in parallel, reports agreement)
+
+`using()` flows DOWN through all compositions. When `two_group_comparison` calls `shapiro_wilk`, the user's `using(alpha=0.01)` reaches it. Sub-recipes don't know they're inside a parent recipe. Each queries the `using()` bag for its parameters and uses defaults if nothing is set.
+
+**Every property propagates at every depth.** Every node in the composition tree — from a multi-step workflow recipe down to the smallest atomic-feeling recipe — is independently:
+
+- **Addressable** — `kendall_tau.inversion_count` is a valid path. So is just `inversion_count`.
+- **Decomposable** — `inversion_count` itself decomposes to `mergesort_with_count` or `fenwick_tree_count`. Each is a recipe. Each is addressable. The fractal goes all the way down to the atom layer.
+- **Tunable** — `using(inversion_method="fenwick")` reaches inside `kendall_tau` to the specific sub-recipe.
+- **Discoverable** — `discover_inversion_count` runs every algorithm, reports which is fastest, which gives which answer.
+- **Sweepable** — `sweep(inversion_method=["mergesort","fenwick","brute"])` runs all three, returns all three.
+- **Superpositionable** — don't collapse. Keep all results. The structural fingerprint of agreement IS the output.
+- **using()-able** — every parameter at every depth is reachable from the top.
+- **Shareable** — the result registers in TamSession. If Kendall already computed the inversion count, Spearman's footrule reuses it. First consumer pays; everyone else gets it free. One pass.
+
+A composed recipe in TBS is not a new thing — it's a **named grouping of existing recipes plus a formula**. `kendall_tau` is syntactic sugar for `sort → inversion_count → tie_count → tau_b_formula`. The composition adds a name and a formula. It doesn't add new computation. Every sub-recipe is independently addressable at the catalog top level. The composition tree IS the computation graph. TBS IS the compiler's IR surface.
+
+### TBS as completeness test
+
+TBS is the forcing function for catalog completeness. When you try to express a function as a TBS statement, every symbol in the expression must resolve to a recipe (or an atom / primitive / op / expr at the lower tiers). If you can't write a clean expression, you've found a gap. The language surface IS the completeness test for the flat catalog.
+
+Three things TBS reveals:
+
+**"This recipe does more than one thing."** If a function internally does multiple distinct computations, it's a compound recipe that breaks composability. A real recipe is one symbol, one operation, one result. If `ar_fit` internally computes ACF + Levinson-Durbin + coefficients + residuals + AIC, that's 5 recipes glued together. Each should be callable independently, shareable independently, liftable independently. Test: can you decompose the TBS expression into smaller expressions that each do exactly one thing? If yes, it should BE those smaller expressions composed.
+
+**"What else computes this?"** For every recipe, the literature has alternative methods. `correlation` → Pearson, Spearman, Kendall, point-biserial, phi, polychoric, tetrachoric, distance, MIC, Hoeffding's D, Schweizer-Wolff, Blomqvist beta... Each is a flavor. Each is a `using(method=...)` key or a standalone recipe. If we only have 4, TBS makes the gap visible.
+
+**"What parameters do people actually tune?"** What R, scipy, MATLAB, Julia, Stata expose for the same computation — every parameter they offer that we don't is a missing `using()` key. The full parameter space of every recipe should be discoverable through TBS, not hidden in source code.

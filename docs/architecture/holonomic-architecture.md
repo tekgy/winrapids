@@ -9,7 +9,7 @@
   - 2026-03-29 — *Binding Times and Three Tiers*: "JIT tier is online partial evaluation: specialize at runtime when pipeline shape becomes known, cache the result. Cache key is the binding-time partition."
   - 2026-03-30 — *Provenance-Addressed, Not Content-Addressed*: "The address encodes HOW the result was produced, not WHAT the result contains. This is a feature, not a bug — cache correctness is structural, not contractual."
 
-- **Naturalist's three 2026-05 garden essays** — the lens being applied:
+- **Naturalist's four 2026-05 garden essays** — the lens being applied:
   - 2026-05-08 *The Name Is a Parameter* — initial recognition (three convergence instances)
   - 2026-05-08 *The Fourth Instance* — fourth instance + the cliffhanger
   - 2026-05-09 *What the Name Surfaces* — applied the path-independence test rigorously, found the recipe-vs-IR tier distinction

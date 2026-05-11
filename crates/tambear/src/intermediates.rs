@@ -587,6 +587,39 @@ pub enum IntermediateTag {
     /// Produced by: pca.
     /// Consumed by: spectral_clustering (PCA init), UMAP initialization, t-SNE init.
     PrincipalComponents { data_id: DataId, n_components: usize },
+
+    /// Shared kernel state for the exp/log family at a specific argument
+    /// and precision context.
+    ///
+    /// The state contains `(k, r, expm1(r))` — the reduction triple that
+    /// every exp/log family member (exp, log, exp2, log2, exp10, log10,
+    /// sinh, cosh, tanh, pow) pulls from. Per `tambear-libm-factoring.md`
+    /// this is the analog of TrigKernelState (which currently lives as a
+    /// per-call tuple in `sin.rs`, not as a registered intermediate).
+    ///
+    /// Cache-key fields (each contributes to the structural identity, per
+    /// aristotle's deconstruction recommendations):
+    /// - `x_bits`: the input argument's IEEE 754 bit pattern.
+    /// - `precision_tag`: which precision context produced the state.
+    ///   `0` = `P0F64` (the f64-only tier shipped in Sweep 35); higher
+    ///   values reserved for future BigFloat-tier states (T19).
+    /// - `door_tag`: which execution surface produced the state.
+    ///   `0` = CPU (the only door for Sweep 35); higher values reserved
+    ///   for future per-door JIT outputs (T23 / DEC-019).
+    /// - `branch_policy_tag`: reserved for DEC-032 forward-compatibility.
+    ///   `0` = `RealAxis` (the only policy meaningful for real-valued
+    ///   exp/log on the real line); complex_log lands BranchPolicy values
+    ///   in Phase D.
+    ///
+    /// Produced by: `recipes::libm::exp_kernel_state::ExpKernelState::compute_or_get`.
+    /// Consumed by: `exp`, `log`, `exp2`, `log2`, `exp10`, `log10`,
+    ///              `sinh`, `cosh`, `tanh`, `pow`, `expm1`, `log1p`.
+    ExpKernelState {
+        x_bits: u64,
+        precision_tag: u8,
+        door_tag: u8,
+        branch_policy_tag: u8,
+    },
 }
 
 /// Which normality test method a `NormalityTest` intermediate represents.

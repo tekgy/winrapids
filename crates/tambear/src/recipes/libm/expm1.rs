@@ -234,6 +234,17 @@ fn special_case(x: f64) -> Option<f64> {
     None
 }
 
+/// Public re-export of the small-path polynomial for use by
+/// `ExpKernelState::compute` — the kernel state needs the same
+/// precision-safe core that `expm1_strict` uses internally.
+///
+/// Forwards to `expm1_small_strict` so a single source-of-truth
+/// implementation lives at the recipe level.
+#[inline]
+pub fn expm1_small_strict_public(r: f64) -> f64 {
+    expm1_small_strict(r)
+}
+
 /// fdlibm `expm1` small-path evaluation at reduced argument `r`,
 /// `|r| ≤ ln(2)/2`. Plain FMA arithmetic.
 ///

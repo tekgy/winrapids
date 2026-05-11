@@ -35,6 +35,7 @@ pub mod asin;
 pub mod atan;
 pub mod erf;
 pub mod exp;
+pub mod exp_kernel_state;
 pub mod expm1;
 pub mod gamma;
 pub mod hyperbolic;

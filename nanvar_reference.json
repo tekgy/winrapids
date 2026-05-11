@@ -1,0 +1,229 @@
+{
+  "generated": "2026-04-22",
+  "environment": {
+    "python_version": "3.13.13",
+    "numpy_version": "2.4.2",
+    "pandas_version": "3.0.1"
+  },
+  "clean_data": {
+    "standard_gaussian_n1000": {
+      "n": 1000,
+      "nanvar_ddof0": 0.9775718960608186,
+      "nanvar_ddof1": 0.9785504465073259,
+      "pandas_skipna_true": 0.9785504465073259,
+      "pandas_skipna_false": 0.9785504465073259
+    },
+    "ill_conditioned": {
+      "n": 1000,
+      "nanvar_ddof0": 1.0282654493902328,
+      "nanvar_ddof1": 1.0292947441343672,
+      "pandas_skipna_true": 1.0292947441343672,
+      "pandas_skipna_false": 1.0292947441343672
+    },
+    "heavy_tail_t2": {
+      "n": 1000,
+      "nanvar_ddof0": 5.002132258733269,
+      "nanvar_ddof1": 5.0071393981314,
+      "pandas_skipna_true": 5.0071393981314,
+      "pandas_skipna_false": 5.0071393981314
+    },
+    "outlier_contaminated": {
+      "n": 1000,
+      "nanvar_ddof0": 424.5444433013834,
+      "nanvar_ddof1": 424.96941271409753,
+      "pandas_skipna_true": 424.96941271409753,
+      "pandas_skipna_false": 424.96941271409753
+    },
+    "small_n10": {
+      "n": 10,
+      "nanvar_ddof0": 1.1492970401773264,
+      "nanvar_ddof1": 1.2769967113081404,
+      "pandas_skipna_true": 1.2769967113081404,
+      "pandas_skipna_false": 1.2769967113081404
+    }
+  },
+  "nan_injected_data": {
+    "standard_gaussian_n1000": {
+      "n": 1000,
+      "n_nan": 100,
+      "n_effective": 900,
+      "nanvar_ddof0": {
+        "result": 0.9764369743619874,
+        "mpmath_50d": "0.97643697436198727240336963345635419660541314209877",
+        "abs_error": 1.2759663036654364e-16,
+        "ulp_error": 1.0
+      },
+      "nanvar_ddof1": {
+        "result": 0.9775231111521564,
+        "mpmath_50d": "0.97752311115215633499781164639679508002766610443703",
+        "abs_error": 6.500218835360321e-17,
+        "ulp_error": 1.0
+      },
+      "pandas_var_skipna_true": {
+        "result": 0.9775231111521564,
+        "mpmath_50d": "0.97752311115215633499781164639679508002766610443703",
+        "abs_error": 6.500218835360321e-17,
+        "ulp_error": 1.0
+      },
+      "var_propagate_returns_nan": true,
+      "pd_skipna_false_returns_nan": true,
+      "nan_indices_preview": [
+        15,
+        30,
+        50,
+        55,
+        69
+      ]
+    },
+    "ill_conditioned": {
+      "n": 1000,
+      "n_nan": 100,
+      "n_effective": 900,
+      "nanvar_ddof0": {
+        "result": 1.036528888724564,
+        "mpmath_50d": "1.0365288882911468195802469135802469135802469127529",
+        "abs_error": 4.334171804197531e-10,
+        "ulp_error": 1951938.0
+      },
+      "nanvar_ddof1": {
+        "result": 1.0376818685785403,
+        "mpmath_50d": "1.0376818681446408649857866765541960202694351740574",
+        "abs_error": 4.3389943501421333e-10,
+        "ulp_error": 1954109.0
+      },
+      "pandas_var_skipna_true": {
+        "result": 1.0376818685785403,
+        "mpmath_50d": "1.0376818681446408649857866765541960202694351740574",
+        "abs_error": 4.3389943501421333e-10,
+        "ulp_error": 1954109.0
+      },
+      "var_propagate_returns_nan": true,
+      "pd_skipna_false_returns_nan": true,
+      "nan_indices_preview": [
+        3,
+        17,
+        31,
+        35,
+        52
+      ]
+    },
+    "heavy_tail_t2": {
+      "n": 1000,
+      "n_nan": 100,
+      "n_effective": 900,
+      "nanvar_ddof0": {
+        "result": 5.307663459107676,
+        "mpmath_50d": "5.3076634591076758652996320431367938066880182098766",
+        "abs_error": 1.347003679568632e-16,
+        "ulp_error": 0.0
+      },
+      "nanvar_ddof1": {
+        "result": 5.313567422910911,
+        "mpmath_50d": "5.3135674229109102099773846927954554238256022123347",
+        "abs_error": 7.900226153072045e-16,
+        "ulp_error": 1.0
+      },
+      "pandas_var_skipna_true": {
+        "result": 5.313567422910911,
+        "mpmath_50d": "5.3135674229109102099773846927954554238256022123347",
+        "abs_error": 7.900226153072045e-16,
+        "ulp_error": 1.0
+      },
+      "var_propagate_returns_nan": true,
+      "pd_skipna_false_returns_nan": true,
+      "nan_indices_preview": [
+        6,
+        40,
+        42,
+        44,
+        51
+      ]
+    },
+    "outlier_contaminated": {
+      "n": 1000,
+      "n_nan": 100,
+      "n_effective": 900,
+      "nanvar_ddof0": {
+        "result": 455.14135393649224,
+        "mpmath_50d": "455.14135393649217646743769981240739808814453798655",
+        "abs_error": 6.353256230018759e-14,
+        "ulp_error": 1.0
+      },
+      "nanvar_ddof1": {
+        "result": 455.64762907991434,
+        "mpmath_50d": "455.64762907991430347129469391675935292472756861835",
+        "abs_error": 3.652870530608324e-14,
+        "ulp_error": 1.0
+      },
+      "pandas_var_skipna_true": {
+        "result": 455.64762907991434,
+        "mpmath_50d": "455.64762907991430347129469391675935292472756861835",
+        "abs_error": 3.652870530608324e-14,
+        "ulp_error": 1.0
+      },
+      "var_propagate_returns_nan": true,
+      "pd_skipna_false_returns_nan": true,
+      "nan_indices_preview": [
+        39,
+        52,
+        67,
+        74,
+        83
+      ]
+    },
+    "small_n10": {
+      "n": 10,
+      "n_nan": 1,
+      "n_effective": 9,
+      "nanvar_ddof0": {
+        "result": 1.2136938711740688,
+        "mpmath_50d": "1.2136938711740687850643111228977790222222222222222",
+        "abs_error": 1.493568887710222e-17,
+        "ulp_error": 0.0
+      },
+      "nanvar_ddof1": {
+        "result": 1.3654056050708274,
+        "mpmath_50d": "1.3654056050708273831973500132600014000000000000000",
+        "abs_error": 1.6802649986739997e-17,
+        "ulp_error": 0.0
+      },
+      "pandas_var_skipna_true": {
+        "result": 1.3654056050708274,
+        "mpmath_50d": "1.3654056050708273831973500132600014000000000000000",
+        "abs_error": 1.6802649986739997e-17,
+        "ulp_error": 0.0
+      },
+      "var_propagate_returns_nan": true,
+      "pd_skipna_false_returns_nan": true,
+      "nan_indices_preview": [
+        4
+      ]
+    }
+  },
+  "historical_regressions": {
+    "all_nan_array_ddof0": {
+      "result": NaN,
+      "is_nan": true,
+      "expected": "NaN (no valid data)"
+    },
+    "all_nan_array_ddof1": {
+      "result": NaN,
+      "is_nan": true,
+      "expected": "NaN (no valid data)"
+    },
+    "n_eff_equals_1_ddof0": {
+      "result": 0.0,
+      "expected": "0.0 (population variance of 1 point is 0)"
+    },
+    "n_eff_equals_1_ddof1": {
+      "result": NaN,
+      "is_nan": true,
+      "expected": "NaN (sample variance of 1 point is undefined)"
+    }
+  },
+  "ddof_semantics": {
+    "numpy_nanvar": "uses n_effective - ddof (NOT n - ddof)",
+    "pandas_series_var_skipna": "uses n_effective - ddof (same as numpy.nanvar)",
+    "test_case": "[1,2,3,4,5,NaN,NaN,NaN], nanvar(ddof=1)=2.5 confirming n_eff-1=4 divisor"
+  }
+}

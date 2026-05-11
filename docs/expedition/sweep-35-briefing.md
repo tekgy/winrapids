@@ -34,7 +34,7 @@ The structural difference (factored vs not-factored argument-reduction-as-shared
 
 5. **`R:\tambear\oracle\{log,exp,sin,cos,tan}\README.md`** — math-researcher's Sweep 34 corpus. Adversarial inputs are already curated; the validation harness exists.
 
-6. **Math-researcher's tan-oracle debrief six-follow-ups** — flagged in their messages on 2026-05-09. Should be re-found in their campsite notes or surfaced from their inbox state.
+6. **Math-researcher's tan-oracle debrief six-follow-ups** — flagged in their messages on 2026-05-09 but **never written to disk**. Lost with their context. Next math-researcher should re-derive from `R:\tambear\oracle\tan\README.md` + corpus + cross-references to other Sweep 34 oracles if relevant. Naming them here so the gap is explicit, not perpetuated as a phantom reference.
 
 ---
 
@@ -102,7 +102,7 @@ Adversarial proptests:
 - Cross-precision proptests green for all named functions
 - ExpKernelState sharing via TamSession verified — re-running an op with same (x, p) hits cache
 - First complex-transcendental recipe lands with full BranchPolicy discipline + adversarial coverage
-- Math-researcher's six follow-ups from tan-oracle debrief addressed or explicitly deferred
+- (Removed dangling reference to math-researcher's six tan-oracle follow-ups; never written to disk; lost with context. Replaced with: "Re-derive any tan-specific follow-ups from the tan corpus + Sweep 34 cross-references if the implementation surfaces them.")
 
 ---
 

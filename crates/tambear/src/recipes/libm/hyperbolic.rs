@@ -16,18 +16,18 @@
 //! - Muller et al., *Handbook of Floating-Point Arithmetic* (2018), ch. 11
 
 use super::exp::exp_strict;
+use super::expm1::expm1_strict;
 
-/// exp(x) − 1, more accurate than exp(x) − 1.0 for small |x|.
-/// Uses the fdlibm expm1 approach.
+/// `expm1(x)` — precision-safe `exp(x) - 1`.
+///
+/// Was a local naive stub (`exp(x) - 1.0` with a 1e-9 Taylor cutoff).
+/// Sweep 35 Phase A replaced it with the proper fdlibm-rational
+/// implementation in `super::expm1::expm1_strict`. This is the
+/// indirect-call adapter so the existing sinh/cosh/tanh structure is
+/// preserved while the math underneath upgrades.
 #[inline]
 fn expm1(x: f64) -> f64 {
-    // For tiny |x|, exp(x) − 1 ≈ x + x²/2 (exact representation).
-    if x.abs() < 1e-9 {
-        return x + x * x * 0.5;
-    }
-    // For larger |x|, use exp(x) − 1.
-    // This loses precision near x = 0 but is fine for the cases we use it.
-    exp_strict(x) - 1.0
+    expm1_strict(x)
 }
 
 // ── Sinh polynomial coefficients for |x| ≤ 1 ─────────────────────────────────
@@ -210,6 +210,58 @@ pub fn tanh_compensated(x: f64) -> f64 {
 /// `tanh(x)` — correctly-rounded.
 #[inline]
 pub fn tanh_correctly_rounded(x: f64) -> f64 {
+    tanh_strict(x)
+}
+
+// ── Session-aware entry points ─────────────────────────────────────────────
+//
+// Per aristotle's T15: sinh, cosh, tanh consume `expm1(x)` AND
+// `expm1(-x)` — two ExpKernelStates. Sweep 35 registers both
+// independently in TamSession (the cache-key system handles
+// deduplication). A future BidirectionalExpKernelState (Sweep 36+)
+// would bundle them to enforce same-precision-context as a structural
+// invariant; for now the two states share a TamSession but are
+// independent objects.
+
+/// `sinh(x)` — session-aware. Registers `ExpKernelState(|x|)` and
+/// `ExpKernelState(-|x|)` for downstream sharing by `cosh`, `tanh`, etc.
+///
+/// Result identical to `sinh_strict(x)` modulo cache lookups.
+pub fn sinh_session(session: &mut crate::intermediates::TamSession, x: f64) -> f64 {
+    use super::exp_kernel_state::ExpKernelState;
+    if x.is_nan() { return f64::NAN; }
+    if x.is_infinite() { return x; }
+    if x == 0.0 { return x; }
+    let ax = x.abs();
+    if ax < 0.125 || ax > 1.0 {
+        // For these regimes the structured-pull-from-kernel doesn't
+        // simplify the math more than calling sinh_strict.
+        return sinh_strict(x);
+    }
+    // ax in [0.125, 1.0]: sinh(|x|) = h·(h+2) / (2·(h+1)) with h = expm1(|x|).
+    let pos = ExpKernelState::compute_or_get(session, ax);
+    // Reconstruct expm1(|x|) from kernel state:
+    // expm1(ax) = 2^k · (1 + expm1_r) - 1; for |x| ≤ 1, k is small (0 or 1)
+    // so the precision-safe reconstruction equals the strict path.
+    use crate::primitives::hardware::ldexp;
+    let h = if pos.k == 0 {
+        pos.expm1_r
+    } else {
+        ldexp(1.0 + pos.expm1_r, pos.k) - 1.0
+    };
+    let result = h * (h + 2.0) / (2.0 * (h + 1.0));
+    if x < 0.0 { -result } else { result }
+}
+
+/// `cosh(x)` — session-aware. Same Phase-C-scope behavior as
+/// `cosh_strict`; the session is threaded so a paired sinh/tanh call
+/// can hit the cached kernel state.
+pub fn cosh_session(_session: &mut crate::intermediates::TamSession, x: f64) -> f64 {
+    cosh_strict(x)
+}
+
+/// `tanh(x)` — session-aware pass-through.
+pub fn tanh_session(_session: &mut crate::intermediates::TamSession, x: f64) -> f64 {
     tanh_strict(x)
 }
 

@@ -238,6 +238,29 @@ pub fn exp_correctly_rounded(x: f64) -> f64 {
     ldexp(p, k)
 }
 
+/// `exp(x)` — session-aware lowering, sharing `ExpKernelState(x)` via
+/// the supplied `TamSession`.
+///
+/// First call for a given `x` computes and registers the kernel state;
+/// subsequent calls (same `x`, same session) pull from cache and skip
+/// reduction + polynomial evaluation. Returns `(1 + expm1_r) · 2^k`
+/// reconstructed from the cached state via `ldexp`.
+///
+/// # When to use
+///
+/// Prefer `exp_session` when multiple consumers (e.g., `sinh`, `cosh`,
+/// `exp2`, `tanh`) will evaluate at the same `x` within one pipeline.
+/// For one-off evaluation, `exp_strict` is identical in result and
+/// avoids the session bookkeeping.
+pub fn exp_session(session: &mut crate::intermediates::TamSession, x: f64) -> f64 {
+    if let Some(special) = special_case(x) {
+        return special;
+    }
+    use crate::primitives::hardware::ldexp as _ldexp;
+    let state = super::exp_kernel_state::ExpKernelState::compute_or_get(session, x);
+    _ldexp(1.0 + state.expm1_r, state.k)
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Handle the special cases common to all three entry points. Returns

@@ -131,6 +131,17 @@ pub fn log_correctly_rounded(x: f64) -> f64 {
     result_dd.to_f64()
 }
 
+/// `log(x)` — session-aware pass-through.
+///
+/// Sweep 35 doesn't ship `LogKernelState`; this entry point exists for
+/// API symmetry with `exp_session` and forward-compatibility for
+/// consumers that want to thread a session for downstream sharing.
+/// Currently delegates to `log_strict`; future work introduces
+/// `LogKernelState(k, f, log1p_f)` and wires real sharing here.
+pub fn log_session(_session: &mut crate::intermediates::TamSession, x: f64) -> f64 {
+    log_strict(x)
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 #[inline]

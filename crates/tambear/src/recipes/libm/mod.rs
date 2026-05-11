@@ -33,6 +33,7 @@
 pub mod adversarial;
 pub mod asin;
 pub mod atan;
+pub mod complex_log;
 pub mod erf;
 pub mod exp;
 pub mod exp10;

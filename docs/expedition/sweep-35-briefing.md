@@ -34,7 +34,7 @@ The structural difference (factored vs not-factored argument-reduction-as-shared
 
 5. **`R:\tambear\oracle\{log,exp,sin,cos,tan}\README.md`** — math-researcher's Sweep 34 corpus. Adversarial inputs are already curated; the validation harness exists.
 
-6. **Math-researcher's tan-oracle debrief six-follow-ups** — flagged in their messages on 2026-05-09 but **never written to disk**. Lost with their context. Next math-researcher should re-derive from `R:\tambear\oracle\tan\README.md` + corpus + cross-references to other Sweep 34 oracles if relevant. Naming them here so the gap is explicit, not perpetuated as a phantom reference.
+6. **Tan-oracle follow-ups** at `R:\tambear\oracle\tan\followups-rederived-2026-05-09.md`. Math-researcher's original list was referenced in messages but never written to disk; main-thread re-derived six plausible follow-ups from the tan oracle README + libm-factoring frame + cross-family Sweep 34 picture. Six items: asymptote-vs-zero regime asymmetry, cross-quadrant sign correctness at large k, cot(x) separate-vs-composed, variants (tanpi/tand/atan2), continued-fraction-vs-polynomial near singularity, shared-kernel-state vs tan-specific computation. Doc explicitly attributes as re-derivation, not recall.
 
 ---
 
@@ -102,7 +102,7 @@ Adversarial proptests:
 - Cross-precision proptests green for all named functions
 - ExpKernelState sharing via TamSession verified — re-running an op with same (x, p) hits cache
 - First complex-transcendental recipe lands with full BranchPolicy discipline + adversarial coverage
-- (Removed dangling reference to math-researcher's six tan-oracle follow-ups; never written to disk; lost with context. Replaced with: "Re-derive any tan-specific follow-ups from the tan corpus + Sweep 34 cross-references if the implementation surfaces them.")
+- Tan-oracle follow-ups (re-derived at `R:\tambear\oracle\tan\followups-rederived-2026-05-09.md`) addressed or explicitly deferred per item — six questions covering precision-regime asymmetry, sign correctness, cot factoring, variants, near-singularity representation, kernel-state design.
 
 ---
 

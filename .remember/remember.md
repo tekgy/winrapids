@@ -12,4 +12,4 @@
 - Empty campsite dirs pre-created at `campsites/sweep-35/`, `campsites/internal-tameness-audit/`, `campsites/recipe-trees-continuation/`.
 - `feels-familiar` discipline added to global CLAUDE.md ("Past-me in the garden is substrate too") — **run BEFORE writing, not as post-hoc confirmation**. Three rediscovery cases this session prove the discipline is load-bearing.
 - Project CLAUDE.md at ~42k chars (right at the 40k UI warning); further pruning candidates noted in past conversation but not pressing.
-- Math-researcher's "six tan-oracle follow-ups" were referenced in messages but never written to disk; lost with their context. Next math-researcher should re-derive from the tan corpus + readings if relevant. Remaining holonomic open questions Q2/Q4/Q5/Q6 still on disk in `holonomic-architecture.md`.
+- Six tan-oracle follow-ups re-derived from substrate at `R:\tambear\oracle\tan\followups-rederived-2026-05-09.md` (math-researcher's original list was lost with their context; doc explicitly attributes as re-derivation, not recall — may or may not match original). Remaining holonomic open questions Q2/Q4/Q5/Q6 still on disk in `holonomic-architecture.md`.

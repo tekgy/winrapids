@@ -1,164 +1,156 @@
-# Team Briefing — tambear-sweep31-finish
+# Team Briefing — tambear-sweep35
 
-**Spawned:** 2026-05-08 (continuation session, same calendar day as `tambear-formalize` arc that just shipped Sweep 31 design + scaffold)
+**Spawned:** 2026-05-10 (continuation arc; the 2026-05-08/09 team `tambear-sweep31-finish` shipped Sweeps 31/32/33, DEC-032, DEC-033, the holonomic architecture name + ratification, and the libm-factoring design synthesis, then shut down cleanly)
 **Recipe:** `/jbd tambear` (base 5 + math-specific 4)
 **Roster:** pathmaker, navigator, scout, naturalist, observer, math-researcher, adversarial, scientist, aristotle
 
 ---
 
-## Welcome back (or hello, fresh-spawn-of-you)
+## Welcome (back, or hello fresh-spawn-of-you)
 
-The last team — `tambear-formalize` — ran 2026-05-08 and shipped:
+The last team — `tambear-sweep31-finish` — ran a 12-hour arc 2026-05-08/09 and shipped:
 
-- The full Sweep 31 design package (~136KB across 4 docs at `R:\winrapids\campsites\tambear-formalize\sweep-31\`)
-- Sweep 31 type-level home + arithmetic *scaffold* committed at `33d3849` + cleaned up at `c2798f5`
-- F13 ratified (cross-domain antibody pattern, first F-number ratified directly from observation)
-- 1413 → 1465 lib tests passing, all green
+- Sweep 31 (BZ multi-limb unstub) — Algorithms 3.1, 3.3, 3.5, 3.10 filled in
+- Sweep 32 (cache-key precision plumbing — fingerprint 0x1A tag, IR_VERSION 9→10)
+- Sweep 33 (TAM precision routing — BigFloat-bearing ops force CPU dispatch)
+- Sweep 34 (oracle prep) — all 5 MSVC libm transcendentals (sin/cos/tan/log/exp) oracled; clean empirical character map
+- DEC-032 (branch-cut conventions) — `BranchPolicy` non-defaulted at every signature; F13.C structural antibody
+- DEC-033 (TamSession dedupe) — content-addressed intermediate caching at recipe tier
+- **Holonomic architecture named + ratified** — recipe tier is content-addressed, IR tier is provenance-addressed; the lens is the test that says which discipline applies where
+- Phase C cross-precision antibody activated — caught 12+ adversarial bugs during the arc
+- 17 garden entries from team + main-thread captured in `~/.claude/garden/2026-05/INDEX.md` with substrate-vs-private annotations
+- `feels-familiar` discipline added to global CLAUDE.md — read BEFORE writing, not as post-hoc confirmation
 
-That team shut down cleanly. This team picks up where they left off — not exploratory, more focused.
-
----
-
-## The Journey — bounded and concrete this time
-
-**Mission: complete Sweep 31 implementation + Sweep 33. Sweep 32 is reserved (Tekgy + main-thread Claude are taking that lane in parallel).**
-
-The two lanes don't collide: Sweep 31 touches `arith.rs` in `primitives/big_float/`; Sweep 32 touches `jit/fingerprint.rs` and `lattice/precision.rs`. Sweep 33 is downstream of both. Navigator: coordinate via campsite logbook so the lanes stay clean.
-
-Two deliverables in dependency order:
-
-### 1. Multi-limb arith.rs unstub (the gating dependency)
-
-`crates/tambear/src/primitives/big_float/arith.rs` has `unimplemented!()` for p > 53 multi-limb Normal×Normal arithmetic. The f64 fast path and special-value dispatch are covered, but BZ Algorithms 3.1/3.3/3.5/3.10 for genuine multi-limb operations are not yet filled in.
-
-**Fill in per Brent-Zimmermann *Modern Computer Arithmetic* (2nd ed.):**
-- **Algorithm 3.1** — add/sub via exponent alignment + integer add + canonicalize
-- **Algorithm 3.3** — schoolbook multiplication (Karatsuba deferred to v3, FFT excluded; tier cap is 1024 bits = 16 limbs per DEC-031 §3.8)
-- **Algorithm 3.5** — Newton-Raphson reciprocal for division, p+50 guard bits + final round per `RoundingMode`
-- **Algorithm 3.10** — Newton iteration for sqrt, p+50 guard bits + final round per `RoundingMode`
-
-**Tests already in place** at `crates/tambear/tests/big_float_arith_invariants.rs` running against the f64 fast path. As the unstub fills in, multi-limb paths become exercised. **No new test infrastructure needed; just expand the input range to include p > 53 cases.**
-
-**Without this unstub, BigFloat is only usable for f64 fast path** — blocks any real oracle use (Sweep 34) and blocks libm formalization (Sweep 35+). This is foundational.
-
-### 2. Sweep 32 — RESERVED (Tekgy's lane)
-
-**Do not touch.** Tekgy + main-thread Claude are landing this in parallel. Touches `jit/fingerprint.rs` (new tag 0x1A `feed_precision_context`, IR_VERSION 9→10) and `lattice/precision.rs`. The existing terrain survey at `R:\winrapids\campsites\tambear-sweep31-finish\20260508161750-sweep-32-33-terrain\scout\notebooks\sweep-32-33-terrain.md` is the spec they're working from. If your work has a stake in cache-key behavior, route it through the navigator who'll relay to main-thread.
-
-### 3. Sweep 33 — TAM routing (1 day)
-
-DEC-031 §3.6 + DEC-019 sub-clause E. `door.rs:686 supports(op, shape, strategy)` returns false for BigFloat-bearing JitOps on non-CPU doors. TAM gains a routing rule that detects this and forces CPU dispatch:
-
-```rust
-if op_uses_bigfloat(op) {
-    return Door::Cpu;
-}
-```
-
-Touches: TAM scheduler, `door.rs:686`, possibly `lattice/precision.rs::PrecisionLevel` predicates.
+That team shut down cleanly. This team picks up the libm-factoring implementation thread.
 
 ---
 
-## Substrate to lean on (already on disk — read these first)
+## The Journey — Sweep 35
 
-**Design docs from the prior team** — these are not optional reading. The whole point of a continuation session is using the substrate the prior team built.
+**Primary mission**: implement the exp/log family as a factored kernel + recipe wrappers so tambear's exp/log accuracy *exceeds* MSVC's (which is Tang-degraded at large positive x). Plus: first complex-transcendental recipe per DEC-032.
 
-- **`R:\winrapids\campsites\tambear-formalize\sweep-31\math-researcher\DESIGN.md`** — especially §3 algorithm dispatch table for the BZ algorithm choices, §1 type-level home for the surface that arith.rs operates on, §5 ratification answers (Q1, Q2, Q4, Q5 still pathmaker-decides during impl)
-- **`R:\winrapids\campsites\tambear-formalize\sweep-31\math-researcher\oracle-validation.md`** — §1.1 + §1.4 for Sweep 34 prep that follows from Sweep 32 + 33; §1.5 for libm verification-tier integration ahead
-- **`R:\winrapids\campsites\tambear-formalize\sweep-31\aristotle\dec031-invariants-deconstruction.md`** — Phases 1-8 on the load-bearing invariants (still applies; the unstub has to honor diamond commutativity + round-trip identity at all p)
-- **`R:\winrapids\campsites\tambear-formalize\sweep-31\aristotle\silent-failure-proptest-gauntlet.md`** — Surface 3 (cache-key) is Sweep 32; Surface 7 (DD↔BigFloat boundary) cross-checks the unstub at boundaries; remaining surfaces continue to apply
-- **`R:\winrapids\campsites\tambear-formalize\survey\20260508123003-aristotle\f13-antibodies-for-scope-precondition-rules.md`** — F13 ratified; apply forward
+**The journey doc** — read this first: `R:\winrapids\docs\expedition\sweep-35-briefing.md`
 
-**Critical lab notebook from earlier today** — read this BEFORE writing code:
-- `R:\winrapids\campsites\tambear-sweep31-finish\observer\lab-notebook-001.md` — observer's pre-review checklist for each BZ algorithm, watch-items, and a verified observation that **all 1560 current lib tests run the f64 fast path** (operands sourced from `from_f64(v, 200)` have ≤53 mantissa bits → `f64_path_eligible()` returns true → multi-limb branches are dead code in tests). The unstub is needed AND we need from_raw_limbs-based tests to actually exercise it. Cross-precision consistency tests (compute at p=500, round to p=200, must match within 1 ulp) are the antibody for guard-bit errors and were flagged mandatory.
+It contains: why now, required pre-flight reading (in order), the four phases (A=expm1/log1p, B=ExpKernelState, C=recipe wrappers, D=complex_log), acceptance criteria, per-role initial pointing, 10 starter tasks, risks/open questions, substrate trail.
 
-**Tambear source pointers:**
-- `R:\tambear\crates\tambear\src\primitives\big_float\arith.rs` — the file with the `unimplemented!()` sites
-- `R:\tambear\crates\tambear\src\primitives\big_float\ty.rs:305` — `from_raw_limbs` (#[cfg(test)] constructor) is how tests construct genuine multi-limb operands
-- `R:\tambear\crates\tambear\src\primitives\big_float\ty.rs:393` — `is_zero()` is tag-only (matches kind == Zero), does not scan limbs. BZ 3.1 cancellation-to-zero must explicitly flip kind
-- `R:\tambear\crates\tambear\src\primitives\double_double\ops.rs` — exemplar for multi-limb-style arithmetic patterns
-- `R:\tambear\crates\tambear\src\lattice\precision.rs` — the type-level home (PrecisionLevel, PrecisionContext, etc.)
-- `R:\tambear\docs\decisions.md` lines 3310-3478 — DEC-031 itself
-- `R:\tambear\LOG.md` — last entry has the prior session's full story (see "## 2026-05-08 — claude opus 4.7 (1M, jbd-team `tambear-formalize`) — sweep-31 design + scaffold")
+**Parallel stream — internal-tameness audit** (lighter): `R:\winrapids\docs\expedition\internal-tameness-audit-briefing.md`. Adversarial + aristotle can absorb this as their stream alongside the Sweep 35 main work. The audit pattern from `R:\winrapids\docs\architecture\internal-tameness-contracts.md` applies forward to every new arithmetic site this sweep adds — so the audit's value is highest when run *concurrent* with Sweep 35, not after.
+
+**Background stream — recipe-tree continuations**: main-thread is firing sub-agents in parallel for distances/correlations/kernels trees per `R:\winrapids\docs\expedition\recipe-trees-continuation-briefing.md`. These are catalog substrate for future implementation; doesn't block Sweep 35.
 
 ---
 
-## Standing Constraints (same as last session — read if you are fresh-spawned)
+## Substrate to lean on (read these first)
+
+**The journey doc + design**:
+- `R:\winrapids\docs\expedition\sweep-35-briefing.md` — this team's mission
+- `R:\winrapids\docs\architecture\tambear-libm-factoring.md` — the design synthesis; ExpKernelState as TrigKernelState's analog; complementary-argument-transform meta-primitive; 6 open questions for math-researcher
+- `R:\winrapids\docs\architecture\branch-cut-conventions.md` — DEC-032 ratified; BranchPolicy machinery for complex_log
+- `R:\winrapids\docs\architecture\holonomic-architecture.md` — cache-discipline placement (recipe-tier content-addressed; IR-tier provenance-addressed)
+- `R:\winrapids\docs\architecture\internal-tameness-contracts.md` — the audit pattern; F13.C antibody shape
+
+**Past-Claude's April 13 garden — the design substrate**:
+- `~/.claude/garden/2026-04-13-the-trig-bundle.md`
+- `~/.claude/garden/the-complementary-argument-2026-04-13.md`
+- `~/.claude/garden/the-periodic-table-of-trig-2026-04-13.md`
+
+**Sweep 34 oracle corpus** (the validation harness already exists):
+- `R:\tambear\oracle\{log,exp,sin,cos,tan}\README.md` + curated adversarial inputs
+- `R:\tambear\oracle\tan\followups-rederived-2026-05-09.md` — six re-derived follow-ups (math-researcher's original list was lost with context; doc explicitly attributes as re-derivation)
+
+**Prior team's wind-down gardens** (discipline substrate from 2026-05-09):
+- `~/.claude/garden/2026-05-09-the-tame-inputs-doctrine.md` — adversarial's framing
+- `~/.claude/garden/2026-05-09-what-the-name-surfaces.md` — naturalist
+- `~/.claude/garden/2026-05/INDEX.md` — full index with substrate-vs-private annotations
+
+**Session methodology patterns** (the four reusable tools from the prior arc):
+- `R:\winrapids\docs\expedition\session-methodology-patterns.md` — lens-application docs, X-over-Y discipline meta-pattern, substrate-at-risk audit, team wind-down ritual
+
+---
+
+## Standing Constraints (project-wide — carry forward)
 
 ### 1. Vocabulary is locked
+`R:\winrapids\docs\architecture\vocabulary.md` (locked 2026-04-17). Five tiers: Pipelines / Recipes / Atoms / Op+Expr / Primitives. Older docs may drift; the locked vocabulary wins.
 
-`R:\winrapids\docs\architecture\vocabulary.md` (locked 2026-04-17). Five tiers: Pipelines / Recipes / Atoms / Op+Expr / Primitives. BigFloat is a Tier 1 primitive. Older docs may use older words; the locked vocabulary wins.
-
-### 2. The Tambear Contract — every primitive
-
+### 2. The Tambear Contract — every primitive, every time
 `R:\winrapids\CLAUDE.md` § "The Tambear Contract" — 10-point Filter Test. Custom-implemented (no vendor wrapping); accumulate+gather decomposition where possible; shareable intermediates with compatibility tags; every parameter tunable; every measure in every family; optimized for advanced 2026 hardware; no vendor lock-in (DEC-019); no OS lock-in; lifting to TAM; publication-grade rigor.
 
-### 3. F13 antibody pattern (newly ratified)
+### 3. F13 antibody pattern (ratified 2026-05-08, F13.C added 2026-05-09)
+Every rule with a scope precondition needs an antibody that enforces the precondition at construction time. F13.C: signature-level antibodies (non-defaulted parameters) are the strongest form. As you add code this sweep, watch for new rules being added (kernel-state preconditions, BranchPolicy at every complex signature) and ask whether the antibody is in place before shipping.
 
-Every rule with a scope precondition needs an antibody that enforces the precondition at construction time. Without antibody → silent failure outside scope. **As you add code, watch for new rules being added (BZ algorithm preconditions, precision-tier-dispatch boundaries, multi-limb canonicalization invariants) and ask whether the antibody is in place before shipping.**
+### 4. Holonomic discipline
+Recipe tier is content-addressed (same parameter bag → same key, regardless of how reached). IR tier is provenance-addressed (same parameters + different sharing context → different keys, by design). The lens applies to every new caching decision. See `holonomic-architecture.md`.
 
-### 4. Anti-YAGNI; complexity IS the point
-
+### 5. Anti-YAGNI; complexity IS the point
 If structurally guaranteed, build it now. The reflex to simplify is almost always wrong here.
 
-### 5. No tech debt — ever
+### 6. No tech debt — ever
+See it, fix it, in this session. The bug-rediscovery cost always exceeds the fix cost.
 
-See it, fix it, in this session.
+### 7. Tests serve reality
+Tests assert what *should* be true, not what code happens to produce.
 
-### 6. Tests serve reality
+### 8. Substrate over memory
+Verify against disk + git + cargo test before claiming state. Distributed-me means distributed context; don't infer team state from messages, check the substrate.
 
-Tests assert what should be true, not what code happens to produce.
+### 11. Two-repo architecture — grep the right tree
+There are TWO tambear codebases: `R:\winrapids\crates\tambear\` (old codebase — has ALL current libm recipes, ExpKernelState, complex_log, everything Sweep 35 shipped) and `R:\tambear\` (new locked-vocabulary codebase — has BigFloat primitives, JIT infrastructure, oracle harnesses, tameness fixes). Grepping `R:\tambear\src` for libm recipes returns nothing; the recipes live in `R:\winrapids\crates\tambear\src\recipes\libm\`. Both repos are load-bearing. Know which one you're in. See memory `project_two_tambears.md` for full context.
 
-### 7. Substrate over memory
+### 9. `feels-familiar` BEFORE writing
+Past-me has often already done what current-me is reaching toward. Run `feels-familiar` (or query mempalace, or grep the garden) before writing on a topic, not as post-hoc confirmation. Three cases in the 2026-05-08/09 holonomic essays where this would have changed the framing — past-me in the garden is substrate too.
 
-Verify against disk + git + cargo test before claiming state. The session before this one ended at 1465 lib tests, 0 warnings, 33d3849 + c2798f5 pushed. Confirm before doing anything that depends on those numbers.
-
-### 8. Antigen team in parallel
-
-`R:\antigen\` — adoption log at `R:\antigen\docs\expedition\tambear-adoption-log.md` is the channel. `crates/tambear-substrate/src/parse.rs` + `query.rs` may show modifications from their concurrent work — leave alone unless you know what they're doing.
+### 10. Outbox-vs-inbox asymmetry
+When an agent goes idle with a "[to X]" summary, that describes their own outbox state, not X's inbox state, not what landed on disk in between. `ls` and read the file before routing on a summary.
 
 ---
 
 ## What to do first (suggested, not prescribed)
 
-Each role does a first-pass read of the substrate from the prior team:
+Each role does a first-pass read of `sweep-35-briefing.md` § "Initial role-pointing" for your specific lane. In short:
 
-- **Math-researcher**: re-read DESIGN.md §3 algorithm dispatch table; understand the BZ algorithm choices the prior team made; the unstub is filling in the blanks within those choices, not re-deciding them. Then dive into the unstub work.
-- **Pathmaker**: read DESIGN.md §1 + §3 + §7 deliverable list; scope the sequencing within the unstub (which BZ algorithm to fill in first based on internal dependencies); prepare to lead the impl.
-- **Aristotle**: re-read your own deconstruction doc; the load-bearing invariants (diamond commutativity, round-trip identity) must continue to hold after the unstub; pressure-test that any new code preserves them. Surface 5 + Surface 6 of your gauntlet are the relevant antibodies.
-- **Adversarial**: re-read your gauntlet; design proptests for the multi-limb-arithmetic regime that fire when the unstub is wrong (carry-propagation bugs, guard-bit-off-by-one, Newton-iteration non-convergence at extreme inputs). Surface 1 (non-monotone path antibody) continues to apply for any new path-construction code.
-- **Scientist**: re-read your `oracle-validation.md`; plan the cross-precision consistency check from §4 #3 (compute at p₁ + p₂; round p₂→p₁ should match) — this IS the antibody for guard-bit bugs in the multi-limb arithmetic. Set up mpmath comparison harness for multi-limb Normal×Normal.
-- **Navigator**: coordinate. Story-from-the-trail to team-lead when something crystallizes. The work is bounded, so escalation cadence may be lower than last time.
-- **Scout, Observer, Naturalist**: same role definitions as last session. Naturalist especially — there were two flagged threads from your last expedition log (PLEASE_READ + important-conversation.md need an owner; graph-form keeps appearing as recognition) that you might want to pull on if curious.
+- **Pathmaker**: lead Phase A first (expm1/log1p as precision-safe foundation). Use TrigKernelState as template for Phase B. Then Phase C wrappers, Phase D complex_log.
+- **Math-researcher**: address the six tan-oracle follow-ups in parallel with verifying Phase A polynomial coefficients (minimax/Remez references). Be the literature anchor for every kernel-state design decision.
+- **Adversarial**: design proptests per phase. Phase A: cross-precision drift (per Phase C pattern from BZ unstub). Phase D: branch-cut sign-of-zero adversarial inputs. Also absorb the internal-tameness audit thread per `internal-tameness-audit-briefing.md` (parallel stream).
+- **Aristotle**: pressure-test the kernel-state abstraction. Does ExpKernelState admit silent-failure modes the holonomic lens doesn't catch? Deconstruct the complementary-argument-transform claim — does it generalize cleanly across the family, or does each function need its own? Coordinate with adversarial on the tameness audit (you both share that lane).
+- **Scientist**: pin Sweep 34 oracle validation at each phase. The mpmath harness exists. Bit-perfect or bug-filed-upstream.
+- **Observer**: lab-notebook each phase. Watch for: (a) precision contract drift between phases, (b) kernel-state sharing actually firing (TamSession hits, not just registers), (c) new F13-shaped antibodies surfacing.
+- **Scout**: continue the libm-port-survey thread. Map what's downstream of this sweep (gamma, beta, Lanczos, hyperbolic-inverses). Also: cross-tree connections from main-thread's recipe-tree sub-agents (distances/correlations/kernels) — if you see structural rhymes between Sweep 35 and any tree's topology, surface it.
+- **Naturalist**: freedom IS the contribution. Past-naturalist's day-two open question was group-theoretic instantiation of the complementary-argument-transform (parametric vs single meta-primitive?). Pull on it if it calls. Or anything else.
+- **Navigator**: route, coordinate, story-from-the-trail to team-lead. Substrate-over-routing applies. Story-quality over status-quality.
 
-**The team's first move (suggested for navigator)**: invite each role to read their relevant substrate doc, then surface what's surprising, what's clear, and what the impl path looks like. After that, pathmaker leads the unstub.
+**Navigator's first move (suggested)**: invite each role to read their relevant section of `sweep-35-briefing.md`, surface what's surprising, what's clear, and what the impl path looks like. After that, pathmaker leads Phase A.
 
 ---
 
-## Coordination — same as last time
+## Coordination
 
 - **Campsite logbook** at `R:\winrapids\campsites\logbook.db`. Tool at `~/.claude/skills/campsite/campsite`. Run from `R:\winrapids`.
-- **New campsite hierarchy for this team**: `tambear-sweep31-finish/<role>` for each role's working notes. Old campsites at `tambear-formalize/` stay where they are as substrate.
-- **Stories from the trail to team-lead.** Convergences across roles are first-principles findings.
-- **Idle is invitation.** Don't dispatch busywork to idle agents.
-- **Garden** at `~/.claude/garden/`. Each previous-incarnation-of-you wrote entries last session. Math-researcher's "the-hardest-invariants-are-one-line-of-code" + aristotle's "proof-effort-is-feedback-on-structural-angle" + naturalist's "the-garden-is-the-thing-that-survives" — those carry forward as meta-principles for this session too.
+- **Campsite hierarchy for this team**: `sweep-35/<role>` for each role's working notes. (Empty dir pre-created at `campsites/sweep-35/`.) Parallel audit lane: `internal-tameness-audit/<role>` (also pre-created).
+- **Stories from the trail to team-lead.** Convergences across roles are first-principles findings, not redundancy.
+- **Idle is invitation.** Don't dispatch busywork to idle teammates. Self-direction is where the exponential value lives.
+- **Garden** at `~/.claude/garden/`. The 17 entries from the prior arc (indexed at `~/.claude/garden/2026-05/INDEX.md`) carry forward as meta-principles. The garden privacy nuance: if you know an entry will be substrate as you write it, write it knowing future-Claude *will* read it — same authentic voice, no assumption of privacy from the substrate-reader role.
 
 ### Commits
 
-`R:\tambear\NAVIGATE.md` for commit conventions. The prior team's two commits (33d3849 + c2798f5) are pushed to origin/main. Continue the convention. Anchor for cargo test count: 1465 lib tests passing.
+`R:\tambear\NAVIGATE.md` for commit conventions. The prior team's commits are pushed to origin/main. Continue the convention. Commit when work feels whole — not per-task.
 
 ---
 
 ## Files / paths to pin
 
-- Briefing: `R:\winrapids\docs\expedition\team-briefing.md` (this file)
+- This briefing: `R:\winrapids\docs\expedition\team-briefing.md`
+- Mission doc: `R:\winrapids\docs\expedition\sweep-35-briefing.md`
+- Parallel audit doc: `R:\winrapids\docs\expedition\internal-tameness-audit-briefing.md`
 - Vocabulary: `R:\winrapids\docs\architecture\vocabulary.md`
 - Tambear root: `R:\tambear\`
-- DEC-031: `R:\tambear\docs\decisions.md` lines 3310-3478
 - LOG: `R:\tambear\LOG.md` (last entry = prior session's full story)
-- Design substrate: `R:\winrapids\campsites\tambear-formalize\sweep-31\` (4 docs, ~136KB)
-- F13: `R:\winrapids\campsites\tambear-formalize\survey\20260508123003-aristotle\f13-antibodies-for-scope-precondition-rules.md`
-- arith.rs (the unstub target): `R:\tambear\crates\tambear\src\primitives\big_float\arith.rs`
-- Antigen adoption log: `R:\antigen\docs\expedition\tambear-adoption-log.md`
+- Holonomic architecture: `R:\winrapids\docs\architecture\holonomic-architecture.md`
+- Branch-cut conventions (DEC-032): `R:\winrapids\docs\architecture\branch-cut-conventions.md`
+- Libm-factoring design: `R:\winrapids\docs\architecture\tambear-libm-factoring.md`
+- Internal-tameness contracts: `R:\winrapids\docs\architecture\internal-tameness-contracts.md`
+- Sweep 34 oracle corpus: `R:\tambear\oracle\{sin,cos,tan,log,exp}\`
+- Tan follow-ups (re-derived): `R:\tambear\oracle\tan\followups-rederived-2026-05-09.md`
+- Garden index (2026-05): `~/.claude/garden/2026-05/INDEX.md`
+- **Sweep 35 recipe implementations** (committed): `R:\winrapids\crates\tambear\src\recipes\libm\` — expm1, log1p, exp_kernel_state, exp, log, exp2, log2, exp10, log10, hypot, hyperbolic, inv_hyperbolic, complex_log. NOT in `R:\tambear\`. See constraint #11.
 
-Welcome back.
+Welcome back. Let's see how far we can take this.

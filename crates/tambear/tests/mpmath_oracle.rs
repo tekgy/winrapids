@@ -408,3 +408,263 @@ fn oracle_report() {
         );
     }
 }
+
+// ── Phase A verification: expm1 + log1p ─────────────────────────────────────
+//
+// These tests load the pre-generated mpmath corpus from
+// R:\tambear\oracle\{expm1,log1p}\data\generated\canonical_landmarks\corpus.json
+// and verify tambear's three strategies against the corpus gold.
+//
+// Contract per Sweep 35 Phase A:
+//   expm1_strict           ≤ 2 ulps
+//   expm1_compensated      ≤ 1 ulp
+//   expm1_correctly_rounded ≤ 1 ulp
+//
+//   log1p_strict           ≤ 2 ulps
+//   log1p_compensated      ≤ 1 ulp
+//   log1p_correctly_rounded ≤ 1 ulp
+//
+// The precision-critical categories are near_zero_positive/negative and
+// very_small_positive/negative. The per-category breakdown printed here is
+// the sign-off evidence for "bit-perfect or bug-filed-upstream".
+
+struct CorpusEntry {
+    input: f64,
+    category: String,
+    gold_f64: f64,
+}
+
+fn load_corpus(json_path: &str, output_field: &str) -> Vec<CorpusEntry> {
+    let content = std::fs::read_to_string(json_path)
+        .unwrap_or_else(|e| panic!("failed to read corpus at {json_path}: {e}"));
+    let doc: serde_json::Value =
+        serde_json::from_str(&content).expect("corpus JSON parse error");
+    let entries = doc["entries"].as_array().expect("entries array");
+    entries
+        .iter()
+        .map(|e| {
+            let input_bits_str = e["input_f64_bits"]
+                .as_str()
+                .expect("input_f64_bits")
+                .trim_start_matches("0x");
+            let input_bits = u64::from_str_radix(input_bits_str, 16)
+                .expect("parse input_f64_bits hex");
+            let input = f64::from_bits(input_bits);
+
+            let gold_bits_str = e[output_field]
+                .as_str()
+                .expect(output_field)
+                .trim_start_matches("0x");
+            let gold_bits = u64::from_str_radix(gold_bits_str, 16)
+                .expect("parse gold hex");
+            let gold = f64::from_bits(gold_bits);
+
+            let category = e["category"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string();
+            CorpusEntry { input, category, gold_f64: gold }
+        })
+        .collect()
+}
+
+fn run_corpus_oracle<F: Fn(f64) -> f64>(
+    label: &str,
+    entries: &[CorpusEntry],
+    tambear_fn: F,
+) -> OracleReport {
+    let xs: Vec<f64> = entries.iter().map(|e| e.input).collect();
+    let golds: Vec<f64> = entries.iter().map(|e| e.gold_f64).collect();
+
+    let mut deviations: Vec<u64> = Vec::with_capacity(xs.len());
+    let mut worst_ulps = 0_u64;
+    let mut worst_x = f64::NAN;
+    let mut n_disagreements = 0_usize;
+
+    for (i, &x) in xs.iter().enumerate() {
+        let got = tambear_fn(x);
+        let expected = golds[i];
+        let dist = tambear::primitives::oracle::ulps_between(got, expected);
+        deviations.push(dist);
+        if dist > 0 {
+            n_disagreements += 1;
+        }
+        if dist > worst_ulps {
+            worst_ulps = dist;
+            worst_x = x;
+        }
+    }
+
+    deviations.sort_unstable();
+    let n = deviations.len();
+    let p50_ulps = deviations[n / 2];
+    let p95_ulps = deviations[(n * 95) / 100];
+    let p99_ulps = deviations[(n * 99) / 100];
+
+    OracleReport {
+        function: label.to_string(),
+        n_samples: xs.len(),
+        worst_ulps,
+        worst_x,
+        p50_ulps,
+        p95_ulps,
+        p99_ulps,
+        n_disagreements,
+    }
+}
+
+fn print_category_breakdown<F: Fn(f64) -> f64>(
+    label: &str,
+    entries: &[CorpusEntry],
+    tambear_fn: F,
+) {
+    use std::collections::BTreeMap;
+    let mut by_cat: BTreeMap<String, (u64, f64)> = BTreeMap::new();
+
+    for e in entries {
+        let got = tambear_fn(e.input);
+        let dist = tambear::primitives::oracle::ulps_between(got, e.gold_f64);
+        let entry = by_cat.entry(e.category.clone()).or_insert((0, f64::NAN));
+        if dist > entry.0 {
+            entry.0 = dist;
+            entry.1 = e.input;
+        }
+    }
+
+    println!("  {label} — per-category worst ulps:");
+    for (cat, (worst, wx)) in &by_cat {
+        println!("    {cat:<45} worst={worst:<6} worst_x={wx:e}");
+    }
+}
+
+#[test]
+#[ignore = "Phase A sign-off: expm1 three-strategy oracle against mpmath corpus. \
+            Run with: cargo test --test mpmath_oracle oracle_report_expm1 -- --ignored --nocapture"]
+fn oracle_report_expm1() {
+    let corpus_path =
+        r"R:\tambear\oracle\expm1\data\generated\canonical_landmarks\corpus.json";
+
+    if !std::path::Path::new(corpus_path).exists() {
+        eprintln!("SKIPPED: expm1 corpus not found at {corpus_path}");
+        return;
+    }
+
+    let entries = load_corpus(corpus_path, "mpmath_expm1_f64_bits");
+    println!("\n=== Phase A: expm1 vs mpmath corpus ({} entries) ===\n", entries.len());
+
+    let r_strict = run_corpus_oracle(
+        "expm1_strict",
+        &entries,
+        tambear::recipes::libm::expm1::expm1_strict,
+    );
+    print_report(&r_strict);
+    print_category_breakdown("expm1_strict", &entries, tambear::recipes::libm::expm1::expm1_strict);
+
+    let r_comp = run_corpus_oracle(
+        "expm1_compensated",
+        &entries,
+        tambear::recipes::libm::expm1::expm1_compensated,
+    );
+    print_report(&r_comp);
+
+    let r_cr = run_corpus_oracle(
+        "expm1_correctly_rounded",
+        &entries,
+        tambear::recipes::libm::expm1::expm1_correctly_rounded,
+    );
+    print_report(&r_cr);
+
+    println!("\n  Summary:");
+    println!(
+        "  corpus entries: {}  near_zero category is the precision-critical ring",
+        entries.len()
+    );
+
+    // Phase A contracts
+    assert!(
+        r_strict.worst_ulps <= 2,
+        "expm1_strict: {ulps} ulps exceeds ≤2 contract. worst_x = {:e}",
+        r_strict.worst_x,
+        ulps = r_strict.worst_ulps
+    );
+    assert!(
+        r_comp.worst_ulps <= 1,
+        "expm1_compensated: {ulps} ulps exceeds ≤1 contract. worst_x = {:e}",
+        r_comp.worst_x,
+        ulps = r_comp.worst_ulps
+    );
+    assert!(
+        r_cr.worst_ulps <= 1,
+        "expm1_correctly_rounded: {ulps} ulps exceeds ≤1 contract. worst_x = {:e}",
+        r_cr.worst_x,
+        ulps = r_cr.worst_ulps
+    );
+
+    println!("\n  Phase A expm1 SIGNED OFF: all three strategies within contract.");
+}
+
+#[test]
+#[ignore = "Phase A sign-off: log1p three-strategy oracle against mpmath corpus. \
+            Run with: cargo test --test mpmath_oracle oracle_report_log1p -- --ignored --nocapture"]
+fn oracle_report_log1p() {
+    let corpus_path =
+        r"R:\tambear\oracle\log1p\data\generated\canonical_landmarks\corpus.json";
+
+    if !std::path::Path::new(corpus_path).exists() {
+        eprintln!("SKIPPED: log1p corpus not found at {corpus_path}");
+        return;
+    }
+
+    let entries = load_corpus(corpus_path, "mpmath_log1p_f64_bits");
+    println!("\n=== Phase A: log1p vs mpmath corpus ({} entries) ===\n", entries.len());
+
+    let r_strict = run_corpus_oracle(
+        "log1p_strict",
+        &entries,
+        tambear::recipes::libm::log1p::log1p_strict,
+    );
+    print_report(&r_strict);
+    print_category_breakdown("log1p_strict", &entries, tambear::recipes::libm::log1p::log1p_strict);
+
+    let r_comp = run_corpus_oracle(
+        "log1p_compensated",
+        &entries,
+        tambear::recipes::libm::log1p::log1p_compensated,
+    );
+    print_report(&r_comp);
+
+    let r_cr = run_corpus_oracle(
+        "log1p_correctly_rounded",
+        &entries,
+        tambear::recipes::libm::log1p::log1p_correctly_rounded,
+    );
+    print_report(&r_cr);
+
+    println!("\n  Summary:");
+    println!(
+        "  corpus entries: {}  near_zero and near_minus_one are the precision-critical categories",
+        entries.len()
+    );
+
+    // Phase A contracts
+    assert!(
+        r_strict.worst_ulps <= 2,
+        "log1p_strict: {ulps} ulps exceeds ≤2 contract. worst_x = {:e}",
+        r_strict.worst_x,
+        ulps = r_strict.worst_ulps
+    );
+    assert!(
+        r_comp.worst_ulps <= 1,
+        "log1p_compensated: {ulps} ulps exceeds ≤1 contract. worst_x = {:e}",
+        r_comp.worst_x,
+        ulps = r_comp.worst_ulps
+    );
+    assert!(
+        r_cr.worst_ulps <= 1,
+        "log1p_correctly_rounded: {ulps} ulps exceeds ≤1 contract. worst_x = {:e}",
+        r_cr.worst_x,
+        ulps = r_cr.worst_ulps
+    );
+
+    println!("\n  Phase A log1p SIGNED OFF: all three strategies within contract.");
+}

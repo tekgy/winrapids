@@ -126,16 +126,29 @@ complementary_arg_transform(x; fixed_point F, group structure G):
     return inverse_transform(core_value, F, G)
 ```
 
-Examples:
-- `log1p(x) = log(1 + x)`: F = 1, G = multiplicative; t = x; transform = "1 + ε"; inverse = identity
-- `expm1(x) = exp(x) - 1`: F = 0, G = additive (output side); t = x; transform = identity; inverse = "result - 1"
-- `sinpi(x) = sin(π·x)`: F = π·integer, G = multiplicative-of-π; t = x; transform = "π·"; inverse = identity
-- `hypot(a, b) = √(a² + b²)`: F = 0 (degenerate axis case); G = additive-with-scale; transform = scale-then-square-then-add; inverse = scale-then-sqrt
-- `cosm1(x) = cos(x) - 1`: F = 0, G = additive (output side); transform = identity; inverse = "result - 1"
+**Important update (2026-05-10, Sweep 35 team convergence)**: the three "shapes" of this transform are better understood as **coordinates**, not categories. Naturalist's three-shapes essay + aristotle's convergence integration together surface that a recipe's position is a four-axis coordinate:
+
+1. **Problem-topology**: where the precision hazard lives (cancellation-at-regular-point, pole-divergence, overflow, underflow, conditioning)
+2. **Fix-shape**: the structural fix (Shape 1 = input-side transform; Shape 2 = output-side transform; Shape 3 = full structural rewrite)
+3. **Sharing-layer**: which kernel states are consumed (orthogonal to problem and fix)
+4. **Precision-parameter-binding**: which coefficient set varies with precision context
+
+A recipe is a *path* through this coordinate space; a function like `hypot` sits at (overflow/underflow, Shape3, UnitVectorState-future, threshold-constant-tier-dependent). `log1p` sits at (cancellation-near-zero, Shape1, LogKernelState, Lp1..Lp7-tier-dependent). They're at different positions on every axis, not members of different categories.
+
+The original "one meta-primitive with three sub-shapes" framing was right directionally; the coordinate-space framing is the load-bearing version. The distinction matters for the cache key: per holonomic-architecture.md, the cache key must include all four coordinates as bytes/tags.
+
+Shape distinctions (original framing preserved):
+- `log1p(x) = log(1 + x)`: **Shape 1** (input-side) — the "1" lives on the input (`log(1+ε)`); the transform rewrites the input
+- `expm1(x) = exp(x) - 1`: **Shape 2** (output-side) — the "1" lives on the output (`exp(x)-1`); the transform rewrites the output
+- `sinpi(x) = sin(π·x)`: **Shape 1** (input-side, scaling variant) — exact reduction bypasses Payne-Hanek
+- `hypot(a, b) = √(a² + b²)`: **Shape 3** (structural rewrite) — no fixed-point / group structure; different algorithm per overflow/underflow regime
+- `cosm1(x) = cos(x) - 1`: **Shape 2** (output-side, cosine)
+
+**log1p (Shape 1) and expm1 (Shape 2) are duals, not analogs.** The "1" is on the input in log1p (correct argument: `log(1+x)`) and on the output in expm1 (correct result: `exp(x)-1`). They have different composition directions with ExpKernelState — log1p's `log1p_r` is an *input-side* transform (the reduced argument is input to log1p's core), while expm1's `expm1_r` is an *output-side* transform (the polynomial evaluates `exp(r)-1` at the reduced argument). Treating them as symmetric fields in ExpKernelState would compose with the wrong transform direction.
 
 The library factors into:
 1. **The raw math** (what the function *is* mathematically)
-2. **The complementary-argument transform** (where the cancellation lives)
+2. **The complementary-argument transform** (where the cancellation lives, which shape)
 3. **The post-transform core** (the precision-safe evaluation — `expm1_r`, `log1p_r`, sin/cos polynomials)
 4. **The inverse transform** (how to recover the output)
 
@@ -188,19 +201,68 @@ This doc is design substrate, not implementation. When pathmaker or whoever pick
 
 ---
 
-## Open questions for math-researcher walk-through
+## Open questions — ANSWERED (math-researcher walkthrough, 2026-05-10)
 
-1. **`pow(x, y)` factorization**. The composed identity `pow(x, y) = exp(y · log(x))` introduces an additional source of error (the multiplication `y · log(x)` happens at recipe-level, not inside the shared kernel). Does `pow` deserve its own kernel state, or is the composed form sufficient at the precision tiers tambear targets?
+All six questions were walked by math-researcher in Sweep 35. Answers in `campsites/sweep-35/20260510222906-math-researcher/math-researcher/`. Key verdicts:
 
-2. **`hypot(a, b)` as a complementary-argument transform**. Past-Claude listed it as an instance, but `hypot` doesn't have an obvious "fixed point" the way log1p does. Is the meta-primitive's group structure broader than the April 13 essay assumed, or is `hypot` a different shape that just shares the *precision-preservation* property?
+1. **`pow(x, y)` factorization** — **composed form is correct; no dedicated PowKernelState needed.** The composition must use DD-precision components: compute `y · log(x)` as a DD product at the recipe layer (`dd_mul(y, log_kernel_state.to_dd())`), reduce to `(k_exp, r_dd)`, then exp. ExpKernelState must expose `r_hi, r_lo` (it does in the Sweep 35 implementation). A flat-f64 `r` would break pow. Full analysis: `20260510223846-libm-factoring-open-questions-1-2.md`.
 
-3. **Gamma function (Lanczos approximation)**. Past-Claude flagged this as the exception — Lanczos is a different shape than log1p. Is the gamma family genuinely outside the complementary-argument frame, or does it fit at a different layer of factoring (e.g., as a shared intermediate for log_gamma + lgamma + beta)?
+2. **`hypot(a, b)` as complementary-argument transform** — **Shape 3 (structural rewrite), not Shape 1 or 2.** Hypot does NOT use ExpKernelState. Its "fixed point" is a 1-dim submanifold (the unit circle in polar view), not a point. The fix is a regime-dispatched algorithm (fdlibm e_hypot.c): scale inputs to avoid overflow/underflow, split into high/low for precision, sqrt, rescale. A future `UnitVectorState(max_abs, ratios)` could be shared across hypot, hypot3, n-norm, cabs — Sweep 36+ work. Full analysis: `20260510223846-libm-factoring-open-questions-1-2.md`.
 
-4. **The exp/log-side analog of the Periodic Table of Trig**. Past-Claude's April 13 trig-table enumeration (5 rows × 6 columns × 3 precision tiers) hasn't been done for exp/log. What does the exp/log periodic table look like? Probably a different shape — fewer "rows" since hyperbolic and pi-scaled don't have direct exp/log analogs, but more "columns" (exp / log / exp2 / log2 / exp10 / log10 / expm1 / log1p / pow / hypot / sinh / cosh / tanh / asinh / acosh / atanh / ...).
+3. **Gamma function (Lanczos)** — **genuinely outside the complementary-argument frame.** Lanczos is a different meta-primitive: series-approximation over a shifted contour, not a fixed-point transform. Gamma family (lgamma, digamma, beta) forms its own kernel-state cluster. Sweep 38 work; don't force into current frame. Mentioned in `20260510224001-libm-factoring-open-questions-4-5-6.md`.
 
-5. **Pi-scaled vs Tang-style reduction symmetry**. For trig, pi-scaled (`sinpi(x) = sin(π·x)`) uses an exact reduction (`round(2x)`) that bypasses Payne-Hanek. Is there an analogous "exact reduction" trick for exp/log? Specifically: `exp2(integer)` and `log2(power-of-2)` ARE exact in float; do they constitute an "exp2-scaled" family analogous to "pi-scaled"? If yes, the family widens.
+4. **The exp/log periodic table** — **3D table: family × reduction-variant × precision-tier.** ~6 families (exp, log, pow, hypot, sinh, asinh) × ~4 reduction variants × 3 precision tiers = ~360 cells, ~30-40% realized. Math-researcher drafted the table in `20260510224001-libm-factoring-open-questions-4-5-6.md`. Full enumeration is a Sweep 36 doc exercise; Sweep 35 implements the f64 row for 4-5 families.
 
-6. **TrigKernelState's high/low decomposition for `r`**. The trig state carries `r_hi` and `r_lo` (double-double representation of the reduced argument). The exp/log analog likely needs the same, but the precision requirements are different (Payne-Hanek needs ~1200 bits of 2/π for large arguments; Tang's k·ln(2) reduction needs fewer bits but the multiplier `k` can be large). What's the right precision contract for `ExpKernelState.r` at each tier?
+5. **Pi-scaled vs Tang-style reduction symmetry** — **YES, binary-scaled (exp2/log2) is the exact analog of pi-scaled (sinpi/cospi).** `exp2(integer)` uses `ldexp` exactly (no polynomial); `log2(power-of-2)` extracts the exponent via `frexp` exactly. Same shape as pi-scaled: exact-reduction bypasses the polynomial; the kernel reuses the same ExpKernelState/LogKernelState. The full "complementary-argument transform" table now has 6 named `(F, G)` pairs — each generating a column of the periodic table. Full analysis: `20260510224001-libm-factoring-open-questions-4-5-6.md`.
+
+6. **TrigKernelState's high/low decomposition for `r`** — **DD pair at f64 tier; BigFloat at higher tiers.** `ExpKernelState.r` is stored as `(r_hi, r_lo)` — the Cody-Waite DD representation preserving ~106-bit precision. At BigFloat p=200+, `r` is a BigFloat (no explicit high/low split needed; the type itself is multi-limb). The `expm1_r` field is f64 at Sweep 35 (f64-output tier); higher tiers will carry `expm1_r` as BigFloat when the struct gains precision-parameterized fields. Full analysis: `20260510224001-libm-factoring-open-questions-4-5-6.md`.
+
+**Substrate note (2026-05-10)**: `TrigKernelState` was claimed above as "already implemented" in the expedition work. Aristotle's Sweep 35 deconstruction (substrate-over-memory check) found this is **not accurate** — old winrapids has a `reduce_trig(x) -> (i32, f64, f64)` tuple inside `sin.rs` but no named struct, no TamSession registration, no cache key. `ExpKernelState` (Sweep 35) is the **first actual TamSession-registered shareable intermediate** in the libm family. The trig reduction exists but is not yet factored as a named, registered kernel state. See `campsites/sweep-35/aristotle/exp-kernel-state-deconstruction.md` § "Substrate Finding 0".
+
+---
+
+## Architectural invariant — representation-precision-matching at composition sites
+
+**Named**: 2026-05-10, Sweep 35.
+
+**Convergence provenance**: surfaced independently from three angles, then unified.
+- **aristotle** — A3 cache-correctness analysis; initial hypothesis was a dedicated `PowKernelState` struct to prevent cross-kernel composition drift (T20, later withdrawn).
+- **math-researcher** — pow error-bound analysis; the composed form `pow = exp(y · log(x))` is correct ONLY when the recipe-layer multiplication preserves the kernel-state's precision (`dd_mul(y, log_kernel_state.to_dd())`, not f64-collapsed product).
+- **naturalist** — axis-4 in the four-axis recipe-coordinate framework: *precision-parameter-binding* as its own axis distinct from sharing-layer. Same constraint, different lens.
+
+Per past-aristotle's **F13 OQ#6** (`campsites/tambear-formalize/survey/20260508123003-aristotle/f13-antibodies-for-scope-precondition-rules.md` § "Open questions" #6): independent methodologies converging on the same structural claim is *evidence the constraint is structurally real, not method-specific*. Aristotle's claim-convergence extension (`campsites/sweep-35/aristotle/convergence-integration-2026-05-10.md`) lifts F13 OQ#6 from site-convergence to claim-convergence. This invariant is an instance of that lift.
+
+**The invariant**:
+
+> At composition sites between two kernel states (or between a kernel state and an externally-bound input like `y` in pow), the arithmetic operates at the precision of the higher-precision operand's **kernel-state representation** — not at the precision of either operand's output magnitude.
+>
+> Mechanism per precision tier:
+> - **P0F64 / P1Extended**: DD multiplication (~106 bits of working precision)
+> - **P2BigFloat{p}**: native BigFloat multiplication at p
+>
+> Same contract, tier-specific realization.
+
+**Why the framing matters**: the initial reach (math-researcher, in the pow open-question walk) was *"the contract is to use DoubleDouble"*. That naming is tier-specific. It ties the invariant to f64 working precision and hides the generality. The lifted naming — *representation-precision-matching* — captures that DD-at-f64 and BigFloat-at-higher-tiers are realizations of the same invariant. The compiler dispatch is on the precision tier; the constraint is one.
+
+**What this rules out**:
+- A flat-f64 `r` field on `ExpKernelState` at P0F64. Composition sites need the DD components exposed.
+- Recipe-layer arithmetic at f64 precision when the kernel state carries DD precision. The multiplication MUST go through the DD primitive.
+- Cache keys that omit the precision-tier discriminant. Two consumers at different tiers would otherwise collide on the same key and silently get the wrong precision back.
+
+**What this enables**:
+- pow as a composed recipe (no `PowKernelState` struct needed; aristotle's T20 withdrawn correctly).
+- ≤1 ulp accuracy at every precision tier without method-specific kernel proliferation.
+- A single named contract pathmaker can enforce per recipe wrapper that composes multiple kernel states.
+
+**Test-design implication**: kernel-state-consistency-tests (per `kernel-state-consistency-tests.md`, math-researcher 2026-05-10) verify this invariant at composition time. The bit-equality test between `pow_via_kernel_states(x, y, ctx).to_bits()` and a high-precision oracle round-trip catches representation-precision-matching violations — when the multiplication slips to f64 instead of DD/BigFloat at the matching tier, the test fires.
+
+**F13 vs. this invariant**:
+- F13.C (signature antibody) catches mis-routing at construction time (non-defaulted parameter).
+- representation-precision-matching catches *semantic drift* inside the implementation when two kernel states compose. Both signatures correct, both implementations correct individually — but the composition silently downgrades to the lower precision tier without the matching-mechanism contract.
+
+The two are complementary; both are required for production-grade composite recipes (Kingdom III per `campsites/sweep-35/20260510222906-math-researcher/math-researcher/20260510225154-periodic-table-of-libm-revisited.md`).
+
+**Forward**: every future kernel state introduced into tambear (UnitVectorState, AtanKernelState, gamma's Stirling-coefficient state, ...) inherits this invariant. The struct must expose its representation at sufficient precision to enable lossless composition with other kernel states at the matching tier. The contract is structural; new kernel-state designs are reviewed against this invariant before they ship.
 
 ---
 

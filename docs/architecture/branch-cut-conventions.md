@@ -155,6 +155,34 @@ impl BranchPolicy {
 
 `#[non_exhaustive]` allows future variants without re-ratifying the existing four. Reserved tag `5` for `Custom(Vec<CutSegment>)` v2-amendment.
 
+### E. Byte-allocation ceiling
+
+**The witness byte is 1 byte = 256 possible BranchPolicy variants.** Currently four are used (Principal, AntiPrincipal, NumericallyStable, Discovery); two are reserved (tag 0 for "uninitialized," tag 5 for `Custom(Vec<CutSegment>)` v2-amendment). That leaves 250 unused slots before structural ceiling.
+
+**Surfaced**: 2026-05-10, aristotle's preparatory deconstruction of task #9 (`R:\winrapids\campsites\sweep-35\aristotle\complex-log-preparatory-deconstruction-2026-05-10.md` § F1). The ceiling is generous for the foreseeable future but not infinite; aristotle's call was to name it upfront rather than discover it late.
+
+**Reserved allocation blocks** (Unicode-PUA-analog):
+
+| Range | Purpose | Status |
+|-------|---------|--------|
+| `0x00` | "uninitialized / byte not fed" antibody | Reserved (per § D) |
+| `0x01–0x0F` | Standard tambear-defined policies | `0x01–0x04` allocated; `0x05` reserved for `Custom(Vec<CutSegment>)` |
+| `0x10–0x1F` | Future tambear-defined numerical-stability variants | Reserved (e.g., `NumericallyStable_HighPrec`, `NumericallyStable_LowPrec`, regime-specific variants) |
+| `0x20–0x2F` | Future tambear-defined discovery / superposition variants | Reserved (e.g., `Discovery_AllBranches`, `Discovery_Sampled`, witness-tagged variants) |
+| `0x30–0xEF` | Standard tambear-defined growth space | Unallocated; available for future ratifications |
+| `0xF0–0xFF` | **User-defined range** | Open for user declarations (`BranchPolicy::Custom(0xF0)` etc.); tambear MUST NOT allocate in this range |
+
+**Why the user-defined range matters**: cross-family branch conventions (e.g., for elliptic functions, hypergeometric functions, multi-valued special functions in domains tambear doesn't yet cover) may have literature-specific cut conventions that don't fit `Principal` / `AntiPrincipal` / `NumericallyStable` / `Discovery`. Reserving `0xF0–0xFF` as user-declarable space means these conventions can be declared at the call site (or via project-level configuration) without amending DEC-032. Cost: zero now; flexibility: real.
+
+**If 256 ever runs out** (structurally implausible without a domain explosion): the upgrade path is well-defined.
+
+1. Bump `IR_VERSION` (current target: 11 once `feed_branch_policy` lands).
+2. Expand the witness column from `u8` to `u16` in the V-column schema.
+3. The tag mapping for existing variants stays bit-compatible (0x01..0x05 in u8 become 0x0001..0x0005 in u16); old cached witnesses are auto-promoted on read.
+4. Cost of the upgrade if planned: small (one IR version bump, one schema migration). Cost if retrofitted under pressure: substantially larger (entire cache invalidates, every kernel recompiles).
+
+**Naming the ceiling now is the antibody for the discover-it-late failure mode.** Per past-naturalist's April 11 ("when a constraint will eventually bite, naming it now is cheaper than discovering it later"), this finding lands in DEC-032 ahead of any byte-pressure rather than after.
+
 ### D-prime. `Principal` is normatively Kahan / C99 / CCC
 
 Per math-researcher's literature ratification (2026-05-09):

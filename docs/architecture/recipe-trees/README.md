@@ -53,8 +53,8 @@ should collapse into one kernel + two recipe wrappers).
 ## How to add a tree for a new family
 
 1. **Identify the kernel(s).** Most families have one kernel; some have
-   several. Two structurally different kernel topologies have surfaced
-   so far, both valid:
+   several. Three structurally distinct kernel topologies have surfaced
+   so far, all valid:
 
    - **Overlapping kernels** (means is the canonical example) — multiple
      kernels reach the same literature-named leaves via different
@@ -71,11 +71,27 @@ should collapse into one kernel + two recipe wrappers).
      don't share vocabulary — there's no parameterization in one kernel
      that produces what another kernel produces.
 
-   Neither topology is "right" — they're family-determined by whether
-   the underlying mathematical operations have shared fixed-points
-   under different parameterizations. When you draft a new tree,
-   check both possibilities; don't force overlap when the family is
-   genuinely disjoint, and don't miss overlap when it's there.
+   - **Clustered kernels with embedding bridges** (distances is the
+     canonical example) — kernels cluster into regions, with overlap
+     *within* a cluster and disjointness *between* clusters; bridges
+     across cluster boundaries exist as *embeddings*, not unifications.
+     Distances resolves into a "geometric" cluster (MinkowskiNorm +
+     InnerProductDistance + parts of Divergence) and a "combinatorial"
+     cluster (SetDistance + SequenceEdit + GraphDistance). Bridges
+     between them are parameter-dependent compositions of two kernels:
+     spectral lift (graph → eigenvector coords → Lp), MinHash
+     (set → sketch → Hamming), k-shingles (sequence → set → Jaccard).
+     The bridge is a *recipe* that composes two kernels, not a new
+     kernel that unifies them. When you spot this shape, preserve the
+     cluster boundaries honestly — don't force fake unification just
+     because some leaves can be embedded into another cluster's space.
+
+   None of the three topologies is "right" — they're family-determined
+   by the underlying mathematical structure. When you draft a new tree,
+   check all three possibilities; don't force overlap when the family
+   is genuinely disjoint, don't miss overlap when it's there, and
+   don't collapse bridge-connected clusters into one unified kernel
+   when the bridge is lossy and parameter-dependent.
 2. **Identify the parameter axes** for each kernel. Each axis is a
    `using()` knob in the eventual recipe API.
 3. **Map every literature-named variant** to a kernel + parameter
@@ -92,14 +108,74 @@ should collapse into one kernel + two recipe wrappers).
    target; the other kernels become recipe wrappers if the named-leaves
    set is wide enough to deserve the syntax.
 
+7. **Identify composition patterns over the kernels.** Some families
+   expose recipe-level structure that *isn't* itself a kernel — it's a
+   parameter axis that composes existing kernels into derived recipes.
+   Correlations surfaced two: a *multivariate axis* (CCA, partial-
+   correlation matrix, multiple R²) and a *copula axis* (Spearman-from-
+   copula, tail-dependence, Schweizer-Wolff σ). Each composition
+   pattern wraps one or more kernels with additional structure
+   (matrix-valued output, copula transformation) without introducing a
+   new kernel. Surface them in the tree as a separate section after
+   the per-kernel sections — they're real catalog structure, just at
+   a different abstraction level than the kernels themselves.
+
+## Structural patterns observed across trees
+
+As the catalog grows, structural patterns surface that aren't visible
+from any single tree. Name them here as they're observed; they
+inform how future trees get drafted.
+
+- **Synonym collapses** — single recipes hidden behind multiple
+  literature names. The tree pattern makes them visible.
+  Confirmed instances: `quartic_kernel ≡ biweight_kernel` (kernels);
+  `rbf_kernel ≡ gaussian_pd_kernel ≡ squared_exponential` (kernels);
+  `matern_1/2 ≡ laplace ≡ exponential_pd_kernel` (kernels —
+  Matérn is the parent form; Laplace and RBF are fixed-ν children);
+  `Wasserstein_p(empirical_1d) ≡ L_p(sort(x) - sort(y))` (distances).
+  When you find one, document it explicitly — three names with one
+  recipe is structural information worth preserving.
+
+- **Sharing-graph hubs** — some families connect to most other trees
+  via TamSession-shareable intermediates; some are leaves. Correlations
+  is the richest hub observed so far (consumes means, distances,
+  kernels, sketches; produces inputs to copulas, regression, linear-
+  algebra). Hub families warrant earlier implementation because their
+  shareable intermediates pay rent across many trees; leaf families
+  can defer to consumer demand.
+
+- **Cross-tree shared intermediates** — the same intermediate appears
+  as the canonical shared state for multiple trees. Examples observed:
+  pairwise-L2-distance matrix is universal across distances and
+  StationaryPD kernels; rank-transformed values are shared by
+  correlations (Spearman) and tail-estimators (order statistics);
+  the 3-field moment trio is shared by means, distances, correlations.
+  When you draft a new tree, check whether existing trees already
+  own a recipe that should be your shared intermediate; consume via
+  TamSession rather than re-implementing.
+
 ## Trees in this directory
 
 - `means.md` — the centrality/central-tendency family (~30 named
-  literature variants across 5 kernels). First pilot.
+  literature variants across 5 kernels). First pilot. Overlapping
+  topology.
+- `sketches.md` — quantile sketches family (DDSketch, KLL, GK,
+  t-digest, ...) across 3 kernels. Second pilot. Disjoint topology.
+- `kernels.md` — smoothing kernels + positive-definite kernels (~40
+  literature names across 7 sub-kernels under 2 disjoint top-level
+  kernel-of-kernels). Disjoint topology with shared functional-form
+  vocabulary.
+- `distances.md` — dissimilarity / metric / divergence family (~50+
+  literature names across 6 kernels). Clustered topology with
+  embedding bridges between geometric and combinatorial clusters.
+- `correlations.md` — correlation family (~20+ literature names
+  across 4 kernels). Mixed topology; MomentCorrelation is the
+  catalog-collapse star. Surfaced composition patterns (multivariate,
+  copula) as a new structural axis.
 
-Future: `distances.md`, `correlations.md`, `kernels.md`, `sketches.md`,
-`tail-estimators.md`, `dispersions.md`, `entropies.md`, `divergences.md`,
-`information-criteria.md`...
+Future: `tail-estimators.md`, `dispersions.md`, `entropies.md`,
+`divergences.md`, `information-criteria.md`, `clustering.md`,
+`regression.md`, `factorizations.md`, `time-series.md`...
 
 The catalog grows organically — one family at a time, ratified by
 math-researcher, used by pathmaker on next-recipe-add to that family.

@@ -96,7 +96,7 @@ All four phases complete:
 - **Phase A** (expm1 + log1p): committed in `sweep-35 phase A` commit
 - **Phase B** (ExpKernelState): committed in `sweep-35 phase B` commit
 - **Phase C** (all wrappers): committed in `sweep-35 phase C` commit
-- **Phase D** (complex_log): staged, awaiting final commit
+- **Phase D** (complex_log): committed in `sweep-35 phase D` commit
 
 **Unplanned work that landed**:
 - `kernel-state-consistency-tests.md` — fourth named antibody class (math-researcher). Addresses the composition-time drift between kernel-state-backed and standalone implementations. Exp.rs refit is the worked example.
@@ -105,18 +105,16 @@ All four phases complete:
 
 ### Remaining uncommitted substrate (session close)
 
-**winrapids**:
-- `complex_log.rs` (staged), `mod.rs` (modified) — Phase D commit pending
-- `kernel-state-consistency-tests.md` (untracked) — should go with Phase D commit or doc commit
-- Modified design docs: `tambear-libm-factoring.md`, `session-methodology-patterns.md`, `team-briefing.md` — should commit
-- Recipe-tree docs (`correlations.md`, `distances.md`, `kernels.md` — new), `README.md` (modified) — untracked
-- `sweep-36-40-downstream-territory-map.md` (untracked) — expedition doc
+**FULLY COMMITTED** — wind-down completed after usage-limit recovery.
 
-**R:\tambear** (all staged/untracked, not committed):
-- `arith.rs` (TI-2), `cmp.rs` (TI-CMP-1/2), `fingerprint.rs` (TI-6)
-- `big_float_vs_mpmath.rs` (+604 lines oracle tests)
-- `sweep_35_exp_log_cross_precision.rs` (untracked — proptest gauntlet)
-- `oracle/expm1/`, `oracle/log1p/` (untracked — oracle corpus)
+**winrapids** (`2739bbf`): all session substrate committed — kernel-state-consistency-tests.md,
+tambear-libm-factoring.md, session-methodology-patterns.md (Patterns 5-8), team-briefing.md
+(Constraint 11), recipe-tree docs (correlations/distances/kernels/README), sweep-36-40 map,
+mpmath_oracle.rs, full campsite tree.
+
+**R:\tambear** (`589dbe9`): all TI fixes committed — TI-2, TI-CMP-1/2/3, TI-1 docstring,
+arith.rs zero-arm fix, big_float_vs_mpmath.rs, sweep_35_exp_log_cross_precision.rs,
+sweep_35_complex_log_branch_cut.rs, oracle/expm1/, oracle/log1p/.
 
 ### Open threads for next session
 

@@ -108,7 +108,13 @@ Adversarial proptests:
 
 ## Suggested team composition
 
-JBD tambear (base 5 + math-specific 4 = 9 roles). Same as `tambear-sweep31-finish`. Continuity matters — math-researcher's six follow-ups and the gardens written at this session's close are substrate for that incarnation of the team.
+**JBD tambear** (base 5 + math-specific 4 = 9 roles). Same as `tambear-sweep31-finish`.
+
+**Why JBD tambear specifically** (vs alternative recipes):
+- *Not /jbd theory* — Sweep 35 is implementation work, not manuscript/writing work. The theory recipe's mode (academic-researcher, internal-consistency-guarding adversarial, manuscript-writing scientist) doesn't fit.
+- *Not /jbd council* — Sweep 35 is multi-phase incremental work, not a single high-stakes one-shot decision. The council recipe's parallel-deliberation + chairman-synthesis is overkill for an extended implementation arc.
+- *Not /jbd default* (base 5 only) — Sweep 35 needs math-researcher (literature verification of polynomial coefficients, Kahan/Remez references), adversarial (cross-precision proptest gauntlets, branch-cut adversarial inputs), scientist (oracle validation per phase), and aristotle (pressure-test the kernel-state abstraction). The math-specific 4 carry real weight.
+- *JBD tambear is the recipe that produced tambear-sweep31-finish's outputs* (12+ adversarial bug fixes, 5 transcendental oracles, DEC-032 + DEC-033 ratified, holonomic walkthrough). Continuity matters — math-researcher's tan-oracle follow-ups, the wind-down gardens, and the substrate trail from this session are immediately usable substrate for that team incarnation.
 
 ### Initial role-pointing (each role can self-direct from here)
 

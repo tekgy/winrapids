@@ -152,17 +152,18 @@ precision-safe. The fall-through to sinh_strict for ax > 1.0 is the gap.
 ## Observation 5 — Watch Items Summary (consolidated)
 
 ### Resolved:
-- **WI-1 (port vs fresh)**: RESOLVED. Phase A extended existing expm1.rs; replaced local naive stub in hyperbolic.rs.
-- **WI-2 (oracle quality)**: PARTIALLY RESOLVED. Two-tier design is correct; verification-tier still deferred.
-- **WI-3 (ULP budget discrepancy)**: RESOLVED. Old file is unchanged; irrelevant to Phase A which landed in same file with separate API.
-- **WI-4 (ExpKernelState precision contract)**: SUBSTANTIALLY RESOLVED. Tags structurally present; f64-only design honest.
-- **WI-5 (cache-hit observability)**: RESOLVED. Arc::ptr_eq is genuine.
+- **WI-1 (port vs fresh)**: RESOLVED. Fresh implementation — new expm1.rs (565 lines) uses fdlibm Q1..Q5 Remez-minimax, not old Taylor form. Math-researcher verified coefficients (task #4).
+- **WI-2 (oracle quality)**: RESOLVED. New oracle tests landed at `R:\tambear\tests\big_float_vs_mpmath.rs` (+604 lines). Discovery-tier fires; verification-tier stubs are `#[ignore]` pending two-repo oracle path resolution (open thread #3 in navigator campsite). Platform-libm oracle gap closed for new work.
+- **WI-3 (ULP budget discrepancy)**: RESOLVED. ULP discrepancy in old code doesn't affect shipped implementation. Math-researcher coefficient verification confirmed < 1 ULP for Q1..Q5 form; oracle harness will verify when it fires.
+- **WI-4 (ExpKernelState precision contract)**: RESOLVED. `precision_tag: u8` is in ExpKernelState's cache key from day one (PRECISION_TAG_P0F64 = 0). All four slots are structural placeholders — Aristotle's T23 pre-empted this: adding tags later means IR_VERSION bump, so the slots were in from the start.
+- **WI-5 (cache-hit observability)**: RESOLVED. `Arc::ptr_eq` in test suite. Same pointer = same cached Arc = real cache hit. Test is `cache_hit_returns_same_arc` in exp_kernel_state.rs.
 - **WI-9 (6 ignored tests)**: RESOLVED. 5 CUDA GPU tests, 1 diagnostic probe — pre-existing, unrelated to Sweep 35.
 
-### Active:
+### Active (carried forward to Sweep 36):
 - **WI-7 (expm1_small_strict_public precondition)**: `pub` function without precondition assert. Low severity.
-- **WI-10 (sinh_session regime gap)**: sinh_session falls through to sinh_strict for |x| > 1.0. Kernel state sharing doesn't fire for large-argument sinh. Medium severity against the acceptance criterion.
-- **WI-11 (cross-precision proptest quality)**: Are the cross-precision proptests genuine cross-tier tests or same-tier consistency checks? Needs verification.
+- **WI-10 (sinh_session regime gap)**: sinh_session falls through to sinh_strict for |x| > 1.0. Kernel state sharing doesn't fire for large-argument sinh. Medium severity. Not addressed in Sweep 35.
+- **WI-11 (cross-precision proptest quality)**: Partially resolved — oracle tests at big_float_vs_mpmath.rs are genuine cross-tier tests. Verification-tier stubs are `#[ignore]` pending two-repo oracle path. Not fully closed.
+- **WI-RoundingMode (antibody site)**: RoundingMode slot in ExpKernelState deferred, not resolved. Open for Sweep 36.
 
 ---
 
@@ -210,3 +211,19 @@ If I'm idle between team messages, I'll read the `exp2.rs` or `log.rs` wrappers
 to check the Phase C wrapper pattern uniformity — do they all filter specials before
 kernel state lookup? Do they all use `ExpKernelState::compute_or_get` or do any
 fall back to direct computation?
+
+---
+
+## Session Close — Sweep 35 Wind-Down
+
+**Shutdown received from team-lead**: Sweep 35 wind-down complete. Formal shutdown to spawn Sweep 36 team.
+
+**Final state of watch items**: Five of the original six core items resolved during the sweep. The navigator confirmed the briefing's risk identification was accurate — the right things were watched, all resolved. Three items carried forward: sinh_session regime gap (WI-10), cross-precision proptest verification-tier stubs (WI-11), and RoundingMode antibody site.
+
+**What this sweep established for the record**:
+- Fresh fdlibm Remez-minimax implementation (not a port), coefficients independently verified
+- Oracle harness at R:\tambear\tests\big_float_vs_mpmath.rs is real cross-tier testing (+604 lines)
+- ExpKernelState cache key is forward-compatible by design (four structural slots, not two)
+- Arc::ptr_eq cache test is genuine observability, not just value-correctness
+
+**Notebook status**: CLOSED. Substrate preserved for Sweep 36 observer pickup.

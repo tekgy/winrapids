@@ -1,0 +1,85 @@
+wing: winrapids
+rooms:
+- name: archive
+  description: Files from archive/
+  keywords:
+  - archive
+  - archive
+- name: benchmarks
+  description: Files from benchmarks/
+  keywords:
+  - benchmarks
+  - benchmarks
+- name: campsites
+  description: Files from campsites/
+  keywords:
+  - campsites
+  - campsites
+- name: campsites_archive
+  description: Files from campsites-archive/
+  keywords:
+  - campsites_archive
+  - campsites-archive
+- name: crates
+  description: Files from crates/
+  keywords:
+  - crates
+  - crates
+- name: documentation
+  description: Files from docs/
+  keywords:
+  - documentation
+  - docs
+- name: experiments
+  description: Files from experiments/
+  keywords:
+  - experiments
+  - experiments
+- name: playground
+  description: Files from playground/
+  keywords:
+  - playground
+  - playground
+- name: playgrounds
+  description: Files from playgrounds/
+  keywords:
+  - playgrounds
+  - playgrounds
+- name: research
+  description: Files from research/
+  keywords:
+  - research
+  - research
+- name: scripts
+  description: Files from scripts/
+  keywords:
+  - scripts
+  - scripts
+- name: src
+  description: Files from src/
+  keywords:
+  - src
+  - src
+- name: tambear
+  description: Files from tambear/
+  keywords:
+  - tambear
+  - tambear
+- name: target4
+  description: Files from target4/
+  keywords:
+  - target4
+  - target4
+- name: target5
+  description: Files from target5/
+  keywords:
+  - target5
+  - target5
+- name: testing
+  description: Files from tests/
+  keywords:
+  - testing
+  - tests
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []

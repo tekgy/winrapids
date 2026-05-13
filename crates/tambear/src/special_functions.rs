@@ -185,6 +185,9 @@ pub fn log_gamma(x: f64) -> f64 {
         // Reflection formula: Γ(x)Γ(1-x) = π / sin(πx)
         // Works for any x where sin(πx) ≠ 0, i.e. x not an integer.
         // For negative non-integers: 1.0 - x > 1, so the recursive call is in the safe region.
+        // RIPE-PUNT TRIGGER: sinpi — replace (PI * x).sin() with sinpi(x) once Phase E ships.
+        // Near-pole failure: for x = -n + ε, the phase error in PI*x gives catastrophic
+        // relative error in sin(πx) when ε is small but outside the integer-detection guard. (G-17)
         let lsin = (std::f64::consts::PI * x).sin().abs().ln();
         std::f64::consts::PI.ln() - lsin - log_gamma(1.0 - x)
     } else {
@@ -240,6 +243,9 @@ pub fn digamma(x: f64) -> f64 {
     }
 
     // Reflection formula for x < 0: ψ(1-x) - ψ(x) = π·cot(πx)
+    // RIPE-PUNT TRIGGER: tanpi — replace (PI * x).tan() with tanpi(x) once Phase E ships.
+    // Near-pole failure: for x = -n + ε, 1e-12 < ε < 1e-6, the phase error in PI*x ≈ 7e-15
+    // gives relative error ≈ 7e-15/|tan(π·ε)| which diverges. tanpi avoids this. (G-22)
     if x < 0.0 {
         return digamma(1.0 - x) - std::f64::consts::PI / (std::f64::consts::PI * x).tan();
     }
@@ -283,6 +289,9 @@ pub fn trigamma(x: f64) -> f64 {
         // Non-integer negatives: reflection formula for trigamma
         // ψ₁(1-x) + ψ₁(x) = π²/sin²(πx)  [reflection formula]
         // ψ₁(x) = π²/sin²(πx) - ψ₁(1-x)
+        // RIPE-PUNT TRIGGER: sinpi — replace (PI * x).sin() with sinpi(x) once Phase E ships.
+        // Near-pole failure: for x = -n + ε, 1e-12 < ε < 1e-6, the phase error ≈ 7e-15
+        // gives catastrophic relative error in sin². sinpi avoids this. (G-22)
         let sin_pi_x = (std::f64::consts::PI * x).sin();
         return std::f64::consts::PI.powi(2) / (sin_pi_x * sin_pi_x) - trigamma(1.0 - x);
     }
@@ -1275,6 +1284,25 @@ mod tests {
         assert!(approx(sum, 1.0, 1e-10));
     }
 
+    #[test]
+    #[should_panic]
+    fn incomplete_gamma_infinity_bug_g20() {
+        // G-20 (adversarial 2026-05-12): regularized_gamma_p(a, inf) returns NaN.
+        // Should return 1.0 exactly (P(a, ∞) = 1 by definition).
+        // Root cause: gamma_cf receives x=inf; b₀=inf; Lentz CF: d=1/inf=0 → d=tiny;
+        // then b stays inf; delta = tiny * inf = NaN; h becomes NaN; log_prefix = NaN.
+        // Fix: add `if x == f64::INFINITY { return 1.0; }` guard in regularized_gamma_p.
+        // Similarly regularized_gamma_q(a, inf) should return 0.0.
+        //
+        // This test is written as should_panic because assert_eq! would panic when
+        // NaN != 1.0. Flip to a normal assert_eq! when the bug is fixed.
+        let result_p = regularized_gamma_p(2.0, f64::INFINITY);
+        let result_q = regularized_gamma_q(2.0, f64::INFINITY);
+        // These should be 1.0 and 0.0 respectively:
+        assert_eq!(result_p, 1.0, "gamma_p(2.0, inf) = {result_p}, expected 1.0");
+        assert_eq!(result_q, 0.0, "gamma_q(2.0, inf) = {result_q}, expected 0.0");
+    }
+
     // ── normal CDF ───────────────────────────────────────────────────────
 
     #[test]
@@ -1325,6 +1353,20 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
+    fn f_cdf_infinity_bug_g21() {
+        // G-21 (adversarial 2026-05-12): f_cdf(f64::INFINITY, d1, d2) returns NaN.
+        // Should return 1.0 exactly (F-distribution CDF at +∞ = 1 by definition).
+        // Root cause: z = d1*inf / (d1*inf + d2) = inf/inf = NaN (IEEE 754).
+        // Then regularized_incomplete_beta(NaN, ...) propagates NaN.
+        // Fix: add `if x == f64::INFINITY { return 1.0; }` guard in f_cdf.
+        // Also: t_cdf(∞, df) returns 1.0 CORRECTLY (because x=df/(df+t²)=0 when t=∞,
+        // and the beta guard `if x <= 0.0 { return 0.0; }` handles it cleanly).
+        let result = f_cdf(f64::INFINITY, 5.0, 10.0);
+        assert_eq!(result, 1.0, "f_cdf(inf, 5.0, 10.0) = {result}, expected 1.0");
+    }
+
+    #[test]
     fn f_cdf_known_value() {
         // F(5,10): P(X ≤ 3.33) ≈ 0.95 (from F-table)
         let p = f_cdf(3.33, 5.0, 10.0);
@@ -1351,6 +1393,16 @@ mod tests {
         let k = 3.0;
         let sum = chi2_cdf(x, k) + chi2_sf(x, k);
         assert!(approx(sum, 1.0, 1e-10));
+    }
+
+    #[test]
+    #[should_panic]
+    fn chi2_cdf_infinity_bug_g20_downstream() {
+        // G-20 downstream: chi2_cdf(f64::INFINITY, k) returns NaN via gamma_p(k/2, inf).
+        // Should return 1.0 (chi-squared CDF at +∞ = 1 by definition).
+        // Fix: fix regularized_gamma_p first (G-20), then chi2_cdf inherits the fix.
+        let result = chi2_cdf(f64::INFINITY, 5.0);
+        assert_eq!(result, 1.0, "chi2_cdf(inf, 5.0) = {result}, expected 1.0");
     }
 
     // ── p-value helpers ──────────────────────────────────────────────────

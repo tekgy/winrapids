@@ -172,10 +172,15 @@ inform how future trees get drafted.
   across 4 kernels). Mixed topology; MomentCorrelation is the
   catalog-collapse star. Surfaced composition patterns (multivariate,
   copula) as a new structural axis.
+### Canonical recipe-trees have migrated to tambear (as of 2026-05-12)
 
-Future: `tail-estimators.md`, `dispersions.md`, `entropies.md`,
-`divergences.md`, `information-criteria.md`, `clustering.md`,
-`regression.md`, `factorizations.md`, `time-series.md`...
+The recipe-trees migration to `R:\tambear\docs\architecture\recipe-trees\` happened during the Sweep 37 journey. The tambear directory is now canonical and ahead of this winrapids directory:
+
+- `entropies.md`, `dispersions.md`, `divergences.md`, `tail-estimators.md` — drafted 2026-05-12 by scout in tambear; not present in this winrapids copy. The winrapids `entropies.md` here is a stale parallel draft (naturalist, 2026-05-12, with NaivePairs-grouping claim that does not match current tambear `accumulate.rs::Grouping` enum). Trust the tambear copy.
+
+Future trees and updates land in tambear; this winrapids directory is reference/archeology only.
+
+Future trees still expected (in tambear, not here): `information-criteria.md`, `clustering.md`, `regression.md`, `factorizations.md`, `time-series.md`, `information-flow.md`, `densities.md`, `complexity-measures.md`...
 
 The catalog grows organically — one family at a time, ratified by
 math-researcher, used by pathmaker on next-recipe-add to that family.

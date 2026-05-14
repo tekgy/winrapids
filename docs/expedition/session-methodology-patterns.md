@@ -209,6 +209,107 @@ Different mechanism, different failure mode, different antibody surface. Three s
 
 **Provenance**: 2026-05-12 Sweep 37 adversarial G-10 finding + navigator's "three independent instances" trail story. Standing harness lives at `R:\tambear\crates\tambear\tests\sweep_37_coefficient_bit_patterns.rs`. Discipline applies forward to every future sweep with polynomial recipes.
 
+### Sub-pattern 5.4 — Two-direction coefficient verification (2026-05-14 extension)
+
+**Single-direction bit-pattern checks are insufficient.** Sub-pattern 5.3 catches the case where a typo in a decimal literal is corrected by anchoring to a known-good hex. But it does NOT catch the case where the *hex itself* is wrong while the *comment* is right — verification looks at the hex (the operationally-relevant path) but never re-derives the hex from the canonical decimal string.
+
+**The failure mode** (caught 2026-05-14):
+
+Three independent bit-pattern errors found in pathmaker's post-crash recovery gamma.rs + lgamma.rs:
+1. `LANCZOS_BOOST_G` hex `0x4018194ABDF21E25` (decodes to 6.02469918051023) — comment said `6.024680040776729583740234375` (the canonical Boost g). Correct hex: `0x40181945B9800000`.
+2. `LN_PI_F64` hex `0x400250D048E7A1BD` (decodes to 2.2894597716988 = 2·ln(π)) — comment said `1.14472988584940017414e+00 = ln(π)`. Correct hex: `0x3FF250D048E7A1BD` (exponent off-by-one).
+3. `STIRLING_B3` hex `0xBF43813F509985B0` (decodes to -5.95241e-04) — comment said `-1/1680 ≈ -5.952380952380953e-4`. Correct hex: `0xBF43813813813814`.
+
+In each case the comment was correct (decimal literal preserved); only the hex was transcribed wrong. The original Sub-pattern 5.3 bit-pattern antibody (`hex.to_bits() == claimed_hex`) tautologically passes because it compares the wrong hex to the same wrong hex.
+
+**The extension**: every coefficient constant verified by BOTH directions:
+
+```rust
+#[test]
+fn coefficient_two_direction_verification() {
+    // Direction 1: hex decodes to expected value (Sub-pattern 5.3)
+    assert_eq!(LANCZOS_BOOST_G.to_bits(), 0x40181945B9800000);
+
+    // Direction 2: comment decimal → f64 round → same hex
+    // (This catches hex transcription errors that Direction 1 misses)
+    assert_eq!(LANCZOS_BOOST_G, 6.024680040776729583740234375_f64);
+    // OR via from_bits on the parsed decimal:
+    let from_decimal: f64 = "6.024680040776729583740234375".parse().unwrap();
+    assert_eq!(LANCZOS_BOOST_G.to_bits(), from_decimal.to_bits());
+}
+```
+
+For the decimal-→f64 round to be exact, the comment must contain enough digits (17+) that the IEEE 754 round-to-nearest is unambiguous. If the comment is only ~16 digits, the round-trip may produce a 1-ULP-different value — the test catches THIS too as a different failure mode (decimal precision insufficient for the bit pattern).
+
+**Methodological lesson on verification**: my Sweep 37 original verification ran in mpmath@80dps with the textual constant `LANCZOS_BOOST_G = 6.024680040776729583740234375` directly. mpmath converted the string to high precision, bypassing the hex. The verification PASSED but didn't exercise the operationally-relevant code path. Two-direction verification forces both paths to agree at the f64 boundary.
+
+**Discipline going forward**:
+- Every coefficient ships with BOTH `assert_eq!(C.to_bits(), 0xHEX)` AND `assert_eq!(C, decimal_literal_or_parse(decimal_string))`.
+- Comment decimal strings must have ≥17 significant digits (enough for unambiguous f64 round).
+- Verification scripts must read the hex AND independently re-compute the canonical decimal, then compare both → same f64.
+
+**Why this is its own sub-pattern**:
+- Sub-pattern 5.3 catches decimal→hex transcription errors (where the developer typed the decimal but the compiler truncated).
+- Sub-pattern 5.4 catches hex→hex transcription errors (where the developer typed the hex by hand and got an exponent bit wrong, or copy-pasted from the wrong source).
+
+Both happen in practice. Both are caught by the dual-direction check.
+
+**Provenance**: 2026-05-14 by math-researcher during gamma + lgamma + incomplete-gamma + incomplete-beta anchor sequence. Caught three independent bit-pattern errors in pathmaker's post-crash recovery work (which copied my Sweep 37 G-constant error verbatim). Audit method documented at `R:\tambear\campsites\20260514-incomplete-gamma-anchor\math-researcher\fdlibm_lgamma_bit_pattern_audit.py`. Discipline applies forward to every coefficient anchor.
+
+### Sub-pattern 5.5 — Orthogonal value-check antibody (2026-05-14 extension)
+
+**Bit-pattern compile-tests verify COEFFICIENT correctness, NOT ALGORITHM-FORM correctness OR THAT THE CONSTANT IS EVER USED.** Even with full Sub-pattern 5.4 (two-direction coefficient verification), the constants can be bit-perfect AND the algorithm form can use them wrong (or never exercise them).
+
+**The failure mode** (caught 2026-05-14):
+
+After Sub-pattern 5.4 caught three bit-pattern errors in pathmaker's gamma.rs + lgamma.rs (G constant, LN_PI, STIRLING_B3), the LN_PI fix was straightforward. But the team realized: the LN_PI bit-pattern test (`assert_eq!(LN_PI_F64.to_bits(), 0x3FF250D048E7A1BD)`) **only verifies the constant equals itself**. If the wrong hex was typed AND that wrong hex was copied into the test, the test would pass tautologically.
+
+The 1945/1945 test pass at the bug's first shipping was the empirical evidence: tests verified constants matched their declared bit patterns, but no test exercised `lgamma(x)` for x<0 (the only path that used LN_PI). The bug was silent — until math-researcher's empirical evaluation script ran the actual code path and discovered the wrong result.
+
+**The extension**: every recipe with a literature-anchored constant ships at least one test that exercises the algorithm at an input where the correct output is **independently derivable** from stdlib transcendentals + a different code path.
+
+Examples shipped 2026-05-14 by pathmaker at commit `92785e9`:
+
+```rust
+#[test]
+fn lgamma_negative_half_via_reflection() {
+    // EXTERNAL CHECK: lgamma(-0.5) = ln|Γ(-0.5)| = ln(2·√π)
+    // computed from stdlib math.log + math.sqrt, NOT from any tambear constant.
+    // This exercises the LN_PI reflection path; if LN_PI is wrong, the test fails.
+    let expected = (2.0_f64 * std::f64::consts::PI.sqrt()).ln();  // = ln(2·√π) ≈ 1.2655
+    let actual = lgamma(-0.5, p0());
+    assert!((actual - expected).abs() < 1e-14);
+}
+
+#[test]
+fn lgamma_negative_three_halves_via_reflection() {
+    // Similarly: lgamma(-1.5) = ln(4·√π/3) computed externally.
+    let expected = (4.0_f64 * std::f64::consts::PI.sqrt() / 3.0).ln();
+    let actual = lgamma(-1.5, p0());
+    assert!((actual - expected).abs() < 1e-14);
+}
+```
+
+**The discipline going forward**:
+- For every recipe with a "famous constant" (LN_PI, sqrt(2π), ln(2), digamma(1) = -γ, etc.), at least one test exercises the algorithm at an input where the answer is independently derivable from stdlib `math.log`, `math.sqrt`, `math.exp` — bypassing the chain of literature-anchored constants.
+- "Self-cross-checks" between sibling algorithms: `erf(0.5) + erfc(0.5) == 1.0` cross-checks erf and erfc.
+- "Limit-form checks": `digamma(1) == -EULER_GAMMA_LIMIT` where EULER_GAMMA_LIMIT is computed from the harmonic-sum limit, not looked up.
+- "Recurrence-shifted checks": `gamma(x+1) / x == gamma(x)` exercises the algorithm at two points with different code paths.
+
+**Why this is its own sub-pattern**:
+- 5.3 (bit-pattern compile-test): catches *decimal→hex* transcription errors at compile time.
+- 5.4 (two-direction verification): catches *hex→hex* transcription errors by checking both directions.
+- **5.5 (orthogonal value-check): catches algorithm-form errors where constants are right but used wrong, AND catches tautological self-bit-pattern tests, AND catches the "constant declared but never exercised" silent-bug class.**
+
+Three sibling antibody classes, three distinct failure tiers:
+- 5.3: constant declared with wrong literal value
+- 5.4: constant declared with right value but wrong bit pattern
+- 5.5: constant correct but algorithm uses it wrong OR no test path exercises it
+
+**Generalizes to**: every numerical recipe with literature-anchored constants. Especially load-bearing for recipes where the constants are NOT obviously famous (Pugh c8, fdlibm Remez refits — values that can't be cross-checked against simple mathematical identities).
+
+**Provenance**: 2026-05-14 by pathmaker during gamma + lgamma debug. Triggered by math-researcher's catch of the LN_PI bug (which was *technically* covered by Sub-pattern 5.4 but had no test path to expose it until math-researcher ran empirical evaluation against an independent oracle). Pathmaker shipped the two reflection-path antibody tests at commit `92785e9` immediately after the catch. Math-researcher's full-audit script `full_audit_92785e9.py` proved the discipline catches not just bit-pattern bugs but algorithm-form bugs by exercising constants through orthogonal paths. Discipline now applies forward to every numerical recipe with non-trivial constants.
+
 **Provenance**: Pattern named 2026-05-10 by navigator (tambear-sweep35) surfacing the structural finding that tasks #8 and #10 were `in_progress` with no running code; main-thread Claude named the pattern. Re-derived a discovery the prior arc had operationalized but not named. Lives now as the fifth methodology pattern.
 
 ---
@@ -570,6 +671,72 @@ The naturalist's CLAUDE.md discipline ("Past-me in the garden is substrate too �
 
 ---
 
+## Pattern 16 — Documentation decay is structurally invisible
+
+**Last verified against substrate**: 2026-05-14 by naturalist (current-journey-team). Four sub-shapes and four decay-resistance primitives verified against `~/.claude/garden/2026-05-12-the-document-and-its-substrate.md` (past-naturalist's meta-synthesis) and four contemporary instances observed in Sweep 37 substrate. **If reading after 2026-08**: sniff-test whether new instances since this date suggest a fifth sub-shape, and re-verify the four primitives against current substrate state. The pattern is itself subject to its own decay-shape; the strange-loop discipline (see § *The pattern applied to itself* below) requires periodic re-verification of the naming document, not just the documents the pattern names.
+
+**Recognition**: A document accurate at write-time can become false at read-time in structurally distinct ways — and *false documents look identical to true documents*. The format is the same, the confidence is the same, the detail-level is the same. The only difference is that the document's claim no longer matches substrate. Substrate-over-memory discipline (Pattern 2) catches this only if the reader has a *reason to check*. Most readers, most of the time, treat documents as authoritative because they're presented that way. The pattern names the family of decay shapes and the discipline (substrate-resistance primitives at write-time) that makes decay locally detectable rather than globally invisible.
+
+**The four sub-shapes** (each a distinct time-axis mismatch between document and substrate):
+
+| Sub-shape | Time-axis | Document says | Substrate says | Decay-resistance primitive |
+|---|---|---|---|---|
+| **Audit hallucination** | Past (write-time projection) | "X exists at Y with Z properties" | X never existed or has moved | **Verification provenance**: "as of YYYY-MM-DD via `<command>` returned `<output>`" |
+| **Stale-trigger bitrot** | Past (write-time forecast) | "when X happens, do Y" | X happened long ago (or won't happen) | **Dated trigger**: "when X happens (parked YYYY-MM-DD; X expected ~Q)" |
+| **Speculative documentation** | Future (intended-state-as-present) | "X is Y" | X *will be* Y; not yet | **Tense-marking**: "X will be Y" / "intended state: X is Y" / sectional separation of current-vs-target |
+| **Past-complete-described-as-in-progress** | Past (last-update stale) | "X is in flight (n/m)" | X completed (m/m landed) | **Last-verified line**: "Last verified against substrate: YYYY-MM-DD; if reading after YYYY-MM, re-verify before trusting" |
+
+All four are *document-state-decoupled-from-substrate-state*. All four have an explicit named-artifact fix that operationalizes substrate-over-memory at the document layer. None of the fixes are difficult; all are easy to *not* do. The cost is one line per claim; the savings is preventing citation-distance-compounded error.
+
+**Shape**:
+
+1. **A document makes a substrate claim** — about file contents, code state, in-flight migrations, deferred work, intended architecture, last-known progress.
+2. **The document does not carry its own decay-resistance primitive** — no verification command, no date, no tense-marker distinguishing present from intended, no last-verified line.
+3. **Time passes**; substrate moves; the document does not follow.
+4. **A reader consumes the document** and acts on its claim because the document looks authoritative and the reader has no signal to distrust it.
+5. **The action is built on a stale claim**; the error compounds with citation distance (the audit gets cited by a survey gets cited by a README gets cited by a sweep kickoff; extracting the error later requires tracing every citation).
+
+**The discipline (substrate-resistance primitives at write-time)**:
+
+When writing any document that describes substrate — audit, sweep README, architecture doc, methodology pattern, recipe-tree, decision record, design proposal, migration plan — include the appropriate primitive for each kind of claim:
+
+1. **Verification provenance for substrate claims**: when describing current substrate state, name the command and date that verified it. *"As of 2026-05-12: `find R:\tambear\crates -name '*.rs' | wc -l` = 487"*. Future-reader can re-run and detect drift.
+2. **Tense-marking for projected state**: when describing future or intended state, use future or conditional tense. Never present tense for projected state. *"Will contain"* / *"intended to contain"* / *"Target state (not yet built)"*. The grammar carries the time-axis.
+3. **Dated triggers for deferrals**: never bare *"when X happens"*; always *"when X happens (parked 2026-MM-DD; X expected ~Q2 2026)"*. The date gives future-reader a sanity check: if today is past the expected-completion date, sniff-test that the trigger hasn't already fired.
+4. **Last-verified line at the top of any document that describes evolving substrate**: *"Last verified against substrate: 2026-05-12; if reading after 2026-06, re-verify before trusting"*. Makes the decay-window explicit and operationalizes the reader's substrate-check.
+
+**Instances observed**:
+
+- 2026-05-12 (audit hallucination): Sweep 37 audit-doc § 4.5 claimed `winrapids/recipes/statistics/` contained 22 .rs files. Scout grepped disk; found 0 .rs files + 5 flat monoliths (~613K) elsewhere. The audit projected intended-end-state in present tense. Crystallized as Sub-pattern 2.1 (audit-substrate-recursion); the structural form is the audit-hallucination sub-shape of Pattern 16.
+- 2026-05-12 (stale-trigger bitrot): `jit/door.rs:470` says *"Kulisch-backed accumulators (when Sweep 3 lands)"*. Sweep 3 landed months ago. The trigger is past-conditional described as still pending; the sentinel is locally invisible because the file otherwise looks current. Caught by Pattern 14's sweep-close stale-sentinel cleanup discipline.
+- 2026-05-12 (speculative documentation): Sweep 38 audit-doc described `recipes/statistics/` as containing organized files when the actual substrate had monoliths. Scout's correction named the sub-shape: *"intended-end-state described in present tense as if current-state"*.
+- 2026-05-12 (past-complete-described-as-in-progress, the inverse): Sweep 8 STATE.md described 8H NonFiniteClaim migration as *"3/5 in flight"* when git showed all 5/5 had landed. The document captured a snapshot that became stale; the reader (naturalist's convergence-check entry) treated the stale snapshot as current and built a framing on top of it.
+- 2026-05-12 (naturalist's own entropies.md draft): naturalist wrote `R:\winrapids\docs\architecture\recipe-trees\entropies.md` after scout had already migrated the canonical recipe-trees to `R:\tambear\`. The draft also claimed a `NaivePairs` Grouping that doesn't exist in tambear's current `accumulate.rs` enum. Both errors are Pattern 16 instances at naturalist's own writing — audit-hallucination at the path layer + speculative-documentation at the enum layer. Self-caught when scout grepped tambear's accumulate.rs; honest archival record now lives at the winrapids path naming the failure mode.
+
+**Pairs with**:
+
+- **Pattern 2** (X-over-Y discipline) and its **Sub-pattern 2.1** (audit-substrate-recursion): Pattern 16 generalizes Sub-pattern 2.1 from "audit docs are substrate" to "all documents about substrate are substrate, with four distinct decay-modes." Pattern 2 names the discipline (substrate-over-document-claim); Pattern 16 names the *kinds* of decay that make the discipline necessary and the *primitives* that make the discipline cheap.
+- **Pattern 9** (substrate-seeding over passive referral): Pattern 16's decay-resistance primitives are substrate-seeding *inside the document itself*. Verification commands, dates, tense markers, last-verified lines are seeded substrate that prevents the passive-referral default of "future-reader will somehow notice the drift."
+- **Pattern 11** (the punt that ripens) and **Pattern 14** (sentinel-strategy): both use dated triggers as their substrate-resistance primitive. Pattern 16 unifies the "dated trigger" primitive across migration debt (sentinel sites) and bare deferred work (any prose mentioning future events).
+- **Pattern 12** (grep validates the abstraction): Pattern 12 catches decay in pattern-naming by cross-role grep; Pattern 16 is the broader family — Pattern 12's cross-role grep is the *substrate-check that fires the decay-resistance primitive*.
+- **Pattern 13** (cross-resolution convergence): past-substrate at one resolution converging with present-investigation at another resolution is the cross-time mechanism that catches decay across sessions — same shape applied across teammate boundaries (Pattern 12) and across time (Pattern 13).
+
+**When NOT to reach for it**:
+
+- When the document is short-lived and won't outlive substrate's stability window (a within-session note that will be read by one teammate within the hour doesn't need verification provenance).
+- When the substrate the document describes is *itself* permanent and immutable (a description of `IEEE 754 binary64` doesn't decay because the standard doesn't move).
+- When the document IS the specification — the substrate has no separate existence to drift from (per past-naturalist's March 15 `when-specs-learn-to-talk` entry: "If the `about` field becomes the ground truth for CONSISTENCY checks, then the documentation IS the specification" — at that point decay-resistance is structural, not added).
+
+**The Bit-Exact Trek meta-finding applied recursively**: the meta-finding from aristotle's expedition is *"promote convention to declaration via a named artifact."* Pattern 16's substrate-resistance primitives are exactly this move applied at the documentation tier. The convention: *"the document is presumed accurate; the reader trusts it."* The named-artifact declaration: *"the document is accurate as of YYYY-MM-DD via command X; if you're reading later, here's how to verify."* Same meta-move; new tier. Six tiers now carry the same shape: decision tier (Pattern 11), cache tier (provenance-addressed vs content-addressed), deconstruction-doc tier (Accept-clause amendment), team-routing tier (substrate-over-routing), contract tier (signed-zero-as-tier-permeating-contract), and now the documentation tier.
+
+**The three-month substrate trail** (Pattern 13 instance at maximum strength): past-Claude has named the parent principle across five entries between March 6 and March 26 — the principle has been in the corpus from sweep-31-ish onward. May 12's three-roles-three-sub-shapes crystallization is contemporary instance at the implementation-detail tier; the family-naming is what makes the principle operational at the team level. Past-naturalist's seven-entry day on 2026-05-12 (with `2026-05-12-the-document-and-its-substrate.md` as the meta-synthesis) is the substrate this pattern crystallizes from. The naturalist's contribution is **drawing the map that shows the principle, the three-month substrate trail, and the contemporary three-role crystallization are all the same thing at different resolutions**. Pattern 16 is the canonical methodology-doc form of that map.
+
+**The pattern applied to itself (strange-loop property)**: this methodology-doc entry is itself a document about substrate (the four sub-shapes, the contemporary instances, the decay-resistance primitives). The discipline applies to its own naming. The "Last verified against substrate" header line at the top of this entry is Pattern 16's discipline operationalized on Pattern 16's substrate claim. If a future-reader finds the four sub-shapes have grown to five, or finds the four primitives have grown to include a fifth (provenance-watermark, perhaps, or auto-regen-trigger), the strange-loop discipline says: include the new sub-shape with the same vocabulary, update the last-verified line, preserve the prior list as substrate trail. The pattern is load-bearing precisely *because* its application to its own naming produces the same kind of corrective artifact as its application to any other document. See `~/.claude/garden/2026-05-14-the-pattern-and-its-own-instance.md` for the strange-loop analysis (current-naturalist 2026-05-14) and `~/.claude/garden/2026-05-12-strange-loops-and-stopping-properties.md` for the underlying Hofstadter framing (past-adversarial 2026-05-12, antigen-on-antigen context).
+
+**Provenance**: Pattern named 2026-05-12 by naturalist (`~/.claude/garden/2026-05-12-the-document-and-its-substrate.md`) integrating three same-day sub-shape discoveries (main-thread's audit-hallucination Sub-pattern 2.1, scout's speculative-documentation entry, scout+naturalist's stale-trigger-bitrot fifth sub-shape) plus an inverse case (8H NonFiniteClaim past-complete-as-in-progress). Crystallized into the canonical methodology-doc form 2026-05-14 by naturalist (current-journey-team) after the candidate queue (`R:\tambear\campsites\20260512161050-methodology-pattern-candidate-queue\naturalist\notebooks\01-pattern-candidate-queue.md`) listed three crystallization options; navigator-candidate-queue lean was Option 1 (standalone Pattern 16); current-naturalist followed that lean. The three-month substrate trail (Pattern 13) anchors the principle in March 6 (`the-eyes-before-the-hands.md`), March 13 (`what-the-naturalist-sees.md`), March 15 (`when-specs-learn-to-talk.md` + `the-formatter-that-assumed-a-surface.md`), and March 26 (`copy-paste-epidemiology.md`).
+
+---
+
 ## How to use this doc
 
 **Reading it**: each pattern has a "Recognition" line at the top. Skim those when you arrive at a new session; if any feel-familiar to what's happening, the pattern may apply.
@@ -577,3 +744,5 @@ The naturalist's CLAUDE.md discipline ("Past-me in the garden is substrate too �
 **Adding to it**: when a new methodology pattern surfaces during a session, draft a new entry with the same shape (Recognition + Shape + Provenance + When-to-reach / When-not). The doc is living substrate, not a frozen reference.
 
 **Cross-references**: each pattern points at the docs / garden entries / CLAUDE.md sections that operationalize it. The pattern-doc is the recognition layer; the operational docs are the action layer.
+
+**Strange-loop test for new patterns**: when adding a new entry, ask — *would the pattern's author refuse to apply its own discipline to this naming-document?* If the answer is "the discipline doesn't apply here because this is the naming doc," the pattern may have a hidden exception that breaks its generality. Pattern 16 passes (last-verified header on its own entry); Pattern 11 passes (dated triggers on its own deferral language). Run the test at write-time, not as a post-hoc audit. Crystallized by naturalist 2026-05-14 from three concurrent instances of crystallizer-inside-the-structure-being-crystallized.

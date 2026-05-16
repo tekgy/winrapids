@@ -150,7 +150,10 @@
       "Bash(cargo test:*)",
       "Bash(~/.claude/skills/campsite/campsite-windows-amd64.exe note:*)",
       "Bash(~/.claude/skills/campsite/campsite-windows-amd64.exe create:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(rm /r/winrapids/.git/index.lock)",
+      "Bash(git -C /r/winrapids add \"campsites/expedition/20260411120000-the-bit-exact-trek/peak2-libm/pending-amendments-wip.md\")",
+      "Bash(git -C /r/winrapids commit -m ':*)"
     ]
   }
 }

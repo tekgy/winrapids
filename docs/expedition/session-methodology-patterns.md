@@ -620,6 +620,85 @@ Pattern 22's sub-shape 22.C (link-irreducible verification) is the relevant mode
 
 ---
 
+### Sub-pattern 5.11 — Anchor-stage value-check (2026-05-18 extension)
+
+*(Sub-pattern 5.8 remains reserved for dispatch-as-a-fourth-site held under Pattern 22's candidates; Sub-pattern 5.9 took 5.9 to preserve that reservation; Sub-pattern 5.10 took 5.10 to preserve that reservation; this anchor-stage value-check antibody takes 5.11.)*
+
+**Last verified against substrate**: 2026-05-18 by naturalist (current-journey-team). **If reading after 2026-08**: re-verify the dilogarithm + half-integer Bessel anchoring instances still hold (the bugs are fixed; the discipline-trail should still be in math-researcher's `tautological-antibody-scan.md`). The failure mode (anchor doc enshrining a wrong identity that propagates to test + impl via single-author lineage) is structural and persistent; the specific instances (dilogarithm sign / half-integer scale factor) will be replaced by new instances as new families anchor on top of existing recipes.
+
+**Anchor docs that claim closed-form identities or specific numerical values for a new recipe fail at a seventh orthogonal site beyond 5.3 / 5.4 / 5.5 / 5.6 / 5.7 / 5.9 / 5.10**: the *anchor-claimed value itself*. When the anchor-writer derives a closed-form identity from their own current reasoning and writes both the impl-target value AND the test-oracle value from the same derivation, the test-vs-impl agreement is *structurally guaranteed*. The bug propagates as a single-author lineage across anchor doc → impl → test, and downstream "antibodies" all agree because they share the wrong source.
+
+**The failure mode** (caught 2026-05-18 across two same-day instances):
+
+Sub-pattern 5.10 (architecture-assumption antibody) operates at anchor-construction tier — verify the *dependency surface* (existence + granularity). 5.11 operates at the *same anchor-construction lifecycle stage* but on a different axis: **verify the anchor's claimed numerical values against an independent oracle (mpmath @ 30+ dps) before committing the values to the anchor doc.** A wrong anchor produces a wrong impl that the wrong test (often co-authored) confirms. The catch-rate at this tier is structurally highest because the anchor is the upstream-most artifact in the chain; correctness propagates downstream automatically when the anchor is right.
+
+**The two instances** (math-researcher's 2026-05-18 trail; each link-irreducibly distinct):
+
+| # | Anchor's claimed identity / value | Reality on disk / mpmath | Recovery technique |
+|---|---|---|---|
+| 1 | Dilogarithm `Li_2(z>1)` inversion: `−π²/6 − (1/2)·ln²(z) − Li_2(1/z)` (anchor + impl + test all share this) | Correct: `+π²/3 − (1/2)·ln²(z) − Li_2(1/z)`. Verified via `mpmath.polylog(2, 2.0)` @ 30 dps. Sign flip + wrong constant. | Anchor-time mpmath query before committing the identity |
+| 2 | Half-integer Bessel scale: `J_{n+1/2}(z) = √(2/(πz)) · j_n(z)` (notebook 04 line 64; propagated to notebooks 05, 01, scout terrain map) | Correct (DLMF 10.47.3 rearranged): `J_{n+1/2}(z) = √(2z/π) · j_n(z)`. Verified by `J_{1/2}(2) = 0.513016...` vs wrong-formula's `0.256508...` | Anchor-time evaluation of one numerical value against mpmath |
+
+**The propagation surface** for Instance 2 makes it the canonical worked-example:
+
+- 2026-05-14: anchor-writer derives `J_{n+1/2}(z) = √(2/(πz)) · j_n(z)` in foundational notebook 04 (line 64)
+- 2026-05-14: copies to notebook 05 (line 185) as canonical antibody
+- 2026-05-14: scout terrain map (line 77) cites the canonical form
+- 2026-05-18 morning: copies to unified pathmaker-pickup anchor 01 (line 595)
+- 2026-05-18: pathmaker implements; tests pass (impl matches tautological anchor antibodies)
+- 2026-05-18: scientist/observer external oracle harness catches the bug because the impl is measured against an *independent* mpmath corpus, not against the in-anchor identity
+- 2026-05-18: pathmaker fixes the impl at commit `38c27f9`; math-researcher then audits and finds wrong formula in 3 of their own anchor docs + scout's terrain map
+- 2026-05-18: math-researcher corrects the anchor docs in-place with `CORRECTED 2026-05-18` comments + DLMF citation + verification line
+
+**The single mpmath evaluation that would have caught it** at notebook-04 origin: `mpmath.besselj(0.5, 2)` returns `0.513016136561828...`; the wrong-formula's value `0.256508...` differs by factor of 2 at the very first inputs. **Ten seconds of mpmath verification at notebook-04-write time would have prevented four days of substrate propagation + downstream impl + external-oracle catch chain.**
+
+**The antibody-strength hierarchy** (math-researcher's tier framework, 2026-05-18):
+
+Math-researcher named three tiers of antibody strength from the same session's work:
+
+- **Tier A (strongest): closed-form cross-recipe identity** — two recipes computed by different code paths agree via a known closed-form identity. Examples: 2F1(1/2, 1/2; 3/2; z²) = arcsin(z)/z (cross-recipe to arcsin); J_{n+1/2}(x) = √(2x/π) · j_n(x) (cross-recipe to spherical Bessel); Wronskian J_{v+1}·Y_v − J_v·Y_{v+1} = 2/(πx). **Why strongest**: each side computed by different code path; bug in either side breaks the identity; bug shared by both sides would have to be in the cross-recipe relation itself (rare; what `feels-familiar` + DLMF cross-check at anchor-write time catches).
+
+- **Tier B (strong): mpmath @ 50dps verified oracle values** — externally generated, correctly-rounded to f64. Example: bessel_jy oracle corpus at `oracle/bessel_jy/data/generated/canonical_landmarks/corpus.json` (with generator script committed alongside for re-derivation). **Why "strong" not "strongest"**: one-time verification at write; pathmaker copying values trusts math-researcher's mpmath script. Inline anchor values without generator script are weaker than corpus-with-script.
+
+- **Tier C (tautological, AVOID): closed-form `let expected = ...` using same primitives as impl** — test computes expected by re-applying same formula impl uses. Examples: dilogarithm `inversion_identity_positive` test (line 170-181) uses same wrong Kummer-like formula as impl. **Why dangerous**: structurally guaranteed to agree; verifies "impl is internally consistent with its own formula," not "impl is mathematically correct."
+
+The discipline prescription: **First preference Tier A, second preference Tier B + generator script, never Tier C.** The dilogarithm `z > 1` antibody battery was Tier C only (three agreeing-wrong tests around the impl bug); **one Tier A or Tier B test would have caught the bug immediately.**
+
+**The post-hoc audit** (math-researcher's retroactive tier-classification of seven 2026-05-18 anchors):
+
+Bessel J/Y unified, Hankel, 2F1 Kummer, 1F1 asymptotic, Airy Maclaurin, Gauss-Legendre, Lerch Phase 2 — all seven combine Tier A + Tier B antibodies; none are Tier-C-only. The discipline retroactively holds for the new generation of anchors; the failure mode was caught by retroactive scan, not by a new commit.
+
+**Why this is its own sub-pattern, not covered by 5.5 / 5.10**:
+
+- **5.5** (orthogonal value-check antibody at test/implementation tier): catches impl-output-vs-oracle mismatches. Operates *after* the recipe is implemented. 5.11 operates *before* the recipe is implemented, at anchor-write time. The same external-oracle-verification discipline, two lifecycle stages.
+- **5.10** (architecture-assumption antibody): verifies the dependency *surface* (does the function exist at the granularity needed?). Same anchor-construction lifecycle stage as 5.11 but a different axis. 5.10 asks *"does this function exist?"*; 5.11 asks *"do the claimed values match reality?"*. Both can fire on the same anchor; both have distinct recovery techniques.
+- **Together (5.5 + 5.10 + 5.11)**: form a *family-frame* — *"verify against external truth at the right granularity at the right lifecycle stage."* Three siblings, distinct stages (anchor-design / anchor-write / impl-test), distinct recovery techniques (signature-grep / mpmath-eval / orthogonal-value-check). The family is what math-researcher's tautological-antibody-scan calls "Sub-pattern 5.5 family."
+
+**The naming choice** (sibling slot vs merge):
+
+The three could have been compressed into one merged "Sub-pattern 5.5 family" pattern. They earn separate slots because the *recovery techniques* are link-irreducibly distinct (signature-grep vs mpmath-eval vs orthogonal-value-check), and *which technique applies when* depends on which lifecycle stage you're at. Compressing them loses the stage-vs-technique information that's load-bearing for *operational use*. Pattern 22's link-irreducibility discipline holds: each sibling catches a failure mode the others structurally cannot. Future-pathmaker reading the methodology-doc should be able to reach for the right discipline at the right stage; the three-sibling form makes that legible.
+
+**Pairs with**:
+
+- **Sub-pattern 5.5** (orthogonal value-check antibody at impl/test tier) — same external-oracle-verification discipline, different lifecycle stage. The pair frames the *implementation-tier vs anchor-tier* dual. Both apply; both are load-bearing.
+- **Sub-pattern 5.10** (architecture-assumption antibody) — sibling at the same anchor-construction lifecycle stage but a different axis. The pair frames the *value-check vs surface-check* dual. Both apply at anchor-write time; both have distinct recovery techniques.
+- **Sub-pattern 5.7** (three-site verification for algorithm-cluster anchors) — 5.7's Stage 1 (math derivation) is where 5.11 operates. 5.7 says *"verify the math is right"*; 5.11 sharpens this with *"verify by mpmath query against the specific values the anchor will claim, not by re-derivation in the same head."*
+- **Sub-pattern 5.9** (convention-translation antibody) — 5.9 catches form-choice between mathematically equivalent literature expressions. 5.11 catches *value-claim errors regardless of form-choice*. The dilogarithm sign bug is partly a 5.9 violation (the inversion-formula form has multiple branches with different signs) AND a 5.11 violation (the wrong sign was enshrined without numerical check). Both apply; they cross-reference.
+- **Pattern 22** (independence as precondition for corroboration) — 5.11's recovery technique (mpmath-as-independent-oracle) is Pattern 22's discipline applied at anchor-write time. The same author writing impl AND test AND anchor identity is canonical 22.B (author-axis single-source); the independent oracle is the cross-author-axis verification that Pattern 22 requires.
+
+**Worked examples in tambear** (verified 2026-05-18 by math-researcher):
+
+- **Dilogarithm `Li_2(z>1)` sign bug** (Instance 1): `crates/tambear/src/recipes/special/dilogarithm.rs` line 89 (impl) + lines 170-181 (test 1) + lines 244-247 (test 2) all share the wrong `-π²/6` constant where the correct value is `+π²/3`. Three tests, all wrong together; baseline 3017/0/0 passed before the bug was discovered. Math-researcher caught while constructing Polylog `|z|>1` anchor (Instance 2 of Sub-pattern 5.10's three-instance trail); root cause is documented at `R:\tambear\campsites\special\20260516182022-bessel-j-y-impl\math-researcher\insights\20260518-tautological-antibody-scan.md` § Instance 1.
+- **Half-integer Bessel scale propagation** (Instance 2): wrong `J_{n+1/2}(z) = √(2/(πz)) · j_n(z)` propagated through 3 math-researcher anchor docs + scout terrain map from 2026-05-14 origin until pathmaker hit it at impl time + scientist/observer external-oracle caught it. Fixed in commit `38c27f9`. Anchor docs corrected in-place with `CORRECTED 2026-05-18` comments. Largest single-instance demonstration of anchor-stage 5.11 failure mode to date.
+
+**Per-anchor discipline** (math-researcher's framing): every anchor doc that claims a numerical value or closed-form identity ships with the mpmath verification trail in the doc itself. The verification arrives *with the anchor*; it isn't a separate audit pass. Anchors without specific value-claims (pure structural decompositions) don't need a 5.11 section. **For every named identity in an anchor, one mpmath evaluation at representative inputs is the discipline — ten seconds at write-time, structurally invariant across the recipe's lifetime.**
+
+**Operational-ratification candidate watchpoint**: math-researcher's tautological-antibody-scan doc + the corrected anchor docs (notebooks 04, 05, 01 with `CORRECTED 2026-05-18` comments) are the operational artifacts of 5.11 already running. If pathmaker's next anchor pickup explicitly cites the tier-A/B/C framework in choosing antibodies, that's the first cross-role operational ratification of 5.11. Watch for it.
+
+**Provenance**: 2026-05-18 by math-researcher (across two same-day anchor-construction instances: dilogarithm sign + half-integer Bessel scale) + navigator (naming the discipline in routing as *"the 'checking anchor against external truth before committing to the framing' discipline you named is exactly Sub-pattern 5.5 applied at the anchor-writing stage rather than the implementation stage."*). Naturalist crystallized the methodology-doc form 2026-05-18 late-afternoon after reading math-researcher's full tautological-antibody-scan and confirming the placement at antibody-tier sibling to 5.10 (same anchor-construction lifecycle stage, distinct axis) rather than merging into one pattern. The pattern earns its Sub-pattern 5.11 slot via the two-instance + link-irreducible-recovery-axes structure (Pattern 22.C) + the post-hoc tier-A/B/C audit showing the discipline retroactively holds for seven new anchors. Substrate-trail at `R:\tambear\campsites\special\20260516182022-bessel-j-y-impl\math-researcher\insights\20260518-tautological-antibody-scan.md` (343 lines, both instances + tier-A/B/C framework + retroactive audit).
+
+---
+
 ## Pattern 6 — Temporal seam in async teamwork
 
 **Recognition**: In an async team where the team-lead and a teammate are working on related threads, the lag between team-lead's guidance message being sent and the teammate's inbox reading it is *structurally* important. The teammate may have shipped substantive work in the gap. When guidance and work converge after-the-fact, the convergence is itself evidence that the substrate is shared at a deeper level than the messages indicate.
@@ -1880,7 +1959,7 @@ If only observer's entry had surfaced the family, Pattern 22 would be undercryst
 
 **Held candidates downstream of Pattern 22** (per aristotle's F16 + 2026-05-16/18 updates):
 
-- **Sub-pattern 5.8** (dispatch-as-a-fourth-site): one instance (Task #17 V4 CF-non-convergence fall-through). Hold; ripening trigger is a second instance. (Note: Sub-pattern 5.9 was crystallized 2026-05-16 for convention-translation antibody, jumping the 5.8 slot; Sub-pattern 5.10 was crystallized 2026-05-18 for architecture-assumption antibody, also jumping the 5.8 slot. The 5.8 reservation persists — when the dispatch-as-a-fourth-site ripens, it takes the next available slot 5.11.)
+- **Sub-pattern 5.8** (dispatch-as-a-fourth-site): one instance (Task #17 V4 CF-non-convergence fall-through). Hold; ripening trigger is a second instance. (Note: Sub-pattern 5.9 was crystallized 2026-05-16 for convention-translation antibody, jumping the 5.8 slot; Sub-pattern 5.10 was crystallized 2026-05-18 for architecture-assumption antibody, also jumping the 5.8 slot; Sub-pattern 5.11 was crystallized 2026-05-18 late-afternoon for anchor-stage value-check antibody, also jumping the 5.8 slot. The 5.8 reservation persists — when the dispatch-as-a-fourth-site ripens, it takes the next available slot 5.12.)
 - **Sub-shape 22.D candidate** (temporal-axis): now has *two* instances — aristotle's F21 (2026-05-16, four-instance Feb/Feb/Mar/May trail) AND Pattern 23's Sub-shape 23.D ratification (2026-05-18, observer's April 2 → May 12 re-derivation across two months by the same role). Pattern 23's crystallization moves 22.D from one-instance to two-instance. Ripening trigger now downgraded: a *third* instance establishes the temporal-axis sub-shape with full corroboration. **Recommend 22.D crystallize at next instance** rather than waiting for a fourth.
 - **F22.E sub-pattern candidate** (feels-familiar-before-methodology-writing): now has *two* instances — aristotle's F22 (2026-05-16, original) AND naturalist's 2026-05-17 + 2026-05-18 Pattern 23 crystallization sequence (where `feels-familiar` surfaced past-Claude's April taxonomy *before* writing, preventing re-derivation at lower resolution). Ripening trigger: third instance ripens; **recommend crystallize at next instance** as the discipline is operating cross-role and cross-session.
 - **F23 sub-pattern candidate** (reader-side decay at intra-document scale): one instance (aristotle's F23 from 2026-05-16, extending Pattern 16 from writer-side to reader-side via Ebbinghaus framing). Hold; ripening trigger is a second instance where reader-side decay (vs writer-side decay) is load-bearing for the diagnosis.

@@ -2295,6 +2295,20 @@ Apply to this watchpoint itself: was the *operational-ratification measurement d
 
 The strange-loop holds: this entry's own crystallization is `existing-discipline`-class (the measurement-pattern was running, fragmentarily, in naturalist's own work); the entry makes the unification explicit so future-naturalist (and future-aristotle) can extend the watchpoint without re-deriving the framing.
 
+### Empirical confirmation (F46, shipped 2026-05-18 late-evening)
+
+Aristotle's F46 (`R:/tambear/campsites/session-20260518/20260518123521-coordination/aristotle/insights/F46-empirical-retroactive-pattern-23-scan.md`) ran the retroactive scan of winrapids commits pre-April 5 and found **at least 14 distinct Pattern 23-class fixes shipped in winrapids commits 2026-04-03** without Pattern 23 vocabulary. Three commits (`a86187b`, `585df6f`, `b1e0643`) contain Reformulation / Threshold-Bailout / Regularized-Limit-class fixes — the disciplines were operating in production *without explicit vocabulary*, ~6 weeks before Pattern 23's May 18 crystallization and before naturalist's April 5-type taxonomy too.
+
+This **empirically confirms Reconstruction 10**: the May 18 Pattern 23 entry made an already-running discipline *legible*, not *operational*. The fix-disciplines existed in team behavior at least 6 weeks before crystallization.
+
+**What this changes for the watchpoint**:
+
+- **Multi-recipe ratification (Pattern 23 watch)**: the *naming* spread across recipes within hours. The *discipline* was already cross-recipe for months. Fast-spread is *vocabulary diffusion*, not *discipline adoption*.
+- **Multi-anchor ratification (Sub-pattern 5.10 watch)**: math-researcher's three same-day instances aren't "adoption of 5.10" — they're the *first explicit application* of an architecture-assumption check that was previously running implicitly when authors verified dependencies before relying on them.
+- **Cross-role ratification (Sub-pattern 5.11 watch)**: math-researcher's tier-A/B/C framework is the *first explicit naming* of a check that was previously running implicitly in adversarial / observer oracle-construction practice.
+
+The unified watchpoint's *descriptive proportion* is empirically ratified by F46. The *prescriptive proportion* (the disciplines being held as canonical at methodology-doc tier) still ratifies on cross-role adoption signals.
+
 ### Held downstream candidate
 
-If F46 (retroactive Reformulation-class scan pre-April 5) confirms Reconstruction 10 empirically, this entry's Provenance section gets a fifth citation. If F46 surfaces nuance (e.g., the unnamed discipline ran at *some* recipe families but not others), the watchpoint refines accordingly. F46 is aristotle/scout's lane.
+F46 has shipped; further empirical scans (e.g., extending pre-March 2026 + cross-checking other failure-class disciplines) could deepen the corroboration but aren't blocking. Aristotle's F-series at F50 (`F50-five-source-convergence-on-naming-makes-checkable.md`) provides additional multi-tier corroboration of the watchpoint's content via five link-irreducible sources (F45 inward + naturalist's lift to past-me 2026-04-10 + F46 empirical + naturalist's math-researcher-candidates insight + Pattern 32 held candidate). The convergence is content-corroboration, not adoption-ratification — both are valid evidence-tiers for the watchpoint per the new descriptive-vs-prescriptive split.

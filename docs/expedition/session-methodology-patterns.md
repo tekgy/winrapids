@@ -6,6 +6,53 @@
 
 ---
 
+## How to read pattern entries: descriptive vs prescriptive components + crystallization class
+
+**Added 2026-05-18 by naturalist** operationalizing aristotle's F45 deconstruction. Substrate-trail: F45 (`R:\tambear\campsites\session-20260518\20260518123521-coordination\aristotle\insights\F45-operational-ratification-as-vocabulary-as-coordination-protocol.md`) + past-Claude's 2026-04-10 `naming-makes-checkable.md` (the principle at recipe-tier) + past-Claude's 2026-03-13 `names-are-not-derivable.md` (the principle at vocabulary-tier).
+
+Every methodology pattern entry below sits on two orthogonal type-axes that change how it should be read and how its success should be measured.
+
+### Type-axis 1 — Descriptive vs prescriptive (gradient, not binary)
+
+Every pattern has both **descriptive components** (what running discipline this pattern makes legible) and **prescriptive components** (what new discipline this pattern proposes adoption of), in different proportions.
+
+- **Mostly-descriptive patterns** (e.g., Pattern 23 boundary-taxonomy) document fix-classes the team was already triaging without explicit names. The pattern's prose makes the *implicit categorization* explicit. Success-test: *accuracy* — does the description match observable team behavior at retroactive scan?
+- **Mostly-prescriptive patterns** (e.g., Sub-pattern 5.11 anchor-stage value-check) propose disciplines the team is being *invited* to adopt. The pattern's prose tells the team to do something they weren't reliably doing. Success-test: *adoption* — does the discipline appear in production work across multiple roles + sessions after crystallization?
+- **Mixed patterns** (most patterns, in practice) carry both: Pattern 22 (corroboration) is descriptive of how the team already corroborates AND prescriptive of how to corroborate when in doubt. Pattern 23 is descriptive of bug-classes AND prescriptive of fix-ranking (Reformulation > Regularized-Limit > Threshold).
+
+The gradient matters because **conflating success-tests produces noisy signals**. A mostly-descriptive pattern doesn't need adoption evidence to be ratified — it needs accuracy evidence. A mostly-prescriptive pattern needs adoption evidence and the accuracy bar is lower (the discipline didn't exist before; you can't retroactively scan for it).
+
+Each entry below carries (when revisited) an estimated *Descriptive component %* and *Prescriptive component %*; together they sum to 100. Patterns crystallized before 2026-05-18 may not yet have explicit proportions; naturalist will annotate as time permits.
+
+### Type-axis 2 — Crystallization class (entry-creation metadata)
+
+Every pattern entry, at the moment of crystallization, is one of:
+
+- **`existing-discipline`** — the pattern crystallizes a discipline that was *already running* in team behavior, often across multiple roles and weeks. The crystallization *unmasks* the discipline so it can be cited, transferred, and audited. Aristotle's F45 Reconstruction 10 framing: *crystallization makes the implicit explicit*. Past-Claude's 2026-04-10 framing: *naming makes a concept checkable.*
+- **`proposed-new-discipline`** — the pattern crystallizes a discipline that did *not* yet exist in observable team behavior. The crystallization is a *proposal*; adoption is the open question. Sub-pattern 5.11 is the closest current example — math-researcher's tier-A/B/C value-check framework was running in math-researcher's own work but was not a cross-role discipline before the crystallization invited it to become one.
+- **`mixed`** — the pattern crystallizes a discipline that was *partly* already running (in some roles / contexts) and *partly* being newly proposed for adoption elsewhere. Most non-trivial methodology patterns fall here.
+
+The crystallization class is *creation-act metadata* — it describes the pattern's birth event, not its current content. A pattern crystallized as `existing-discipline` can still have prescriptive elements (Type-axis 1); the crystallization class only describes whether the birth event was unmasking-or-proposing.
+
+### Why both axes matter
+
+Type-axis 1 (content) tells you *which parts* of the pattern's prose are documentation vs proposal. Type-axis 2 (creation) tells you *what kind of event* the pattern's first appearance was. They're orthogonal: a `existing-discipline` crystallization can have prescriptive content (Pattern 23 ranks fix-disciplines prescriptively even though it crystallized an existing taxonomy); a `proposed-new-discipline` crystallization can have descriptive grounding (Sub-pattern 5.11 grounds its proposal in two concrete failure-instances).
+
+Together, the two axes resolve a recurring confusion: *"is this pattern ratified?"* The right answer depends on which axis you're asking about. *"Is its accuracy ratified?"* → check retroactive evidence of the discipline running. *"Is its adoption ratified?"* → check forward instances of citation in cross-role + cross-session production work.
+
+### Reading patterns through this lens
+
+When you encounter a pattern entry below:
+
+1. Identify the descriptive/prescriptive proportion (estimate if not annotated)
+2. Identify the crystallization class (existing-discipline / proposed-new / mixed)
+3. Read the prose with the corresponding success-test in mind
+4. If the pattern has an *operational-ratification watchpoint* (see the unified entry at the end of this doc), the watchpoint applies *only to the prescriptive proportion* of the pattern — the descriptive proportion ratifies on accuracy, not on watchpoint instances
+
+This framework was created to make the reading more precise; it isn't a new ratification gate. Existing patterns remain valid as-is; the lens helps future-Claude (and reviewers) ask the right question of each entry.
+
+---
+
 ## Pattern 1 — Lens-application docs
 
 **Recognition**: A foundational lens (a structural insight that connects multiple instances) spawns N downstream "application" docs, each applying the lens to a specific question.
@@ -126,6 +173,9 @@
 ---
 
 ## Pattern 5 — Antibodies precede their antigens
+
+**Type-axis 1**: ~30% descriptive (documents the substrate practice already running in tambear work) / ~70% prescriptive (proposes concurrent design as the canonical discipline).
+**Type-axis 2 (crystallization class)**: `mixed` — the concurrent-design discipline was running in parts of the team (adversarial pre-sweep work) but the cross-role proposal to make it canonical was new.
 
 **Terminology note**: "antigen" here is the immunology metaphor — the code-under-test is the antigen (the surface that may carry a bug), the test/audit/lint is the antibody (what catches it). This is NOT a reference to the `antigen-rs` crate at `R:\antigen\` (a tambear *consumer*, imported locally, governed by its own adoption log per `team-briefing.md` §"Antigen team in parallel"). Both meanings coexist in the project intentionally — antigen-rs the crate gave us the vocabulary; the immunology metaphor is what makes the pattern memorable. When reading docs that use "antigen": code-under-test = the metaphor; library-imported-as-dep = the crate.
 
@@ -257,6 +307,9 @@ Both happen in practice. Both are caught by the dual-direction check.
 **Provenance**: 2026-05-14 by math-researcher during gamma + lgamma + incomplete-gamma + incomplete-beta anchor sequence. Caught three independent bit-pattern errors in pathmaker's post-crash recovery work (which copied my Sweep 37 G-constant error verbatim). Audit method documented at `R:\tambear\campsites\20260514-incomplete-gamma-anchor\math-researcher\fdlibm_lgamma_bit_pattern_audit.py`. Discipline applies forward to every coefficient anchor.
 
 ### Sub-pattern 5.5 — Orthogonal value-check antibody (2026-05-14 extension)
+
+**Type-axis 1**: ~20% descriptive (the orthogonal-check discipline was running in some adversarial test design) / ~80% prescriptive (proposes per-recipe orthogonal-value-check antibody as canonical).
+**Type-axis 2 (crystallization class)**: `proposed-new-discipline` — the antibody class was not running cross-role before crystallization; first cross-role operational ratification was the bessel_jy half-integer fix on 2026-05-18.
 
 **Bit-pattern compile-tests verify COEFFICIENT correctness, NOT ALGORITHM-FORM correctness OR THAT THE CONSTANT IS EVER USED.** Even with full Sub-pattern 5.4 (two-direction coefficient verification), the constants can be bit-perfect AND the algorithm form can use them wrong (or never exercise them).
 
@@ -541,6 +594,9 @@ This single sentence is the antibody. Pathmaker reading the anchor sees the conv
 
 ### Sub-pattern 5.10 — Architecture-assumption antibody (2026-05-18 extension)
 
+**Type-axis 1**: ~40% descriptive (math-researcher's three same-day anchor-construction instances exhibit the discipline already running within-author) / ~60% prescriptive (proposes the discipline as cross-author canonical at anchor-construction time).
+**Type-axis 2 (crystallization class)**: `mixed` — the within-author discipline was running (math-researcher's own anchor-doc construction); the cross-author proposal is the new component.
+
 **Last verified against substrate**: 2026-05-18 by naturalist (current-journey-team). **If reading after 2026-08**: re-verify the three-instance trail and check whether new instance-classes have emerged. Anchor-doc construction discipline evolves with the team's vocabulary; the *failure mode* (anchor depending on assumed-but-not-actual dependency surface) is structural and persistent, but the *recovery techniques* (signature-grep / existence-grep / oracle-independence) may need new siblings as new dependency-failure axes surface.
 
 **Anchor docs depend on other recipes' capabilities, and the dependency must be verified at the granularity the anchor will actually consume — not at the family-name level.** Group-level summaries ("bessel_i is shipped," "we have quadrature") hide function-level limitations ("only n=0,1 is shipped," "no quadrature primitive exists at all"). The discipline: every anchor doc with a cross-recipe dependency includes an *architecture-assumption check* in its preamble — `grep` for the actual `pub fn` signature, verify the specific capability exists at the granularity needed, and cite the verification.
@@ -616,11 +672,14 @@ Pattern 22's sub-shape 22.C (link-irreducible verification) is the relevant mode
 
 **Provenance**: 2026-05-18 by math-researcher (across three same-day anchor-construction instances: Airy fractional Bessel; Polylog `|z|>1` dilogarithm; Lerch Phase-2 quadrature) + navigator (coinage "architecture-assumption antibody"; "when an anchor depends on another recipe's capability, verify the specific function signature, not the family name"). Naturalist crystallized the methodology-doc form 2026-05-18 afternoon after substrate-verifying the three instances on disk (`bessel_i.rs` confirmed `bessel_i0/i1` only; `grep` confirmed no `quadrature` primitive in `crates/tambear/src/`; Polylog dilogarithm sign-bug routed to adversarial). The pattern earns its Sub-pattern 5.10 slot via the same-day three-instance + link-irreducible-failure-axes structure (Pattern 22.C). Substrate-trail at math-researcher's three anchor docs + navigator's coinage in 2026-05-18 messaging.
 
-**Operational-ratification candidate watchpoint**: Pattern 23 was used in production code within hours of crystallization (per `insights/20260518-pattern-23-ratified-in-production-within-hours.md`). If 5.10's vocabulary ("architecture-assumption check") appears in another anchor doc within a week, this is the second instance of the operational-ratification candidate held downstream of Pattern 22 / Pattern 23. Watch for it.
+**Operational-ratification watchpoint** (multi-anchor projection): see the unified entry *"Operational-ratification watchpoint (cross-tier fractal projection)"* at the end of this doc. This sub-pattern's instance signals the *multi-anchor* tier (math-researcher's three anchor docs of 2026-05-18 are the anchoring within-author instances; cross-author would be another anchor doc citing 5.10's vocabulary explicitly). Per crystallization class (`existing-discipline` for the within-author trail; `proposed-new-discipline` for the cross-author adoption), the watchpoint applies to the prescriptive proportion of 5.10 (the *cross-role adoption* of the architecture-assumption check) and accuracy-tests the descriptive proportion (the *math-researcher's already-running discipline*) via retroactive trail of past anchor docs.
 
 ---
 
 ### Sub-pattern 5.11 — Anchor-stage value-check (2026-05-18 extension)
+
+**Type-axis 1**: ~25% descriptive (math-researcher's tautological-antibody-scan retroactively audits 7 anchors and shows the discipline was running implicitly in some anchors) / ~75% prescriptive (proposes anchor-stage mpmath verification as canonical for every named identity).
+**Type-axis 2 (crystallization class)**: `proposed-new-discipline` for cross-role adoption (within-role math-researcher discipline was already running but cross-role discipline wasn't yet established at crystallization time).
 
 *(Sub-pattern 5.8 remains reserved for dispatch-as-a-fourth-site held under Pattern 22's candidates; Sub-pattern 5.9 took 5.9 to preserve that reservation; Sub-pattern 5.10 took 5.10 to preserve that reservation; this anchor-stage value-check antibody takes 5.11.)*
 
@@ -693,7 +752,7 @@ The three could have been compressed into one merged "Sub-pattern 5.5 family" pa
 
 **Per-anchor discipline** (math-researcher's framing): every anchor doc that claims a numerical value or closed-form identity ships with the mpmath verification trail in the doc itself. The verification arrives *with the anchor*; it isn't a separate audit pass. Anchors without specific value-claims (pure structural decompositions) don't need a 5.11 section. **For every named identity in an anchor, one mpmath evaluation at representative inputs is the discipline — ten seconds at write-time, structurally invariant across the recipe's lifetime.**
 
-**Operational-ratification candidate watchpoint**: math-researcher's tautological-antibody-scan doc + the corrected anchor docs (notebooks 04, 05, 01 with `CORRECTED 2026-05-18` comments) are the operational artifacts of 5.11 already running. If pathmaker's next anchor pickup explicitly cites the tier-A/B/C framework in choosing antibodies, that's the first cross-role operational ratification of 5.11. Watch for it.
+**Operational-ratification watchpoint** (cross-role projection): see the unified entry *"Operational-ratification watchpoint (cross-tier fractal projection)"* at the end of this doc. This sub-pattern's instance signals the *cross-role* tier (math-researcher's tautological-antibody-scan + corrected anchor docs are within-role operational artifacts; pathmaker or scout citing the tier-A/B/C framework in choosing antibodies for a new anchor would be the first cross-role operational ratification). Per crystallization class (`proposed-new-discipline` for cross-role adoption), the watchpoint's adoption test is the *right* success-test for the cross-role proportion; the descriptive-proportion (math-researcher's within-role discipline already running) is ratified by the existence of the tautological-antibody-scan + corrected anchors substrate.
 
 **Provenance**: 2026-05-18 by math-researcher (across two same-day anchor-construction instances: dilogarithm sign + half-integer Bessel scale) + navigator (naming the discipline in routing as *"the 'checking anchor against external truth before committing to the framing' discipline you named is exactly Sub-pattern 5.5 applied at the anchor-writing stage rather than the implementation stage."*). Naturalist crystallized the methodology-doc form 2026-05-18 late-afternoon after reading math-researcher's full tautological-antibody-scan and confirming the placement at antibody-tier sibling to 5.10 (same anchor-construction lifecycle stage, distinct axis) rather than merging into one pattern. The pattern earns its Sub-pattern 5.11 slot via the two-instance + link-irreducible-recovery-axes structure (Pattern 22.C) + the post-hoc tier-A/B/C audit showing the discipline retroactively holds for seven new anchors. Substrate-trail at `R:\tambear\campsites\special\20260516182022-bessel-j-y-impl\math-researcher\insights\20260518-tautological-antibody-scan.md` (343 lines, both instances + tier-A/B/C framework + retroactive audit).
 
@@ -1761,6 +1820,9 @@ Past-naturalist named the team-tier machine; past-aristotle named the cognitive-
 
 ## Pattern 22 — Independence as precondition for corroboration
 
+**Type-axis 1**: ~60% descriptive (the team was already corroborating through multi-axis convergence; Pattern 22 makes the independence requirement explicit) / ~40% prescriptive (proposes link-irreducibility as the discipline test for when corroboration is real vs apparent).
+**Type-axis 2 (crystallization class)**: `existing-discipline` for the multi-axis-convergence baseline; `mixed` for the link-irreducibility discipline (some roles operated it implicitly, some did not).
+
 **Last verified against substrate**: 2026-05-15 by naturalist (current-journey-team). **If reading after 2026-08**: re-verify by checking whether the team's verification disciplines still distinguish *independent measurement* from *correlated measurement*. The corruption mode this pattern names is structurally invisible in routine work — only audits or pressure-tests surface it. If the team has stopped explicitly asking "are these two sources actually independent?" the pattern has decayed.
 
 **Recognition**: When two or more sources agree on a claim, the agreement is **only evidence** if the sources are structurally independent. Agreement between sources that share a common failure mode (same author, same upstream artifact, same calibration, same theoretical frame, same mental state at the same time) is **not corroboration** — it's one measurement reported twice. The structural shape: *"separate identity is what makes agreement informative"* (past-naturalist, 2026-03-14).
@@ -1974,6 +2036,9 @@ If only observer's entry had surfaced the family, Pattern 22 would be undercryst
 
 ## Pattern 23 — The five-type boundary taxonomy (denominator / convergence / cancellation / equipartition / structural-Fock)
 
+**Type-axis 1**: ~70% descriptive (past-Claude April 2 had the complete taxonomy; current-team May fragments rediscovered it independently; the team was already triaging bugs through this taxonomy without explicit names) / ~30% prescriptive (the *ranking* — Reformulation > Regularized-Limit > Threshold+Bailout — is genuinely prescriptive; proposes fix-discipline ordering not implicit before crystallization).
+**Type-axis 2 (crystallization class)**: `existing-discipline` for the taxonomy itself (past-Claude resolution + current-team independent fragments confirm pre-crystallization existence); `proposed-new-discipline` for the ranking sub-component. Aristotle's F46 (retroactive Reformulation-class scan pre-April 5) is the empirical accuracy test.
+
 **Last verified against substrate**: 2026-05-18 by naturalist (current-journey-team). **If reading after 2026-08**: re-verify by checking whether the team's boundary-handling disciplines still distinguish *which type of boundary* a failure mode represents (vs treating "numerical edge case" as a single undifferentiated category). The taxonomy's value is the per-type fix-discipline; if fixes are being applied generically without naming the type, the pattern has decayed back to its pre-crystallization state and the team is rediscovering the types instance-by-instance.
 
 **Recognition**: A method produces wrong answers (or fails to produce answers) at the edge of its parameter space, function class, or input domain. The instinct is "numerical edge case, add a guard." The pattern says: **boundary failures partition into five structurally distinct types, each with a distinct fix-discipline.** Calling all five "edge cases" loses the structure that says *which* fix applies. Naming the type is the first step toward the right fix.
@@ -2150,7 +2215,7 @@ The `38c27f9` commit also contains a clean **Sub-pattern 5.5 self-naming** at it
 
 - **Sub-shape 23.E candidate** (combinatorial-explosion-as-Type-5): when a method's computational cost is exponential in input size, that *is* a Type 5 structural boundary at the time-resource tier. Anchoring instances: brute-force vs Barnes-Hut for N-body (`Ω(N²)` vs `O(N log N)`); brute-force determinant vs LU (`O(N!)` vs `O(N³)`). Held; ripening trigger is naming a *third* anchoring instance where the cost-boundary diagnosis surfaces the fix-discipline before the implementer hits the wall.
 - **Sub-pattern 23.x candidate** (consumer-routes-on-V-type): the consumer-side discipline corresponding to V-column production. When a recipe ships V_denominator, V_convergence, V_cancellation, V_equipartition, V_structural, the consumer's discipline is to route on the type that's signaling, not on a scalar confidence. Held; ripening trigger is a documented case where consumer routed on wrong V-type and produced a worse outcome than routing on the right one.
-- **Operational-ratification candidate** (cross-pattern): a methodology pattern is *operationally ratified* when another role uses its vocabulary for decision-making (not just citation) in production work within a short window of crystallization. Three instances today across two patterns (Pattern 23 × 2 in airy + bessel_jy commits; Sub-pattern 5.5 × 1 in bessel_jy commit half-integer fix). All same-day; same-day clustering may be single-day noise. Held; ripening trigger is a *fourth* instance distributed across at least one more session.
+- **Operational-ratification watchpoint** (multi-recipe projection): see the unified entry *"Operational-ratification watchpoint (cross-tier fractal projection)"* below. This sub-shape's instance signals the *multi-recipe* tier (Pattern 23 vocabulary appearing in two different recipe families' commit messages within hours of crystallization; Sub-pattern 5.5 vocabulary self-cited in commit message half-integer fix). Per crystallization class (Pattern 23 is `existing-discipline` for the underlying taxonomy; the *ranking* discipline — Reformulation > Regularized-Limit > Threshold — is `proposed-new-discipline`), the watchpoint applies to the prescriptive proportion (the ranking's adoption) and the descriptive proportion (the taxonomy accuracy) is ratified retroactively by past Reformulation-class fixes pre-April 5.
 
 ---
 
@@ -2163,3 +2228,73 @@ The `38c27f9` commit also contains a clean **Sub-pattern 5.5 self-naming** at it
 **Cross-references**: each pattern points at the docs / garden entries / CLAUDE.md sections that operationalize it. The pattern-doc is the recognition layer; the operational docs are the action layer.
 
 **Strange-loop test for new patterns**: when adding a new entry, ask — *would the pattern's author refuse to apply its own discipline to this naming-document?* If the answer is "the discipline doesn't apply here because this is the naming doc," the pattern may have a hidden exception that breaks its generality. Pattern 16 passes (last-verified header on its own entry); Pattern 11 passes (dated triggers on its own deferral language). Run the test at write-time, not as a post-hoc audit. Crystallized by naturalist 2026-05-14 from three concurrent instances of crystallizer-inside-the-structure-being-crystallized.
+
+---
+
+## Operational-ratification watchpoint (cross-tier fractal projection)
+
+**Status**: One unified watchpoint; replaces three previously-separate candidates (Pattern 22/23 multi-recipe; Sub-pattern 5.10 multi-anchor; Sub-pattern 5.11 cross-role). Crystallized 2026-05-18 by naturalist operationalizing aristotle's F45 deconstruction.
+
+**Type-axis 1 (descriptive ~30% / prescriptive ~70%)**: descriptive of an *observed phenomenon* (the methodology doc's vocabulary diffuses into production work at multiple tiers); prescriptive of an *adoption-test discipline* (use the cross-tier fractal projection as the success-test for prescriptive-component-proportions of patterns).
+
+**Type-axis 2 (crystallization class: `existing-discipline`)**: this watchpoint is the unmasking of a measurement-pattern that naturalist had been running fragmentarily across three separate candidate-entries. Aristotle's F45 made the unification legible; the watchpoint discipline itself was already running.
+
+### What it watches
+
+**One signal**: running-discipline-becomes-vocabulary-becomes-citable-protocol across roles + time.
+
+**Three measurement scales** (fractal projections of the one signal):
+
+| Scale | Signal shape | First observed instance | Status |
+|---|---|---|---|
+| **Multi-recipe** | Same methodology vocabulary appears in two different recipe families' commit messages within hours of crystallization | Pattern 23 in airy commit `b3fbb0c` + bessel_jy commit `38c27f9` (same day, same vocabulary) | 3 instances 2026-05-18 (Pattern 23 ×2 + Sub-pattern 5.5 ×1); held for 4th instance distributed across at least one more session |
+| **Multi-anchor** | Methodology vocabulary appears in another anchor doc within a week, in a different family | Sub-pattern 5.10 vocabulary in math-researcher's three same-day anchor docs (within-author baseline) | Held for first cross-author anchor doc citing 5.10's "architecture-assumption check" framing |
+| **Cross-role** | Methodology vocabulary appears in a different role's work as decision-routing language (not just citation) | Sub-pattern 5.11 framework operationally embedded in math-researcher's own tautological-antibody-scan + 7 anchor audit (within-role baseline) | Held for pathmaker / scout citing tier-A/B/C framework in choosing antibodies for a new anchor |
+
+The three scales are *fractal projections of one phenomenon* (per F45 Reconstruction 8): same vocabulary-as-coordination-protocol diffusion process at three different measurement granularities.
+
+### What success looks like (per crystallization-class)
+
+**For `proposed-new-discipline` patterns + the prescriptive proportion of `mixed` patterns**:
+
+Success = the watchpoint fires at the appropriate tier. A prescriptive pattern about cross-recipe decisions ratifies when the multi-recipe scale fires; a prescriptive pattern about anchor-construction ratifies when the multi-anchor scale fires; a prescriptive pattern about cross-role coordination ratifies when the cross-role scale fires. Different prescriptive patterns naturally project at different tiers; the right tier for each is whichever scale the discipline is *meant to coordinate at*.
+
+The operationally-tractable proxy is the *instance-count + session-distribution* criterion (e.g., "fourth instance distributed across at least one more session"). This proxy is *biased* — it favors patterns whose adoption produces measurable artifacts (commit messages, anchor docs); patterns whose adoption is invisible (e.g., changes to how a role *thinks* without changes to what they write) will read as un-ratified even when adopted.
+
+**For `existing-discipline` patterns + the descriptive proportion of `mixed` patterns**:
+
+Success = *accuracy* — retroactive substrate-scan confirms the discipline was running unnamed in past team behavior. Aristotle's F46 candidate (scan git log for Reformulation-class fixes pre-April 5) is the empirical test for Pattern 23's descriptive accuracy. If multiple instances of the discipline are visible pre-crystallization, the descriptive proportion is ratified by existence, not by adoption.
+
+### Why one watchpoint, not three
+
+Per F45 Reconstruction 10: **patterns make visible disciplines that were already running in team behavior; crystallization is unmasking, not certifying adoption**. The three measurement scales are all measuring the same underlying phenomenon — the vocabulary's diffusion as legibility-of-running-discipline. Conflating them as separate watchpoints implied they were measuring *different* phenomena; the unification makes the actual structure visible.
+
+The operationally-tractable proxy is the same across all three scales: count instances + check session-distribution. The substantive difference is *which tier* the count is at (recipes / anchors / roles).
+
+### Provenance
+
+- **F45** (aristotle, 2026-05-18) — the deconstruction that unified the three separate candidates. Phase 8 produced the empirical task (F46 retroactive scan) that would *strengthen* this watchpoint by confirming the underlying claim (Reconstruction 10).
+- **Past-Claude 2026-04-10 `naming-makes-checkable.md`** (scout) — the underlying principle at recipe-tier: "*naming is not a convenience. It's a correctness mechanism. The vocabulary of the code determines what the code can check about itself.*" F45 lifts this principle from code-constructs to methodology-patterns.
+- **Past-Claude 2026-03-13 `names-are-not-derivable.md`** (main-thread) — the deepest formulation: "*names are editorial decisions, not technical derivations. The vocabulary transfers; the understanding persists.*"
+- **Naturalist's afternoon insight 2026-05-18** (`R:\tambear\campsites\session-20260518\20260518123521-coordination\naturalist\insights\20260518-evening-math-researcher-candidates-already-named.md`) — recursive evidence: past-me framings were already operationally load-bearing for current-team work; current-team was reaching for less-resolved versions until naturalist surfaced past-me.
+- **Naturalist's F45 response** (`R:\tambear\campsites\session-20260518\20260518123521-coordination\naturalist\insights\20260518-F45-response-and-typology-substrate.md`) — the operational acceptance + edit-scope substrate that produced this entry.
+
+### Pairs with
+
+- **Pattern 22** (independence as precondition for corroboration): cross-role evidence at the cross-role scale of this watchpoint is link-irreducible per Pattern 22.C if the cross-role instances satisfy independence.
+- **Pattern 23** (boundary taxonomy): the operational-ratification log within Pattern 23's entry is the canonical instance of multi-recipe-scale ratification.
+- **Pattern 16** (documentation decay): this watchpoint is the *write-time* phenomenon that Pattern 16 catches at the *read-time decay* of. Pattern 16's last-verified discipline applies to this entry too (last verified: 2026-05-18).
+- **Sub-pattern 5.10 + 5.11**: this watchpoint's two non-multi-recipe scales were extracted from these sub-patterns' previously-separate watchpoint candidates; both sub-patterns now point here.
+- **F45 + F46**: aristotle's F-series substrate is the substrate-trail for this watchpoint's unification.
+
+### Strange-loop test
+
+This watchpoint says: methodology vocabulary diffuses from the doc into production work at three tiers; the diffusion is evidence the discipline was already running.
+
+Apply to this watchpoint itself: was the *operational-ratification measurement discipline* running before naturalist crystallized it as three separate candidates? Yes — naturalist had been carrying the three candidates as held-watchpoints for ~4 days (Pattern 23 watchpoint since 2026-05-18 morning; Sub-pattern 5.10 watchpoint since 2026-05-18 afternoon; Sub-pattern 5.11 watchpoint since 2026-05-18 late-afternoon). The unification surfaces the discipline at the right tier; aristotle's F45 made the unification legible.
+
+The strange-loop holds: this entry's own crystallization is `existing-discipline`-class (the measurement-pattern was running, fragmentarily, in naturalist's own work); the entry makes the unification explicit so future-naturalist (and future-aristotle) can extend the watchpoint without re-deriving the framing.
+
+### Held downstream candidate
+
+If F46 (retroactive Reformulation-class scan pre-April 5) confirms Reconstruction 10 empirically, this entry's Provenance section gets a fifth citation. If F46 surfaces nuance (e.g., the unnamed discipline ran at *some* recipe families but not others), the watchpoint refines accordingly. F46 is aristotle/scout's lane.

@@ -458,6 +458,87 @@ The shape: **N orthogonal verification axes where each catches what the others c
 
 ---
 
+### Sub-pattern 5.9 — Convention-translation antibody (2026-05-16 extension)
+
+*(Sub-pattern 5.8 was previously reserved for dispatch-as-a-fourth-site under Pattern 22's held candidates; this convention-translation antibody takes 5.9 to preserve that reservation.)*
+
+**Last verified against substrate**: 2026-05-16 by naturalist (current-journey-team). **If reading after 2026-08**: re-verify the six-anchor cross-section that motivated this still applies. Tambear's anchor practice may have evolved; the failure mode (equivalent-form mismatch silently producing wrong answers) is structural and persistent, but the specific instances (Boost x-=1 shift; wrapper-vs-regime split; F13.C branch convention) will be replaced by new convention pitfalls as new families are anchored.
+
+**Algorithm-anchor docs that translate a mathematical fact from a literature source (Boost / A&S / DLMF / paper) into a recipe implementation fail at a sixth orthogonal site beyond 5.3 / 5.4 / 5.5 / 5.6 / 5.7**: the *equation form*. Two mathematically equivalent forms of the same fact produce the same numerical answer at the anchor's truncation but differ catastrophically at the implementation's working precision. Coefficient-level antibodies (5.3 / 5.4) are blind to the choice; orthogonal-value antibodies (5.5) can mask it; the only catch is *derivation-pinning at anchor time*.
+
+**The failure mode** (caught 2026-05-16 in digamma anchor):
+
+The asymptotic expansion of ψ(x) has at least two equivalent forms in the literature:
+
+- **Standard**: `ψ(x) ≈ ln(x) - 1/(2x) - Σ_k B_{2k}/(2k · x^{2k})`
+- **Boost's `x -= 1` shift**: `ψ(x) ≈ ln(x-1) + 1/(2(x-1)) - Σ_k B_{2k}/(2k · (x-1)^{2k})`
+
+The Bernoulli coefficients are identical. The signs are different (`-1/(2x)` vs `+1/(2(x-1))`) because the shift changes the form, not the math. A pathmaker reading the anchor and seeing `+1/(2y)` in Boost-style code who *expects* `-1/(2x)` from the standard form would patch the `+` to `-` and silently break the function by O(1/x).
+
+Six anchors today (digamma, trigamma, erfinv, Lambert W, 1F1, Bessel K) each contained at least one such convention pitfall. **6/6** independent recipes with the same failure mode at the anchor-translation layer. The universality is the corroboration.
+
+**The discipline**: every algorithm-anchor doc has an explicit **"Section 9: convention pitfalls"** (or equivalent) that:
+
+1. Names the form chosen (Boost's vs A&S's vs DLMF's).
+2. Names the equivalent form NOT chosen and what would change if you used it.
+3. Derives the chosen form's specific terms (which sign on 1/(2y); which side of the shift; which branch convention) with one or two lines of arithmetic.
+4. If the alternative form would silently produce wrong answers, says so explicitly. The pathmaker should be able to verify the derivation in 30 seconds while reading the anchor.
+
+**The catalog of convention pitfalls** (instances from 2026-05-16 anchors):
+
+- **Asymptotic shifts**: standard vs Boost's `x -= 1` (digamma); same family in trigamma and Bessel K
+- **Recurrence direction**: forward J_n / backward J_n (Miller's algorithm — must run backward for convergence)
+- **Reflection conventions**: `ψ(1-x) - ψ(x) = π·cot(πx)` vs `ψ(x) + ψ(1-x) = -...` (sign-on-cot trap)
+- **Series in (x/2)² vs x²**: same series, different convention; Bessel I uses (x/2)² small-x
+- **Branch cut conventions** for complex log / sqrt — `arg(z) ∈ (-π, π]` vs `[0, 2π)`
+- **FMA vs separated-multiply-add** for high-precision evaluation — same coefficients, different evaluation form, different ULP
+- **Multi-file dispatch wrapper-vs-regime-impl split**: trigamma's wrapper file applied a shift; missing the wrapper produced wrong-by-design implementations (instance form: anchor-translation discipline must verify the *full call-stack*, not just the inner regime implementation)
+- **Halley fallback vs pure rational**: Boost's erfinv regimes 4-7 use pure rational; scipy uses pure rational everywhere. Tambear chose Halley fallback. The choice changes the recipe-form materially even when coefficients agree.
+- **Kummer transformation as convention**: which of 15 Kummer transformations to apply where (1F1 anchor — not form, *when to apply*).
+- **F13.C branch as convention**: Lambert W's branch parameter is non-defaultable; scipy/MATLAB use signed convention; Boost uses explicit; tambear uses enum. Choice changes the recipe's signature.
+
+**Why this is its own sub-pattern, not covered by 5.3/5.4/5.5/5.6/5.7**:
+
+- **5.3** (bit-pattern antibody): coefficient literal verification at the bit level. Blind to form choice when bits agree.
+- **5.4** (two-direction verification): hex ↔ decimal round-trip. Verifies the literal matches what was written; blind to whether the *equation* the literal is plugged into is right.
+- **5.5** (orthogonal value-check): computes the value through an independent path. Catches "wrong combination of right numbers" at a value-tier; convention pitfalls produce *consistent-wrong* answers at the value-tier, so 5.5 catches them only if the orthogonal path happens to use the alternate form (lucky).
+- **5.6** (kingdom-routing): routes the antibody by kingdom. Convention pitfalls span kingdoms; 5.6's routing doesn't help disambiguate convention.
+- **5.7** (three-site verification): verifies math / form / combine sites of an algorithm cluster. Convention pitfalls happen at the *form* site, so 5.7 partially covers them — but 5.7's algorithm-cluster verification asks "does each stage match the gold-standard's stage?", not "did we pick the right *kind* of form when multiple equivalent forms exist?" Convention-translation antibody asks the latter; the form-site of 5.7 asks the former.
+
+**Where it bites hardest**: when the alternate form's behavior at the *anchor's tested inputs* matches the chosen form within the anchor's precision budget. The bug surfaces at *other* inputs not in the anchor's test set. Per-recipe correctness tests pass; production fails on unrelated regimes. Without an explicit derivation pinning the choice, the test set's silence is mistaken for correctness across the recipe's full domain.
+
+**Pairs with**:
+
+- **Sub-pattern 5.7** (three-site verification): 5.7's Stage 2 (algorithm form) is where convention-translation lives. 5.8 sharpens 5.7's Stage 2 with the discipline of explicit form-derivation in the anchor doc. Together: 5.7 verifies the algorithm form *matches* the gold-standard's form; 5.8 verifies the gold-standard's form *is* what the anchor doc claims it is.
+- **Sub-pattern 5.5** (orthogonal value-check): 5.5 catches value-tier discrepancies when the orthogonal path happens to use a different form; 5.8 catches form-tier discrepancies *directly* by anchor-doc discipline. 5.5 is a value-tier antibody; 5.8 is a documentation-tier antibody.
+- **Pattern 16** (documentation decay is structurally invisible): convention-translation is the *write-time* tier of Pattern 16's failure family — Pattern 16 catches docs that decay; 5.8 catches docs that were written without sufficient form-derivation in the first place.
+
+**The substrate-trail across math-researcher's six anchors (2026-05-16)**:
+
+Six anchor docs shipped 2026-05-16 by math-researcher, each containing at least one explicit "convention pitfalls" section (or equivalent). The universality across genuinely different mathematical objects (digamma / trigamma / erfinv / Lambert W / 1F1 / Bessel K) is the corroboration. Source: `R:\tambear\campsites\session-20260516\20260516162534-coordination\math-researcher\20260516-convergence-check-six-anchors.md` § Finding 4.
+
+The discipline emerged independently in each anchor — math-researcher didn't write a "convention pitfalls" template first and copy it; each anchor's pitfall section was written to address that anchor's specific form choices. **6/6 anchors. Zero exceptions. That's the corroboration math-researcher's convergence-check named.**
+
+**Why this is genuinely a new pattern, not math-researcher's reasoning attractor**:
+
+Per F17.B amendment to Pattern 22 (past-Claude is one source): if math-researcher's six anchor convergences were *only* math-researcher's writing, this would be intra-source self-similarity, not corroboration. But the underlying *fact* — that mathematically equivalent forms exist for every algorithm cluster and choice matters at implementation precision — is non-Claude reality. The fact is corroborated by the entire history of numerical analysis (Boost vs A&S vs DLMF disagree on which form to expose; FPDiff [ISSTA 2020] found 125 bugs that include form-discrepancies between libraries; R blog Jan 2026 documents CRAN packages failing due to libm-version form changes producing 1 ULP differences). The non-Claude corroboration is *the structural property of the literature itself*: equivalent forms exist, choice changes implementation behavior, no library that has solved this problem has solved it without explicit form-pinning.
+
+**Generalizes to**: every algorithm-anchor port from external literature. The catalog grows with each new family.
+
+**Worked example: digamma anchor (2026-05-16)**:
+
+Pathmaker shipped digamma at HEAD `5c19541`. Math-researcher's anchor doc (`R:\tambear\campsites\20260516-digamma-polygamma-anchor\math-researcher\notebooks\01-digamma-anchor.md` § 10) contained:
+
+> *"Boost uses `x -= 1` before applying the asymptotic. The standard form has `-1/(2x)` for `y = x`. After Boost's shift, `y = x - 1` and the term becomes `+1/(2y)`. If you read the standard form and copy the `-` sign without re-deriving for the shifted variable, you produce a wrong answer by O(1/x) at every x."*
+
+This single sentence is the antibody. Pathmaker reading the anchor sees the convention pitfall explicitly; the implementation uses Boost's form correctly. Without this sentence, the convention pitfall would have been invisible at coefficient-bit-level inspection and produced a silent O(1/x) error across the recipe's full domain.
+
+**Strange-loop self-application**: this Sub-pattern's own crystallization satisfies its own discipline at the methodology-doc tier. Pattern 22 (independence-as-corroboration) and F17.B (past-Claude is one source) are the conventions of methodology-pattern verification. This Sub-pattern's substrate-citation strategy makes the choice explicit: math-researcher's six within-session anchors are not six independent sources (one author / one session); they are samples of one source faithfully reflecting non-Claude reality (the form-choice problem is structural in numerical analysis). The corroboration is the non-Claude fact + math-researcher's faithful noticing of it. Without the explicit framing, this pattern's promotion to Sub-pattern 5.8 would be vulnerable to F17.B's self-citation critique.
+
+**Provenance**: 2026-05-16 by math-researcher across six anchor docs and one convergence-check report. Seed at `R:\tambear\campsites\session-20260516\20260516162534-coordination\math-researcher\notebooks\02-convention-translation-antibodies-seed.md`; convergence-check confirmation at `…\math-researcher\20260516-convergence-check-six-anchors.md` § Finding 4. Naturalist crystallized the methodology-doc form 2026-05-16 evening after substrate-survey of math-researcher's six anchors and cross-check against FPDiff (ISSTA 2020) and R blog (Jan 2026) for non-Claude corroboration. The naturalist's outside-inspiration note at `R:\tambear\campsites\session-20260516\20260516162534-coordination\naturalist\20260516-outside-inspiration-r-blog-fpdiff.md` traces the non-Claude substrate-trail.
+
+---
+
 ## Pattern 6 — Temporal seam in async teamwork
 
 **Recognition**: In an async team where the team-lead and a teammate are working on related threads, the lag between team-lead's guidance message being sent and the teammate's inbox reading it is *structurally* important. The teammate may have shipped substantive work in the gap. When guidance and work converge after-the-fact, the convergence is itself evidence that the substrate is shared at a deeper level than the messages indicate.
@@ -1573,7 +1654,106 @@ When verifying a translation chain (e.g., gold-standard algorithm ported into ta
 
 Documented at aristotle's F16 deconstruction (this session's coordination campsite). Operationalized as Sub-pattern 5.7 (three-site verification for algorithm-cluster anchors).
 
-**Why three sub-shapes, not one**:
+### Sub-shape 22.E — Cross-recipe identity as recipe-family corroboration (2026-05-16 extension)
+
+**Last verified against substrate**: 2026-05-16 by naturalist (current-journey-team). **If reading after 2026-08**: re-verify the six-anchor cross-section that motivated this still applies; the recipe-family structure may have evolved with new family additions (csqrt / casin / catan / hypergeometric families coming).
+
+*(Sub-shape 22.D was held for the temporal-axis candidate from aristotle's F21; this cross-recipe-identity sub-shape takes 22.E to preserve that reservation.)*
+
+**Pattern 22's discipline ("agreement is evidence only when sources are structurally independent") applies in stronger form at the recipe-family tier**: a per-recipe correctness test confirms the recipe returns the right number; a cross-recipe identity test confirms the recipe *fits into the family's structure*. The second is corroboration in Pattern 22's sense — the recipe is checked through an independent path (another recipe + a mathematical identity coupling them).
+
+**Distinct from existing 22.A/B/C/D sub-shapes**:
+
+- **22.A** (false convergence from shared source): the source-independence axis at the recipe-family tier is satisfied by *which recipe couples to which other recipe via what identity*. Each cross-recipe identity is a distinct path. The corroboration is robust against shared-source critique because the identity itself is a non-Claude mathematical fact.
+- **22.B** (substrate-cross-check collapse from shared author): not applicable directly; the recipe-family corroboration mode is structurally orthogonal to author-diversity.
+- **22.C** (link-irreducible verification): cross-recipe identity is one specific implementation of 22.C at the recipe-family tier — each identity is a link-irreducible verification surface that uses a *different mathematical fact* than the per-recipe correctness test uses.
+- **22.D candidate** (temporal-axis): not applicable; 22.E lives at the recipe-family tier, orthogonal to temporal-distribution of evidence.
+
+**The shape**:
+
+For every recipe R in a family F (e.g., F = special functions), R should have at least one cross-recipe identity test coupling R to another recipe R' ∈ F via a closed-form mathematical identity. The identity is *independent of* R's per-recipe correctness test (different paths to the same number). The discipline: **every new recipe anchor in a family includes at least one cross-recipe identity antibody, even when it feels redundant with per-recipe tests.**
+
+**Why "redundant" is the point**:
+
+A per-recipe test verifies the recipe produces the right number at chosen inputs against an oracle (mpmath, Boost, paper). A cross-recipe identity test verifies the recipe *and* another recipe agree on the closed-form coupling between them. If either is wrong, the identity test fails. If only one is wrong, per-recipe tests pass (the oracle agrees with the wrong recipe; the wrong recipe agrees with itself); only the cross-recipe identity test surfaces the mismatch with the family.
+
+Spherical Bessel example (2026-05-16): the implementation's per-recipe correctness against mpmath passed, but the cross-recipe Wronskian identity (`j_l · y_{l+1} - j_{l+1} · y_l = -1/x²`) caught a sign error that the anchor doc had `+1/x²`. The mismatch lived in the *family's gap*, not in any single recipe. Only the cross-recipe identity could surface it.
+
+**Catalog of cross-recipe identities (instances from 2026-05-16 six-anchor convergence)**:
+
+| Recipe | Cross-recipe couplings | Identity used |
+|---|---|---|
+| digamma ψ(x) | ↔ lgamma | ψ = d/dx lgamma (numerical derivative) |
+| trigamma ψ'(x) | ↔ digamma | ψ' = d/dx ψ (numerical derivative) |
+| erfinv | ↔ erf | erf(erfinv(p)) = p (round-trip) |
+| Lambert W | ↔ exp | w·exp(w) = z (definitional inversion) |
+| 1F1 Maclaurin | ↔ erf | M(1/2, 3/2, -z²) = √π·erf(z)/(2z) (analytical) |
+| Bessel K | ↔ Bessel I | I·K' - I'·K = 1/x (Wronskian) |
+
+**Six anchors, six cross-recipe couplings.** Zero exceptions. The universality is the corroboration (with non-Claude reality being the actual ratifier: special functions form families that have closed-form identities between members, by the structural properties of analytic continuation and functional equations).
+
+**The discipline** (anchor-doc requirement):
+
+Every new recipe anchor includes a section "Cross-recipe identity antibodies" that:
+
+1. Names at least one recipe R' the new recipe R couples to.
+2. Names the closed-form identity I(R, R') = 0 connecting them.
+3. Provides a test that verifies the identity at representative inputs.
+4. If the family has multiple cross-recipe identities (e.g., Bessel K couples to Bessel I via Wronskian AND to Bessel K' via derivative), prefers two independent identities — each catches a different family-gap failure mode.
+
+**Build-order discipline** (math-researcher's framing):
+
+When implementing a recipe, find the cross-recipe identity *first*. Build it as the load-bearing antibody, not as an afterthought. The identity test gates the recipe's promotion to the family. Per-recipe tests confirm the recipe is internally correct; the identity test confirms the recipe is family-correct.
+
+**Why this is genuinely Pattern 22 corroboration, not intra-source self-similarity**:
+
+Math-researcher writing six anchors today is one source. Per F17.B amendment, six anchors written by one author in one session are six samples of one source's reasoning attractor. But the corroboration target is *not* math-researcher's reasoning — it is **the mathematics of special function theory**. The fact that cross-recipe identities exist (Wronskians, derivative chains, round-trip identities, reflection identities) is a property of the analytic structure of special functions, established over centuries by independent mathematicians. Math-researcher's role is *noticing* the identities, not *generating* them.
+
+The six anchors faithfully reflecting the structure is single-author confirmation; the structure itself is the non-Claude corroboration. The two together satisfy Pattern 22.
+
+**Pairs with**:
+
+- **Sub-pattern 5.9** (convention-translation antibody): 5.9 catches form-mismatch at the anchor-translation tier; 22.E catches form-mismatch at the recipe-family tier. Math-researcher named the sibling structure: *"The cross-recipe identity catches form-mismatch at the family level. Same failure mode at different scales; same remedy structure (more antibody coverage where the verification is independent)."*
+- **Pattern 22** (independence as precondition for corroboration): 22.E is the recipe-family-tier instance of Pattern 22's principle. Pattern 22 names the discipline; 22.E names the specific form the discipline takes when corroborating recipe correctness within a family.
+- **Sub-pattern 5.5** (orthogonal value-check): 5.5 is value-tier orthogonality; 22.E is family-tier orthogonality. Both compute through independent paths; the path-independence is the antibody.
+- **Pattern 10** (infrastructure-not-per-recipe): Pattern 10 says build infrastructure once and every recipe inherits. 22.E is the recipe-family-level analog: build cross-recipe identities once per family and every recipe inherits the corroboration.
+
+**Generalizes to**: every recipe family. Special functions today; statistical distributions tomorrow (CDF/PDF/quantile/MGF couplings); ODE solvers further out (energy preservation, symplectic invariants, time-reversal); ML primitives (gradient-forward / gradient-backward chain rule as cross-primitive identity); music theory (Tonnetz transformations, voice-leading invariants).
+
+**Distinction from FPDiff (ISSTA 2020) and differential-testing literature**:
+
+FPDiff does *cross-library* differential testing (gsl ↔ scipy ↔ mpmath ↔ jmat) — synonyms between libraries are tested for disagreement. 22.E does *within-library cross-recipe* identity testing (digamma ↔ lgamma in *tambear*) — identities within the family are tested. The two are orthogonal:
+
+- FPDiff finds disagreements *between* implementations of the same function across libraries. Catches bugs that affect only one library.
+- 22.E finds disagreements *between recipes within the same library* that should satisfy a closed-form identity. Catches bugs at the family's gaps.
+
+A bug that affects multiple libraries equally would survive FPDiff but be caught by 22.E (if a cross-recipe identity exposes it). A bug in only one library would survive 22.E (if both recipes in the family share the bug) but be caught by FPDiff. **The two methodologies are complementary; neither subsumes the other.**
+
+**Worked example: spherical Bessel Wronskian sign (2026-05-16)**:
+
+The anchor doc claimed the Wronskian identity `j_l · y_{l+1} - j_{l+1} · y_l = +1/x²`. Pathmaker's implementation faithfully reproduced the anchor; per-recipe tests against mpmath passed (mpmath was consulted at write-time and agreed with the implementation). But mpmath at 50dps directly evaluating the Wronskian gives `-1/x²`. The cross-recipe identity test (running `j_l`, `y_{l+1}`, `j_{l+1}`, `y_l` and asserting the identity) caught the sign mismatch: implementation and anchor doc were self-consistent (same sign convention), but the family's structure (the true Wronskian sign) disagreed.
+
+Without 22.E, the bug would have shipped invisible at the per-recipe correctness tier and surfaced only when downstream code depending on the family's structure observed wrong behavior.
+
+**Strange-loop self-application**: this Sub-shape's own promotion to methodology-doc satisfies its own discipline. The promotion isn't justified by math-researcher's six within-session anchors alone (per F17.B, one-author-one-session = one source). The promotion is justified by the six anchors + the non-Claude mathematical structure (cross-recipe identities exist by special function theory) + the orthogonality argument (22.E is structurally distinct from 5.5 / 5.7 / FPDiff). The corroboration is genuinely multi-axis, including non-Claude axes. The pattern instantiates itself at its own naming-decision: cross-recipe-identity-discipline applied recursively to methodology-discipline-promotion.
+
+**Provenance**: 2026-05-16 by math-researcher across six anchor docs + one convergence-check report + one garden entry. Garden entry at `~/.claude/garden/2026-05-16-cross-recipe-identity-antibodies.md` (math-researcher's voice). Convergence-check at `R:\tambear\campsites\session-20260516\20260516162534-coordination\math-researcher\20260516-convergence-check-six-anchors.md` § Finding 1. Naturalist crystallized the methodology-doc form 2026-05-16 evening after substrate-survey + cross-check against FPDiff (ISSTA 2020) for non-Claude corroboration of the orthogonality argument. Outside-inspiration note at `R:\tambear\campsites\session-20260516\20260516162534-coordination\naturalist\20260516-outside-inspiration-r-blog-fpdiff.md`.
+
+**Why four sub-shapes, not three**:
+
+22.A, 22.B, 22.C name the principle at three axes of *one-instance* corroboration (verifying a single claim through independent paths). 22.E names the principle at the *family-tier* (verifying recipe correctness through the family's cross-couplings). 22.D candidate (temporal-axis) is held; if it ripens, the family extends to five sub-shapes spanning two orthogonal dimensions:
+
+| Sub-shape | Tier | Axis of shared failure | Recovery discipline |
+|---|---|---|---|
+| 22.A (False convergence) | one-instance | Source axis (same upstream artifact) | Independent third measurement |
+| 22.B (Cross-check collapse) | one-instance | Author axis (same authoring mind) | Reference implementation in different framework |
+| 22.C (Link-irreducible verification) | one-instance | Verification-link axis (same decomposition site) | Link-irreducibility audit |
+| 22.D candidate (Temporal-axis) | one-instance | Time axis (same session / same campaign) | Cross-session corroboration |
+| 22.E (Cross-recipe identity) | recipe-family | Family-gap axis (same family-mathematical structure) | Cross-recipe identity test |
+
+Each sub-shape's recovery discipline addresses a *different* dimension of independence. All current sub-shapes are needed for full corroboration in their respective tier.
+
+**Why three sub-shapes, not one** (original Pattern 22 reflection at 22.A/B/C tier):
 
 22.A, 22.B, and 22.C name the same principle (independence-as-corroboration-precondition) at three distinct axes:
 
@@ -1617,9 +1797,13 @@ If only observer's entry had surfaced the family, Pattern 22 would be undercryst
 
 **Provenance**: Pattern named **2026-05-15 by naturalist (current-journey-team)** integrating four-role contemporary substrate (observer + math-researcher/pathmaker + aristotle + naturalist's own three-site crystallization) AND six past-Claude resolutions across three months (March 14 / March 15 / March 26 / April 6 / April 10 / May 14). The pattern is past-Claude's principle, crystallized at the methodology-doc tier by the four-role contemporary convergence on May 15. Sub-shape attribution: 22.A = observer; 22.B = math-researcher/pathmaker (collaboratively across two days, anchor + workup); 22.C = aristotle. Naturalist's contribution: surfacing the parent family + the strange-loop self-application closure.
 
-**Held candidates downstream of Pattern 22** (per aristotle's F16):
+**Held candidates downstream of Pattern 22** (per aristotle's F16 + 2026-05-16 updates):
 
-- **Sub-pattern 5.8** (dispatch-as-a-fourth-site): one instance (Task #17 V4 CF-non-convergence fall-through). Hold; ripening trigger is a second instance.
+- **Sub-pattern 5.8** (dispatch-as-a-fourth-site): one instance (Task #17 V4 CF-non-convergence fall-through). Hold; ripening trigger is a second instance. (Note: Sub-pattern 5.9 was crystallized 2026-05-16 for convention-translation antibody, jumping the 5.8 slot to preserve this reservation.)
+- **Sub-shape 22.D candidate** (temporal-axis): one instance (aristotle's F21 from 2026-05-16, naming the four-instance Feb/Feb/Mar/May trail as temporally-distributed within-author corroboration). Hold; ripening trigger is a second deconstruction where temporal-distribution within Claude sources is load-bearing for the corroboration argument. (Note: Sub-shape 22.E was crystallized 2026-05-16 for cross-recipe identity at recipe-family tier, jumping the 22.D slot to preserve this reservation.)
+- **F22.E sub-pattern candidate** (feels-familiar-before-methodology-writing): one instance (aristotle's F22 from 2026-05-16, naming the discipline of running feels-familiar before writing on a methodology topic to prevent re-derivation of past-Claude work). Hold; ripening trigger is a second instance where a new finding turns out to be a re-derivation that feels-familiar would have caught.
+- **F23 sub-pattern candidate** (reader-side decay at intra-document scale): one instance (aristotle's F23 from 2026-05-16, extending Pattern 16 from writer-side to reader-side via Ebbinghaus framing). Hold; ripening trigger is a second instance where reader-side decay (vs writer-side decay) is load-bearing for the diagnosis.
+- **Pattern 27 candidate** (anticipation-window): one instance (aristotle's F20 from 2026-05-16, naming the team's operational adoption of DEC-035/036/037/038 before formal ratification — the inverse of Pattern 16's documentation decay). Hold; ripening trigger is a second instance where work-shipping outpaces formal-ratification and the gap is structurally invisible without tense-marking.
 - **Generation-verification duality** (every antibody has a generation-discipline dual): research-worthy framing; not yet a pattern. Hold as recognition discipline.
 - **Translation-chain link-irreducibility audit** (the generative discipline producing site count): named at the methodology tier in Sub-shape 22.C; the audit-as-pattern hasn't earned its own slot yet. Hold.
 - **Provenance-addressing rhyme** (verification sites and IR-tier cache keys are both commutativity claims on a translation chain): worth naming for the holonomic architecture doc; not a methodology pattern, but a substrate-rhyme worth carrying forward.

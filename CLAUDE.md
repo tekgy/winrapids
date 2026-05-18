@@ -4,6 +4,51 @@ Windows-native GPU-accelerated data science toolkit. Market Atlas signal farm.
 
 ---
 
+## Scope separation — read this BEFORE the vocabulary lock
+
+> **Anticipation marker (added 2026-05-16 by aristotle per F20.C)**:
+> the scope-separation framing in this section is codified as
+> **DEC-035** at `R:\tambear\docs\decisions\DEC-035-tambear-ternyx-distinction.md`,
+> currently **PROPOSED awaiting Tekgy ratification**. The framing is
+> operationally adopted (the team works from `R:\tambear` for math;
+> winrapids is treated as archeology). When DEC-035 ratifies, this
+> section becomes canonical and the marker is dropped. If rejected,
+> revert this section and the scope-separation stands on Tekgy's
+> direct 2026-05-14 statement (per the memory file
+> `~/.claude/projects/R--winrapids/memory/project_tambear_ternyx_distinction.md`).
+
+**The repo split**:
+
+- `R:\tambear\` — the canonical math + execution toolkit being built.
+  ALL math lives here permanently. The repo Tekgy + team work in.
+- `R:\winrapids\` — **archeology, fading**. This repo's purpose is being
+  re-narrated. If reactivated, may become RAPIDS-for-Windows GPU work —
+  but **NOT as math** (math is permanently tambear). Coefficient bugs
+  here do NOT need back-porting per
+  `~/.claude/projects/R--winrapids/memory/project_winrapids_tambear_separation.md`.
+- `R:\fintek` + `R:\ternyx-sip` — current intermediate state. Math
+  currently lives there; will be REPLACED by tambear-via-ternyx as
+  tambear matures.
+- `R:\ternyx\` — the temperospatial market system. **Different project**.
+  Will be tambear's FIRST real user once tambear is "done end-to-end."
+
+**Reading order for next-render orientation**:
+
+1. Read this section first to know which repo you're in
+2. Read the vocabulary lock below to know which language to use
+3. Verify against `R:\tambear\` (canonical) before relying on any
+   substrate claim in this repo — winrapids documentation may carry
+   old framings that drift from tambear's current state
+
+**The "Market Atlas signal farm" framing** in the line above this section
+is part of the old WinRapids identity (pre-DEC-035). Under DEC-035 framing,
+the Market Atlas signal farm is **a ternyx concern that will USE tambear
+when tambear is done end-to-end**, NOT a WinRapids concern. The old
+framing is preserved in this header for substrate-trail continuity; the
+operationally-current framing is the scope separation in this section.
+
+---
+
 ## Vocabulary lock — read this first
 
 Tambear's vocabulary was locked on 2026-04-17. The single source of truth is `R:\winrapids\docs\architecture\vocabulary.md`. Read it before reading anything else here.

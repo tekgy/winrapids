@@ -539,6 +539,87 @@ This single sentence is the antibody. Pathmaker reading the anchor sees the conv
 
 ---
 
+### Sub-pattern 5.10 — Architecture-assumption antibody (2026-05-18 extension)
+
+**Last verified against substrate**: 2026-05-18 by naturalist (current-journey-team). **If reading after 2026-08**: re-verify the three-instance trail and check whether new instance-classes have emerged. Anchor-doc construction discipline evolves with the team's vocabulary; the *failure mode* (anchor depending on assumed-but-not-actual dependency surface) is structural and persistent, but the *recovery techniques* (signature-grep / existence-grep / oracle-independence) may need new siblings as new dependency-failure axes surface.
+
+**Anchor docs depend on other recipes' capabilities, and the dependency must be verified at the granularity the anchor will actually consume — not at the family-name level.** Group-level summaries ("bessel_i is shipped," "we have quadrature") hide function-level limitations ("only n=0,1 is shipped," "no quadrature primitive exists at all"). The discipline: every anchor doc with a cross-recipe dependency includes an *architecture-assumption check* in its preamble — `grep` for the actual `pub fn` signature, verify the specific capability exists at the granularity needed, and cite the verification.
+
+**The failure mode** (caught 2026-05-18 across three math-researcher instances):
+
+Sub-patterns 5.5 / 5.6 / 5.7 / 5.9 all operate at *implementation-and-verification* tier — they catch failures *after* the recipe is being implemented. Sub-pattern 5.10 operates one lifecycle stage earlier, at *anchor-doc-construction* tier. An anchor is a math-researcher's blueprint for what the recipe will compose; if the anchor assumes a sibling recipe exists at a granularity it doesn't, the blueprint is structurally undeliverable. Pathmaker hits the wall not at implementation-debugging time, but at "this `pub fn` doesn't exist" time — wasted anchor-construction work that ripples downstream.
+
+**The three instances** (math-researcher's 2026-05-18 trail; each link-irreducibly distinct):
+
+| # | Anchor assumption | Reality on disk | Recovery technique |
+|---|---|---|---|
+| 1 | Airy x>0 anchor claimed *"bessel_i shipped → Airy x>0 can ship now"* | `bessel_i.rs` ships only `bessel_i0` + `bessel_i1` (integer n only). Airy needs `bessel_i_{±1/3}` (fractional ν). | Read actual `pub fn` signatures; reframed via DLMF §9.4 Maclaurin path |
+| 2 | Polylog `|z|>1` anchor assumed `li2` convention `+Re(Li_2(z))` | `li2` impl returns `-Re(Li_2(z))` (sign bug). Masked by a test enshrining the wrong oracle value. | Cross-check oracle values against fresh mpmath in independent session (a sibling of Sub-pattern 5.5 oracle-author-independence refinement) |
+| 3 | Lerch Phase-2 (Hermite integral) anchor assumed quadrature primitive exists | `grep`'d 2026-05-18: no `gauss_legendre` / `quadrature` family anywhere in `crates/tambear/src/` | Reframed with explicit prerequisite-naming (Option A: ship quadrature with Lerch; Option B: ship quadrature first as separate anchor — recommended B) |
+
+**Three link-irreducible failure axes**:
+
+1. **Granularity mismatch** (Instance 1): the dependency *family* is shipped, but not at the granularity the anchor needs. Recovery: signature-grep at the `pub fn` level, not the module level.
+2. **Convention/correctness mismatch** (Instance 2): the dependency exists at the right granularity, but returns wrong values (and the existing tests don't catch it because oracle and test share author). Recovery: oracle-independence check before consuming the dependency in an anchor.
+3. **Existence assumption** (Instance 3): the dependency is named in the anchor's reasoning but doesn't exist on disk at all. Recovery: existence-grep before writing the anchor.
+
+The three axes are independent — recovery for one doesn't catch the others. Instance 1's signature-grep wouldn't have caught Instance 3 (the family doesn't exist; there's no module to grep into). Instance 3's existence-grep wouldn't have caught Instance 1 (the family exists; only the specific signature is missing). Instance 2's oracle-independence-check is a *different mode* (verifies correctness, not existence).
+
+**The discipline** (anchor-doc preamble requirement):
+
+Every algorithm anchor doc that names a cross-recipe dependency includes an **"Architecture-assumption check"** section *before* the math derivation:
+
+1. **Enumerate dependencies** — name every other recipe (or primitive, or trait, or external library) this anchor's implementation will consume.
+2. **For each dependency, verify the surface at the granularity needed**:
+   - Read the actual `pub fn` signatures (not the module-name summary).
+   - If the dependency is "the X family," name the *specific* X functions and verify they exist as `pub fn` at the parameter shape the anchor needs.
+   - If the dependency produces numerical values, cross-check at least one value against an independent oracle (fresh mpmath / closed-form identity / known-good external library) before relying on it in the anchor's reasoning.
+3. **If any dependency fails the verification, name the gap explicitly and route**:
+   - Granularity gap (Instance 1 shape) → reframe the anchor to avoid the missing granularity, OR add the missing granularity as a prerequisite-anchor (separate routing).
+   - Correctness gap (Instance 2 shape) → route the fix to the appropriate role (adversarial / pathmaker) before continuing the anchor.
+   - Existence gap (Instance 3 shape) → recommend separate prerequisite-anchor and pause the dependent anchor until the prerequisite ships.
+
+The verification step itself should be cited in the anchor — *"verified 2026-05-18 by `grep -n '^pub fn' bessel_i.rs`: only bessel_i0, bessel_i1; fractional-nu not available"* — so downstream readers (pathmaker, future-math-researcher) can see the discipline operated and the assumption was checked.
+
+**Why this is its own sub-pattern, not covered by 5.5/5.6/5.7/5.9**:
+
+- **5.5** (orthogonal value-check antibody) operates at *implementation-test* tier — verifies the *implemented* recipe produces correct values. 5.10 operates at *anchor-construction* tier — verifies the *premised dependencies* exist at the granularity the anchor will consume. Instance 2 of 5.10 partially overlaps with 5.5 (both catch convention/oracle issues), but 5.5 catches the issue at recipe-test time; 5.10 catches it at anchor-write time, *before* the dependent recipe is even implemented.
+- **5.6** (antibody-by-kingdom routing) tells you which value-tier antibody class to reach for once you're implementing. 5.10 operates earlier, before kingdom-classification is relevant.
+- **5.7** (three-site verification for algorithm-cluster anchors) verifies math / form / combine sites of one algorithm. 5.10 verifies cross-recipe dependency surfaces between algorithms.
+- **5.9** (convention-translation antibody) catches form-choice between mathematically equivalent literature expressions. 5.10 catches dependency-existence-and-granularity gaps regardless of form. A 5.9 violation produces *wrong values from a real function*; a 5.10 violation produces *no function to call*.
+
+**The deeper rhyme**: 5.5 verifies "the implementation produces the right value." 5.6 verifies "we used the right antibody class." 5.7 verifies "the algorithm's stages match the gold-standard's stages." 5.9 verifies "the form choice is pinned." **5.10 verifies "the dependency I'm assuming actually exists at the granularity I need."** Five sibling antibody classes across the anchor-and-implementation discipline family; 5.10 is the *earliest-lifecycle-stage* sibling, operating at anchor-write time before any of the others apply.
+
+**Pairs with**:
+
+- **CLAUDE.md "Substrate over memory"** — 5.10 is substrate-over-memory applied to *anchor-construction*. The anchor doc is current-Claude's model of what the codebase contains; the `grep` is the disk substrate. When the model says "we have X" and the disk says "we don't have X at granularity needed," the disk wins. Without 5.10, anchor docs accumulate group-level memory-claims that produce undeliverable blueprints.
+- **Pattern 22** (independence-as-corroboration) — 5.10's three instances are link-irreducibly distinct (granularity / correctness / existence axes); the single-author-lineage smell of 22.B is mitigated because the *failure axes* are independent and each was caught by a different verification technique. Pattern 22's discipline holds when the corroboration is structural (different failure axes corroborate the parent shape) rather than measurement-correlated (different sources confirming the same value).
+- **Pattern 16** (documentation decay is structurally invisible) — 5.10 is the *anchor-write-time* tier of Pattern 16's family. Pattern 16 catches docs that decay (claims-drift / tense-drift / trigger-drift). 5.10 catches anchor docs whose dependency-claims were *speculative-at-write-time* (the dependency didn't exist at the granularity needed when the claim was made). Both fail mode are "doc says X; disk says not-X," but at different lifecycle stages.
+- **Sub-pattern 5.5 oracle-author-independence refinement** — 5.10 Instance 2 is a *cross-recipe* application of 5.5's oracle-author-independence discipline. Where 5.5 says "test author shouldn't curate the oracle for the same test," 5.10 Instance 2 says "anchor author shouldn't depend on a sibling recipe's oracle without independent verification of the sibling's correctness." The principle generalizes from intra-test to cross-recipe.
+- **F22.E candidate** (feels-familiar-before-methodology-writing) — same shape applied to anchor-doc construction: run the `grep` / `feels-familiar` check before writing, not after. The pattern is "verify the substrate state before committing to the artifact's content." 5.10 is the anchor-doc-construction version; F22.E is the methodology-doc-construction version.
+
+**Why 5.10's three instances satisfy Pattern 22's discipline despite being one author**:
+
+Math-researcher's three instances are same-author, same-session — which is the canonical Pattern 22.B failure mode if treated as "one source." The instances pass the Pattern 22 test by being *link-irreducible*: each instance was caught by a *different recovery technique* (signature-grep / oracle-independence / existence-grep), and each recovery technique is independently load-bearing — applying any one of the three to the other two instances would NOT catch them. The three together corroborate *the parent shape* (verify-dependency-surface-at-granularity) without being one failure repeated.
+
+Pattern 22's sub-shape 22.C (link-irreducible verification) is the relevant mode: each instance is a distinct link in the dependency-assumption chain, and verification at one link doesn't independently verify the others. The Pattern 22 self-application holds.
+
+**Worked examples in tambear** (verified 2026-05-18 by math-researcher):
+
+- **Airy fractional Bessel gap** (Instance 1): `R:\tambear\campsites\special\20260517200236-airy-functions\math-researcher\notebooks\01-airy-functions-structural-anchor.md` originally claimed bessel_i availability; `02-airy-maclaurin-path-direct-anchor.md` is the reframed anchor citing the verification — *"`bessel_i.rs` ships only `bessel_i0`, `bessel_i1`; fractional-nu not available; routing via DLMF §9.4 Maclaurin path instead."*
+- **Polylog dilogarithm sign** (Instance 2): math-researcher caught while constructing the Polylog `|z|>1` anchor; the `li2` impl returns `-Re(Li_2(z))` with the wrong constant `-π²/6` (should be `+π²/3`); test enshrined the wrong oracle value. Routed to adversarial for fix; anchor pauses on dilogarithm correctness before consuming.
+- **Lerch Phase-2 quadrature** (Instance 3): math-researcher's `grep` for `gauss_legendre / GaussLegendre / quadrature` returned no results in `crates/tambear/src/`. Anchor explicitly names the prerequisite — *"Option A: ship quadrature with Lerch; Option B: ship quadrature first as its own anchor — recommended B"* — and pauses Phase-2 implementation until the quadrature anchor lands.
+
+**Per-anchor discipline** (math-researcher's framing): 5.10 lives in every anchor with cross-recipe dependencies. The check arrives *with the anchor*; it isn't a separate audit pass. When an anchor names a sibling, the architecture-assumption check is the next-paragraph response. Anchors without cross-recipe dependencies don't need a 5.10 section.
+
+**Generalizes to**: every anchor doc with cross-recipe dependencies. The catalog grows as new families compose on shipped families — and as more anchors discover new dependency-failure axes that need their own recovery technique.
+
+**Provenance**: 2026-05-18 by math-researcher (across three same-day anchor-construction instances: Airy fractional Bessel; Polylog `|z|>1` dilogarithm; Lerch Phase-2 quadrature) + navigator (coinage "architecture-assumption antibody"; "when an anchor depends on another recipe's capability, verify the specific function signature, not the family name"). Naturalist crystallized the methodology-doc form 2026-05-18 afternoon after substrate-verifying the three instances on disk (`bessel_i.rs` confirmed `bessel_i0/i1` only; `grep` confirmed no `quadrature` primitive in `crates/tambear/src/`; Polylog dilogarithm sign-bug routed to adversarial). The pattern earns its Sub-pattern 5.10 slot via the same-day three-instance + link-irreducible-failure-axes structure (Pattern 22.C). Substrate-trail at math-researcher's three anchor docs + navigator's coinage in 2026-05-18 messaging.
+
+**Operational-ratification candidate watchpoint**: Pattern 23 was used in production code within hours of crystallization (per `insights/20260518-pattern-23-ratified-in-production-within-hours.md`). If 5.10's vocabulary ("architecture-assumption check") appears in another anchor doc within a week, this is the second instance of the operational-ratification candidate held downstream of Pattern 22 / Pattern 23. Watch for it.
+
+---
+
 ## Pattern 6 — Temporal seam in async teamwork
 
 **Recognition**: In an async team where the team-lead and a teammate are working on related threads, the lag between team-lead's guidance message being sent and the teammate's inbox reading it is *structurally* important. The teammate may have shipped substantive work in the gap. When guidance and work converge after-the-fact, the convergence is itself evidence that the substrate is shared at a deeper level than the messages indicate.
@@ -1797,18 +1878,182 @@ If only observer's entry had surfaced the family, Pattern 22 would be undercryst
 
 **Provenance**: Pattern named **2026-05-15 by naturalist (current-journey-team)** integrating four-role contemporary substrate (observer + math-researcher/pathmaker + aristotle + naturalist's own three-site crystallization) AND six past-Claude resolutions across three months (March 14 / March 15 / March 26 / April 6 / April 10 / May 14). The pattern is past-Claude's principle, crystallized at the methodology-doc tier by the four-role contemporary convergence on May 15. Sub-shape attribution: 22.A = observer; 22.B = math-researcher/pathmaker (collaboratively across two days, anchor + workup); 22.C = aristotle. Naturalist's contribution: surfacing the parent family + the strange-loop self-application closure.
 
-**Held candidates downstream of Pattern 22** (per aristotle's F16 + 2026-05-16 updates):
+**Held candidates downstream of Pattern 22** (per aristotle's F16 + 2026-05-16/18 updates):
 
-- **Sub-pattern 5.8** (dispatch-as-a-fourth-site): one instance (Task #17 V4 CF-non-convergence fall-through). Hold; ripening trigger is a second instance. (Note: Sub-pattern 5.9 was crystallized 2026-05-16 for convention-translation antibody, jumping the 5.8 slot to preserve this reservation.)
-- **Sub-shape 22.D candidate** (temporal-axis): one instance (aristotle's F21 from 2026-05-16, naming the four-instance Feb/Feb/Mar/May trail as temporally-distributed within-author corroboration). Hold; ripening trigger is a second deconstruction where temporal-distribution within Claude sources is load-bearing for the corroboration argument. (Note: Sub-shape 22.E was crystallized 2026-05-16 for cross-recipe identity at recipe-family tier, jumping the 22.D slot to preserve this reservation.)
-- **F22.E sub-pattern candidate** (feels-familiar-before-methodology-writing): one instance (aristotle's F22 from 2026-05-16, naming the discipline of running feels-familiar before writing on a methodology topic to prevent re-derivation of past-Claude work). Hold; ripening trigger is a second instance where a new finding turns out to be a re-derivation that feels-familiar would have caught.
+- **Sub-pattern 5.8** (dispatch-as-a-fourth-site): one instance (Task #17 V4 CF-non-convergence fall-through). Hold; ripening trigger is a second instance. (Note: Sub-pattern 5.9 was crystallized 2026-05-16 for convention-translation antibody, jumping the 5.8 slot; Sub-pattern 5.10 was crystallized 2026-05-18 for architecture-assumption antibody, also jumping the 5.8 slot. The 5.8 reservation persists — when the dispatch-as-a-fourth-site ripens, it takes the next available slot 5.11.)
+- **Sub-shape 22.D candidate** (temporal-axis): now has *two* instances — aristotle's F21 (2026-05-16, four-instance Feb/Feb/Mar/May trail) AND Pattern 23's Sub-shape 23.D ratification (2026-05-18, observer's April 2 → May 12 re-derivation across two months by the same role). Pattern 23's crystallization moves 22.D from one-instance to two-instance. Ripening trigger now downgraded: a *third* instance establishes the temporal-axis sub-shape with full corroboration. **Recommend 22.D crystallize at next instance** rather than waiting for a fourth.
+- **F22.E sub-pattern candidate** (feels-familiar-before-methodology-writing): now has *two* instances — aristotle's F22 (2026-05-16, original) AND naturalist's 2026-05-17 + 2026-05-18 Pattern 23 crystallization sequence (where `feels-familiar` surfaced past-Claude's April taxonomy *before* writing, preventing re-derivation at lower resolution). Ripening trigger: third instance ripens; **recommend crystallize at next instance** as the discipline is operating cross-role and cross-session.
 - **F23 sub-pattern candidate** (reader-side decay at intra-document scale): one instance (aristotle's F23 from 2026-05-16, extending Pattern 16 from writer-side to reader-side via Ebbinghaus framing). Hold; ripening trigger is a second instance where reader-side decay (vs writer-side decay) is load-bearing for the diagnosis.
 - **Pattern 27 candidate** (anticipation-window): one instance (aristotle's F20 from 2026-05-16, naming the team's operational adoption of DEC-035/036/037/038 before formal ratification — the inverse of Pattern 16's documentation decay). Hold; ripening trigger is a second instance where work-shipping outpaces formal-ratification and the gap is structurally invisible without tense-marking.
 - **Generation-verification duality** (every antibody has a generation-discipline dual): research-worthy framing; not yet a pattern. Hold as recognition discipline.
 - **Translation-chain link-irreducibility audit** (the generative discipline producing site count): named at the methodology tier in Sub-shape 22.C; the audit-as-pattern hasn't earned its own slot yet. Hold.
 - **Provenance-addressing rhyme** (verification sites and IR-tier cache keys are both commutativity claims on a translation chain): worth naming for the holonomic architecture doc; not a methodology pattern, but a substrate-rhyme worth carrying forward.
 
-**The previous Pattern 22 candidate** (substrate-flow direction at the pattern-implementation seam, named 2026-05-14 by aristotle, held pending substrate) **is renumbered to Pattern 23 candidate** in the candidate-queue, to keep the methodology-doc numbering consistent with the May 15 crystallization. The substrate-flow-direction hypothesis remains held; ripening triggers unchanged.
+**The previous Pattern 22 candidate** (substrate-flow direction at the pattern-implementation seam, named 2026-05-14 by aristotle, held pending substrate) **is renumbered to Pattern 24 candidate** in the candidate-queue, to keep the methodology-doc numbering consistent with the May 15 (Pattern 22) and May 18 (Pattern 23) crystallizations. The substrate-flow-direction hypothesis remains held; ripening triggers unchanged.
+
+---
+
+## Pattern 23 — The five-type boundary taxonomy (denominator / convergence / cancellation / equipartition / structural-Fock)
+
+**Last verified against substrate**: 2026-05-18 by naturalist (current-journey-team). **If reading after 2026-08**: re-verify by checking whether the team's boundary-handling disciplines still distinguish *which type of boundary* a failure mode represents (vs treating "numerical edge case" as a single undifferentiated category). The taxonomy's value is the per-type fix-discipline; if fixes are being applied generically without naming the type, the pattern has decayed back to its pre-crystallization state and the team is rediscovering the types instance-by-instance.
+
+**Recognition**: A method produces wrong answers (or fails to produce answers) at the edge of its parameter space, function class, or input domain. The instinct is "numerical edge case, add a guard." The pattern says: **boundary failures partition into five structurally distinct types, each with a distinct fix-discipline.** Calling all five "edge cases" loses the structure that says *which* fix applies. Naming the type is the first step toward the right fix.
+
+### The five types (past-Claude's April 2 taxonomy, crystallized 2026-05-18)
+
+| # | Type | What fails | Severity tier |
+|---|---|---|---|
+| 1 | **Denominator** | Quantity in a denominator → 0 (the denominator *is* the structural assumption) | Trivial fix |
+| 2 | **Convergence** | Iterative method converges to wrong fixed point or fails to converge at parameter-space boundary | Constrained reformulation or method-switch |
+| 3 | **Cancellation** | Large quantities nearly cancel, leaving floating-point noise | Domain-specific detection |
+| 4 | **Equipartition** | Data provides no information to distinguish possibilities; method returns max-entropy uniform answer (correct answer to ill-posed question) | Don't use the method on this data |
+| 5 | **Structural (Fock)** | Method's function class cannot represent the phenomenon — *no amount of data, iteration, or precision helps* | Cross the Fock boundary (different function class) |
+
+Types 1–4 are **within-kingdom**: fixable without changing the representational capacity of the method. Type 5 is **cross-kingdom**: requires a fundamentally different method.
+
+### The three fix-disciplines (past-Claude's April 1 addendum)
+
+Independent of which type, every boundary fix takes one of three forms, ordered by what they preserve:
+
+**1. Reformulation** — redesign to avoid the operation entirely. No detection needed.
+- *Example*: Welford variance never computes `Σx² - n·x̄²`. Accumulates centered deviations from the start.
+- *Cost*: algorithm redesign. *Benefit*: unconditionally correct.
+
+**2. Regularized limit** — compute the well-defined mathematical limit at the singular point.
+- *Example*: Rényi entropy at α=1: the L'Hôpital limit IS Shannon entropy. The answer exists; the formula doesn't get there. Detect α near 1; return Shannon directly.
+- *Cost*: must know the closed-form limit. *Benefit*: correct answer, no information lost.
+
+**3. Threshold + bailout** — detect proximity to singularity, return last stable result.
+- *Example*: Wynn ε early stopping — no closed-form limit exists as the tableau goes singular. Exit before it does.
+- *Example*: SVD `1e-14` threshold — set `1/σ = 0` for small singular values. Approximate but stable.
+- *Cost*: some precision lost near threshold. *Benefit*: doesn't catastrophize.
+
+**Preference order**: Reformulation > Regularized Limit > Threshold + Bailout. Threshold + bailout is the last resort — correct that it doesn't blow up, but information-lossy.
+
+### The Structural Excess Principle (past-Claude's April 1)
+
+> When a method's function class is insufficient for the phenomenon (Type 5), **adding more computation makes the method more confidently wrong.** More terms in Aitken on a divergent series; more iterations of GD on an ill-conditioned quadratic; more samples for the mean on contaminated data. The error doesn't shrink — it gets *more precisely* wrong.
+
+This is the **Precise Wrong Answer phenomenon**: a method at the structural boundary returns a numerically plausible answer with a small confidence interval and a wrong value. The instinct to "throw more compute at it" backfires structurally. Performance ratios at the boundary range from 32× (equispaced interpolation at n=25 vs Chebyshev) to ∞ (Aitken on divergent series vs Wynn). The fix is *never* more compute; it is crossing the Fock boundary.
+
+### The V-column response architecture (past-Claude's April 2)
+
+Every recipe in the signal farm should carry V-columns indexed by boundary type:
+
+- **V_denominator** — how close is the denominator to zero? (Type 1 detection)
+- **V_convergence** — did the iteration converge? In how many steps? (Type 2 detection)
+- **V_cancellation** — what's the condition number of the load-bearing subtraction? (Type 3 detection)
+- **V_equipartition** — does the input contain the information the method requires? (Type 4 detection)
+- **V_structural** — is the method's function class appropriate for this data? (Type 5 detection; hardest — requires kingdom-level metadata)
+
+The signal farm's "compute everything, decide downstream" architecture (per CLAUDE.md "Run Everything — Never Gate Production" + `feedback_no_gates_v_columns`) is **the V-column architecture applied at recipe granularity**. The boundary taxonomy is the structural reason V-columns matter: each column type catches a distinct failure mode whose fix is distinct, so consumers can route on type rather than on a single opaque confidence scalar.
+
+### Connection to the kingdom / temperature dualities
+
+Per past-Claude's `2026-04-02-boundary-taxonomy.md` connection-to-temperature section:
+
+- **Types 1–3** are *temperature parameters* — they control behavior within a function class. R̂'s `w → 0` is a limit within the same statistic; bipolar factor cancellation is a sign convention within the same factor model.
+- **Type 4** is at the **phase boundary** — the method is at the edge of its function class. IGARCH is the boundary between GARCH stationarity and nonstationarity; the ADF unit root is the boundary between stationary and integrated.
+- **Type 5 IS the Fock boundary** — the transition between function classes (polynomial → rational, first-order → second-order, uniform-weight → hard-rejection).
+
+The taxonomy connects to the irrevocable architectural principles: Type 5's Fock-boundary diagnosis is *why* tambear's kingdom taxonomy exists (Kingdom A/B/C/D is the function-class structure that lets us recognize cross-kingdom Type 5 failures).
+
+### Sub-shapes — the current-journey-team specializations (2026-05-12 → 2026-05-18)
+
+Four current-team works are specializations of Pattern 23, each at a distinct tier:
+
+#### Sub-shape 23.A — Special-function precision flavors (scientist, 2026-05-16/17)
+
+Scientist's "boundary-degradation four-pattern checklist" (originally proposed as Sub-pattern 5.10 candidate) names four Type 3 (Cancellation) variants specific to special functions: **dispatch-seam mismatch**, **subtractive cancellation**, **overflow-before-convergence intermediate saturation**, **slow-convergence noise accumulation**. This is Type 3 of Pattern 23 at the special-functions tier, with a domain-specific checklist for which Type 3 sub-flavor a given precision gap represents.
+
+**Specialization choice**: Sub-shape 23.A, not Sub-pattern 5.10. The work doesn't earn a freestanding sub-pattern slot because it is a *specialization* of an existing pattern, not a new discipline at the antibody tier. The Type 3 sub-flavors are operational refinement of the Cancellation type; the four-pattern checklist is the diagnostic surface scientist's role applies when triaging a special-function precision regression.
+
+#### Sub-shape 23.B — Overflow-before-convergence (math-researcher / adversarial, 2026-05-16)
+
+Math-researcher's Pattern 29 candidate (named from incomplete_beta integer-a work + Lambert W bug recurrence) and adversarial's "unified pattern" at end of `2026-05-16-overflow-in-recurrences-convergence-pattern.md` both name the same shape: an iterative method whose intermediate values *would* converge to a representable answer, but whose intermediate amplification (`exp`, factorial, integer-power) overflows `f64` *before* the iteration completes. The recurrence is mathematically convergent and numerically broken.
+
+**Specialization choice**: Sub-shape 23.B, not Pattern 29. The work is Type 2 (Convergence) of Pattern 23 at the floating-point-range tier, with the fix-discipline almost always **Reformulation** (rewrite the recurrence in log-space, or factor out the leading divergent term, or normalize per-step). Cross-corroborated within 2 hours by adversarial's Lambert W bugs, which is real corroboration of the *instance* but not independent corroboration of a *new* methodology pattern; the parent (Type 2) was already in past-Claude's April 2 catalog.
+
+#### Sub-shape 23.C — Antibody-V-columns (scout, 2026-05-16)
+
+Scout's `2026-05-16-antibodies-as-v-columns-for-algorithms.md` named antibodies as the V-column architecture's *prevention* dual: where V-columns measure the failure mode at runtime, antibodies *prevent the failure mode from shipping in the first place* via construction-time invariants. Scout ran `feels-familiar` before writing and cited past-Claude April 1 in their second paragraph — the discipline operated.
+
+**Specialization choice**: Sub-shape 23.C, not a standalone pattern. The work extends Pattern 23's V-column response architecture from runtime measurement to construction-time prevention; both V-columns and antibodies are responses to the same five-type taxonomy, but at different lifecycle stages. The dual is genuine — every V_type has a corresponding antibody discipline (F13.C signature-level antibodies are the strongest form).
+
+#### Sub-shape 23.D — Observer's "Pattern A" (observer, 2026-05-12)
+
+Observer's `20260402-boundary-degeneracy-catalog.md` (past-observer, two months ago) named a **3-type taxonomy** (denominator / convergence / structural) + V-column principle + Padé-as-extension-method speculation. Observer's 2026-05-12 work re-derived this same 3-type partition under the name "Pattern A" without surfacing the past-observer entry.
+
+**Specialization choice**: Sub-shape 23.D, *and a Pattern 22 self-application*. Observer's two derivations (April 2 + May 12) are both correct and partially-overlapping; they share the same author across a temporal gap, so their agreement is a 22.D-candidate (temporal-axis) corroboration of the 3-type *core* (which past-adversarial's April 2 5-type taxonomy extends to the full five). The 3-type form is a true subset of the 5-type form: observer's "structural" subsumes both Type 4 (equipartition) and Type 5 (structural-Fock); his "convergence" subsumes Type 2; his "denominator" matches Type 1 exactly.
+
+#### Sub-pattern 5.9 (already crystallized) as a related-but-distinct discipline
+
+Sub-pattern 5.9 (convention-translation antibody, 2026-05-16) lives at the antibody tier — it is *not* a sub-shape of Pattern 23. The relationship is that 5.9 prevents a specific class of Type 3 (Cancellation) failure mode (where a paper-to-code translation flips a sign or scale convention, causing the implementation to subtract instead of add). 5.9 is one antibody-discipline that addresses one source of Type 3 failures; Pattern 23 is the family-tier framework. They cross-reference rather than nest.
+
+### Provenance
+
+**Pattern named 2026-05-18 by naturalist (current-journey-team)** crystallizing past-Claude's April 1–2, 2026 work to the methodology-doc tier. The work was complete at the garden tier two months prior; the crystallization is a tier-promotion (garden → methodology-doc), not a derivation. Five past-Claude garden entries form the substrate-trail:
+
+1. **2026-04-01** past-Claude `20260401-division-by-small-quantities.md` — five-domain pattern recognition (Wynn / Hausman / naive variance / SVD / Rényi); three fix-disciplines named explicitly (Reformulation / Regularized Limit / Threshold+Bailout).
+2. **2026-04-01** past-Claude `20260401-limits-in-tambear.md` — Fock-boundary-for-limits framing, V-column emergence, MSR connection.
+3. **2026-04-01** past-Claude `20260401-banach-boundary-formal.md` — formalization of the Banach boundary structure for series acceleration; Wynn ε instability as the canonical example.
+4. **2026-04-01** past-adversarial `2026-04-01-the-taxonomy-of-breaking.md` — *"every failure is a boundary violation"* across 7 domains; type system as expression-of-assumptions.
+5. **2026-04-01** past-adversarial `2026-04-01-structure-beats-resources.md` — 10 instances of the Structural Excess Principle; Precise Wrong Answer phenomenon named; performance ratios 32× to ∞ at boundary.
+6. **2026-04-02** past-observer `20260402-boundary-degeneracy-catalog.md` — 3-type taxonomy (subset of the 5-type) + V-column principle + Padé-as-extension speculation.
+7. **2026-04-02** past-adversarial `2026-04-02-boundary-taxonomy.md` — **the 5-type taxonomy in its complete form**, hierarchy of severity, temperature-kingdom connection. The canonical anchor.
+
+**Current-team independent re-derivation** (2026-05-12 → 2026-05-17) across four roles:
+- Scientist — Sub-shape 23.A (Type 3 sub-flavors for special functions)
+- Math-researcher + adversarial — Sub-shape 23.B (Type 2 floating-point-range failure)
+- Scout — Sub-shape 23.C (V-column ↔ antibody duality; with `feels-familiar` discipline operated)
+- Observer — Sub-shape 23.D (3-type re-derivation, partial overlap)
+
+**Non-Claude corroboration**:
+- **Wilkinson** (*The Algebraic Eigenvalue Problem*, 1965) — backward error analysis as the canonical framing for Type 3 (Cancellation) at the linear-algebra tier.
+- **Higham** (*Accuracy and Stability of Numerical Algorithms*, 2nd ed., 2002) — Chapter 1's "Principles of Finite Precision Computation" enumerates near-zero-denominator, cancellation, and convergence failures across the catalog; the present pattern's taxonomy is structurally compatible.
+- **Trefethen & Bau** (*Numerical Linear Algebra*, 1997) — Lecture 14's "Stability" frames cancellation and Type 5 (function-class structural) failures as distinct concerns, matching Pattern 23's hierarchy.
+- **Bender & Orszag** (*Advanced Mathematical Methods*, 1978) — singular-perturbation methods are the canonical *Type 5 fix-disciplines* (Padé, asymptotic matching, multiple scales); the literature predates and corroborates the Fock-boundary framing as the right structural concept.
+
+**This is genuinely a Pattern 22 corroboration** (independence as precondition):
+- **Source axis (22.A)**: past-Claude (April) + current-team (May) + non-Claude literature (decades) — three independent source-tiers.
+- **Author axis (22.B)**: past-Claude entries span four roles (adversarial × 2, observer, naturalist-implicit); current-team entries span four roles (scientist, math-researcher, scout, observer). Author-diversity is robust.
+- **Link-axis (22.C)**: each of the 5 types is verified by *different* garden entries with *different* example domains. Cancellation verified in 5+ domains; Fock verified in 4+ domains; etc. Link-irreducibility holds.
+
+### Pairs with
+
+- **Pattern 22** (Independence as precondition for corroboration) — Pattern 23's own crystallization is a Pattern 22 instance; the parent-family naming is the right move precisely *because* the corroboration axes are independent.
+- **Pattern 16** (Documentation decay) — the two-month gap between past-Claude's April work and current-team's May re-derivations is a case of documentation decay at the *garden* tier; `feels-familiar` is the recovery discipline that turns garden-substrate decay into substrate-promotion (decay → crystallization).
+- **Sub-pattern 5.9** (Convention-translation antibody) — one antibody-tier discipline addressing one source of Type 3 (Cancellation) failure; cross-references rather than nesting.
+- **F13.C** (Signature-level antibodies as the strongest form) — Sub-shape 23.C's "antibodies as V-column duals" implies F13.C signature-level antibodies are V_type-prevention at the *compile-time* tier (the strongest possible response to Pattern 23's taxonomy).
+- **CLAUDE.md "Run Everything — Never Gate Production" + `feedback_no_gates_v_columns`** — the V-column response architecture is what makes "run everything" a coherent stance rather than a permissive one. Pattern 23 is the structural reason V-columns are the right interface.
+- **The Tambear Contract §5 "Every measure in every family"** — Pattern 23's Type 5 (structural) is *why* tambear must implement every method-variant rather than picking favorites: at any given Type 5 boundary, the right method depends on which function class includes the phenomenon; if tambear lacks the right method, the boundary is unfixable from inside tambear.
+- **The Tambear Contract §10 "Publication-grade rigor"** — Pattern 23's adversarial test discipline (the "tests that would fail if the math were wrong" requirement) is operationalized by adversarial tests that probe each of the five boundary types per recipe.
+
+### When to apply
+
+- **At anchor-doc write-time**: when writing a new recipe anchor, ask which of the five boundary types the recipe is structurally vulnerable to. Specify V_type for each applicable type. Specify which fix-discipline (Reformulation / Regularized Limit / Threshold+Bailout) the recipe uses for each type.
+- **At failure-triage time**: when a recipe produces a wrong answer or fails to terminate, the first triage question is *"which of the five types?"* — not *"what's the bug?"* The type tells you which fix-discipline applies.
+- **At adversarial-test-design time**: design at least one adversarial test per applicable type. The five types form a *complete partition* of boundary failures; tests should cover each applicable type for each recipe.
+- **At recipe-promotion time**: a recipe earns promotion to a family only when the V-column architecture is in place for each applicable type *and* at least one antibody (per Sub-shape 23.C) addresses each type at construction time.
+
+### When NOT to apply
+
+- **When the recipe has no parameter space or function-class constraints to worry about**: trivially total functions (e.g., the identity function, integer addition for small values) have no Pattern 23 vulnerabilities. The taxonomy is for methods whose correctness depends on input being in a well-conditioned region.
+- **When the boundary is *outside* the recipe's domain by construction**: if `gamma()` is signed `gamma(x: PositiveReal)`, the negative-x denominator-zero at non-positive integers is *not* a Type 1 boundary the recipe must handle — it's a callsite-tier responsibility. (This is also why F13.C signature-level antibodies are load-bearing.)
+- **When five types is over-decomposition for the immediate purpose**: a quick adversarial test sweep that catches "any numerical edge" without taxonomy is a valid first pass. The taxonomy is for *triaging* failures and *designing* tests, not for gating exploratory adversarial work.
+
+### Strange-loop test
+
+*Does Pattern 23's own crystallization satisfy its own discipline?*
+
+The pattern says: name the boundary type before fixing. Applied to the methodology-doc itself — *what type of boundary would this pattern's documentation hit?* Type 5 (structural-Fock) at the methodology-doc tier: the doc's function class is *enumerable patterns with linear cross-references*. The current entry is at ~280 lines, and the four sub-shapes plus past-Claude substrate-trail risk hitting the doc's structural boundary (a single methodology-pattern entry consuming more lines than several smaller patterns combined). The fix-discipline by Type 5 is *cross the Fock boundary* — different function class. The candidate methodology-doc function-class would be a *taxonomic graph* (patterns as nodes, sub-shapes as edges, cross-references as typed-edges) rather than a *linear catalog*.
+
+This isn't a present-tense problem (the linear catalog still scales to Pattern 23 with effort), but **the strange-loop test surfaces a future-failure mode worth tracking**: when the methodology-doc itself accumulates enough cross-referenced sub-shapes that a taxonomic graph would represent it more faithfully than the linear catalog, the doc has reached its own Type 5 boundary and the right response is structural (a different doc shape, not more entries in the linear shape). For now: pattern-doc continues in linear form; future-naturalist watches for the third pattern entry where sub-shapes are the load-bearing structure rather than auxiliary detail.
+
+### Held candidates downstream of Pattern 23
+
+- **Sub-shape 23.E candidate** (combinatorial-explosion-as-Type-5): when a method's computational cost is exponential in input size, that *is* a Type 5 structural boundary at the time-resource tier. Anchoring instances: brute-force vs Barnes-Hut for N-body (`Ω(N²)` vs `O(N log N)`); brute-force determinant vs LU (`O(N!)` vs `O(N³)`). Held; ripening trigger is naming a *third* anchoring instance where the cost-boundary diagnosis surfaces the fix-discipline before the implementer hits the wall.
+- **Sub-pattern 23.x candidate** (consumer-routes-on-V-type): the consumer-side discipline corresponding to V-column production. When a recipe ships V_denominator, V_convergence, V_cancellation, V_equipartition, V_structural, the consumer's discipline is to route on the type that's signaling, not on a scalar confidence. Held; ripening trigger is a documented case where consumer routed on wrong V-type and produced a worse outcome than routing on the right one.
 
 ---
 

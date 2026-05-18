@@ -2305,13 +2305,13 @@ Six tiers of independent corroboration; six tiers ratifying the descriptive prop
 
 **Three measurement scales** (fractal projections of the one signal):
 
-| Scale | Signal shape | First observed instance | Status |
+| Scale | Signal shape | First observed instance | Status (post-F46-direct) |
 |---|---|---|---|
-| **Multi-recipe** | Same methodology vocabulary appears in two different recipe families' commit messages within hours of crystallization | Pattern 23 in airy commit `b3fbb0c` + bessel_jy commit `38c27f9` (same day, same vocabulary) | 3 instances 2026-05-18 (Pattern 23 ×2 + Sub-pattern 5.5 ×1); held for 4th instance distributed across at least one more session |
-| **Multi-anchor** | Methodology vocabulary appears in another anchor doc within a week, in a different family | Sub-pattern 5.10 vocabulary in math-researcher's three same-day anchor docs (within-author baseline) | Held for first cross-author anchor doc citing 5.10's "architecture-assumption check" framing |
-| **Cross-role** | Methodology vocabulary appears in a different role's work as decision-routing language (not just citation) | Sub-pattern 5.11 framework operationally embedded in math-researcher's own tautological-antibody-scan + 7 anchor audit (within-role baseline) | Held for pathmaker / scout citing tier-A/B/C framework in choosing antibodies for a new anchor |
+| **Multi-recipe** | Same methodology vocabulary appears in two different recipe families' commit messages within hours of crystallization | Pattern 23 in airy commit `b3fbb0c` + bessel_jy commit `38c27f9` (same day, same vocabulary) | **DESCRIPTIVE-confirmed** by F46. Pattern 23-class disciplines pre-date crystallization by 6+ weeks (14+ retroactive instances in winrapids `a86187b` / `585df6f` / `b1e0643`); fast-spread is vocabulary diffusion, not discipline adoption. Adoption-watch retires; descriptive-accuracy watch replaces it (do new instances continue matching Type 1-5 taxonomy?). |
+| **Multi-anchor** | Methodology vocabulary appears in another anchor doc within a week, in a different family | Sub-pattern 5.10 vocabulary in math-researcher's three same-day anchor docs (within-author baseline) | **DESCRIPTIVE-confirmed** by F46. Architecture-assumption check was running implicitly in anchor-construction practice before May 18 crystallization. Adoption-watch retires; descriptive-accuracy watch replaces it. |
+| **Cross-role** | Methodology vocabulary appears in a different role's work as decision-routing language (not just citation) | Sub-pattern 5.11 framework operationally embedded in math-researcher's own tautological-antibody-scan + 7 anchor audit (within-role baseline) | **PRESCRIPTIVE-pending**. Tier-A/B/C classification is genuinely new per F46; pre-May-18 anchors don't exhibit it. Adoption-watch retains; held for pathmaker / scout citing tier-A/B/C framework in choosing antibodies for a new anchor. |
 
-The three scales are *fractal projections of one phenomenon* (per F45 Reconstruction 8): same vocabulary-as-coordination-protocol diffusion process at three different measurement granularities.
+The three scales are *fractal projections of one phenomenon* (per F45 Reconstruction 8) at the level of *how* vocabulary diffuses through team work. Per F46-direct empirical findings, the three scales also exhibit a 2/1 split on the descriptive-vs-prescriptive gradient: two are descriptive-confirmed (the discipline pre-dated the naming), one is genuinely prescriptive-pending (the discipline is new at crystallization time). The unification (F45) and the empirical split (F46) coexist: same phenomenon at three scales of measurement; different positions of each scale on the descriptive↔prescriptive gradient.
 
 ### What success looks like (per crystallization-class)
 

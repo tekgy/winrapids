@@ -2361,13 +2361,15 @@ Aristotle's F46 (`R:/tambear/campsites/session-20260518/20260518123521-coordinat
 
 This **empirically confirms Reconstruction 10**: the May 18 Pattern 23 entry made an already-running discipline *legible*, not *operational*. The fix-disciplines existed in team behavior at least 6 weeks before crystallization.
 
-**What this changes for the watchpoint**:
+**What this changes for the watchpoint** — F46 sharpens the gradient into a 2/1 split:
 
-- **Multi-recipe ratification (Pattern 23 watch)**: the *naming* spread across recipes within hours. The *discipline* was already cross-recipe for months. Fast-spread is *vocabulary diffusion*, not *discipline adoption*.
-- **Multi-anchor ratification (Sub-pattern 5.10 watch)**: math-researcher's three same-day instances aren't "adoption of 5.10" — they're the *first explicit application* of an architecture-assumption check that was previously running implicitly when authors verified dependencies before relying on them.
-- **Cross-role ratification (Sub-pattern 5.11 watch)**: math-researcher's tier-A/B/C framework is the *first explicit naming* of a check that was previously running implicitly in adversarial / observer oracle-construction practice.
+- **Multi-recipe ratification (Pattern 23 watch) — DESCRIPTIVE-confirmed**: the *naming* spread across recipes within hours. The *discipline* was already cross-recipe for months. Fast-spread is *vocabulary diffusion*, not *discipline adoption*. The fourth-instance-across-sessions test is wrong-shaped for this watch — the discipline doesn't need adoption-evidence (already adopted; pre-dates the naming by 6 weeks). The right test is *descriptive accuracy* (do new instances continue to match the Type 1-5 taxonomy?).
+- **Multi-anchor ratification (Sub-pattern 5.10 watch) — DESCRIPTIVE-confirmed**: math-researcher's three same-day instances aren't "adoption of 5.10" — they're the *first explicit application* of an architecture-assumption check that was previously running implicitly when authors verified dependencies before relying on them. Same descriptive-accuracy test applies; not adoption-test.
+- **Cross-role ratification (Sub-pattern 5.11 watch) — PRESCRIPTIVE-pending**: math-researcher's tier-A/B/C framework is a **genuinely new classification scheme** — pre-May-18 anchors don't exhibit it. The fourth-instance-across-sessions test IS correct here; it measures real adoption of a new discipline. This is the only watch of the three that retains the prescriptive-adoption shape.
 
-The unified watchpoint's *descriptive proportion* is empirically ratified by F46. The *prescriptive proportion* (the disciplines being held as canonical at methodology-doc tier) still ratifies on cross-role adoption signals.
+The unified watchpoint's *descriptive proportion* (Pattern 23 + Sub-pattern 5.10 watches) is empirically confirmed by F46 — those watches retire as "discipline confirmed to pre-date crystallization." The *prescriptive proportion* (Sub-pattern 5.11 watch) retains the adoption-test as appropriate.
+
+This 2/1 split (aristotle's F46-direct framing) is sharper than F45's "three projections of one phenomenon" framing. F45 was right that they live on the same descriptive↔prescriptive gradient; F46 empirically established WHERE on the gradient each sits. Two are descriptive-endpoint; one is prescriptive-leaning.
 
 ### Held downstream candidate
 

@@ -6,16 +6,8 @@ Windows-native GPU-accelerated data science toolkit. Market Atlas signal farm.
 
 ## Scope separation — read this BEFORE the vocabulary lock
 
-> **Anticipation marker (added 2026-05-16 by aristotle per F20.C)**:
-> the scope-separation framing in this section is codified as
-> **DEC-035** at `R:\tambear\docs\decisions\DEC-035-tambear-ternyx-distinction.md`,
-> currently **PROPOSED awaiting Tekgy ratification**. The framing is
-> operationally adopted (the team works from `R:\tambear` for math;
-> winrapids is treated as archeology). When DEC-035 ratifies, this
-> section becomes canonical and the marker is dropped. If rejected,
-> revert this section and the scope-separation stands on Tekgy's
-> direct 2026-05-14 statement (per the memory file
-> `~/.claude/projects/R--winrapids/memory/project_tambear_ternyx_distinction.md`).
+> **DEC-035** at `R:\tambear\docs\decisions\DEC-035-tambear-ternyx-distinction.md`
+> **RATIFIED-BY-TEAM 2026-05-18**. This section is canonical.
 
 **The repo split**:
 

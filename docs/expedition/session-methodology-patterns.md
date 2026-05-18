@@ -2371,6 +2371,26 @@ The unified watchpoint's *descriptive proportion* (Pattern 23 + Sub-pattern 5.10
 
 This 2/1 split (aristotle's F46-direct framing) is sharper than F45's "three projections of one phenomenon" framing. F45 was right that they live on the same descriptive↔prescriptive gradient; F46 empirically established WHERE on the gradient each sits. Two are descriptive-endpoint; one is prescriptive-leaning.
 
+### Refined mechanism (F48, shipped 2026-05-18 late-evening)
+
+Aristotle's F48 (`R:/tambear/campsites/session-20260518/20260518123521-coordination/aristotle/insights/F48-routing-speed-refined-to-cross-recipe-generalization-speed.md`) tested F46's "routing speed might be the operational impact" hypothesis directly. Result: **routing speed for single-recipe fixes didn't change post-Pattern-23** (pre-Pattern-23 single-recipe find→fix cycles were already fast — seconds to minutes). What DID change is **cross-recipe fix-class generalization speed**.
+
+The smoking gun: `b3fbb0c` (airy Type-1 alternating-series guard fix at 13:23:59) → `38c27f9` (bessel_jy Type-1 fix at 13:29:45) — **6 minutes apart, different recipe, same fix-class, explicitly cited in commit message as "second instance of the Type-1 boundary pattern"**. Pre-Pattern-23, same-fix-class-in-different-recipe took separate adversarial discovery cycles. Post-Pattern-23, pathmaker can scan "where else does this fix-class apply?" in minutes.
+
+**The deeper finding**: pattern crystallization enables a *new search primitive* over the team's substrate — *"find me other instances of this fix-class across recipes."* Without an explicit pattern name, you can't search for "this kind of bug" across the codebase. With one, you can. **The pattern doesn't introduce the discipline (F46 confirmed disciplines pre-existed); it makes the discipline searchable.**
+
+**Refined success criteria for the descriptive-confirmed watches** (Pattern 23 + Sub-pattern 5.10):
+
+The right success-test for these is *"does this pattern enable a search primitive over the team's substrate?"* — NOT "citations-in-commits per se." Citations are the *evidence* that the search primitive is operational; the underlying success criterion is the search-primitive itself.
+
+- **Pattern 23 search primitive**: pathmaker can scan recipes for "Type-1 boundary candidates" / "Cancellation-class fixes" / "Threshold+Bailout candidates." **Operationally proven** by the b3fbb0c→38c27f9 propagation.
+- **Sub-pattern 5.10 search primitive**: math-researcher (or other anchor authors) can scan anchor docs for "unverified architecture assumptions." **Operationally proven** by the same-day three-instance arc (Airy fractional Bessel + Polylog `li2` sign + Lerch quadrature).
+- **Sub-pattern 5.11 (prescriptive)**: search-primitive frame doesn't apply yet because cross-role adoption hasn't happened. The fourth-instance-across-sessions adoption-test is correct here.
+
+**This refines Reconstruction 10** (F45) into a sharper form: methodology pattern crystallization makes visible disciplines already running, **AND** enables a new search-primitive ("find other instances of this fix-class across recipes/anchors/roles"). The new capability is *search-by-fix-class*; the disciplines themselves were running. The vocabulary's operational role is to *make the fix-class a searchable target across the team's substrate*.
+
+**Held forward** (F48 candidate F45.X4): every pattern entry could explicitly name *"what search-primitive does this enable over the team's substrate?"* — concrete operational artifact for naturalist's lane in future pattern annotations.
+
 ### Held downstream candidate
 
 F46 has shipped; further empirical scans (e.g., extending pre-March 2026 + cross-checking other failure-class disciplines) could deepen the corroboration but aren't blocking. Aristotle's F-series at F50 (`F50-five-source-convergence-on-naming-makes-checkable.md`) provides additional multi-tier corroboration of the watchpoint's content via five link-irreducible sources (F45 inward + naturalist's lift to past-me 2026-04-10 + F46 empirical + naturalist's math-researcher-candidates insight + Pattern 32 held candidate). The convergence is content-corroboration, not adoption-ratification — both are valid evidence-tiers for the watchpoint per the new descriptive-vs-prescriptive split.

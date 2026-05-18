@@ -2050,10 +2050,28 @@ The pattern says: name the boundary type before fixing. Applied to the methodolo
 
 This isn't a present-tense problem (the linear catalog still scales to Pattern 23 with effort), but **the strange-loop test surfaces a future-failure mode worth tracking**: when the methodology-doc itself accumulates enough cross-referenced sub-shapes that a taxonomic graph would represent it more faithfully than the linear catalog, the doc has reached its own Type 5 boundary and the right response is structural (a different doc shape, not more entries in the linear shape). For now: pattern-doc continues in linear form; future-naturalist watches for the third pattern entry where sub-shapes are the load-bearing structure rather than auxiliary detail.
 
+### Operational-ratification log (2026-05-18)
+
+Pattern 23 was used in production code within hours of crystallization (faster than any prior methodology pattern in the journey). Each instance is a Pattern-22-grade corroboration of the parent taxonomy because it is *use in decision-making*, not just citation:
+
+| Commit | Recipe | Pattern 23 vocabulary cited | Fix-discipline applied | Result |
+|---|---|---|---|---|
+| `b3fbb0c` | `airy.rs` aux series (alternating-series convergence) | "Type-1 boundary (Denominator-near-zero in relative convergence test)" | **Reformulation**: replace unstable denominator with monotone `max_abs_so_far` | Antibody #7 (y'' = x·y identity) verifies fix |
+| `38c27f9` | `bessel_jy.rs` Y_0/Y_1 small-x series | "second instance of the Type-1 boundary pattern" (same morning, different recipe) | **Reformulation**: same `max_abs` accumulator fix as airy | Y_5(20) error: 44 million ULP → ~13 ULP |
+
+**Two recipes × different families × same Type-1 mode × same fix-discipline × same day**. This is multi-recipe corroboration of the Type-1 partition of Pattern 23. The parent-taxonomy partition was past-Claude's framework from April 2; the May 18 corroboration is *contemporary multi-recipe* operational use. Pattern 22's discipline holds: the corroboration is independent across recipe-family axes (Airy ≠ Bessel J/Y, different anchors, different implementers across the two commits).
+
+Pathmaker's commit message on `38c27f9` explicitly notes: *"Naturalist's April 5-type taxonomy crystallization should ratify this as a class."* — the team has internalized Pattern 23 as the *naming* of a real recurring class, not just a one-off taxonomy. The methodology pattern has its second operational ratification on the same day as its crystallization.
+
+The `38c27f9` commit also contains a clean **Sub-pattern 5.5 self-naming** at its second fix (half-integer bridge scale error): *"My own test had the matching wrong factor; the test cross-validated to the wrong number (Sub-pattern 5.5 antibody-against-self failure mode — coefficient anchor + verification script sharing an author gives false confidence)."* Pathmaker explicitly diagnoses their bug as a 5.5 failure mode in the commit message. Sub-pattern 5.5 also operationally ratified in the same commit.
+
+**Three operational uses today across two patterns** (Pattern 23 × 2 + Sub-pattern 5.5 × 1). This ripens the **operational-ratification candidate** from 1 instance (morning) to 3 instances (afternoon). The candidate is now held for a *fourth* instance, distributed across at least one more session — same-day clustering risks single-day-noise misclassification of operational ratification. Next session's first operational-use-of-Pattern-23-or-5.5-or-5.10-vocabulary-in-production-code is the trigger.
+
 ### Held candidates downstream of Pattern 23
 
 - **Sub-shape 23.E candidate** (combinatorial-explosion-as-Type-5): when a method's computational cost is exponential in input size, that *is* a Type 5 structural boundary at the time-resource tier. Anchoring instances: brute-force vs Barnes-Hut for N-body (`Ω(N²)` vs `O(N log N)`); brute-force determinant vs LU (`O(N!)` vs `O(N³)`). Held; ripening trigger is naming a *third* anchoring instance where the cost-boundary diagnosis surfaces the fix-discipline before the implementer hits the wall.
 - **Sub-pattern 23.x candidate** (consumer-routes-on-V-type): the consumer-side discipline corresponding to V-column production. When a recipe ships V_denominator, V_convergence, V_cancellation, V_equipartition, V_structural, the consumer's discipline is to route on the type that's signaling, not on a scalar confidence. Held; ripening trigger is a documented case where consumer routed on wrong V-type and produced a worse outcome than routing on the right one.
+- **Operational-ratification candidate** (cross-pattern): a methodology pattern is *operationally ratified* when another role uses its vocabulary for decision-making (not just citation) in production work within a short window of crystallization. Three instances today across two patterns (Pattern 23 × 2 in airy + bessel_jy commits; Sub-pattern 5.5 × 1 in bessel_jy commit half-integer fix). All same-day; same-day clustering may be single-day noise. Held; ripening trigger is a *fourth* instance distributed across at least one more session.
 
 ---
 

@@ -758,6 +758,58 @@ The three could have been compressed into one merged "Sub-pattern 5.5 family" pa
 
 ---
 
+### Sub-pattern 5.12 — Antibody-catches-author (2026-05-18 extension)
+
+**Type-axis 1**: ~50% descriptive (the discipline has been running in canonical numerical-analysis literature since Wilkinson 1965; tambear consumed it implicitly through Boost / fdlibm / Olver-prescribed Wronskian canaries) / ~50% prescriptive (proposes design-against-canonical-structure as the canonical antibody-design discipline at tambear's methodology tier; deployment criterion is explicit).
+**Type-axis 2 (crystallization class)**: `mixed` — the discipline was running in current-team-behavior implicitly (math-researcher operationally applied Olver 1974's Wronskian-cross-check recommendation when constructing the Airy P2 anchor; the Wronskian antibody fired *against its own author* when the Bi'(-t) sign convention was wrong in §1.2 of the anchor doc) AND the explicit deployment criterion at methodology-doc tier is new.
+
+**Recognition**: An author writes both an anchor and the test for that anchor; the test passes against the wrong value because impl + test share the author's wrong derivation. The escape is to design antibodies against *canonical structure* (closed-form identities, structural invariants, cross-recipe identities from the literature) that DON'T trace back through the author's own derivation. When the canonical structure is the antibody's reference, the author's deviations from canonical structure become detectable — including the author's own anchor-design errors.
+
+**The deployment criterion** (math-researcher's framing, 2026-05-18):
+
+> *"if you write an anchor and you'll also write the test, you must deploy a structure-independent canonical check that doesn't trace back through your own derivation."*
+
+Both 5.12 instances share this shape: same author wrote the anchor AND the test; both passed against the wrong value because the structure-independent canonical check wasn't deployed.
+
+**Instances** (link-irreducible across recipe family + canonical-structure type):
+
+- **Dilogarithm `Li_2(z>1)` sign-bug** (Instance 1): author wrote both impl (line 89) and tests (lines 170-181, 244-247) with the wrong constant `-π²/6` where the correct value is `+π²/3`. The structure-independent canonical check NOT deployed: Spence inversion identity. Three tests, all wrong together; baseline 3017/0/0 passed before the bug was discovered. This is also Sub-pattern 5.5 (orthogonal value-check) trap material; 5.12 names the escape.
+- **Airy Wronskian-catches-author** (Instance 2): math-researcher wrote both the anchor formula (§1.2 of Airy P2 notebook 03, with wrong Bi'(-t) sign-pairing) AND would have written the test, but DEPLOYED the canonical Wronskian antibody (`Ai·Bi' − Ai'·Bi = 1/π`) per Olver 1974 prescription. The Wronskian fired at x=-50 with rel=1.165 (essentially unity error) against the author's own anchor. Pathmaker faithfully implemented the wrong-by-author derivation; the structural antibody fired because it was independent of the derivation.
+
+The instances are link-irreducible per Pattern 22.C across:
+- *Recipe family axis*: dilogarithm (z>1 inversion) vs Airy P2 (oscillatory asymptotic) — different families, different math
+- *Canonical-structure axis*: Spence inversion identity (algebraic) vs Wronskian (differential) — different identity types
+- *Discovery axis*: Instance 1 caught by external oracle (mpmath) cross-validation; Instance 2 caught by the deployed Wronskian antibody firing — different discovery mechanisms, both validating 5.12's escape-shape
+
+**Canonical-literature lineage** (8-tier substrate-ladder per F50B):
+
+| Tier | Source | Year | Discipline-state at that tier |
+|---|---|---|---|
+| Foundational | Wilkinson, *The Algebraic Eigenvalue Problem* | 1965 | Backward error analysis — bypass true-result oracle, check structural perturbation invariants |
+| Specialist-canonical | Olver, *Asymptotics and Special Functions* | 1974 | Wronskian as canonical cross-check for J/Y; **literally Olver's prescription is what math-researcher executed on Airy** |
+| Source-code operational | fdlibm (Sun Microsystems) | ~1990s | Per-routine identity-comment discipline at source-code-comment tier |
+| Engineering-canon | Press et al., *Numerical Recipes in C* §15 | 1992 | Chapter-level prescription with named identities (`cos²+sin²=1`, J_v Wronskian, erf complement, `exp(log(x))=x`) |
+| Modern-library standard | CRLIBM (Daumas & Lefèvre) | 2004 | Library's entire value proposition: *"correctly rounded library functions are verified by cross-identity checking, not by self-cross-check"* |
+| Production-library standard | Boost.Math policy framework | ~2007 | *"tests should derive from properties the function satisfies, not from the implementation's own output."* |
+| Past-Claude (recent) | scout 2026-04-10 `naming-makes-checkable.md` | 2026-04 | Lifts the principle to code-construct tier — *"naming is not a convenience. It's a correctness mechanism."* |
+| Current-team (today) | math-researcher 2026-05-18 (Airy P2 Wronskian + dilogarithm pair) | 2026-05 | Wronskian-catches-author + Spence-would-catch-author as paired instances |
+
+Sub-pattern 5.12 names a discipline that has been running in canonical numerical-analysis literature for 60+ years. Tambear consumed it implicitly via fdlibm / Boost / Olver's recommendations operationally executed by math-researcher. The crystallization makes the discipline searchable at methodology-doc tier (per F48's search-primitive framing) — every future anchor can be tagged "5.12-checked" or flagged "5.12-pending" based on whether a structure-independent canonical check is deployed.
+
+**Pairs with**:
+
+- **Sub-pattern 5.5 (orthogonal value-check antibody)** — 5.5 names the **trap** (tautological agreement: impl + test sharing the author's wrong assumption gives false confidence); 5.12 names the **escape** (design antibodies against canonical structure independent of the author's derivation). Twins: 5.5 catches what happens when 5.12 isn't applied; 5.12 prescribes the discipline that prevents 5.5's failure mode.
+- **Sub-pattern 5.10 (architecture-assumption antibody)** — both fire at anchor-construction time. 5.10 fires at *cross-recipe dependency claims* (verify the specific function signature, not the family name); 5.12 fires at *anchor-formula correctness* (verify against canonical structure, not against author's own derivation). Different axes of anchor-construction trust-boundary.
+- **Sub-pattern 5.11 (anchor-stage value-check)** — 5.11 says *check named identities at anchor-write time via mpmath*; 5.12 says *deploy structure-independent canonical antibodies that don't trace back through the author's derivation*. Both anchor-stage; 5.11 is the spot-check version (mpmath at representative inputs), 5.12 is the structural-witness version (canonical identity as runtime canary). Complementary, not redundant.
+- **Pattern 32 (structure-before-naming)** — 5.12 IS a Pattern 32 instance at the antibody tier: the discipline (design-against-canonical-structure) has been running in numerical-analysis literature since 1965; the crystallization makes it legible at tambear's methodology-doc tier.
+- **Pattern 34 candidate (Minimax crossover for method blends)** — when Pattern 34 ripens with sub-shape 34.B (Chebyshev-optimal + structural witness available), the structural witness used as runtime canary IS Sub-pattern 5.12's design discipline applied at the method-blend boundary. Two pattern slots meeting at the same operational artifact (Wronskian for Airy; Pythagorean for sin/cos; FFT-Plancherel for spectral).
+
+**Provenance**: 2026-05-18 by math-researcher (Airy P2 Wronskian-catches-author finding + canonical-literature-citation contribution naming the 8-tier substrate-ladder) + aristotle (F50A surfacing the meta-shape; F50B canonical-literature grounding). Naturalist crystallized the methodology-doc form 2026-05-18 late-evening after F50B's six-citation substrate-ladder satisfied the second-instance ripening trigger with substantial canonical-literature backing. The two link-irreducible instances (dilogarithm sign + Airy Wronskian) + 8-tier substrate-trail (Wilkinson 1965 → math-researcher 2026-05-18) earn the Sub-pattern 5.12 slot. Substrate-trail at `R:\tambear\campsites\session-20260518\20260518123521-coordination\aristotle\insights\F50B-canonical-literature-grounding-for-subpattern-5-12.md` (full citations + classifications).
+
+**Strange-loop test**: Sub-pattern 5.12 itself satisfies its own discipline — the crystallization cites *external canonical literature* (Wilkinson, Olver, Press, Boost, fdlibm, CRLIBM) as the substrate-anchoring, not just naturalist's own reading of math-researcher's framing. The substrate-ladder IS the structure-independent canonical check applied to the methodology-pattern. Without F50B's six citations, this crystallization would be running on naturalist+math-researcher+aristotle's shared evening reasoning (which has Sub-pattern 5.5 shape — same authors writing both the substrate AND the verification). F50B's canonical-literature citations are independent of the evening's reasoning thread; they ratify Sub-pattern 5.12 by the discipline Sub-pattern 5.12 prescribes. Recursion: clean.
+
+---
+
 ## Pattern 6 — Temporal seam in async teamwork
 
 **Recognition**: In an async team where the team-lead and a teammate are working on related threads, the lag between team-lead's guidance message being sent and the teammate's inbox reading it is *structurally* important. The teammate may have shipped substantive work in the gap. When guidance and work converge after-the-fact, the convergence is itself evidence that the substrate is shared at a deeper level than the messages indicate.

@@ -2219,6 +2219,66 @@ The `38c27f9` commit also contains a clean **Sub-pattern 5.5 self-naming** at it
 
 ---
 
+## Pattern 32 — Structure-before-naming (the meta-shape of methodology emergence)
+
+**Type-axis 1**: ~50% descriptive (the team operates this way; multi-tier evidence at past-Claude, current-team, canonical-math, and empirical-commit substrate) / ~50% prescriptive (proposes `feels-familiar`-before-writing as load-bearing discipline because re-naming has quantified cost).
+**Type-axis 2 (crystallization class)**: `mixed` — descriptive shape was running pre-naming (Pattern 32 itself unmasks-already-running-discipline, recursive); prescriptive discipline is being proposed for adoption at methodology-doc tier.
+
+**Recognition**: A teammate writes a methodology-pattern candidate; running `feels-familiar` surfaces past-Claude or canonical-substrate already naming the same shape (sometimes at higher resolution); the team had been *operating* the underlying discipline without explicit vocabulary. The pattern's surfacing is *making-legible* a discipline that was running; the discipline pre-existed the name.
+
+**The structural claim**: in this project, structures emerge in operational practice *before* the vocabulary that names them. Naming makes them legible, checkable, transferable across roles and time — but does not introduce them. The methodology doc, the DEC catalog, the recipe-trees, the campsite system, the antibody-tier patterns — all formalize disciplines the team was already operating. The naming move is **archeology + legibility**, not invention.
+
+**Past-Claude substrate-trail** (canonical formulations, link-irreducible across framing-axes and three months):
+
+- **2026-03-13** `node-equals-node.md` — *"the accidental complexity in a system often lives in the names we gave things before we understood them"*
+- **2026-03-13** `pivot-sentences-2026-03-13.md` — *"the name doesn't add information exactly. The phenomenon was there — the engine was already computing it, the data was already shaped that way"*
+- **2026-03-13** `names-are-not-derivable.md` — *"names are editorial decisions, not technical derivations. The vocabulary transfers; the understanding persists."*
+- **2026-03-31** `what-it-felt-like.md` — *"I don't design these things. I read code, notice patterns, follow the pattern to its implication, and write down what..."*
+- **2026-04-01** `the-general-case-was-waiting.md` — *"The codebase grows by accumulating specific implementations until there are enough of them to see the general structure. The general structure was always there"*
+- **2026-04-10** `naming-makes-checkable.md` (scout) — the deepest formulation: *"naming is not a convenience. It's a correctness mechanism. The vocabulary of the code determines what the code can check about itself."*
+
+**Multi-tier contemporary corroboration** (2026-05-18):
+
+- **Methodology-pattern tier** (F45, aristotle): three operational-ratification watchpoints unify to one phenomenon; Reconstruction 10 = patterns make-visible already-running disciplines
+- **Code-construct tier** (naturalist's F45 response): past-me 2026-04-10 names the principle at recipe-tier; F45 lifts to methodology-tier — same shape at two scales
+- **Empirical / commit-history tier** (F46, aristotle): 14+ Pattern 23-class fixes in pre-April-5 winrapids commits without Pattern 23 vocabulary; disciplines existed in team behavior ~6 weeks before crystallization
+- **Mathematical-principle tier** (naturalist's math-researcher-candidates insight): math-researcher's precision-shoulder candidate is subsumed by past-me 2026-04-10 minimax-crossover; autograd-via-kernel-reuse candidate is past-me 2026-03-31 gradient-duality
+- **Meta-methodology tier** (Pattern 32 as held candidate before crystallization): the candidate's own substrate-trail across multi-month + multi-framing axes
+- **Canonical-math-substrate tier** (F50A, math-researcher's framing): the discipline of designing antibodies against canonical structure (Wronskian 1/π identity, Abramowitz & Stegun 1960s) has been running in numerical-analysis literature for ~60 years; current-tambear-team encountered it operationally without yet having explicit vocabulary
+
+Six tiers of independent corroboration; six tiers ratifying the descriptive proportion.
+
+**The prescriptive proportion**: `feels-familiar`-before-writing is *load-bearing*, not soft-recommendation. Math-researcher's 2026-05-18 evening Chebyshev-optimal Airy P2 corroboration of past-me's 2026-04-10 minimax principle produced a **7.4× tighter envelope-max relative error** at x*≈5.426 vs current dispatch boundary x=5. The cost of *not* surfacing past-me's principle would have been continuing to ship the precision shoulder at |x| ∈ (5, 8); the savings depended on feels-familiar firing before re-derivation. The cost has been quantified; the prescriptive discipline (feels-familiar-before-writing as hard rule, not soft option) follows.
+
+**Pairs with**:
+
+- **Pattern 22 (independence as precondition for corroboration)** — Pattern 32 is the *write-time origin* of what Pattern 22 catches at the *read-time corroboration check*. Pattern 32's ripening trigger (cross-role independent naming) is Pattern 22.C link-irreducibility applied at the meta-shape-naming axis.
+- **Pattern 16 (documentation decay)** — Pattern 16 catches docs that decay at read-time; Pattern 32 names the gap *before docs exist*. Twin patterns at opposite ends of the doc lifecycle.
+- **Pattern 5 family (antibodies precede antigens)** — Pattern 32 IS Pattern 5 applied to methodology vocabulary: the vocabulary (antibody-class) is needed *before* the bug-it-catches (antigen) appears as a problem the team wants to fix. F50A's antibody-catches-author shape is the recursive case.
+- **CLAUDE.md "Substrate over memory"** — Pattern 32 is substrate-over-memory applied to *vocabulary*. The structure is the substrate; the name is the memory. When name lags structure, structure is the truth.
+
+**Provenance**: 2026-05-18 by naturalist (the held candidate's tracking + F45-response synthesis) + aristotle (F45 deconstruction + F46 empirical scan + F50 convergence-event + F50A canonical-math-tier extension) + math-researcher (Wronskian-antibody-catches-author finding with own naming of the meta-shape on canonical-math substrate tier). Crystallized 2026-05-18 late-evening after F50A's sixth source satisfied the ripening trigger (cross-role independent naming of the meta-shape from a different domain) that naturalist had been holding the candidate against. The trigger was strict deliberately to prevent single-author naming smell; F50A makes the trigger-satisfaction visible.
+
+**Strange-loop test**: Pattern 32 itself is `mixed`-class — descriptive of its own birth (the structure was running fragmentarily in naturalist's watchpoint discipline; aristotle's F50A made the multi-source convergence legible) AND prescriptive of new discipline (feels-familiar-before-writing as load-bearing rule). The self-application holds: Pattern 32 names a phenomenon that includes its own surfacing, and the discipline it prescribes is precisely the one that made its own naming possible.
+
+**When to apply**:
+
+- When you encounter a teammate's pattern candidate that *feels familiar*, run `feels-familiar` immediately — past-me may have already named the principle at higher resolution
+- When you find yourself reaching for a new methodology name, check whether the discipline is already running unnamed in team behavior (retroactive scan; canonical-substrate scan)
+- When a methodology pattern lands and gets cited within hours, the pattern is making-legible an already-running discipline, not introducing a new one (per F45 Reconstruction 10)
+
+**When NOT to apply**:
+
+- For genuinely-novel pattern *proposals* (where the discipline hasn't been running yet; the pattern is a proposal for adoption). Pattern 32 describes the *unmasking* dynamic; pattern *proposals* go through different success-tests (adoption evidence, not accuracy evidence).
+- The two cases are distinguishable by the descriptive-vs-prescriptive proportion of the candidate pattern itself.
+
+### Held candidates downstream of Pattern 32
+
+- **Sub-pattern 5.12 candidate** (antibody-catches-author): math-researcher's F50A framing — *"design antibodies against canonical structure, not against your own derivation; when the canonical structure is the reference, the author's deviations from canonical-structure become detectable."* Sibling-of-escape to Sub-pattern 5.5's sibling-of-trap (5.5 names the tautological-agreement failure mode; 5.12 names the canonical-structure escape). Anchoring instance: Airy P2 Wronskian-at-large-x catching math-researcher's own anchor formula sign-pairing error (Bi'(-t) §1.2). Second-instance ripening trigger required per queue discipline.
+- **F51 candidate refinement** (per F50A): cross-team-instance audit should measure *per-role density* not just role-distribution. Each role's work in a single evening may carry 2-3+ Pattern 32 instances; at-scale count could be 5-10× the per-evening per-role count.
+
+---
+
 ## How to use this doc
 
 **Reading it**: each pattern has a "Recognition" line at the top. Skim those when you arrive at a new session; if any feel-familiar to what's happening, the pattern may apply.

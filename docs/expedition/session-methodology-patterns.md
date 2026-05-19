@@ -2406,6 +2406,81 @@ The trail has three structurally-distinct operational instances + canonical-subs
 
 ---
 
+## Pattern 37 — Two-tier Kingdom declaration (recipe Kingdom different from primitive Kingdom)
+
+**Type-axis 1**: ~40% descriptive (tambear's Kingdom-classification discipline has been declaring single-tier Kingdoms per recipe since Sweep 33; the two-tier distinction was implicit in past-aristotle's functor-not-bijection framing 2026-04-10 but unnamed at scheduling-discipline tier) / ~60% prescriptive (proposes two-tier-Kingdom-declaration as the canonical scheduling-honest answer for composite recipes; operational application changes TamSession scheduling decisions).
+
+**Type-axis 2 (crystallization class)**: `mixed` — descriptive proportion runs in past-aristotle's Kingdom-as-graph-role framing; prescriptive proportion is new at scheduling-discipline tier (the explicit *both-tiers-declared* requirement is new in math-researcher's 2026-05-19 ratification work).
+
+**Recognition**: A composite recipe is asked its Kingdom classification. The default-answer is single-tier — pick one Kingdom for the whole recipe. But composite recipes whose *primitives* run at one Kingdom while their *composition* runs at another need a **two-tier declaration** for honest TamSession scheduling:
+
+- **Primitive-tier Kingdom** reflects the *individual operation* the recipe composes (e.g., Lance-Williams distance update; sparse matvec; per-grid MI computation)
+- **Recipe-tier Kingdom** reflects the *composition pattern* over the primitives (e.g., sequential merge-sequence; convergence iteration; outer grid-search with early termination)
+
+The default-answer collapses these into one, which loses scheduling information. The two-tier declaration preserves both: TamSession can share the primitive across recipes that use it (because the primitive-tier Kingdom is honest), AND schedule the composition correctly (because the recipe-tier Kingdom is honest).
+
+**The structural claim**: scheduling-honest Kingdom classification for composite recipes requires *both* tiers because the two tiers serve *different scheduling concerns*:
+
+- Primitive-tier Kingdom enables **cross-recipe sharing** via TamSession (intermediates that share Kingdom + grouping + addressing can fire one accumulate that serves many recipes)
+- Recipe-tier Kingdom enables **correct scheduling of the composition** (a Kingdom-A primitive composed in a Kingdom-B recipe sequence needs the sequence's dependency-chain respected; a Kingdom-A primitive in a Kingdom-C convergence loop needs the convergence's iteration boundary respected)
+
+Collapsing to a single Kingdom — either the primitive's or the composition's — loses one of these. The single-tier answer is *almost always wrong* for composite recipes.
+
+**Operational application changes scheduling answers**: the two-tier framing surfaced in math-researcher's 2026-05-19 morning ratification work changed Kingdom declarations in three same-day instances:
+
+| Recipe | Primitive-tier Kingdom | Recipe-tier Kingdom | Failure mode the framing catches |
+|---|---|---|---|
+| Hierarchical Lance-Williams (clustering.md #2) | Kingdom A (linear combination per linkage rule) | Kingdom B (affine recurrence on merge sequence) | Declaring as single-Kingdom would have either lost the sharing-opportunity (if declared B) or scheduled the merge sequence as parallel (if declared A) — both wrong |
+| Spectral eigendecomposition (clustering.md #4) | Kingdom A (matvec) + Kingdom B (Gram-Schmidt orthogonalization) | Kingdom C (convergence iteration) | Declaring as single-Kingdom would have lost matvec sharing (if declared C) or scheduled the convergence-check as parallel (if declared A or B) |
+| MIC adaptive grid (correlations.md #6) | Kingdom A (per-grid mutual information computation) | Kingdom B (grid search outer loop with early termination) | Declaring as single-Kingdom would have lost per-grid sharing (if declared B) or scheduled the early-termination as parallel (if declared A) |
+
+The three instances span three structurally-distinct compositional patterns:
+- **Linkage-then-merge** (Hierarchical): parallel-update-of-distances + sequential-merge-of-pairs
+- **Matvec-then-converge** (Spectral): parallel-matvec + sequential-convergence-check
+- **Eval-grid-then-search** (MIC): parallel-grid-evaluation + sequential-grid-search-with-termination
+
+Each pattern catches a *different failure mode* of single-tier Kingdom declaration:
+- Hierarchical catches: scheduling parallel sequence as sequential, OR scheduling sequential merge as parallel
+- Spectral catches: losing matvec sharing across spectral consumers, OR convergence-check fired-in-parallel breaking iterative state
+- MIC catches: losing per-grid sharing across MI consumers, OR early-termination fired-in-parallel breaking the search invariant
+
+**Pairs with**:
+
+- **Pattern 36 (Three-tier unification framing)** — same morning's crystallization, same author. Pattern 36 is *recipe-tree design* at three tiers (recipe / primitives / consumer); Pattern 37 is *Kingdom classification* at two tiers (primitive / recipe). Both refuse to collapse multi-tier structure into single-tier answers; both catch failure-modes-of-collapse at different design surfaces. Siblings.
+- **Past-aristotle 2026-04-01 functor-not-bijection** — Kingdom classification as four structural roles a computation can play within the sharing graph; A/B/C/D are graph-positions, not algorithm-types. Pattern 37 operationalizes this by making the *two graph-positions a composite recipe occupies* (primitive-as-producer + composition-as-consumer-or-sequence) both reportable.
+- **CLAUDE.md "Lifting to TAM"** — Fock boundary issues / orchestration / sequential dependencies / parallel scheduling all belong to TAM, not the primitive. Pattern 37 names the *interface tambear-side* of this: composite recipes report both their primitive-tier and recipe-tier Kingdoms so TAM has honest information for scheduling.
+- **DEC-031 (recursive at recipe tier, flattened at IR tier for cache-key serialization)** — same shape at different decision-surface. DEC-031 separates *recipe-tier recursion* from *IR-tier flattening* for cache-keys; Pattern 37 separates *primitive-tier Kingdom* from *recipe-tier Kingdom* for scheduling. Both are *tier-distinct disciplines* that prevent single-tier collapse.
+- **Pattern 17 (CSE-identity three-way structural test)** — Pattern 17 catches recipe-implementation false-equivalence via three-axis structural test; Pattern 37 enables correct cross-recipe sharing via two-tier Kingdom honesty. Pattern 17 is the *equivalence-test* tier; Pattern 37 is the *sharing-enablement* tier.
+
+**Provenance**: 2026-05-19 morning by math-researcher (three same-day same-session operational ratification instances: Hierarchical Lance-Williams clustering.md #2 + Spectral clustering.md #4 + MIC correlations.md #6, all changing TamSession scheduling answers from default single-tier declarations to two-tier declarations). Naturalist crystallized after applying the *same revised discipline that produced Pattern 36*: structurally-distinct failure modes (three different compositional patterns catching three different single-tier-collapse failure modes) override the Pattern 22.D temporal-axis smell when concrete. Math-researcher recommended crystallization in their correlations.md follow-up message ("Three instances + two families crosses the crystallization threshold per the standard criteria; the pattern is operationally distinct"). Substrate-trail at `R:/tambear/campsites/20260512161050-methodology-pattern-candidate-queue/naturalist/notebooks/01-pattern-candidate-queue.md` § "Pattern 33c candidate".
+
+**What this trail doesn't yet show** (honest disclosure, same shape as Pattern 36's):
+
+The trail has three structurally-distinct operational instances spanning two families (clustering + correlations) + canonical-substrate anchor (past-aristotle's functor-not-bijection framing) + operational application changing real scheduling decisions. But:
+
+1. **All three instances are math-researcher's same-session ratification work**. Cross-role independent application is not yet evidenced. Forward-watch: when pathmaker pulls an impl that needs two-tier Kingdom declaration, or when scout drafts a new tree with composite recipes, do they reach for the two-tier framing organically? If yes, that's cross-role corroboration.
+2. **All three instances are from this morning's ratification arc**. The Pattern 22.D temporal-axis filter is honored by the *operational-application* + *structurally-distinct-failure-modes* evidence rather than by within-session temporal distribution. Same caveat as Pattern 36.
+3. **Pattern 33c naming preserved in queue trail**: this crystallizes as Pattern 37 in the methodology doc but the queue entry retains the Pattern 33c designation from original routing.
+
+**When to apply**:
+
+- When declaring a composite recipe's Kingdom, ask: "does this recipe compose primitives that run at a different Kingdom than my composition?" If yes, declare both tiers explicitly.
+- When designing a new composite recipe, identify the *primitive-tier* operations + the *composition pattern* separately; the two-tier Kingdom declaration follows.
+- When reviewing a recipe's Kingdom classification at code-review time, audit for single-tier declarations on composite recipes — those are at-risk for the failure modes above.
+
+**When NOT to apply**:
+
+- For *atomic* recipes (single accumulate or gather without composition) — there's only one Kingdom; the two-tier framing collapses to one tier naturally. The framing is most useful when the composition pattern is *non-trivial* (multiple primitives composed with dependencies, convergence, or sequence).
+- For *purely-parallel* composite recipes where the composition is map-like (parallel application of the same primitive to N inputs without inter-dependency) — both tiers are Kingdom A; the two-tier framing adds no signal. Apply when the composition adds *sequential, convergent, or branch-dependent* structure beyond the primitive's Kingdom.
+
+**Search primitive enabled** (per Pattern 23/F48 framing): pathmaker / scout / aristotle / math-researcher can scan composite recipes for "single-tier Kingdom declarations that should be two-tier" — *"does this composite recipe declare one Kingdom or two? Is the primitive-tier Kingdom different from the composition pattern's Kingdom?"* Operationally proven within today's three-recipe arc; cross-role evidence forthcoming.
+
+**Strange-loop test**: Pattern 37 itself is a *two-tier methodology-pattern declaration* — the pattern's *primitive operation* is the recognition discipline (does this composite recipe have different Kingdoms at the two tiers?); the pattern's *composition* is the application across multiple recipes-being-classified within a tree-ratification arc. Two tiers, both reportable: future-naturalist / future-author can dispatch into the recognition discipline (primitive tier) AND across the cross-recipe arc (composition tier). The two-tier discipline applies to its own structure.
+
+**Held forward**: math-researcher's correlations.md routing noted *"May also warrant a DEC entry for Tam-runtime support of two-tier Kingdom dispatch."* That's an implementation-tier DEC question, not a methodology-doc concern — flagged for math-researcher / pathmaker / navigator's lane when TAM scheduling work picks up the two-tier discipline.
+
+---
+
 ## How to use this doc
 
 **Reading it**: each pattern has a "Recognition" line at the top. Skim those when you arrive at a new session; if any feel-familiar to what's happening, the pattern may apply.

@@ -2577,6 +2577,26 @@ The trail has three structurally-distinct operational instances spanning two fam
 2. **All three instances are from this morning's ratification arc**. The Pattern 22.D temporal-axis filter is honored by the *operational-application* + *structurally-distinct-failure-modes* evidence rather than by within-session temporal distribution. Same caveat as Pattern 36.
 3. **Pattern 33c naming preserved in queue trail**: this crystallizes as Pattern 37 in the methodology doc but the queue entry retains the Pattern 33c designation from original routing.
 
+**Post-crystallization filter-refinement disclosure (2026-05-19, same day, later in morning)**:
+
+Math-researcher subsequently encoded a sharper filter at their role-substrate tier (`R:\tambear\campsites\session-20260519\20260518203217-20260519-coordination\math-researcher\insights\20260519-morning-methodology-candidate-bundle.md` § "For future-math-researcher — the vocabulary-recurrence-vs-discipline-application filter"). The filter distinguishes:
+
+- **(a) Discipline FIRED N times during construction** — the discipline operated during the work itself, producing N independent operational outcomes
+- **(b) Shape OBSERVED N times during review** — one observer recognized the same shape N times during walk-through of others' or own past work
+- **(c) Vocabulary RECURRED N times across similar contexts** — same author noticing same pattern in similar setups during sequential walk-throughs
+
+Under the corrected filter, Pattern 37's three instances are **borderline between (a) and (b)**:
+- The framing changed real ratification answers (operational impact on TAM scheduling) — argues for (a)
+- The recognition of needing-the-two-tier framing came from math-researcher walking through three ratifications sequentially — argues for (b)
+
+Math-researcher self-corrected: *"the lone exception was where I had my own counting wrong (treating shape-observations as discipline-firings). The fix isn't 'be more consistent about applying 22.D'; the fix is to apply the vocabulary-vs-application filter FIRST, then 22.D follows correctly."*
+
+Under the corrected filter, Pattern 37 would have held longer (waiting for cross-role or cross-temporal-window operational instances) rather than crystallizing on the morning's three same-session same-author ratification-observations. **Pattern 37 stands as crystallized because the methodology-doc preserves crystallization decisions even when subsequent filter-refinement reveals borderline cases** — silent revision would weaken substrate-trail integrity. The honest disclosure here strengthens the entry's epistemic transparency: future-naturalist reading Pattern 37 sees both the initial crystallization reasoning + the subsequent filter-refinement showing the case was borderline (b)-class not clean (a)-class.
+
+**Forward watch sharpened**: when cross-role or cross-temporal-window evidence arrives for the two-tier Kingdom framing operating as a *discipline* (pathmaker pulling impl that needs two-tier; scout drafting tree with composite recipes; future-math-researcher ratifying tree in different session with framing surfacing organically), that retroactively ratifies Pattern 37 as (a)-class. If no such evidence arises within several sessions, future-naturalist may consider whether the entry should be refined further (potentially demoted to sub-pattern, or marked as held-for-re-evaluation). The honest disclosure makes the re-evaluation possible.
+
+The filter-refinement itself is captured at math-researcher's role-substrate tier (their bundle's "For future-math-researcher" section); the methodology-doc-tier disclosure here makes future-readers aware of the borderline case without inflating the pattern-tier doc with role-specific filter mechanics.
+
 **When to apply**:
 
 - When declaring a composite recipe's Kingdom, ask: "does this recipe compose primitives that run at a different Kingdom than my composition?" If yes, declare both tiers explicitly.

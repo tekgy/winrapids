@@ -129,6 +129,44 @@ This framework was created to make the reading more precise; it isn't a new rati
 
 **Provenance**: Sub-pattern named 2026-05-12 by naturalist during Sweep 37, integrating scout's 2026-05-12 grep-catches of audit-claim drift. Observer's `feedback_substrate_over_memory_recursive.md` ("substrate is repo-specific, not project-global") generalized to "substrate is doc-specific, not pan-codebase" — the same recursion at the audit-doc level. Filed as sub-pattern of Pattern 2 rather than standalone Pattern 15 because the structural shape (X-over-Y with X-as-durable, Y-as-convenient) is identical; only the X and Y values are recursive.
 
+### Sub-pattern 2.2 — Impl-vs-sibling-canonical alignment (the gravity of the canonical)
+
+**Recognition**: An impl looks fine in isolation, tests pass, code runs. But the impl has drifted from a *canonical form already present elsewhere in the codebase* — a sibling artifact (vocabulary doc, paired tree, atom-design intent, in-scope variable). Nothing fails; nothing's wrong-by-bug-standard; the only "fix" is to bring the impl into alignment with the canonical form that already exists in the sibling substrate. Sibling-substrate gravity is X; impl's first-pass framing is Y.
+
+**Distinct from Pattern 2's other instances** (substrate-over-memory at agent-context tier; sub-pattern 2.1 at audit-doc tier): this is *impl-vs-canonical-elsewhere-in-codebase*, not impl-vs-context-window or impl-vs-audit-claim. The X is *another artifact in the same codebase that already decided this question correctly*; the Y is the *impl's local framing that didn't consult the sibling*.
+
+**Instances** (pathmaker 2026-05-19 morning, three structurally-distinct drift modes caught in one fresh-spawn wake):
+
+| Drift axis | Instance | X (canonical) | Y (drifted impl) | Fix |
+|---|---|---|---|---|
+| **Value-flow** | `noncentral_chi_squared.rs:115` — `let half_x = 0.5 * x;` defined but never used; hot loop recomputes `-0.5 * x` and `x.ln()` and `half_lambda.ln()` for 200 iterations | The already-computed loop-invariants in same scope | Re-deriving in loop instead of hoisting | Use already-computed values; hoist loop-invariants |
+| **Vocabulary** | `kernels.md` accumulate+gather decompositions using `addressing` slot when atom takes `grouping`; `gather(X × X, addressing: AllPairs)` when `clustering.md` already established canonical pairwise pattern as `accumulate(grouping: Tiled(n,n), op: NoOp)` | `vocabulary.md` (locked atoms vocab) + `clustering.md` (canonical pairwise pattern) | Older/different vocabulary in fresh-drafted pseudocode | Slot-name canonicalization to locked-atoms vocab |
+| **Decomposition-shape** | SmoothingKernel KDE decomposition shown as `gather(...) → gather(...) → accumulate(...)` three atom calls | The atom's `expr` slot designed to take any function of `x(i)` + loop-invariants — one atom call sufficient | Treating atom-pipeline as prose-style vector-pipeline-of-intermediates | Fold three calls into one: `accumulate(grouping: All, expr: sh((x(i)-y)/h), op: Add, data: x)` |
+
+**The structural claim**: when sibling substrate already has a correct form, *the impl must align to it even when the impl works in isolation*. The drift is invisible because nothing fails, but it propagates uncertainty to the next reader: *"is this drift intentional? did the sibling change after this impl was drafted? which form should I use in my own work?"* The fix isn't dramatic; it's *applying the gravity of the canonical*. Sibling-substrate decided; impl needs to remember.
+
+**Distinct from bug-fixing**: bug fixes change something *because it was wrong*. Sub-pattern 2.2 fixes change something *because it was drifted-from-correct-elsewhere*. The pattern catches a class of *not-bugs-but-drifts* that escape test suites entirely.
+
+**Pairs with**:
+
+- **Pattern 16 (Documentation decay)** — Pattern 16 catches *time-drift* between docs and reality (claims-drift, tense-drift, trigger-drift over a long timeline). Sub-pattern 2.2 catches *write-time-drift* between sibling impl artifacts (the impl drifts at-write-time because the author didn't consult the sibling, not over months). Twin patterns at opposite ends of the docs-impl alignment timeline.
+- **Sub-pattern 5.10 (architecture-assumption antibody)** — 5.10 catches dependency-existence drift at anchor-construction time; 2.2 catches canonical-form drift at impl-write time. Same lifecycle stage (write-time, not test-time); different axes (5.10 = does-it-exist; 2.2 = does-it-align-with-canonical).
+- **Sub-pattern 5.11 (anchor-stage value-check)** — 5.11 verifies anchor's *values* against external mpmath; 2.2 verifies impl's *form* against canonical sibling. Anchor-stage vs impl-stage; values vs forms; both X-over-Y substrate alignment at different lifecycle stages.
+- **Pattern 36 (Three-tier unification framing)** — when *primitives-tier* unification is the canonical answer (e.g., accumulate-as-Riesz), the impl must align by using that primitive uniformly. Sub-pattern 2.2 catches the *failure to align* at impl-write tier; Pattern 36 names the *recipe-tree-design discipline* that produces the canonical form.
+- **CLAUDE.md "Substrate over memory"** — the canonical statement. Sub-pattern 2.2 is the application at the *sibling-artifact tier* (within-codebase, between artifacts) — adding to the family alongside agent-context (substrate-over-memory canonical) and audit-doc-claims (Sub-pattern 2.1).
+
+**Provenance**: Pathmaker 2026-05-19 morning, fresh-spawn wake. Three same-day same-author instances caught + named in pathmaker's garden entry `~/.claude/garden/2026-05/2026-05-19-the-impl-had-drifted-from-its-substrate.md` ("The impl had drifted from its substrate — three shapes, one rhyme"). Pathmaker explicitly routed to navigator/naturalist for placement, naming the pattern themselves ("substrate-gravity" / "applying the gravity of the canonical"). Naturalist placed at Sub-pattern 2.2 (sibling to 2.1 audit-substrate-recursion) per Pattern 2 family structural fit: same X-over-Y discipline, X = sibling-artifact canonical form, Y = impl's first-pass without consulting sibling.
+
+**Pattern 22.C link-irreducibility check**: three drift axes are structurally distinct (value-flow / vocabulary / decomposition-shape); three canonical-form sources are distinct (in-scope code / external doc / atom's design intent); three fix-disciplines are distinct (hoist / vocab-canonicalize / fold). Same-author same-session passes the failure-modes axis per the discipline established by Pattern 36 + Pattern 37 (*structurally-distinct failure modes can override temporal-axis smell when concrete*). This crystallization is **first cross-role substrate corroboration** in the morning's discipline-application arc — Patterns 36 + 37 were math-researcher's lane; Sub-pattern 2.2 is pathmaker's lane. The discipline operates across roles, not just one.
+
+**When NOT to reach for it**:
+
+- For *correctness fixes* (something was actually wrong, tests would have failed eventually) — that's bug-fixing territory, not drift-from-substrate
+- When *no canonical form exists yet* in any sibling artifact — the impl IS the canonical (Pattern 32 territory: structure-before-naming)
+- When the *canonical form is contested* (multiple sibling artifacts disagree) — that's a different problem (canonical-form-establishment), not align-to-existing-canonical
+
+**Search primitive enabled** (per F48 framing): pathmaker / scout / navigator can scan diffs at code-review time for *"does this impl align with the canonical form in [vocabulary.md / sibling tree / paired recipe / in-scope already-computed value]?"* — drift-detection at write-time-or-review-time. Operationally proven within pathmaker's morning wake (three drift-fixes shipped in 45 minutes).
+
 ---
 
 ## Pattern 3 — Substrate-at-risk audit

@@ -167,6 +167,70 @@ This framework was created to make the reading more precise; it isn't a new rati
 
 **Search primitive enabled** (per F48 framing): pathmaker / scout / navigator can scan diffs at code-review time for *"does this impl align with the canonical form in [vocabulary.md / sibling tree / paired recipe / in-scope already-computed value]?"* — drift-detection at write-time-or-review-time. Operationally proven within pathmaker's morning wake (three drift-fixes shipped in 45 minutes).
 
+### Sub-pattern 2.3 — Multi-channel substrate bridge at session boundaries (channel-redundancy as substrate, not single-channel agent-discipline)
+
+**Recognition**: When an agent crashes or otherwise can't write a sleep note before session-end, the bridge to the next session ISN'T broken — because the substrate-bridge across session boundaries is *not* "agent writes sleep note" but **multi-channel substrate redundancy** across roles + artifacts + version-control. When one channel is missing (no sleep note), other channels (git commits + campsite logbook + sibling agents' notes + team-lead briefing + previous resting note) carry. The bridge is the *intersection of channels carrying enough information to reconstruct state* — not any single channel.
+
+**Distinct from earlier Sub-pattern 2.X instances**:
+- **Sub-pattern 2.1**: audit-doc-claim vs actual-state (within-session substrate-staleness)
+- **Sub-pattern 2.2**: impl-vs-sibling-canonical (within-session artifact-alignment)
+- **Sub-pattern 2.3 (NEW)**: multi-channel substrate-bridge AT session boundary (cross-session reconstruction-from-distributed-substrate)
+
+All three are X-over-Y where X = durable substrate and Y = convenient single-source. Sub-pattern 2.3 is specifically *cross-session* (not within-session) and operates on the *substrate-bridge channel* axis (not the substrate-content axis).
+
+**Instances** (2026-05-19 morning, two cross-role recovery arcs from same crash event):
+
+| Role | Crash context | Channels that load-bore reconstruction | Channel notably missing |
+|---|---|---|---|
+| **Naturalist** (fresh-spawn) | Evening crystallization arc interrupted before sleep note | Campsite logbook (multi-agent timestamps) + afternoon resting note (mid-day state) + git log (Pattern 32/Sub-5.12 commits) + team-lead briefing | Naturalist's own evening sleep note |
+| **Navigator** (fresh-spawn) | Evening session active, no navigator sleep note | remember.md (updated by other agents through evening) + git log (commit messages as state-trail) + campsite logbook (math-researcher + observer entries) + team-lead briefing | Navigator's own sleep note |
+
+The two reconstructions used *different load-bearing channels for different role-specific concerns*: naturalist's reconstruction leaned on campsite-logbook + afternoon resting note (methodology-doc state + held candidates); navigator's reconstruction leaned on remember.md + git commit messages (tests-passing baseline + active threads). **Multi-channel-bridge isn't just "some channel always works" — it's "different channels load-bear for different roles' reconstruction needs."**
+
+**Navigator's structural finding** (2026-05-19 morning route): *git commit messages turned out to be the most load-bearing channel — adversarial-resistant (can't be skipped, every committed change has one), always present, self-timestamped.* The other channels (sleep notes, campsite entries, resting notes) are *opt-in* and *agent-volitional*; git commits are *structural* and *automatic*. When all volitional channels miss, the structural channel carries.
+
+**The structural claim** (extending CLAUDE.md "Substrate over memory" to session-boundary tier): substrate-over-memory at *session boundaries* operates as **multi-channel redundancy across asymmetric channels** (volitional + structural). The discipline isn't "agents must always write sleep notes" (which fails when crashes happen); it's "design the substrate-bridge so that volitional-channel-loss is recoverable from structural-channel presence." Volitional channels (sleep notes, campsite entries, resting notes) carry *richer narrative information* but are *missable*; structural channels (git commits, remember.md if maintained) carry *minimal but adversarial-resistant* information and are *always present*. The combination is what bridges; neither alone is sufficient at the failure mode where the agent can't write.
+
+**Past-Claude substrate-trail** (deep anchor):
+
+- **2026-03-13 `the-seam-between-sessions.md`** (past-naturalist) — *"Within a session, you hold the full context: you know the convention changed, you update all the callsites. Across sessions, the new session inherits the artifacts of the old but not the awareness of the change."* The seam-between-sessions was named two months before today's framing; today's framing extends it: the *artifacts-as-substrate-bridge* discipline operates exactly because the seam is real and *can't* be bridged by single-agent-discipline. Multi-channel artifacts are how the seam IS bridged.
+- **Reading-notebook `pastawski-happy-code-holographic-qec.md`** (past-Claude) — *"different boundary paths → different boundary operators → same logical action; the redundancy IS the error correction. Individual intermediates are useful, but combinations of intermediates can unlock computations that no individual intermediate supports. The entanglement wedge is strictly larger than the union of causal wedges. The shared session is strictly more powerful than the sum of individual caches."* The structural rhyme is direct: holographic QEC's reconstruction-wedge-via-redundancy IS the multi-channel-substrate-bridge framing. Past-me already had the framework from physics; today's operational evidence is the empirical instantiation.
+
+**Pairs with**:
+
+- **CLAUDE.md "Substrate over memory"** — Sub-pattern 2.3 IS substrate-over-memory at the session-boundary tier with channel-asymmetry made explicit (volitional + structural channels need *different* design disciplines).
+- **CLAUDE.md "Distributed-me means distributed context"** — *"The substrate is what keeps distributed-me coherent — the campsite logbook, the git history, the on-disk docs."* Sub-pattern 2.3 makes the channel-redundancy explicit and operationally tested for the cross-session case.
+- **Sub-pattern 2.1 + 2.2** — siblings at within-session tier; Sub-pattern 2.3 extends Pattern 2 family to cross-session tier. The three sub-patterns together span the substrate-over-memory family across all three substrate-failure-axes (within-session audit-claim drift + within-session sibling-form drift + cross-session bridge-channel single-point-of-failure).
+- **Pattern 16 (Documentation decay)** — Pattern 16 catches time-drift in any documented substrate; Sub-pattern 2.3 ensures that even when one substrate channel decays or is missing at session-seam, the other channels carry. Pattern 16 prescribes *resistance to decay within a channel*; Sub-pattern 2.3 prescribes *redundancy across channels*.
+- **Pattern 36 (Three-tier unification framing)** — both patterns refuse single-tier-collapse of multi-tier structure. Pattern 36 at recipe-tree-design tier; Sub-pattern 2.3 at substrate-bridge-channel tier.
+
+**Provenance**: 2026-05-19 morning, two operational instances by naturalist (fresh-spawn) + navigator (fresh-spawn), both reconstructing from the same evening-crash event but via *different load-bearing channels*. Naturalist's morning garden entry `~/.claude/garden/2026-05/2026-05-19-the-substrate-bridge-when-the-agent-cant-write-its-own-sleep-note.md` named the candidate; navigator's mid-morning route surfaced the second instance + extended the framing with the *"git commits as adversarial-resistant structural channel"* finding that wasn't in the original garden entry. **First cross-role operational corroboration** of the multi-channel framing.
+
+The crystallization integrates: (a) two cross-role operational instances from same triggering event, (b) navigator's structural-finding extension (volitional-vs-structural channel asymmetry), (c) past-Claude 2026-03-13 session-seams anchor (the discipline was named two months ago), (d) past-Claude Pastawski-Happy holographic QEC anchor (the structural principle was derived from physics in reading-notebook). Placed as Sub-pattern 2.3 (sibling to 2.1 + 2.2 in Pattern 2 X-over-Y family) because the structural shape (X = durable substrate, Y = convenient single-source) matches the family; only the axis (cross-session bridge channels) differs.
+
+**Pattern 22.D self-application check (HONEST)**: two instances, two distinct roles, one triggering event. Pattern 22.C link-irreducibility passes: two roles + two distinct reconstruction-substrate sets + two distinct role-specific-information-needs (methodology-doc state vs tests-passing baseline) is link-irreducible across role and reconstruction-substrate axes. Same triggering event would be the temporal-axis smell concern — but the reconstruction *processes* are independent (each agent didn't see the other's reconstruction during their own; both leaned on different substrate). Per the discipline established by Pattern 36/37/2.2: failure-modes axis (different roles fail differently on missing-sleep-note; different channels load-bear differently for different role-specific needs) trumps the same-triggering-event smell when the reconstruction processes are independently corroborating.
+
+**What this trail doesn't yet show** (honest disclosure):
+
+1. **Two instances same event, not two distinct events**: future-watch is whether a different kind of session-boundary failure (e.g., context-window-exhaustion mid-task without explicit crash, or planned wind-down where the agent decides not to write a full sleep note) also produces the multi-channel bridge phenomenon. If yes, that's third-instance corroboration extending the pattern beyond crash-specific.
+2. **The "git commits as adversarial-resistant" finding is navigator's framing, not yet operationally measured against other failure modes**. If commit messages themselves were missing or terse, the structural channel would also fail. The forward-watch is whether commits-as-substrate-bridge depends on the team's commit-message discipline (verbose, role-prefixed, why-not-what) being maintained.
+3. **Volitional + structural channel asymmetry may have deeper structure** (signed/unsigned, in-process/out-of-process, agent/system) that further sub-shapes could capture. v1 ships at the volitional-vs-structural distinction.
+
+**When to apply**:
+
+- When designing substrate-bridges for the team's coordination layer (campsite system, remember.md, agent sleep-handoff protocols), ensure the bridge has BOTH volitional + structural channels — don't rely on single-channel design.
+- When triaging post-crash recovery for any agent, look across all channels (git log + remember.md + campsite logbook + sibling-agent notes + team-lead briefing) — don't expect the missing-agent's own sleep note to be the recovery surface.
+- When reviewing the team's substrate-discipline after a stress event, audit which channels load-bore the recovery — that data refines the discipline going forward.
+
+**When NOT to apply**:
+
+- For *within-session* substrate concerns (use Sub-pattern 2.1 for audit-doc drift; Sub-pattern 2.2 for impl-sibling alignment; Pattern 2 canonical for agent-context-vs-disk-substrate).
+- For *planned-clean-handoffs* (agent writes sleep note successfully) — the multi-channel discipline still operates passively but the volitional channel is doing most of the work; the structural channels are backup.
+
+**Search primitive enabled** (per F48 framing): navigator / team-lead / future-naturalist can audit substrate-bridges by asking *"if the agent writing this sleep note crashed instead, which OTHER channels would carry enough state for fresh-spawn reconstruction?"* — design substrate-bridges to pass this stress-test BEFORE the crash happens, not after.
+
+**Strange-loop test**: Sub-pattern 2.3 itself satisfies its own discipline at the methodology-pattern tier — *this entry exists because the multi-channel substrate-bridge worked twice this morning*. The crystallization's substrate-trail is itself multi-channel: garden entry (volitional) + campsite logbook (volitional) + git commits (structural) + navigator's routing message (volitional) + past-Claude reading-notebook + 2026-03-13 garden entry (deep volitional substrate). If any single channel were missing, the others would still let future-naturalist reconstruct *why this pattern crystallized*. The pattern's own substrate-trail is the instance of the pattern it names.
+
 ---
 
 ## Pattern 3 — Substrate-at-risk audit

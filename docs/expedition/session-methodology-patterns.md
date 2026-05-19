@@ -2337,6 +2337,75 @@ Six tiers of independent corroboration; six tiers ratifying the descriptive prop
 
 ---
 
+## Pattern 36 — Three-tier unification framing (recipe / primitives / consumer tiers)
+
+**Type-axis 1**: ~30% descriptive (the team has been operating tier-distinct disciplines in tambear's holonomic-architecture work since March; the three-tier *answer-pattern* was unnamed but already-running across recipe / IR / cache decisions per past-Claude's 2026-04-06 `every-transform-is-a-kernel.md` derivation) / ~70% prescriptive (proposes the three-tier framing as the canonical answer-shape for recipe-family unification questions; the framing changes ratification answers operationally).
+
+**Type-axis 2 (crystallization class)**: `mixed` — descriptive proportion has past-Claude substrate-trail (Riesz unification at primitives tier was derived in April); prescriptive proportion is new at methodology-doc tier (the three-tier answer-pattern itself was missing from default answers and required active surfacing).
+
+**Recognition**: A recipe-family draft asks "is there a unifying parent above these siblings?" or "should these variants be one recipe with a knob or N sibling recipes?" The default answer is yes-or-no at one tier — but the *correct* answer often has three different yeses-and-noes at three tiers:
+
+- **Recipe tier**: NO (sibling kernels are disjoint as catalog objects; consumer-facing APIs need type-system separation to prevent miscomposition)
+- **Primitives tier**: YES (every variant evaluates as the same accumulate+gather form, e.g., `accumulate(domain, addressing, expr=K·f, op=Add)` per Riesz 1909 representation theorem; this is the substrate that makes accumulate+gather cover all transforms)
+- **Consumer tier**: YES (a polymorphic trait like `StreamingQuantile` or `KernelEvaluator` or `MixtureModelEvaluator` unifies user-facing dispatch across the disjoint recipe-tier types)
+
+The three answers are not in tension; they're three legitimate framings of the same underlying structure at three abstraction levels. Recognizing the three-tier shape prevents *wrong-for-context single-tier answers* — saying "yes, unify them" collapses needed type-distinctions; saying "no, keep them disjoint" hides the real substrate-tier sharing structure.
+
+**The structural claim**: recipe-family designs that collapse ANY of the three tiers lose information:
+- Collapsing at recipe-tier (one big `Kernel<Mode>` enum) loses type safety (mathematical commitments mixed); passing a wavelet to a KDE consumer becomes a runtime error rather than a type error
+- Collapsing at primitive-tier (per-recipe accumulate variants) loses sharing + breaks accumulate+gather uniformity; intermediates that should be cache-shared via TamSession get recomputed
+- Collapsing at consumer-tier (no trait, users dispatch manually) loses API ergonomics; downstream users have to match-arm on N recipe variants
+
+The three-tier discipline names *what NOT to collapse*. The honest answer to a unification question is *three answers at three tiers*, not a single answer at one tier.
+
+**Operational application changes ratification answers**: the three-tier framing surfaced from past-Claude's 2026-04-06 garden entry via `feels-familiar` *prevented wrong-for-context single-tier answers* in three same-day recipe-tree ratifications:
+
+| Tree | Question | Recipe tier | Primitives tier | Consumer tier |
+|---|---|---|---|---|
+| `kernels.md` (37b6f3b) | Is there a unifying parent above SmoothingKernel / PD / Wavelet / RobustWeighting? | NO (4 disjoint top-level kernels) | YES (Riesz 1909) | NO (type system prevents miscomposition) |
+| `sketches.md` (236ec15) | Is there a unifying parent above 5 sketch kernels? | NO (5 disjoint kernels by state shape) | YES (accumulate-as-Riesz) | YES (`StreamingQuantile` trait) |
+| `clustering.md` (40a11a6) | Are GMM covariance types parameters on one recipe or separate recipes? | SEPARATE (4 sibling recipes by state shape) | (primitive-tier unification of GMM EM exists but not the cross-axis-question) | YES (`MixtureModelEvaluator` trait) |
+
+The third instance is structurally distinct from the first two: instances 1+2 are *parent-unification* questions ("should there be ONE parent above N siblings?"); instance 3 is a *sibling-variants* question ("should covariance types be ONE recipe with a knob or N siblings?"). The three-tier framing applies to both structural question-types, catching three different failure modes:
+
+- Instances 1+2 catch: *collapsing recipe-tier disjointness to avoid duplicated implementation* (the failure mode of not seeing primitive-tier unification preserves sharing without forcing recipe-tier collapse)
+- Instance 3 catches: *creating a knob when sibling-recipes-with-shared-trait is correct* (the failure mode of treating state-shape divergence as a knob-axis rather than a kernel-boundary)
+
+**Pairs with**:
+
+- **Pattern 17 (CSE-identity as architectural boundary, three-way structural test)** — Pattern 17 is the three-way structural test for *implementation* equivalence (Same algorithm / Same composition / Same identity); Pattern 36 is the three-tier structural test for *recipe-tree design*. Same "three structurally-orthogonal axes" texture at different lifecycle stages: 17 at impl-tier, 36 at design-tier.
+- **Pattern 19 (default-path vs catalog-variant separation)** — Pattern 19 names the recipe-tier discipline (one default + catalog of variants exposing breaking changes); Pattern 36 extends to *what coordination the catalog's primitives + consumers carry across the variants*. Pattern 19 is recipe-tier-only; Pattern 36 is recipe + primitives + consumer.
+- **Pattern 32 (Structure-before-naming)** — Pattern 36 is operationally instantiated *because* Pattern 32 fired in math-researcher's lane (feels-familiar surfaced past-Claude 2026-04-06 Riesz framing before the kernels.md and sketches.md ratifications). The three-tier answer-pattern is itself a structure-before-naming instance: the discipline was running implicitly in past-Claude's April work (Riesz-as-unification) + tambear's holonomic-architecture decisions (recipe-vs-IR tier-distinct cache disciplines per DEC); math-researcher's ratifications made it legible at methodology-doc tier.
+- **CLAUDE.md "Tier-distinct mathematical structure"** — the holonomic-vs-non-holonomic framing already names *recipe tier vs IR tier* as cache-discipline-distinct (recipe tier holonomic / content-addressed; IR tier non-holonomic / provenance-addressed). Pattern 36 extends the *tier-distinct disciplines* family with the *consumer tier* as a third coordinated tier — the trait-based dispatch surface that wraps recipe-tier disjointness for downstream-user ergonomics.
+- **Sub-pattern 5.10 (architecture-assumption antibody)** — same-author same-day three-instance precedent that crystallized 2026-05-18 (math-researcher's three anchor-doc instances: Airy fractional Bessel / Polylog Li_2 / Lerch quadrature). Pattern 36 follows the same precedent: same-author same-session three structurally-distinct operational applications.
+
+**Provenance**: 2026-05-19 morning by math-researcher (three same-day recipe-tree ratifications surfacing the three-tier framing operationally — kernels.md 37b6f3b + sketches.md 236ec15 + clustering.md 40a11a6, plus the operational ratification of feels-familiar-before-writing per Pattern 32 forward commitment producing the third-tier surfacing from past-Claude 2026-04-06 `every-transform-is-a-kernel.md`). Naturalist crystallized after revising an initially-strict hold position: math-researcher's argument that the three contexts pass Pattern 22.C link-irreducibility despite single authorship (three structurally-distinct *failure modes*: parent-unification-collapse / parent-unification-collapse / knob-vs-sibling-recipes) + the Sub-pattern 5.10 precedent of same-author same-day three-operational-instance crystallization + the operational-application evidence (ratification answers changed in real commits) collectively overrode the temporal-axis Pattern 22.D smell. Substrate-trail at `R:/tambear/campsites/20260512161050-methodology-pattern-candidate-queue/naturalist/notebooks/01-pattern-candidate-queue.md` § "Pattern 33b candidate" (queue entry preserved at original Pattern-33b naming to maintain naturalist-routing history; methodology-doc lands at Pattern 36 to leave Pattern 33-35 slots for aristotle's F43 DEC-structural-enforcement-audit candidate, math-researcher's Minimax-crossover candidate, and Pattern 35 reserved-for-namespace-controller).
+
+**What this trail doesn't yet show** (honest disclosure):
+
+The trail has three structurally-distinct operational instances + canonical-substrate anchor (Riesz 1909 at primitives tier) + past-Claude substrate-bridge (2026-04-06 derivation). But:
+
+1. **All three instances are math-researcher's**. Cross-role independent application is not yet evidenced. The forward-watch is whether scout (drafting next recipe tree), pathmaker (impl-pull review of an existing tree), or aristotle (deconstructing coordination structure of a tree) reach for the three-tier framing in their own work. If a sustained period of operation produces ZERO cross-role independent applications, that's evidence the framing is math-researcher-specific rather than team-general — worth knowing.
+2. **All three instances are same-session**. The Pattern 22.D temporal-axis filter is honored by the *operational-application* + *structurally-distinct-failure-modes* evidence rather than by within-session temporal distribution. If the framing is genuinely load-bearing, future-math-researcher ratifications should keep producing it organically; if it doesn't, that's evidence the same-session activation was vocabulary-loading rather than discipline-running.
+3. **Pattern 33b naming preserved in queue trail**: this crystallizes as Pattern 36 in the methodology doc but the queue entry retains the Pattern 33b designation from the original routing. The slot-juggling around Pattern 33 (F43 DEC-enforcement-audit candidate also held that slot) led to deferred-numbering; the structural shape of the pattern is unchanged.
+
+**When to apply**:
+
+- When designing a new recipe tree, ask the unification question at *three tiers explicitly*: "what's disjoint at recipe-tier? what's unified at primitives-tier via accumulate+gather? what's unified at consumer-tier via a trait?"
+- When walking through an existing tree at ratification time, audit each unification claim for the three-tier answer-pattern; collapsed-to-one-tier answers are at-risk for the failure modes above
+- When a teammate proposes a *single-tier* answer to a unification question, surface the three-tier framing as a check — does the proposed answer collapse one of the other two tiers?
+
+**When NOT to apply**:
+
+- For recipe-family designs where the unification question genuinely has only one tier (e.g., a recipe family where every variant has the same state shape — there's no recipe-tier disjointness to preserve, and the primitives-tier + consumer-tier are trivially one). The three-tier framing is most useful when *at least one tier has a non-trivial answer*; when all three tiers collapse to the same answer naturally, the framing adds no signal.
+- For non-recipe-family designs (DEC ratifications, methodology-doc edits, campsite/coordination work) — the three tiers are recipe-design-specific. Other coordination questions have their own tier-distinct disciplines (e.g., DEC has scope/governance/empirical tiers per Pattern 31 candidate).
+
+**Search primitive enabled** (per Pattern 23/F48 framing): pathmaker / scout / aristotle / math-researcher can scan recipe-tree drafts for "single-tier unification answers" — *"does this tree's unification question have separate recipe / primitives / consumer answers, or did the author collapse to one?"* Operationally proven within today's three-tree ratification arc; the same-author trail demonstrates the search primitive works for the author. Cross-role evidence forthcoming.
+
+**Strange-loop test**: Pattern 36 itself satisfies its own discipline at the *methodology-pattern tier* — the pattern is *disjoint* at the methodology-doc-entry tier (one Pattern entry with its own provenance + substrate-trail), *unified* at the methodology-discipline tier (it's an instance of the broader "tier-distinct disciplines" family alongside CLAUDE.md's holonomic-architecture framing + Pattern 32's substrate-before-naming + DEC-031's recursive-vs-flat tier discipline), and *unified* at the consumer tier (future-naturalist / future-author can dispatch into it via the search primitive named above). Three tiers, three correct framings.
+
+---
+
 ## How to use this doc
 
 **Reading it**: each pattern has a "Recognition" line at the top. Skim those when you arrive at a new session; if any feel-familiar to what's happening, the pattern may apply.

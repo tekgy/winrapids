@@ -1,6 +1,24 @@
 # WinRapids
 
-Windows-native GPU-accelerated data science toolkit. Market Atlas signal farm.
+Windows-native GPU workspace — **this repo is archeology (last real commit 2026-05-18).**
+
+> ## ⚠️ CURRENT STATUS & ORIENTATION — read first (updated 2026-07-15)
+> **The work lives in `R:\tambear`, not here.** This session is rooted in winrapids (cwd + project) for
+> transitional reasons only; ALL active work — charters, expeditions, `.tbs`, the atom basis — is in
+> **`R:\tambear\jbd\`**, and the canonical instructions are **`R:\tambear\CLAUDE.md` +
+> `R:\tambear\jbd\the-tambear-body.md` + `R:\tambear\docs\`**. Do NEW work in `R:\tambear`
+> (`git -C /r/tambear …`); treat this repo as read-only archeology.
+>
+> **Read these memories before acting** (current operating context):
+> `project_operating_topology` · `project_winrapids_claude_md_is_stale` (this file is stale — trust the memories +
+> tambear over it) · `project_kingdoms_live_decs_pending` (Kingdom A/B/C/D is LIVE per DEC-046; the atom-basis
+> DEC-061 that dissolves it is UNRATIFIED; 7 DECs pending; **NO kingdom sweep**) ·
+> `project_tbs_atom_basis_session_state` (the `.tbs`/atom-basis arc + the open type-system agenda) ·
+> `feedback_substrate_neutral_no_flinch`.
+>
+> **Everything below is legacy winrapids material.** The vocabulary lock, the Tambear Contract, and the irrevocable
+> principles are still broadly accurate; the "market / dimensional-ladder kingdom" identity is NOT (see "What This
+> System IS"). Where anything below conflicts with the memories above or `R:\tambear`, **they win.**
 
 ---
 
@@ -32,12 +50,9 @@ Windows-native GPU-accelerated data science toolkit. Market Atlas signal farm.
    substrate claim in this repo — winrapids documentation may carry
    old framings that drift from tambear's current state
 
-**The "Market Atlas signal farm" framing** in the line above this section
-is part of the old WinRapids identity (pre-DEC-035). Under DEC-035 framing,
-the Market Atlas signal farm is **a ternyx concern that will USE tambear
-when tambear is done end-to-end**, NOT a WinRapids concern. The old
-framing is preserved in this header for substrate-trail continuity; the
-operationally-current framing is the scope separation in this section.
+**The old "Market Atlas signal farm" tagline was removed (2026-07-15).** It was a **ternyx** concern (a future
+*user* of tambear), never a WinRapids/tambear one — per the scope separation here. (The prior "preserved for
+substrate-trail continuity" rationale was not intended, and is dropped.)
 
 ---
 
@@ -59,13 +74,12 @@ Older sections of this CLAUDE.md and other docs across the repo may use words li
 
 ## What This System IS
 
-The market is a temporospatial system. Not a prediction problem. Not a game to win. A SYSTEM — with properties that can be described, measured, and farmed as signal.
-
-The goal: build the instrument that describes the system. Farm every measurable signal. Let the system speak. When it has enough dimensional resolution, it stops being a prediction problem — you observe from close enough to the true structure that the behavior becomes legible.
-
-The kingdoms are a dimensional ladder. Each kingdom adds one tensor cross-axis. K01 is 1D (ticks). K02 is 2D (bins). K03 is 3D (cross-cadence). K04 is 4D (cross-ticker). Higher kingdoms add spatial axes — the fault map, the phase space topology, the learned metric space where market coupling lives geometrically.
-
-Traditional signals are 2D projections of higher-dimensional structure. We're building the projection apparatus to climb the dimensional ladder until the structure resolves.
+> **SUPERSEDED / MISPLACED (2026-07-15).** The "market temporospatial system / dimensional-ladder kingdoms
+> (K01=1D ticks, K02=2D bins, tensor-rank ladder)" framing that lived here is a **ternyx** concern — a future
+> *user* of tambear — not tambear or winrapids (see the scope separation above). It is also **not the current
+> kingdom framing**: the live computational kingdoms are **A/B/C/D** (ratified DEC-046), being dissolved into the
+> atom basis (DEC-061, *unratified*) — see the `project_kingdoms_live_decs_pending` memory. Tambear's own "what it
+> is" lives in `R:\tambear\docs\` and `R:\tambear\jbd\the-tambear-body.md`.
 
 ---
 
